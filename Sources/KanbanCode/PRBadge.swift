@@ -66,24 +66,34 @@ struct PRBadgeStrip: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
                 ForEach(prLinks.sortedByPRNumber, id: \.number) { pr in
-                    Button {
-                        openPullRequest(pr)
-                    } label: {
-                        PRBadge(
-                            status: pr.status,
-                            prNumber: pr.number,
-                            unresolvedThreads: pr.unresolvedThreads ?? 0
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .help(helpText(for: pr))
+                    PRBadgeButton(pr: pr, githubBaseURL: githubBaseURL, projectPath: projectPath)
                 }
             }
         }
         .frame(maxWidth: maxWidth)
     }
+}
 
-    private func helpText(for pr: PRLink) -> String {
+struct PRBadgeButton: View {
+    let pr: PRLink
+    var githubBaseURL: String?
+    var projectPath: String?
+
+    var body: some View {
+        Button {
+            openPullRequest()
+        } label: {
+            PRBadge(
+                status: pr.status,
+                prNumber: pr.number,
+                unresolvedThreads: pr.unresolvedThreads ?? 0
+            )
+        }
+        .buttonStyle(.plain)
+        .help(helpText)
+    }
+
+    private var helpText: String {
         var parts = ["Open PR #\(pr.number)"]
         if let status = pr.status {
             parts.append(status.rawValue)
@@ -94,7 +104,7 @@ struct PRBadgeStrip: View {
         return parts.joined(separator: " - ")
     }
 
-    private func openPullRequest(_ pr: PRLink) {
+    private func openPullRequest() {
         if let url = resolvedPRURL(pr, githubBaseURL: githubBaseURL) {
             NSWorkspace.shared.open(url)
             return

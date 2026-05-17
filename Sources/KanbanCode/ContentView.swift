@@ -1375,12 +1375,10 @@ struct ContentView: View {
                     }
 
                     if !card.link.prLinks.isEmpty {
-                        ToolbarItem(placement: .primaryAction) {
-                            PRBadgeStrip(
-                                prLinks: card.link.prLinks,
-                                projectPath: card.link.projectPath,
-                                maxWidth: 360
-                            )
+                        ToolbarItemGroup(placement: .primaryAction) {
+                            ForEach(card.link.prLinks.sortedByPRNumber, id: \.number) { pr in
+                                PRBadgeButton(pr: pr, projectPath: card.link.projectPath)
+                            }
                         }
                     }
 
