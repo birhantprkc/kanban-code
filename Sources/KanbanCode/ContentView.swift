@@ -1374,15 +1374,25 @@ struct ContentView: View {
                         }
                     }
 
-                    if let primaryPR = card.link.prLinks.sortedByPRDisplayPriority.first {
+                    if card.link.prLinks.sortedByPRDisplayPriority.indices.contains(0) {
                         ToolbarItem(placement: .primaryAction) {
-                            PRToolbarButton(pr: primaryPR, projectPath: card.link.projectPath)
+                            PRToolbarButton(pr: card.link.prLinks.sortedByPRDisplayPriority[0], projectPath: card.link.projectPath)
                         }
                     }
-                    if card.link.prLinks.count > 1 {
+                    if card.link.prLinks.sortedByPRDisplayPriority.indices.contains(1) {
+                        ToolbarItem(placement: .primaryAction) {
+                            PRToolbarButton(pr: card.link.prLinks.sortedByPRDisplayPriority[1], projectPath: card.link.projectPath)
+                        }
+                    }
+                    if card.link.prLinks.sortedByPRDisplayPriority.indices.contains(2) {
+                        ToolbarItem(placement: .primaryAction) {
+                            PRToolbarButton(pr: card.link.prLinks.sortedByPRDisplayPriority[2], projectPath: card.link.projectPath)
+                        }
+                    }
+                    if card.link.prLinks.count > 3 {
                         ToolbarItem(placement: .primaryAction) {
                             PROverflowMenu(
-                                prLinks: Array(card.link.prLinks.sortedByPRDisplayPriority.dropFirst()),
+                                prLinks: Array(card.link.prLinks.sortedByPRDisplayPriority.dropFirst(3)),
                                 projectPath: card.link.projectPath
                             )
                         }
