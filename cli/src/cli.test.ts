@@ -229,9 +229,47 @@ describe("kanban channel (CLI e2e)", () => {
     assert.match(log, /display-message -p #S/);
     assert.match(log, /send-keys -t sess-self Enter/);
     assert.match(log, /send-keys -t sess-self Escape/);
-    assert.match(log, /send-keys -t sess-self \/compact Enter/);
+    assert.match(log, /set-buffer \/compact/);
+    assert.match(log, /paste-buffer -p -t sess-self/);
+    assert.match(log, /send-keys -t sess-self Enter/);
     assert.match(log, /set-buffer Continue after compact\./);
     assert.match(log, /paste-buffer -p -t sess-self/);
+  });
+
+  test("self-compact submits /compact when no follow-up prompt is provided", () => {
+    const sessionName = "sess-self-no-follow-up";
+    const { binDir, logPath } = seedFakeTmux(sessionName);
+    const env = {
+      HOME: home,
+      PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      TMUX: "/tmp/tmux-123/default,1,0",
+      TMUX_SESSION_NAME: sessionName,
+      TMUX_LOG: logPath,
+    };
+    seedLinks([
+      {
+        id: "card_self_no_follow_up",
+        name: "self card",
+        column: "in_progress",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        tmuxLink: { sessionName },
+        isRemote: false,
+        prLinks: [],
+        manualOverrides: {},
+        source: "manual",
+        manuallyArchived: false,
+      },
+    ]);
+
+    const r = runCli(["self-compact"], env);
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /Sent \/compact to sess-self-no-follow-up\./);
+
+    const log = readFileSync(logPath, "utf-8");
+    assert.match(log, /set-buffer \/compact/);
+    assert.match(log, /paste-buffer -p -t sess-self-no-follow-up/);
+    assert.match(log, /send-keys -t sess-self-no-follow-up Enter/);
   });
 
   test("self-compact explains when current tmux is not linked to a card", () => {

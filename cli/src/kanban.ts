@@ -13,6 +13,7 @@ import {
   sendTmuxEnter,
   sendTmuxKeys,
   pasteTmuxPrompt,
+  pasteTmuxText,
   sendTmuxEscape,
   readLastTranscriptTurns,
   readSessionContext,
@@ -403,7 +404,9 @@ Examples:
       // then provide the optional post-compact continuation prompt.
       assertTmuxResult("send Enter", sendTmuxEnter(tmuxSession));
       assertTmuxResult("send Escape", sendTmuxEscape(tmuxSession));
-      assertTmuxResult("send /compact", sendTmuxKeys(tmuxSession, "/compact"));
+      assertTmuxResult("paste /compact", pasteTmuxText(tmuxSession, "/compact"));
+      sleepSeconds(0.2);
+      assertTmuxResult("submit /compact", sendTmuxEnter(tmuxSession));
       if (followUp.trim().length > 0) {
         sleepSeconds(Number.isFinite(followUpDelay) ? followUpDelay : 2);
         assertTmuxResult("send post-compact prompt", pasteTmuxPrompt(tmuxSession, followUp));

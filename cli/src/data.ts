@@ -206,6 +206,22 @@ export function pasteTmuxPrompt(
   }
 }
 
+export function pasteTmuxText(
+  sessionName: string,
+  text: string
+): { ok: boolean; error?: string } {
+  const tmux = findTmux();
+  try {
+    execSync(
+      `${tmux} set-buffer ${shellEscape(text)} && ${tmux} paste-buffer -p -t ${shellEscape(sessionName)}`,
+      { encoding: "utf-8" }
+    );
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}
+
 export function sendTmuxEscape(
   sessionName: string
 ): { ok: boolean; error?: string } {
