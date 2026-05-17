@@ -48,6 +48,7 @@ struct NewTaskDialog: View {
                 text: $prompt,
                 images: $images,
                 placeholder: "Describe what you want \(selectedAssistant.displayName) to do...",
+                maxHeight: 180,
                 onSubmit: submitForm
             )
 

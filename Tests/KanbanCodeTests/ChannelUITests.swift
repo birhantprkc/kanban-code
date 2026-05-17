@@ -79,7 +79,8 @@ struct ChannelUITests {
             onlineByHandle: [:],
             onSend: { _, _ in },
             onClose: {},
-            draft: .constant("")
+            draft: .constant(""),
+            draftImages: .constant([])
         )
         hostAndLayout(chat)
     }
@@ -105,7 +106,8 @@ struct ChannelUITests {
             onlineByHandle: ["alice": true, "user": true],
             onSend: { _, _ in },
             onClose: {},
-            draft: .constant("")
+            draft: .constant(""),
+            draftImages: .constant([])
         )
         hostAndLayout(chat)
     }
@@ -194,7 +196,8 @@ struct ChannelUITests {
             onlineForOther: true,
             onSend: { _, _ in },
             onClose: {},
-            draft: .constant("")
+            draft: .constant(""),
+            draftImages: .constant([])
         )
         hostAndLayout(dm)
     }
@@ -206,7 +209,8 @@ struct ChannelUITests {
             other: other,
             messages: [],
             onlineForOther: false,
-            draft: .constant("")
+            draft: .constant(""),
+            draftImages: .constant([])
         )
         hostAndLayout(dm)
     }
@@ -231,7 +235,8 @@ struct ChannelUITests {
             onSend: { _, _ in },
             onClose: {},
             onCopyDMCommand: { _ in },
-            draft: .constant("")
+            draft: .constant(""),
+            draftImages: .constant([])
         )
         hostAndLayout(chat)
     }
@@ -258,7 +263,8 @@ struct ChannelUITests {
                 "alice": .activelyWorking,
                 "bob": .needsAttention,
             ],
-            draft: .constant("")
+            draft: .constant(""),
+            draftImages: .constant([])
         )
         hostAndLayout(chat)
     }

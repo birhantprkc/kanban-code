@@ -73,8 +73,10 @@ struct CardDetailView: View {
     /// when the user switches cards mid-load — see loadHistory().
     @State private var historyLoadCardId: String?
     @State private var hasMoreTurns = false
-    // Per-card chat drafts (keyed by card ID, persisted to disk)
-    @State private var chatDrafts: [String: ChatDraft] = ChatDraft.loadAll()
+    // Per-card chat drafts (keyed by card ID, persisted to disk). Drafts are
+    // loaded one card at a time so terminal-only card switches do not scan
+    // the entire drafts directory during SwiftUI view initialization.
+    @State private var chatDrafts: [String: ChatDraft] = [:]
     @State private var chatPendingMessage: String?
 
     private var chatDraftText: Binding<String> {
@@ -288,6 +290,7 @@ struct CardDetailView: View {
             isLoadingHistory = false
             isLoadingMore = false
             hasMoreTurns = false
+            await loadDraftForCurrentCard()
             browserTabs = hydrateBrowserTabs()
             terminalGrabFocus = false
             // Reset tab to a valid one for this card (skip auto-focus)
@@ -1660,6 +1663,20 @@ struct CardDetailView: View {
             // Silently fail — empty history is fine
         }
         if card.id == myCardId { isLoadingHistory = false }
+    }
+
+    private func loadDraftForCurrentCard() async {
+        let loadingCardId = card.id
+        if chatDrafts[loadingCardId] != nil { return }
+
+        let draft = await Task.detached {
+            ChatDraft.load(cardId: loadingCardId)
+        }.value
+
+        guard card.id == loadingCardId else { return }
+        if let draft {
+            chatDrafts[loadingCardId] = draft
+        }
     }
 
     private func loadMoreHistory() async {

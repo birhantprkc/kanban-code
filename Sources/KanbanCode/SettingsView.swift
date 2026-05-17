@@ -118,6 +118,9 @@ struct SettingsView: View {
             )
             .tabItem { Label("General", systemImage: "gear") }
 
+            SelfCompactSettingsView()
+                .tabItem { Label("Self-Compact", systemImage: "arrow.triangle.2.circlepath") }
+
             NotificationSettingsView()
                 .tabItem { Label("Notifications", systemImage: "bell") }
 
@@ -127,7 +130,7 @@ struct SettingsView: View {
             AmphetamineSettingsView()
                 .tabItem { Label("Amphetamine", systemImage: "bolt.fill") }
         }
-        .frame(width: 520, height: 520)
+        .frame(width: 560, height: 620)
         .task {
             await checkAvailability()
         }
@@ -445,6 +448,140 @@ struct AddAPIServiceSheet: View {
         let model = modelFlag.isEmpty ? nil : modelFlag
         let service = APIService(name: "", assistant: assistant, launcherPrefix: prefix, modelFlag: model)
         return assistant.launchCommand(skipPermissions: true, worktreeName: nil, service: service)
+    }
+}
+
+// MARK: - Self-Compact
+
+struct SelfCompactSettingsView: View {
+    private let settingsStore = SettingsStore()
+
+    @State private var config = SelfCompactSettings()
+    @State private var saveTask: Task<Void, Never>?
+
+    var body: some View {
+        Form {
+            Section("Context Guard") {
+                Toggle("Enable self-compact guard", isOn: Binding(
+                    get: { config.enabled },
+                    set: {
+                        config.enabled = $0
+                        scheduleSave()
+                    }
+                ))
+
+                HStack {
+                    Text("Poll every")
+                    Spacer()
+                    Text("\(config.pollIntervalSeconds)s")
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                    Stepper("", value: Binding(
+                        get: { config.pollIntervalSeconds },
+                        set: {
+                            config.pollIntervalSeconds = $0
+                            scheduleSave()
+                        }
+                    ), in: 10...300, step: 10)
+                    .labelsHidden()
+                }
+
+                Text("Kanban Code reads Claude's statusline context usage for live cards. Prompt rules are queued for the agent and auto-sent when it finishes; compact rules paste `/compact` directly into tmux.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Thresholds") {
+                ForEach($config.rules) { $rule in
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            TextField("Tokens", value: $rule.thresholdTokens, format: .number)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 96)
+                                .monospacedDigit()
+                                .onChange(of: rule.thresholdTokens) { scheduleSave() }
+
+                            Picker("Action", selection: $rule.action) {
+                                ForEach(SelfCompactAction.allCases, id: \.self) { action in
+                                    Text(action.displayName).tag(action)
+                                }
+                            }
+                            .labelsHidden()
+                            .frame(width: 150)
+                            .onChange(of: rule.action) { scheduleSave() }
+
+                            Spacer()
+
+                            Button {
+                                config.rules.removeAll { $0.id == rule.id }
+                                scheduleSave()
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                            .buttonStyle(.borderless)
+                            .foregroundStyle(.secondary)
+                            .help("Remove threshold")
+                        }
+
+                        TextEditor(text: $rule.message)
+                            .font(.system(.caption, design: .monospaced))
+                            .frame(minHeight: 54, maxHeight: 78)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(Color.secondary.opacity(0.18))
+                            )
+                            .onChange(of: rule.message) { scheduleSave() }
+                    }
+                    .padding(.vertical, 4)
+                }
+
+                HStack {
+                    Button("Add Threshold") {
+                        config.rules.append(SelfCompactRule(
+                            id: UUID().uuidString,
+                            thresholdTokens: 800_000,
+                            action: .compactNow,
+                            message: "/compact"
+                        ))
+                        config.rules.sort { $0.thresholdTokens < $1.thresholdTokens }
+                        scheduleSave()
+                    }
+                    .controlSize(.small)
+
+                    Spacer()
+
+                    Button("Reset Defaults") {
+                        config.rules = SelfCompactRule.defaults
+                        config.pollIntervalSeconds = 30
+                        scheduleSave()
+                    }
+                    .controlSize(.small)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+        .task {
+            if let settings = try? await settingsStore.read() {
+                config = settings.selfCompact
+            }
+        }
+    }
+
+    private func scheduleSave() {
+        saveTask?.cancel()
+        saveTask = Task {
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled else { return }
+            do {
+                var settings = try await settingsStore.read()
+                settings.selfCompact = config
+                try await settingsStore.write(settings)
+                NotificationCenter.default.post(name: .kanbanCodeSettingsChanged, object: nil)
+            } catch {
+                KanbanCodeLog.warn("settings", "Failed to save self-compact settings: \(error)")
+            }
+        }
     }
 }
 

@@ -18,6 +18,8 @@ public struct Settings: Codable, Sendable {
     public var apiServices: [APIService]
     /// Maps `CodingAssistant.rawValue` → `APIService.id` for the default service per assistant.
     public var defaultAPIServiceIds: [String: String]
+    /// Automatic context-limit guard for Claude sessions.
+    public var selfCompact: SelfCompactSettings
 
     public init(
         projects: [Project] = [],
@@ -33,7 +35,8 @@ public struct Settings: Codable, Sendable {
         defaultAssistant: CodingAssistant? = nil,
         enabledAssistants: [CodingAssistant] = CodingAssistant.allCases,
         apiServices: [APIService] = [],
-        defaultAPIServiceIds: [String: String] = [:]
+        defaultAPIServiceIds: [String: String] = [:],
+        selfCompact: SelfCompactSettings = SelfCompactSettings()
     ) {
         self.projects = projects
         self.globalView = globalView
@@ -49,6 +52,7 @@ public struct Settings: Codable, Sendable {
         self.enabledAssistants = enabledAssistants
         self.apiServices = apiServices
         self.defaultAPIServiceIds = defaultAPIServiceIds
+        self.selfCompact = selfCompact
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -56,6 +60,7 @@ public struct Settings: Codable, Sendable {
         case promptTemplate, githubIssuePromptTemplate, columnOrder, hasCompletedOnboarding, defaultAssistant
         case enabledAssistants
         case apiServices, defaultAPIServiceIds
+        case selfCompact
         case skill // backward-compat: old name for promptTemplate
     }
 
@@ -94,6 +99,7 @@ public struct Settings: Codable, Sendable {
         }
         apiServices = (try? container.decodeIfPresent([APIService].self, forKey: .apiServices)) ?? []
         defaultAPIServiceIds = (try? container.decodeIfPresent([String: String].self, forKey: .defaultAPIServiceIds)) ?? [:]
+        selfCompact = (try? container.decodeIfPresent(SelfCompactSettings.self, forKey: .selfCompact)) ?? SelfCompactSettings()
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -112,6 +118,7 @@ public struct Settings: Codable, Sendable {
         try container.encode(enabledAssistants, forKey: .enabledAssistants)
         try container.encode(apiServices, forKey: .apiServices)
         try container.encode(defaultAPIServiceIds, forKey: .defaultAPIServiceIds)
+        try container.encode(selfCompact, forKey: .selfCompact)
         // Note: "skill" is NOT encoded — only read for backward-compat
     }
 }
@@ -213,6 +220,92 @@ public struct SessionTimeoutSettings: Codable, Sendable {
 
     public init(activeThresholdMinutes: Int = 1440) {
         self.activeThresholdMinutes = activeThresholdMinutes
+    }
+}
+
+public enum SelfCompactAction: String, Codable, Sendable, CaseIterable {
+    case queuePrompt
+    case compactNow
+
+    public var displayName: String {
+        switch self {
+        case .queuePrompt: "Queue prompt"
+        case .compactNow: "Compact now"
+        }
+    }
+}
+
+public struct SelfCompactRule: Identifiable, Codable, Sendable, Equatable {
+    public var id: String
+    public var thresholdTokens: Int
+    public var action: SelfCompactAction
+    public var message: String
+
+    public init(
+        id: String,
+        thresholdTokens: Int,
+        action: SelfCompactAction,
+        message: String
+    ) {
+        self.id = id
+        self.thresholdTokens = thresholdTokens
+        self.action = action
+        self.message = message
+    }
+
+    public static let defaults: [SelfCompactRule] = [
+        SelfCompactRule(
+            id: "ctx-500k",
+            thresholdTokens: 500_000,
+            action: .queuePrompt,
+            message: "You are above the 500k context limit. Whenever it is convenient, use the kanban CLI to send yourself a self-compact."
+        ),
+        SelfCompactRule(
+            id: "ctx-600k",
+            thresholdTokens: 600_000,
+            action: .queuePrompt,
+            message: "You are above the 600k context limit. Please compact yourself soon using the kanban CLI self-compact command."
+        ),
+        SelfCompactRule(
+            id: "ctx-700k",
+            thresholdTokens: 700_000,
+            action: .queuePrompt,
+            message: "You are above the 700k context limit. Compact yourself IMMEDIATELY using the kanban CLI self-compact command."
+        ),
+        SelfCompactRule(
+            id: "ctx-750k",
+            thresholdTokens: 750_000,
+            action: .compactNow,
+            message: "/compact"
+        ),
+    ]
+}
+
+public struct SelfCompactSettings: Codable, Sendable, Equatable {
+    public var enabled: Bool
+    public var pollIntervalSeconds: Int
+    public var rules: [SelfCompactRule]
+
+    public init(
+        enabled: Bool = false,
+        pollIntervalSeconds: Int = 30,
+        rules: [SelfCompactRule] = SelfCompactRule.defaults
+    ) {
+        self.enabled = enabled
+        self.pollIntervalSeconds = pollIntervalSeconds
+        self.rules = rules
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        pollIntervalSeconds = try c.decodeIfPresent(Int.self, forKey: .pollIntervalSeconds) ?? 30
+        let decodedRules = (try? c.decodeIfPresent([SelfCompactRule].self, forKey: .rules)) ?? SelfCompactRule.defaults
+        rules = decodedRules.isEmpty ? SelfCompactRule.defaults : decodedRules
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled, pollIntervalSeconds, rules
     }
 }
 

@@ -321,6 +321,35 @@ struct ImageSenderTests {
         ])
     }
 
+    @Test("inline image send does not leave newline before image paste")
+    func inlineImageSendCarriesPreImageNewlinesForward() async throws {
+        let mock = MockTmux()
+        mock.capturedPaneOutputs = [
+            "❯ before",
+            "❯ before\n [Image #1] (↑ to select)",
+            "❯ before\n [Image #1] (↑ to select)\n\nafter",
+        ]
+
+        let sender = ImageSender(tmux: mock)
+        let image = ImageAttachment(data: Data([0x01]))
+
+        try await sender.sendPromptWithImages(
+            sessionName: "test-session",
+            prompt: "before\n\n[Image #1]after",
+            images: [image],
+            setClipboard: { _ in },
+            pollInterval: .milliseconds(10),
+            timeout: .seconds(5)
+        )
+
+        #expect(mock.events == [
+            "text:before",
+            "image",
+            "text:\n\nafter",
+            "submit",
+        ])
+    }
+
     @Test("times out when image not confirmed")
     func sendImageTimeout() async throws {
         let mock = MockTmux()

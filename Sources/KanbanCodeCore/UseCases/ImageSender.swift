@@ -102,40 +102,93 @@ public actor ImageSender {
     ) async throws {
         let parts = PromptImageLayout.parts(in: prompt, imageCount: images.count)
         let hasInlineImages = parts.contains { $0.imageIndex != nil }
+        let stagedParts: [PromptImageLayout.Part]
 
         if hasInlineImages {
-            for part in parts {
-                if let imageIndex = part.imageIndex {
-                    try await sendImages(
-                        sessionName: sessionName,
-                        images: [images[imageIndex]],
-                        assistant: assistant,
-                        setClipboard: setClipboard,
-                        pollInterval: pollInterval,
-                        timeout: timeout
-                    )
-                } else if !part.text.isEmpty {
-                    try await tmux.pasteText(to: sessionName, text: part.text)
-                }
-            }
+            stagedParts = parts
         } else {
+            var appendedParts: [PromptImageLayout.Part] = []
             if !prompt.isEmpty {
-                try await tmux.pasteText(to: sessionName, text: prompt)
+                appendedParts.append(.init(text: prompt))
             }
-            if !images.isEmpty {
+            appendedParts += images.indices.map { .init(text: "", imageIndex: $0) }
+            stagedParts = appendedParts
+        }
+
+        try await sendParts(
+            stagedParts,
+            sessionName: sessionName,
+            images: images,
+            assistant: assistant,
+            setClipboard: setClipboard,
+            pollInterval: pollInterval,
+            timeout: timeout
+        )
+
+        if !prompt.isEmpty || !images.isEmpty {
+            try await tmux.submitPrompt(to: sessionName)
+        }
+    }
+
+    private func sendParts(
+        _ parts: [PromptImageLayout.Part],
+        sessionName: String,
+        images: [ImageAttachment],
+        assistant: CodingAssistant,
+        setClipboard: @Sendable (Data) -> Void,
+        pollInterval: Duration,
+        timeout: Duration
+    ) async throws {
+        var carryNewlines = ""
+        for (offset, part) in parts.enumerated() {
+            if let imageIndex = part.imageIndex {
                 try await sendImages(
                     sessionName: sessionName,
-                    images: images,
+                    images: [images[imageIndex]],
                     assistant: assistant,
                     setClipboard: setClipboard,
                     pollInterval: pollInterval,
                     timeout: timeout
                 )
+                continue
+            }
+
+            var text = carryNewlines + part.text
+            carryNewlines = ""
+
+            // Claude Code can submit the current draft when an image is pasted
+            // after a text chunk that ends with a newline. Keep image ordering
+            // reliable by never leaving the pre-image paste newline-terminated;
+            // carry those line breaks forward and paste them after the image.
+            if nextPartIsImage(parts, after: offset) {
+                let split = splitTrailingNewlines(from: text)
+                text = split.body
+                carryNewlines = split.trailingNewlines
+            }
+
+            if !text.isEmpty {
+                try await tmux.pasteText(to: sessionName, text: text)
             }
         }
 
-        if !prompt.isEmpty || !images.isEmpty {
-            try await tmux.submitPrompt(to: sessionName)
+        if !carryNewlines.isEmpty {
+            try await tmux.pasteText(to: sessionName, text: carryNewlines)
         }
+    }
+
+    private func nextPartIsImage(_ parts: [PromptImageLayout.Part], after offset: Int) -> Bool {
+        let next = offset + 1
+        guard parts.indices.contains(next) else { return false }
+        return parts[next].imageIndex != nil
+    }
+
+    private func splitTrailingNewlines(from text: String) -> (body: String, trailingNewlines: String) {
+        var splitIndex = text.endIndex
+        while splitIndex > text.startIndex {
+            let previous = text.index(before: splitIndex)
+            guard text[previous].isNewline else { break }
+            splitIndex = previous
+        }
+        return (String(text[..<splitIndex]), String(text[splitIndex...]))
     }
 }

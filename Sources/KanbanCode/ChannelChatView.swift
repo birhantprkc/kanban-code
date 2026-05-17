@@ -351,12 +351,14 @@ struct ChannelChatView: View {
     /// survives drawer switches — avoids losing in-progress typing when the
     /// user jumps to another channel/card and comes back.
     @Binding var draft: String
+    /// Image attachments for the draft. Also parent-owned so pasted images
+    /// survive drawer switches for the same lifecycle as the draft text.
+    @Binding var draftImages: [Data]
     /// Optional share controller. When present, a globe button in the header
     /// opens the share dialog and an active share is shown as a banner
     /// below the header. When nil, all share UI is hidden.
     var shareController: ChannelShareController? = nil
 
-    @State private var pastedImages: [Data] = []
     @State private var rosterExpanded = false
     @State private var isNearBottom: Bool = true
     @State private var unseenNewCount: Int = 0
@@ -1390,7 +1392,7 @@ struct ChannelChatView: View {
             focusRequestToken: focusRequestToken,
             onSend: { body, imagePaths in onSend(body, imagePaths) },
             text: $draft,
-            pastedImages: $pastedImages
+            pastedImages: $draftImages
         )
     }
 }
@@ -1438,8 +1440,8 @@ struct DMChatView: View {
     /// Local user's handle, used to tint this side's messages. See ChannelChatView.
     var myHandle: String = ""
     @Binding var draft: String
+    @Binding var draftImages: [Data]
 
-    @State private var pastedImages: [Data] = []
     @State private var isNearBottom: Bool = true
     @State private var unseenNewCount: Int = 0
     @State private var isCmdHeld: Bool = false
@@ -1656,7 +1658,7 @@ struct DMChatView: View {
             mentionCandidates: [other.handle],
             onSend: { body, imagePaths in onSend(body, imagePaths) },
             text: $draft,
-            pastedImages: $pastedImages
+            pastedImages: $draftImages
         )
     }
 

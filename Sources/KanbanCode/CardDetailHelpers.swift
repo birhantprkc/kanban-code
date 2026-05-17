@@ -357,6 +357,16 @@ struct ChatDraft: Codable {
         return result
     }
 
+    static func load(cardId: String) -> ChatDraft? {
+        let path = (dirPath as NSString).appendingPathComponent("\(cardId).json")
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let draft = try? JSONDecoder().decode(ChatDraft.self, from: data),
+              !draft.isEmpty else {
+            return nil
+        }
+        return draft
+    }
+
     static func save(cardId: String, draft: ChatDraft) {
         let path = (dirPath as NSString).appendingPathComponent("\(cardId).json")
         if draft.isEmpty {

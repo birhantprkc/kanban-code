@@ -240,6 +240,68 @@ struct SettingsStoreTests {
         #expect(settings.defaultAPIServiceIds.isEmpty)
     }
 
+    // MARK: - Self-compact settings
+
+    @Test("selfCompact defaults disabled with threshold defaults")
+    func selfCompactDefaultSettings() async throws {
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+
+        let settings = try await SettingsStore(basePath: dir).read()
+        #expect(settings.selfCompact.enabled == false)
+        #expect(settings.selfCompact.pollIntervalSeconds == 30)
+        #expect(settings.selfCompact.rules.map(\.thresholdTokens) == [500_000, 600_000, 700_000, 750_000])
+        #expect(settings.selfCompact.rules.last?.action == .compactNow)
+    }
+
+    @Test("selfCompact round-trips through SettingsStore")
+    func selfCompactRoundTrip() async throws {
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+        let store = SettingsStore(basePath: dir)
+
+        var settings = Settings()
+        settings.selfCompact = SelfCompactSettings(
+            enabled: true,
+            pollIntervalSeconds: 60,
+            rules: [
+                SelfCompactRule(
+                    id: "test-900k",
+                    thresholdTokens: 900_000,
+                    action: .compactNow,
+                    message: "/compact"
+                ),
+            ]
+        )
+        try await store.write(settings)
+
+        let read = try await store.read()
+        #expect(read.selfCompact.enabled)
+        #expect(read.selfCompact.pollIntervalSeconds == 60)
+        #expect(read.selfCompact.rules.count == 1)
+        #expect(read.selfCompact.rules[0].thresholdTokens == 900_000)
+        #expect(read.selfCompact.rules[0].action == .compactNow)
+    }
+
+    @Test("Old settings JSON without selfCompact decodes with disabled defaults")
+    func backwardCompatNoSelfCompact() async throws {
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+
+        let json = """
+        {
+          "projects": [{ "path": "/x", "name": "x", "visible": true }]
+        }
+        """
+        let path = (dir as NSString).appendingPathComponent("settings.json")
+        try json.write(toFile: path, atomically: true, encoding: .utf8)
+
+        let settings = try await SettingsStore(basePath: dir).read()
+        #expect(settings.projects.count == 1)
+        #expect(settings.selfCompact.enabled == false)
+        #expect(settings.selfCompact.rules.count == 4)
+    }
+
     // MARK: - Forward-compat: unknown values in JSON must not wipe the whole config
 
     @Test("Unknown values in enabledAssistants don't break decoding — regression for 'projects gone on restart'")

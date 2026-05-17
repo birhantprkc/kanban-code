@@ -186,14 +186,34 @@ final class PromptEditorScrollView: NSScrollView {
         guard let textView = documentView as? NSTextView,
               let layoutManager = textView.layoutManager,
               let textContainer = textView.textContainer else { return }
+        let contentWidth = max(1, contentView.bounds.width)
+        textContainer.containerSize = NSSize(
+            width: contentWidth,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        textView.frame.size.width = contentWidth
+
         layoutManager.ensureLayout(for: textContainer)
         let textHeight = layoutManager.usedRect(for: textContainer).height
             + textView.textContainerInset.height * 2
         let newHeight = min(maxContentHeight, max(36, textHeight))
+        textView.frame.size.height = max(newHeight, textHeight)
+        hasVerticalScroller = textHeight > maxContentHeight
         if abs(newHeight - contentHeight) > 1 {
             contentHeight = newHeight
             invalidateIntrinsicContentSize()
+            superview?.invalidateIntrinsicContentSize()
         }
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        recalcIntrinsicHeight()
+    }
+
+    override func layout() {
+        super.layout()
+        recalcIntrinsicHeight()
     }
 }
 

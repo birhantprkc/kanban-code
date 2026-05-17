@@ -115,8 +115,11 @@ struct ContentView: View {
     @State var rawSyncOutput = ""
     @State var editingQueuedPromptId: String?
     @State var channelGithubBaseURLByCardId: [String: String] = [:]
+    @State var channelDraftImages: [String: [Data]] = [:]
+    @State var dmDraftImages: [String: [Data]] = [:]
     @State var isToolbarMerging = false
     @State var toolbarMergeError: String?
+    @State private var selfCompactTriggeredThresholds: [String: Set<Int>] = [:]
     @State private var navigationBackStack: [DrawerNavigationTarget] = []
     @State private var navigationForwardStack: [DrawerNavigationTarget] = []
     @State private var suppressNextNavigationRecord = false
@@ -1151,6 +1154,9 @@ struct ContentView: View {
                 for ch in store.state.channels {
                     store.dispatch(.refreshChannelMessages(channelName: ch.name))
                 }
+            }
+            .task(id: "self-compact-monitor") {
+                await selfCompactMonitorLoop()
             }
             .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeChannelsChanged)) { _ in
                 store.dispatch(.refreshChannels)
@@ -2697,6 +2703,16 @@ struct ContentView: View {
                 get: { store.state.channelDrafts[channel.name] ?? "" },
                 set: { store.dispatch(.setChannelDraft(channelName: channel.name, body: $0)) }
             ),
+            draftImages: Binding(
+                get: { channelDraftImages[channel.name] ?? [] },
+                set: { newValue in
+                    if newValue.isEmpty {
+                        channelDraftImages.removeValue(forKey: channel.name)
+                    } else {
+                        channelDraftImages[channel.name] = newValue
+                    }
+                }
+            ),
             shareController: shareController
         )
         .task(id: channelGithubBaseURLResolutionKey(channel: channel, messages: msgs)) {
@@ -2840,6 +2856,16 @@ struct ContentView: View {
             draft: Binding(
                 get: { store.state.dmDrafts[key] ?? "" },
                 set: { store.dispatch(.setDMDraft(other: other, body: $0)) }
+            ),
+            draftImages: Binding(
+                get: { dmDraftImages[key] ?? [] },
+                set: { newValue in
+                    if newValue.isEmpty {
+                        dmDraftImages.removeValue(forKey: key)
+                    } else {
+                        dmDraftImages[key] = newValue
+                    }
+                }
             )
         )
     }
@@ -2865,6 +2891,80 @@ struct ContentView: View {
             }
         }
         return out
+    }
+
+    private func selfCompactMonitorLoop() async {
+        while !Task.isCancelled {
+            let interval = await evaluateSelfCompactThresholds()
+            try? await Task.sleep(for: .seconds(interval))
+        }
+    }
+
+    @discardableResult
+    private func evaluateSelfCompactThresholds() async -> Int {
+        let settings = (try? await settingsStore.read()) ?? Settings()
+        let config = settings.selfCompact
+        let interval = max(10, config.pollIntervalSeconds)
+        guard config.enabled else {
+            selfCompactTriggeredThresholds.removeAll()
+            return interval
+        }
+
+        let rules = config.rules
+            .filter { $0.thresholdTokens > 0 }
+            .sorted { $0.thresholdTokens < $1.thresholdTokens }
+        guard let firstThreshold = rules.first?.thresholdTokens else { return interval }
+
+        let candidates = store.state.cards.compactMap { card -> (cardId: String, sessionId: String, sessionName: String)? in
+            let link = card.link
+            guard link.effectiveAssistant == .claude,
+                  let sessionId = link.sessionLink?.sessionId,
+                  let sessionName = link.tmuxLink?.sessionName
+            else { return nil }
+            return (card.id, sessionId, sessionName)
+        }
+
+        var liveSessionIds = Set<String>()
+        for candidate in candidates {
+            liveSessionIds.insert(candidate.sessionId)
+            guard let usage = ContextUsageReader.read(sessionId: candidate.sessionId) else { continue }
+            let usedTokens = usage.totalInputTokens + usage.totalOutputTokens
+            if usedTokens < firstThreshold {
+                selfCompactTriggeredThresholds.removeValue(forKey: candidate.sessionId)
+                continue
+            }
+
+            let seen = selfCompactTriggeredThresholds[candidate.sessionId] ?? []
+            let newlyCrossed = rules.filter { usedTokens >= $0.thresholdTokens && !seen.contains($0.thresholdTokens) }
+            guard let rule = newlyCrossed.max(by: { $0.thresholdTokens < $1.thresholdTokens }) else { continue }
+
+            var updatedSeen = seen
+            updatedSeen.formUnion(rules.filter { $0.thresholdTokens <= rule.thresholdTokens }.map(\.thresholdTokens))
+            selfCompactTriggeredThresholds[candidate.sessionId] = updatedSeen
+            await triggerSelfCompactRule(rule, cardId: candidate.cardId, sessionName: candidate.sessionName, usedTokens: usedTokens)
+        }
+
+        selfCompactTriggeredThresholds = selfCompactTriggeredThresholds.filter { liveSessionIds.contains($0.key) }
+        return interval
+    }
+
+    private func triggerSelfCompactRule(_ rule: SelfCompactRule, cardId: String, sessionName: String, usedTokens: Int) async {
+        switch rule.action {
+        case .queuePrompt:
+            let body = rule.message.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !body.isEmpty else { return }
+            if let link = store.state.links[cardId],
+               link.queuedPrompts?.contains(where: { $0.body == body }) == true {
+                return
+            }
+            KanbanCodeLog.info("self-compact", "Queueing context warning for \(cardId.prefix(12)) at \(usedTokens) tokens")
+            store.dispatch(.addQueuedPrompt(cardId: cardId, prompt: QueuedPrompt(body: body, sendAutomatically: true)))
+
+        case .compactNow:
+            let command = rule.message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "/compact" : rule.message
+            KanbanCodeLog.warn("self-compact", "Forcing compact for \(cardId.prefix(12)) at \(usedTokens) tokens")
+            try? await tmuxAdapter.pastePrompt(to: sessionName, text: command)
+        }
     }
 
     // Launch, resume, fork, migration, worktree cleanup, and sync status
