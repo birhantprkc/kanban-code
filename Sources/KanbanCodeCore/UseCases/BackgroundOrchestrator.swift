@@ -358,6 +358,13 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
                 KanbanCodeLog.info("notify", "Auto-send skipped: no tmux session for \(sessionId.prefix(8))")
                 return
             }
+            if await shouldDropStaleSelfCompactPrompt(prompt, link: link) {
+                KanbanCodeLog.info("notify", "Auto-send dropping stale self-compact prompt for \(sessionId.prefix(8))")
+                if let dispatch {
+                    await dispatch(.removeQueuedPrompt(cardId: link.id, promptId: prompt.id))
+                }
+                return
+            }
 
             KanbanCodeLog.info("notify", "Auto-sending queued prompt to \(sessionId.prefix(8)): \(prompt.body.prefix(40))...")
 
@@ -372,6 +379,28 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
         } catch {
             KanbanCodeLog.warn("notify", "autoSendQueuedPrompt failed: \(error)")
         }
+    }
+
+    private func shouldDropStaleSelfCompactPrompt(_ prompt: QueuedPrompt, link: Link) async -> Bool {
+        let body = prompt.body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty,
+              let sessionId = link.sessionLink?.sessionId else {
+            return false
+        }
+
+        let settings = (try? await SettingsStore().read()) ?? Settings()
+        guard settings.selfCompact.enabled else { return false }
+
+        guard let rule = settings.selfCompact.rules
+            .filter({ $0.action == .queuePrompt })
+            .first(where: { $0.message.trimmingCharacters(in: .whitespacesAndNewlines) == body }) else {
+            return false
+        }
+
+        guard let usage = ContextUsageReader.read(sessionId: sessionId) else {
+            return true
+        }
+        return usage.currentContextTokens < rule.thresholdTokens
     }
 
     /// Slow background tick: poll activity states for sessions without hook events.

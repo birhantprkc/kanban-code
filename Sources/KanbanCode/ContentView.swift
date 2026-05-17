@@ -1374,11 +1374,17 @@ struct ContentView: View {
                         }
                     }
 
-                    if !card.link.prLinks.isEmpty {
-                        ToolbarItemGroup(placement: .primaryAction) {
-                            ForEach(card.link.prLinks.sortedByPRNumber, id: \.number) { pr in
-                                PRBadgeButton(pr: pr, projectPath: card.link.projectPath)
-                            }
+                    if let primaryPR = card.link.prLinks.sortedByPRDisplayPriority.first {
+                        ToolbarItem(placement: .primaryAction) {
+                            PRToolbarButton(pr: primaryPR, projectPath: card.link.projectPath)
+                        }
+                    }
+                    if card.link.prLinks.count > 1 {
+                        ToolbarItem(placement: .primaryAction) {
+                            PROverflowMenu(
+                                prLinks: Array(card.link.prLinks.sortedByPRDisplayPriority.dropFirst()),
+                                projectPath: card.link.projectPath
+                            )
                         }
                     }
 
@@ -1391,7 +1397,7 @@ struct ContentView: View {
                             } label: {
                                 Image(systemName: "chevron.left.forwardslash.chevron.right")
                             }
-                            .help("Open in editor")
+                            .help("Open in Editor")
                         }
                     }
 
@@ -2777,6 +2783,9 @@ struct ContentView: View {
             }
         }
         return refs.sorted {
+            let leftRank = prStatusDisplayRank($0.status)
+            let rightRank = prStatusDisplayRank($1.status)
+            if leftRank != rightRank { return leftRank < rightRank }
             if $0.number != $1.number { return $0.number < $1.number }
             return $0.handle < $1.handle
         }
@@ -2890,9 +2899,10 @@ struct ContentView: View {
         for candidate in candidates {
             liveSessionIds.insert(candidate.sessionId)
             guard let usage = ContextUsageReader.read(sessionId: candidate.sessionId) else { continue }
-            let usedTokens = usage.totalInputTokens + usage.totalOutputTokens
+            let usedTokens = usage.currentContextTokens
             if usedTokens < firstThreshold {
                 selfCompactTriggeredThresholds.removeValue(forKey: candidate.sessionId)
+                removeQueuedSelfCompactWarnings(cardId: candidate.cardId, rules: rules)
                 continue
             }
 
@@ -2926,6 +2936,23 @@ struct ContentView: View {
             let command = rule.message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "/compact" : rule.message
             KanbanCodeLog.warn("self-compact", "Forcing compact for \(cardId.prefix(12)) at \(usedTokens) tokens")
             try? await tmuxAdapter.pastePrompt(to: sessionName, text: command)
+        }
+    }
+
+    private func removeQueuedSelfCompactWarnings(cardId: String, rules: [SelfCompactRule]) {
+        let warningBodies = Set(
+            rules
+                .filter { $0.action == .queuePrompt }
+                .map { $0.message.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        )
+        guard !warningBodies.isEmpty,
+              let prompts = store.state.links[cardId]?.queuedPrompts else {
+            return
+        }
+        for prompt in prompts where warningBodies.contains(prompt.body.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            KanbanCodeLog.info("self-compact", "Removing stale context warning for \(cardId.prefix(12))")
+            store.dispatch(.removeQueuedPrompt(cardId: cardId, promptId: prompt.id))
         }
     }
 

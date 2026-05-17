@@ -355,7 +355,7 @@ struct CardBadgesRow: View {
         }
 
         // PR badge(s) — worst status across all PRs
-        if let primary = card.link.prLinks.sortedByPRNumber.first {
+        if let primary = card.link.prLinks.sortedByPRDisplayPriority.first {
             let totalThreads = card.link.prLinks.compactMap(\.unresolvedThreads).reduce(0, +)
             PRBadge(status: card.link.worstPRStatus, prNumber: primary.number, unresolvedThreads: totalThreads)
             if card.link.prLinks.count > 1 {

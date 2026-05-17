@@ -9,6 +9,19 @@ public struct ContextUsage: Sendable, Equatable {
     public let totalCostUsd: Double?
     public let model: String?
 
+    /// Claude's current context-window usage in tokens.
+    ///
+    /// `totalInputTokens + totalOutputTokens` is a lifetime-ish statusline
+    /// total and can stay high after compaction. The percentage/window pair is
+    /// what backs Claude Code's visible context meter, so automation that acts
+    /// on "current context" should use this value.
+    public var currentContextTokens: Int {
+        guard contextWindowSize > 0, usedPercentage > 0 else {
+            return totalInputTokens + totalOutputTokens
+        }
+        return Int((Double(contextWindowSize) * usedPercentage / 100.0).rounded())
+    }
+
     public init(
         usedPercentage: Double,
         contextWindowSize: Int,
