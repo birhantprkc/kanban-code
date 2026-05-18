@@ -4,7 +4,7 @@ import UserNotifications
 /// Executes side effects produced by the Reducer.
 /// All async operations (disk, network, tmux) go through here.
 public actor EffectHandler {
-    private static let channelMessageTailLimit = 500
+    private static let channelMessageTailLimit = 200
 
     private let coordinationStore: CoordinationStore
     private let tmuxAdapter: TmuxManagerPort?

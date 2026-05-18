@@ -30,6 +30,7 @@ struct PromptEditor: NSViewRepresentable {
     var onTabIntercept: (() -> String?)?
     var onImagePaste: ((Data) -> String?)?
     var onEscape: (() -> Void)?
+    var onHeightChange: (CGFloat) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -37,6 +38,7 @@ struct PromptEditor: NSViewRepresentable {
 
     func makeNSView(context: Context) -> PromptEditorScrollView {
         let scrollView = PromptEditorScrollView(maxHeight: maxHeight)
+        scrollView.onHeightChange = onHeightChange
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
@@ -129,6 +131,7 @@ struct PromptEditor: NSViewRepresentable {
         textView.needsDisplay = true
 
         // Recalculate intrinsic height after text/font changes
+        scrollView.onHeightChange = onHeightChange
         scrollView.recalcIntrinsicHeight()
     }
 
@@ -168,6 +171,7 @@ struct PromptEditor: NSViewRepresentable {
 final class PromptEditorScrollView: NSScrollView {
     private var contentHeight: CGFloat = 80
     private let maxContentHeight: CGFloat
+    var onHeightChange: (CGFloat) -> Void = { _ in }
 
     init(maxHeight: CGFloat = 400) {
         self.maxContentHeight = maxHeight
@@ -204,6 +208,10 @@ final class PromptEditorScrollView: NSScrollView {
             contentHeight = newHeight
             invalidateIntrinsicContentSize()
             superview?.invalidateIntrinsicContentSize()
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.onHeightChange(self.contentHeight)
+            }
         }
     }
 

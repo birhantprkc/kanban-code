@@ -10,6 +10,24 @@ struct PromptSection: View {
     var maxHeight: CGFloat = 400
     var onSubmit: () -> Void = {}
     @State private var usesInlineImageMarkers = false
+    @State private var editorHeight: CGFloat
+
+    init(
+        text: Binding<String>,
+        images: Binding<[ImageAttachment]>,
+        placeholder: String = "Describe what you want Claude to do...",
+        minHeight: CGFloat = 80,
+        maxHeight: CGFloat = 400,
+        onSubmit: @escaping () -> Void = {}
+    ) {
+        self._text = text
+        self._images = images
+        self.placeholder = placeholder
+        self.minHeight = minHeight
+        self.maxHeight = maxHeight
+        self.onSubmit = onSubmit
+        self._editorHeight = State(initialValue: minHeight)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -37,10 +55,12 @@ struct PromptSection: View {
                     let marker = PromptImagePlaceholders.insertMarker(for: images)
                     images.append(ImageAttachment(data: data))
                     return marker
+                },
+                onHeightChange: { height in
+                    editorHeight = min(maxHeight, max(minHeight, height))
                 }
             )
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(minHeight: minHeight, alignment: .top)
+            .frame(height: editorHeight, alignment: .top)
             .padding(4)
             .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
         }

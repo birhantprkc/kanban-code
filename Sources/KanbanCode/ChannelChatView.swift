@@ -382,7 +382,7 @@ struct ChannelChatView: View {
     @FocusState private var inputFocused: Bool
     @FocusState private var isSearchFieldFocused: Bool
 
-    private static let retainedScrollbackLimit = 2_000
+    private static let retainedScrollbackLimit = 500
     private static let searchPageSize = 500
 
     private var displayedMessages: [ChannelMessage] {
@@ -1470,7 +1470,7 @@ struct DMChatView: View {
     @State private var retainedMessages: [ChannelMessage] = []
     @FocusState private var inputFocused: Bool
 
-    private static let retainedScrollbackLimit = 2_000
+    private static let retainedScrollbackLimit = 500
 
     private var displayedMessages: [ChannelMessage] {
         retainedMessages.isEmpty ? messages : retainedMessages
