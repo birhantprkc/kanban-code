@@ -222,6 +222,24 @@ export function pasteTmuxText(
   }
 }
 
+export function waitForTmuxPaneText(
+  sessionName: string,
+  patterns: RegExp[],
+  timeoutSeconds: number,
+  intervalSeconds: number = 0.5
+): boolean {
+  if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) return false;
+  const deadline = Date.now() + timeoutSeconds * 1000;
+  while (Date.now() < deadline) {
+    const pane = captureTmuxPane(sessionName, 200);
+    if (patterns.some((pattern) => pattern.test(pane))) {
+      return true;
+    }
+    execSync(`sleep ${Math.max(0.1, intervalSeconds)}`);
+  }
+  return false;
+}
+
 export function sendTmuxEscape(
   sessionName: string
 ): { ok: boolean; error?: string } {

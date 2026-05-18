@@ -425,8 +425,21 @@ struct ChannelChatView: View {
         return out
     }
 
+    private var activityParticipants: [ChannelMember] {
+        var byId: [String: ChannelMember] = [:]
+        for member in channel.members {
+            byId[member.id] = member
+        }
+        for message in messages {
+            guard let cardId = message.from.cardId else { continue }
+            let member = ChannelMember(cardId: cardId, handle: message.from.handle, joinedAt: message.ts)
+            byId[member.id] = byId[member.id] ?? member
+        }
+        return byId.values.sorted { $0.handle < $1.handle }
+    }
+
     private var activelyWorkingMembers: [ChannelMember] {
-        channel.members.filter { member in
+        activityParticipants.filter { member in
             activityByHandle[member.handle] == .activelyWorking
         }
     }

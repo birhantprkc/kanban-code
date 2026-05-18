@@ -14,6 +14,7 @@ import {
   sendTmuxKeys,
   pasteTmuxPrompt,
   pasteTmuxText,
+  waitForTmuxPaneText,
   sendTmuxEscape,
   readLastTranscriptTurns,
   readSessionContext,
@@ -379,6 +380,7 @@ program
   .command("self-compact")
   .description("Send /compact to this agent's own Kanban Code tmux session")
   .option("--follow-up-delay <seconds>", "Seconds to wait after /compact before sending the follow-up", "2")
+  .option("--compact-wait-timeout <seconds>", "Seconds to wait for Claude to finish compacting before follow-up", "60")
   .option("-j, --json", "Output as JSON")
   .argument("[followUp...]", "Optional post-compact prompt. Quote it, or pipe/heredoc multi-line text on stdin.")
   .addHelpText(
@@ -399,6 +401,7 @@ Examples:
       const { card, tmuxSession } = selfCompactTarget();
       const followUp = readFollowUpFromArgsOrStdin(followUpArgs);
       const followUpDelay = Number.parseFloat(opts.followUpDelay);
+      const compactWaitTimeout = Number.parseFloat(opts.compactWaitTimeout);
 
       // Flush any pending text, leave transient UI states, request compaction,
       // then provide the optional post-compact continuation prompt.
@@ -409,6 +412,11 @@ Examples:
       assertTmuxResult("submit /compact", sendTmuxEnter(tmuxSession));
       if (followUp.trim().length > 0) {
         sleepSeconds(Number.isFinite(followUpDelay) ? followUpDelay : 2);
+        waitForTmuxPaneText(
+          tmuxSession,
+          [/Conversation compacted/i, /\bCompacted\b/i],
+          Number.isFinite(compactWaitTimeout) ? compactWaitTimeout : 60
+        );
         assertTmuxResult("send post-compact prompt", pasteTmuxPrompt(tmuxSession, followUp));
       }
 

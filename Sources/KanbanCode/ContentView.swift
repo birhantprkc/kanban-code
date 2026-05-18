@@ -2796,6 +2796,13 @@ struct ContentView: View {
             else { continue }
             out[m.handle] = state
         }
+        for message in store.state.channelMessages[ch.name] ?? [] {
+            guard let cardId = message.from.cardId, let link = store.state.links[cardId],
+                  let sid = link.sessionLink?.sessionId,
+                  let state = store.state.activityMap[sid]
+            else { continue }
+            out[message.from.handle] = state
+        }
         return out
     }
 

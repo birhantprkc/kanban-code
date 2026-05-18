@@ -50,6 +50,10 @@ if [ "$1" = "display-message" ]; then
   printf '%s\\n' "$TMUX_SESSION_NAME"
   exit 0
 fi
+if [ "$1" = "capture-pane" ]; then
+  printf '%s\\n' "Compacted"
+  exit 0
+fi
 exit 0
 `
   );
