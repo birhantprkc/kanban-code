@@ -467,7 +467,7 @@ public enum TranscriptReader {
         // User text can be at top level or inside message.content
         if let text = JsonlParser.extractTextContent(from: obj) {
             // Show slash commands cleanly (e.g. "/clear")
-            if let command = JsonlParser.parseLocalCommand(text) {
+            if let command = JsonlParser.parseLocalCommandDisplay(text) {
                 return [ContentBlock(kind: .text, text: command)]
             }
             // Show command stdout as plain text

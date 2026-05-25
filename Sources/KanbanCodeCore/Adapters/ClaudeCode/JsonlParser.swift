@@ -340,12 +340,45 @@ public enum JsonlParser {
         return command.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Render Claude local slash-command metadata without dropping the user's
+    /// real prompt. Pure commands still show cleanly as `/clear`, while
+    /// command-message/command-args or adjacent plain text are preserved.
+    public static func parseLocalCommandDisplay(_ text: String) -> String? {
+        guard let command = parseLocalCommand(text) else { return nil }
+
+        let message = parseTag("command-message", in: text)
+        if !message.isEmpty {
+            return "\(command)\n\n\(message)"
+        }
+
+        let args = parseTag("command-args", in: text)
+        if !args.isEmpty {
+            return "\(command) \(args)"
+        }
+
+        let cleaned = stripMetadataTags(text)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleaned.isEmpty {
+            return "\(command)\n\n\(cleaned)"
+        }
+
+        return command
+    }
+
     /// Extract output text from `<local-command-stdout>text</local-command-stdout>`.
     public static func parseLocalCommandStdout(_ text: String) -> String? {
         let regex = try! Regex("<local-command-stdout>([\\s\\S]*?)</local-command-stdout>")
         guard let match = text.firstMatch(of: regex) else { return nil }
         let output = String(match.output[1].substring!)
         return output.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func parseTag(_ tag: String, in text: String) -> String {
+        let escaped = NSRegularExpression.escapedPattern(for: tag)
+        let regex = try! Regex("<\(escaped)>([\\s\\S]*?)</\(escaped)>")
+        guard let match = text.firstMatch(of: regex) else { return "" }
+        return String(match.output[1].substring!)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Remove all known metadata XML tag pairs, returning the remaining text.

@@ -318,6 +318,36 @@ struct TranscriptReaderTests {
         #expect(turns[1].textPreview == "Next prompt")
     }
 
+    @Test("Slash command with command-message preserves prompt body")
+    func slashCommandWithMessagePreservesBody() async throws {
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+
+        let path = (dir as NSString).appendingPathComponent("test.jsonl")
+        try [
+            #"{"type":"user","sessionId":"s1","message":{"content":"<command-name>/reuse-worktree</command-name><command-message>please continue this task\n\nwith all context</command-message><command-args></command-args>"},"cwd":"/test"}"#,
+        ].joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+
+        let turns = try await TranscriptReader.readTurns(from: path)
+        #expect(turns.count == 1)
+        #expect(turns[0].textPreview == "/reuse-worktree\n\nplease continue this task\n\nwith all context")
+    }
+
+    @Test("Slash command with adjacent text preserves prompt body")
+    func slashCommandWithAdjacentTextPreservesBody() async throws {
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+
+        let path = (dir as NSString).appendingPathComponent("test.jsonl")
+        try [
+            #"{"type":"user","sessionId":"s1","message":{"content":[{"type":"text","text":"<command-name>/reuse-worktree</command-name><command-message></command-message><command-args></command-args>"},{"type":"text","text":"now fix the failing tests"}]},"cwd":"/test"}"#,
+        ].joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+
+        let turns = try await TranscriptReader.readTurns(from: path)
+        #expect(turns.count == 1)
+        #expect(turns[0].textPreview == "/reuse-worktree\n\nnow fix the failing tests")
+    }
+
     @Test("Shows command stdout as assistant-style turn in history")
     func showsStdoutAsAssistant() async throws {
         let dir = try makeTempDir()
