@@ -14,9 +14,12 @@
     "test": "tsx --test --test-reporter=spec 'src/*.test.ts'"
   },
   "dependencies": {
+    "@slack/socket-mode": "^2.0.7",
+    "@slack/web-api": "^7.16.0",
     "chokidar": "^5.0.0",
     "commander": "^13.1.0",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
