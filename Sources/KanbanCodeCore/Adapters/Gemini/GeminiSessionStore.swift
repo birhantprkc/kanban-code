@@ -308,12 +308,13 @@ public final class GeminiSessionStore: SessionStore, @unchecked Sendable {
         query: String, paths: [String],
         onResult: @MainActor @Sendable ([SearchResult]) -> Void
     ) async throws {
-        let queryTerms = BM25Scorer.tokenize(query)
-        guard !queryTerms.isEmpty else { return }
+        let searchQuery = SessionSearchQuery(query)
+        guard !searchQuery.isEmpty else { return }
 
         struct DocInfo {
             let path: String
             let matchingTokens: [String]
+            let exactMatches: Int
             let wordCount: Int
             let snippets: [String]
             let modifiedTime: Date
@@ -325,23 +326,25 @@ public final class GeminiSessionStore: SessionStore, @unchecked Sendable {
 
         let fileManager = FileManager.default
 
-        // Filter to existing files and sort by modification time (newest first)
+        // Preserve caller order; the command palette sends active/recent cards first
+        // so exact searches can yield useful results before scanning older sessions.
         let validPaths: [(String, Date)] = paths.compactMap { path in
             guard fileManager.fileExists(atPath: path),
                   let attrs = try? fileManager.attributesOfItem(atPath: path),
                   let mtime = attrs[.modificationDate] as? Date else { return nil }
             return (path, mtime)
-        }.sorted { $0.1 > $1.1 }
+        }
 
         for (path, mtime) in validPaths {
             try Task.checkCancellation()
 
-            let (matchingTokens, wordCount, snippets) = extractMatchingTokens(
-                from: path, queryTerms: queryTerms
+            let (matchingTokens, exactMatches, wordCount, snippets) = extractMatchingTokens(
+                from: path, query: searchQuery
             )
             guard wordCount > 0 else { continue }
             totalWordCount += wordCount
-            guard !matchingTokens.isEmpty else { continue }
+            guard !matchingTokens.isEmpty || exactMatches > 0 else { continue }
+            if searchQuery.requiresExactMatch, exactMatches == 0 { continue }
 
             let uniqueTerms = Set(matchingTokens)
             for term in uniqueTerms {
@@ -351,6 +354,7 @@ public final class GeminiSessionStore: SessionStore, @unchecked Sendable {
             docs.append(DocInfo(
                 path: path,
                 matchingTokens: matchingTokens,
+                exactMatches: exactMatches,
                 wordCount: wordCount,
                 snippets: snippets,
                 modifiedTime: mtime
@@ -360,14 +364,18 @@ public final class GeminiSessionStore: SessionStore, @unchecked Sendable {
             let avgDocLength = Double(totalWordCount) / max(Double(docs.count), 1.0)
             var results: [SearchResult] = []
             for doc in docs {
-                let boost = BM25Scorer.recencyBoost(modifiedTime: doc.modifiedTime)
-                let score = BM25Scorer.score(
-                    terms: queryTerms,
+                let termsScore = searchQuery.terms.isEmpty ? 0 : BM25Scorer.score(
+                    terms: searchQuery.terms,
                     documentTokens: doc.matchingTokens,
                     avgDocLength: avgDocLength,
                     docCount: docs.count,
                     docFreqs: globalTermFreqs,
-                    recencyBoost: boost
+                    recencyBoost: BM25Scorer.recencyBoost(modifiedTime: doc.modifiedTime)
+                )
+                let score = searchQuery.score(
+                    termsScore: termsScore,
+                    exactMatches: doc.exactMatches,
+                    modifiedTime: doc.modifiedTime
                 )
                 if score > 0 {
                     results.append(SearchResult(
@@ -387,16 +395,17 @@ public final class GeminiSessionStore: SessionStore, @unchecked Sendable {
     /// Extract matching tokens and snippets from a Gemini session JSON file.
     private func extractMatchingTokens(
         from path: String,
-        queryTerms: [String]
-    ) -> (tokens: [String], wordCount: Int, snippets: [String]) {
+        query: SessionSearchQuery
+    ) -> (tokens: [String], exactMatches: Int, wordCount: Int, snippets: [String]) {
         guard let data = FileManager.default.contents(atPath: path),
               let session = try? JSONDecoder().decode(
                   GeminiSessionParser.SessionFile.self, from: data
               ) else {
-            return ([], 0, [])
+            return ([], 0, 0, [])
         }
 
         var matchingTokens: [String] = []
+        var exactMatches = 0
         var wordCount = 0
         var topSnippets: [(score: Int, text: String)] = []
 
@@ -418,19 +427,18 @@ public final class GeminiSessionStore: SessionStore, @unchecked Sendable {
             wordCount += docTokens.count
 
             for token in docTokens {
-                if let matched = matchQueryTerm(token: token, queryTerms: queryTerms) {
+                if let matched = query.matchToken(token) {
                     matchingTokens.append(matched)
                 }
             }
 
             // Track top snippets
             let lower = text.lowercased()
-            var snippetScore = 0
-            for qt in queryTerms {
-                if lower.contains(qt) { snippetScore += 1 }
-            }
+            let lineExactMatches = query.exactMatchCount(in: lower)
+            exactMatches += lineExactMatches
+            let snippetScore = query.snippetScore(in: lower)
             if snippetScore > 0 {
-                let snippet = extractSnippet(from: text, queryTerms: queryTerms, role: role)
+                let snippet = extractSnippet(from: text, queryTerms: query.snippetTerms, role: role)
                 if topSnippets.count < Self.maxSnippets {
                     topSnippets.append((snippetScore, snippet))
                     topSnippets.sort { $0.score > $1.score }
@@ -441,16 +449,7 @@ public final class GeminiSessionStore: SessionStore, @unchecked Sendable {
             }
         }
 
-        return (matchingTokens, wordCount, topSnippets.map(\.text))
-    }
-
-    private func matchQueryTerm(token: String, queryTerms: [String]) -> String? {
-        for qt in queryTerms {
-            if token == qt || token.hasPrefix(qt) || qt.hasPrefix(token) {
-                return qt
-            }
-        }
-        return nil
+        return (matchingTokens, exactMatches, wordCount, topSnippets.map(\.text))
     }
 
     private func extractSnippet(from text: String, queryTerms: [String], role: String) -> String {

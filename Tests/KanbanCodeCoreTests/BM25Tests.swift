@@ -123,4 +123,47 @@ struct BM25Tests {
         )
         #expect(bothTermsScore > oneTermScore)
     }
+
+    @Test("Quoted query is treated as exact phrase")
+    func quotedExactPhraseQuery() {
+        let query = SessionSearchQuery("\"https://github.com/langwatch/langwatch/pull/4189\"")
+        #expect(query.requiresExactMatch)
+        #expect(query.exactPhrases.contains("https://github.com/langwatch/langwatch/pull/4189"))
+        #expect(query.exactMatchCount(in: "see https://github.com/langwatch/langwatch/pull/4189") > 0)
+    }
+
+    @Test("PR number query only exact matches that PR")
+    func prNumberExactQuery() {
+        let query = SessionSearchQuery("#4189")
+        #expect(query.requiresExactMatch)
+        #expect(query.exactMatchCount(in: "opened PR #4189") > 0)
+        #expect(query.exactMatchCount(in: "https://github.com/langwatch/langwatch/pull/4189") > 0)
+        #expect(query.exactMatchCount(in: "opened PR #4190") == 0)
+    }
+
+    @Test("Claude search indexes pr-link records")
+    func claudeSearchIndexesPRLinkRecords() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kanban-search-tests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let target = dir.appendingPathComponent("target.jsonl")
+        let other = dir.appendingPathComponent("other.jsonl")
+        try """
+        {"type":"pr-link","sessionId":"s1","prNumber":4189,"prUrl":"https://github.com/langwatch/langwatch/pull/4189","prRepository":"langwatch/langwatch"}
+
+        """.write(to: target, atomically: true, encoding: .utf8)
+        try """
+        {"type":"pr-link","sessionId":"s2","prNumber":4190,"prUrl":"https://github.com/langwatch/langwatch/pull/4190","prRepository":"langwatch/langwatch"}
+
+        """.write(to: other, atomically: true, encoding: .utf8)
+
+        let results = try await ClaudeCodeSessionStore().searchSessions(
+            query: "#4189",
+            paths: [target.path, other.path]
+        )
+        #expect(results.map(\.sessionPath) == [target.path])
+        #expect(results.first?.snippets.first?.contains("4189") == true)
+    }
 }

@@ -283,12 +283,13 @@ public final class ClaudeCodeSessionStore: SessionStore, @unchecked Sendable {
         onResult: @MainActor @Sendable ([SearchResult]) -> Void
     ) async throws {
         let t0 = ContinuousClock.now
-        let queryTerms = BM25Scorer.tokenize(query)
-        guard !queryTerms.isEmpty else { return }
+        let searchQuery = SessionSearchQuery(query)
+        guard !searchQuery.isEmpty else { return }
 
         struct DocInfo {
             let path: String
             let matchingTokens: [String]
+            let exactMatches: Int
             let wordCount: Int
             let snippets: [String]
             let modifiedTime: Date
@@ -300,34 +301,36 @@ public final class ClaudeCodeSessionStore: SessionStore, @unchecked Sendable {
 
         let fileManager = FileManager.default
 
-        // Filter to existing files and sort by modification time (newest first)
+        // Preserve caller order; the command palette sends active/recent cards first
+        // so exact searches can yield useful results before scanning older sessions.
         let validPaths: [(String, Date)] = paths.compactMap { path in
             guard fileManager.fileExists(atPath: path),
                   let attrs = try? fileManager.attributesOfItem(atPath: path),
                   let mtime = attrs[.modificationDate] as? Date else { return nil }
             return (path, mtime)
-        }.sorted { $0.1 > $1.1 }
+        }
 
-        KanbanCodeLog.info("search", "searchSessions: \(validPaths.count)/\(paths.count) valid files, terms=\(queryTerms)")
+        KanbanCodeLog.info("search", "searchSessions: \(validPaths.count)/\(paths.count) valid files, terms=\(searchQuery.terms) exact=\(searchQuery.exactPhrases)")
 
         for (idx, (path, mtime)) in validPaths.enumerated() {
             try Task.checkCancellation()
 
             let tFile = ContinuousClock.now
-            let (matchingTokens, wordCount, snippets) = try await extractMatchingTokens(
-                from: path, queryTerms: queryTerms
+            let (matchingTokens, exactMatches, wordCount, snippets) = try await extractMatchingTokens(
+                from: path, query: searchQuery
             )
             let fileName = (path as NSString).lastPathComponent
             if idx < 5 || idx % 20 == 0 {
                 let fileSize = (try? fileManager.attributesOfItem(atPath: path)[.size] as? Int) ?? 0
-                KanbanCodeLog.info("search", "  [\(idx+1)/\(validPaths.count)] \(fileName) (\(fileSize / 1024)KB) words=\(wordCount) matches=\(matchingTokens.count) \(tFile.duration(to: .now))")
+                KanbanCodeLog.info("search", "  [\(idx+1)/\(validPaths.count)] \(fileName) (\(fileSize / 1024)KB) words=\(wordCount) matches=\(matchingTokens.count) exact=\(exactMatches) \(tFile.duration(to: .now))")
             }
             guard wordCount > 0 else { continue }
 
             totalWordCount += wordCount
 
-            // Only track and yield when file has matching tokens
-            guard !matchingTokens.isEmpty else { continue }
+            // Only track and yield when file has matching tokens or exact matches.
+            guard !matchingTokens.isEmpty || exactMatches > 0 else { continue }
+            if searchQuery.requiresExactMatch, exactMatches == 0 { continue }
 
             // Track global document frequencies
             let uniqueTerms = Set(matchingTokens)
@@ -338,6 +341,7 @@ public final class ClaudeCodeSessionStore: SessionStore, @unchecked Sendable {
             docs.append(DocInfo(
                 path: path,
                 matchingTokens: matchingTokens,
+                exactMatches: exactMatches,
                 wordCount: wordCount,
                 snippets: snippets,
                 modifiedTime: mtime
@@ -347,14 +351,18 @@ public final class ClaudeCodeSessionStore: SessionStore, @unchecked Sendable {
             let avgDocLength = Double(totalWordCount) / max(Double(docs.count), 1.0)
             var results: [SearchResult] = []
             for doc in docs {
-                let boost = BM25Scorer.recencyBoost(modifiedTime: doc.modifiedTime)
-                let score = BM25Scorer.score(
-                    terms: queryTerms,
+                let termsScore = searchQuery.terms.isEmpty ? 0 : BM25Scorer.score(
+                    terms: searchQuery.terms,
                     documentTokens: doc.matchingTokens,
                     avgDocLength: avgDocLength,
                     docCount: docs.count,
                     docFreqs: globalTermFreqs,
-                    recencyBoost: boost
+                    recencyBoost: BM25Scorer.recencyBoost(modifiedTime: doc.modifiedTime)
+                )
+                let score = searchQuery.score(
+                    termsScore: termsScore,
+                    exactMatches: doc.exactMatches,
+                    modifiedTime: doc.modifiedTime
                 )
                 if score > 0 {
                     results.append(SearchResult(sessionPath: doc.path, score: score, snippets: doc.snippets))
@@ -375,14 +383,15 @@ public final class ClaudeCodeSessionStore: SessionStore, @unchecked Sendable {
 
     private func extractMatchingTokens(
         from path: String,
-        queryTerms: [String]
-    ) async throws -> (tokens: [String], wordCount: Int, snippets: [String]) {
+        query: SessionSearchQuery
+    ) async throws -> (tokens: [String], exactMatches: Int, wordCount: Int, snippets: [String]) {
         guard let handle = FileHandle(forReadingAtPath: path) else {
-            return ([], 0, [])
+            return ([], 0, 0, [])
         }
         defer { try? handle.close() }
 
         var matchingTokens: [String] = []
+        var exactMatches = 0
         var wordCount = 0
         // Track top snippets sorted by score (number of matching query terms)
         var topSnippets: [(score: Int, text: String)] = []
@@ -395,15 +404,13 @@ public final class ClaudeCodeSessionStore: SessionStore, @unchecked Sendable {
                 try Task.checkCancellation()
             }
 
-            // Fast string check — skip lines that aren't user/assistant messages
+            // Fast string check — skip lines that aren't searchable records.
             guard line.contains("\"type\"") else { continue }
-            guard line.contains("\"user\"") || line.contains("\"assistant\"") else { continue }
+            guard line.contains("\"user\"") || line.contains("\"assistant\"") || line.contains("\"pr-link\"") else { continue }
 
             guard let lineData = line.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
-                  let type = obj["type"] as? String,
-                  (type == "user" || type == "assistant"),
-                  let text = JsonlParser.extractTextContent(from: obj) else { continue }
+                  let (type, text) = searchableText(from: obj) else { continue }
 
             // Tokenize and match — only keep tokens that match query terms
             let docTokens = text.lowercased()
@@ -413,19 +420,18 @@ public final class ClaudeCodeSessionStore: SessionStore, @unchecked Sendable {
             wordCount += docTokens.count
 
             for token in docTokens {
-                if let matched = matchQueryTerm(token: token, queryTerms: queryTerms) {
+                if let matched = query.matchToken(token) {
                     matchingTokens.append(matched)
                 }
             }
 
             // Track top snippets by number of matching query terms
             let lower = text.lowercased()
-            var snippetScore = 0
-            for qt in queryTerms {
-                if lower.contains(qt) { snippetScore += 1 }
-            }
+            let lineExactMatches = query.exactMatchCount(in: lower)
+            exactMatches += lineExactMatches
+            let snippetScore = query.snippetScore(in: lower)
             if snippetScore > 0 {
-                let snippet = extractSnippet(from: text, queryTerms: queryTerms, role: type)
+                let snippet = extractSnippet(from: text, queryTerms: query.snippetTerms, role: type)
                 // Insert if we have room or this scores higher than the worst
                 if topSnippets.count < Self.maxSnippets {
                     topSnippets.append((snippetScore, snippet))
@@ -437,16 +443,32 @@ public final class ClaudeCodeSessionStore: SessionStore, @unchecked Sendable {
             }
         }
 
-        return (matchingTokens, wordCount, topSnippets.map(\.text))
+        return (matchingTokens, exactMatches, wordCount, topSnippets.map(\.text))
     }
 
-    /// Check if a document token matches any query term (exact or prefix match).
-    private func matchQueryTerm(token: String, queryTerms: [String]) -> String? {
-        for qt in queryTerms {
-            if token == qt || token.hasPrefix(qt) || qt.hasPrefix(token) {
-                return qt  // normalize to query term for TF counting
-            }
+    private func searchableText(from obj: [String: Any]) -> (type: String, text: String)? {
+        guard let type = obj["type"] as? String else { return nil }
+
+        if type == "user" || type == "assistant" {
+            guard let text = JsonlParser.extractTextContent(from: obj) else { return nil }
+            return (type, text)
         }
+
+        if type == "pr-link" {
+            var parts: [String] = []
+            if let number = obj["prNumber"] {
+                parts.append("PR #\(number)")
+            }
+            if let url = obj["prUrl"] as? String {
+                parts.append(url)
+            }
+            if let repo = obj["prRepository"] as? String {
+                parts.append(repo)
+            }
+            guard !parts.isEmpty else { return nil }
+            return ("pr", parts.joined(separator: " "))
+        }
+
         return nil
     }
 
@@ -463,7 +485,7 @@ public final class ClaudeCodeSessionStore: SessionStore, @unchecked Sendable {
                 let prefix = start > 0 ? "..." : ""
                 let suffix = end < text.count ? "..." : ""
                 let snippet = text[startIdx..<endIdx].replacingOccurrences(of: "\n", with: " ")
-                let label = role == "user" ? "You" : "Claude"
+                let label = role == "user" ? "You" : (role == "pr" ? "PR" : "Claude")
                 return "\(label): \(prefix)\(snippet)\(suffix)"
             }
         }

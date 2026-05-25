@@ -544,11 +544,21 @@ struct SearchOverlay: View {
         let t0 = ContinuousClock.now
         KanbanCodeLog.info("search", "deepSearch START query='\(currentQuery)' cards=\(currentCards.count)")
 
-        // Build path→card lookup once
+        let searchQuery = SessionSearchQuery(currentQuery)
+
+        // Build path→card lookup once, preserving a search order that checks
+        // direct PR matches and active/recent cards before archived history.
         var cardByPath: [String: KanbanCodeCard] = [:]
-        for card in currentCards {
+        var orderedPaths: [String] = []
+        var seenPaths: Set<String> = []
+        for card in currentCards.sorted(by: { lhs, rhs in
+            deepSearchPriority(lhs, query: searchQuery) > deepSearchPriority(rhs, query: searchQuery)
+        }) {
             if let p = card.link.sessionLink?.sessionPath ?? card.session?.jsonlPath {
                 cardByPath[p] = card
+                if seenPaths.insert(p).inserted {
+                    orderedPaths.append(p)
+                }
             }
         }
 
@@ -559,7 +569,7 @@ struct SearchOverlay: View {
                 KanbanCodeLog.info("search", "deepSearch END query='\(currentQuery)' elapsed=\(t0.duration(to: .now)) cancelled=\(Task.isCancelled)")
             }
 
-            let paths = Array(cardByPath.keys)
+            let paths = orderedPaths
             KanbanCodeLog.info("search", "deepSearch: \(paths.count) session paths to search")
 
             do {
@@ -585,6 +595,30 @@ struct SearchOverlay: View {
         }
         searchTask = task
         await task.value
+    }
+
+    private func deepSearchPriority(_ card: KanbanCodeCard, query: SessionSearchQuery) -> Double {
+        var score = 0.0
+
+        if !query.prNumbers.isEmpty {
+            let linkedPRs = Set(card.link.prLinks.map { String($0.number) })
+            if query.prNumbers.contains(where: linkedPRs.contains) {
+                score += 10_000
+            }
+        }
+
+        switch card.column {
+        case .inReview: score += 600
+        case .inProgress: score += 500
+        case .waiting: score += 400
+        case .done: score += 300
+        case .backlog: score += 200
+        case .allSessions: score += 0
+        }
+
+        let recency = card.link.lastActivity ?? card.link.updatedAt
+        score += recency.timeIntervalSince1970 / 1_000_000_000
+        return score
     }
 }
 

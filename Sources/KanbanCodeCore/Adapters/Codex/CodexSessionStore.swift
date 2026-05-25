@@ -133,12 +133,13 @@ public final class CodexSessionStore: SessionStore, @unchecked Sendable {
         paths: [String],
         onResult: @MainActor @Sendable ([SearchResult]) -> Void
     ) async throws {
-        let queryTerms = BM25Scorer.tokenize(query)
-        guard !queryTerms.isEmpty else { return }
+        let searchQuery = SessionSearchQuery(query)
+        guard !searchQuery.isEmpty else { return }
 
         struct DocInfo {
             let path: String
             let matchingTokens: [String]
+            let exactMatches: Int
             let wordCount: Int
             let snippets: [String]
             let modifiedTime: Date
@@ -150,7 +151,7 @@ public final class CodexSessionStore: SessionStore, @unchecked Sendable {
                   let attrs = try? fileManager.attributesOfItem(atPath: path),
                   let mtime = attrs[.modificationDate] as? Date else { return nil }
             return (path, mtime)
-        }.sorted { $0.1 > $1.1 }
+        }
 
         var docs: [DocInfo] = []
         var globalTermFreqs: [String: Int] = [:]
@@ -158,13 +159,14 @@ public final class CodexSessionStore: SessionStore, @unchecked Sendable {
 
         for (path, mtime) in validPaths {
             try Task.checkCancellation()
-            let (tokens, wordCount, snippets) = try await extractMatchingTokens(
+            let (tokens, exactMatches, wordCount, snippets) = try await extractMatchingTokens(
                 from: path,
-                queryTerms: queryTerms
+                query: searchQuery
             )
             guard wordCount > 0 else { continue }
             totalWordCount += wordCount
-            guard !tokens.isEmpty else { continue }
+            guard !tokens.isEmpty || exactMatches > 0 else { continue }
+            if searchQuery.requiresExactMatch, exactMatches == 0 { continue }
 
             for term in Set(tokens) {
                 globalTermFreqs[term, default: 0] += 1
@@ -173,6 +175,7 @@ public final class CodexSessionStore: SessionStore, @unchecked Sendable {
             docs.append(DocInfo(
                 path: path,
                 matchingTokens: tokens,
+                exactMatches: exactMatches,
                 wordCount: wordCount,
                 snippets: snippets,
                 modifiedTime: mtime
@@ -181,13 +184,18 @@ public final class CodexSessionStore: SessionStore, @unchecked Sendable {
             let avgDocLength = Double(totalWordCount) / max(Double(docs.count), 1.0)
             var results: [SearchResult] = []
             for doc in docs {
-                let score = BM25Scorer.score(
-                    terms: queryTerms,
+                let termsScore = searchQuery.terms.isEmpty ? 0 : BM25Scorer.score(
+                    terms: searchQuery.terms,
                     documentTokens: doc.matchingTokens,
                     avgDocLength: avgDocLength,
                     docCount: docs.count,
                     docFreqs: globalTermFreqs,
                     recencyBoost: BM25Scorer.recencyBoost(modifiedTime: doc.modifiedTime)
+                )
+                let score = searchQuery.score(
+                    termsScore: termsScore,
+                    exactMatches: doc.exactMatches,
+                    modifiedTime: doc.modifiedTime
                 )
                 if score > 0 {
                     results.append(SearchResult(sessionPath: doc.path, score: score, snippets: doc.snippets))
@@ -365,10 +373,11 @@ public final class CodexSessionStore: SessionStore, @unchecked Sendable {
 
     private func extractMatchingTokens(
         from path: String,
-        queryTerms: [String]
-    ) async throws -> (tokens: [String], wordCount: Int, snippets: [String]) {
+        query: SessionSearchQuery
+    ) async throws -> (tokens: [String], exactMatches: Int, wordCount: Int, snippets: [String]) {
         let turns = try await readTranscript(sessionPath: path)
         var matchingTokens: [String] = []
+        var exactMatches = 0
         var wordCount = 0
         var topSnippets: [(score: Int, text: String)] = []
 
@@ -381,18 +390,17 @@ public final class CodexSessionStore: SessionStore, @unchecked Sendable {
             let docTokens = BM25Scorer.tokenize(text)
             wordCount += docTokens.count
             for token in docTokens {
-                if let matched = matchQueryTerm(token: token, queryTerms: queryTerms) {
+                if let matched = query.matchToken(token) {
                     matchingTokens.append(matched)
                 }
             }
 
             let lower = text.lowercased()
-            var snippetScore = 0
-            for term in queryTerms where lower.contains(term) {
-                snippetScore += 1
-            }
+            let lineExactMatches = query.exactMatchCount(in: lower)
+            exactMatches += lineExactMatches
+            let snippetScore = query.snippetScore(in: lower)
             if snippetScore > 0 {
-                let snippet = extractSnippet(from: text, queryTerms: queryTerms, role: turn.role)
+                let snippet = extractSnippet(from: text, queryTerms: query.snippetTerms, role: turn.role)
                 if topSnippets.count < Self.maxSnippets {
                     topSnippets.append((snippetScore, snippet))
                     topSnippets.sort { $0.score > $1.score }
@@ -403,16 +411,7 @@ public final class CodexSessionStore: SessionStore, @unchecked Sendable {
             }
         }
 
-        return (matchingTokens, wordCount, topSnippets.map(\.text))
-    }
-
-    private func matchQueryTerm(token: String, queryTerms: [String]) -> String? {
-        for term in queryTerms {
-            if token == term || token.hasPrefix(term) || term.hasPrefix(token) {
-                return term
-            }
-        }
-        return nil
+        return (matchingTokens, exactMatches, wordCount, topSnippets.map(\.text))
     }
 
     private func extractSnippet(from text: String, queryTerms: [String], role: String) -> String {
