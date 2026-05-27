@@ -3,7 +3,7 @@ import { strict as assert } from "node:assert";
 import { parse as parseYaml } from "yaml";
 import { routeSlackMessage, slackToPlain } from "./slack/inbound.js";
 import { slackAppManifest } from "./slack/manifest.js";
-import { formatSystemAnnouncement, SYSTEM_MESSAGE_PREFIX } from "./slack/announce.js";
+import { formatReceivedMessage, RECEIVED_MESSAGE_HEADER } from "./slack/announce.js";
 
 const MAPPING = { C123: "dependabot-scout", C999: "security-scout" };
 const reasonOf = (d: ReturnType<typeof routeSlackMessage>) => (d.action === "ignore" ? d.reason : undefined);
@@ -33,16 +33,16 @@ describe("routeSlackMessage", () => {
   });
 });
 
-describe("formatSystemAnnouncement", () => {
-  test("prepends the [SYSTEM MESSAGE] marker so automated traffic is distinguishable from agent replies", () => {
-    const out = formatSystemAnnouncement("Good morning, review the open Dependabot PRs.");
-    assert.equal(out, "[SYSTEM MESSAGE]\nGood morning, review the open Dependabot PRs.");
-    assert.ok(out.startsWith(SYSTEM_MESSAGE_PREFIX));
+describe("formatReceivedMessage", () => {
+  test("marks the injected prompt as a received message and italicizes the body", () => {
+    const out = formatReceivedMessage("Good morning, review the open Dependabot PRs.");
+    assert.equal(out, ">>> Received user message\n\n_Good morning, review the open Dependabot PRs._");
+    assert.ok(out.startsWith(RECEIVED_MESSAGE_HEADER));
   });
 
-  test("preserves multi-line bodies verbatim under the marker", () => {
+  test("wraps multi-line bodies in italics under the header", () => {
     const body = "line one\nline two";
-    assert.equal(formatSystemAnnouncement(body), `${SYSTEM_MESSAGE_PREFIX}\n${body}`);
+    assert.equal(formatReceivedMessage(body), `${RECEIVED_MESSAGE_HEADER}\n\n_${body}_`);
   });
 });
 

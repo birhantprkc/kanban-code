@@ -3,20 +3,20 @@ import { loadAgentsConfig } from "../agents/config.js";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
-/// Posts "automated" agent traffic (scheduled nudges, auto-compact notes,
-/// auto-sent queued prompts) to an agent's Slack channel. Human messages
-/// relayed *from* Slack must NOT go through here (they already appear in Slack).
+/// Mirrors every prompt injected into an agent (scheduled nudges, self-compact,
+/// auto-sent queued prompts, and any `kanban send` someone runs by hand) to the
+/// agent's Slack channel. Messages relayed *from* a Slack human must NOT go
+/// through here, they already appear in Slack as that person's message.
 
-/// Marker prepended to every announced message. Because only automated,
-/// system-originated traffic flows through this module (never messages typed by
-/// a human in Slack), the marker lets anyone reading the channel tell a
-/// system-injected prompt (cron nudge, self-compact, auto-sent queued prompt)
-/// apart from the agent's own replies.
-export const SYSTEM_MESSAGE_PREFIX = "[SYSTEM MESSAGE]";
+/// Header shown above each mirrored prompt. It marks the text as the input the
+/// agent received (not the agent's own reply), so a reader can tell the two
+/// apart in the channel.
+export const RECEIVED_MESSAGE_HEADER = ">>> Received user message";
 
-/// Prepend the system marker to an automated announcement.
-export function formatSystemAnnouncement(text: string): string {
-  return `${SYSTEM_MESSAGE_PREFIX}\n${text}`;
+/// Format an injected prompt for the channel: the header, then the body in
+/// italics (Slack mrkdwn uses _underscores_ for italic; * and ** do not work).
+export function formatReceivedMessage(text: string): string {
+  return `${RECEIVED_MESSAGE_HEADER}\n\n_${text}_`;
 }
 
 function defaultConfigPath(): string {
@@ -61,7 +61,7 @@ export async function announceToSlack(slug: string, text: string, opts: Announce
   const channel = await channelForSlug(slug, opts.configPath ?? defaultConfigPath(), c);
   if (!channel) return false;
   try {
-    await c.post(channel, formatSystemAnnouncement(text));
+    await c.post(channel, formatReceivedMessage(text));
     return true;
   } catch {
     return false;

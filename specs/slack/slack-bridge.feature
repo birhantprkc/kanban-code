@@ -17,14 +17,12 @@ Feature: Bidirectional Slack bridge for agent observability and steering
     And consecutive assistant lines (thinking + reply) are merged into one logical message
     And tool results are summarized rather than dumped in full
 
-  Scenario: Automated prompts are mirrored and marked, human relays are not
-    When the runtime auto-sends a queued prompt (e.g. an auto-compact warning) to the agent
-    Then that prompt is posted to the channel prefixed with "[SYSTEM MESSAGE]"
-    When a scheduled nudge is delivered to the agent
-    Then that nudge is posted to the channel prefixed with "[SYSTEM MESSAGE]"
+  Scenario: Every injected prompt is mirrored and marked, human relays are not
+    When any prompt is injected into the agent (a scheduled nudge, a self-compact, an auto-sent queued prompt, or a manual kanban send on the box)
+    Then it is posted to the channel under the header ">>> Received user message" with the body in italics
     When a human's Slack message is relayed into the agent
     Then it is NOT re-posted by the bridge (it already appears as that person's Slack message)
-    And so the "[SYSTEM MESSAGE]" marker only ever appears on system-originated traffic, letting a reader tell injected prompts apart from the agent's own replies
+    And so the marker only ever appears on injected prompts, letting a reader tell the agent's input apart from its own replies
 
   Scenario: A team member steers the agent from Slack
     Given a team member posts a message in the agent's channel

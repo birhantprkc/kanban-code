@@ -292,7 +292,7 @@ program
   .argument("<card>", "Card ID, ID prefix, or name search")
   .argument("<message>", "Message to send")
   .option("--keys", "Use send-keys instead of paste-buffer (for short single-line)")
-  .option("--announce", "Also post this message to the agent's Slack channel (for scheduled/automated sends)")
+  .option("--announce", "(deprecated: kanban send always mirrors the message to the agent's Slack channel now)")
   .option("-j, --json", "Output as JSON")
   .action(async (cardQuery: string, message: string, opts) => {
     const links = readLinks();
@@ -310,7 +310,10 @@ program
       ? sendTmuxKeys(card.tmuxLink.sessionName, message)
       : pasteTmuxPrompt(card.tmuxLink.sessionName, message);
 
-    if (result.ok && opts.announce) {
+    // Always mirror the injected prompt to Slack. Messages relayed *from* a
+    // Slack human never reach this command (the bridge pastes them directly),
+    // so they are correctly never re-posted.
+    if (result.ok) {
       await announceToSlack(card.name ?? cardQuery, message);
     }
 
