@@ -46,4 +46,6 @@ Feature: Bidirectional Slack bridge for agent observability and steering
   Scenario: Formatting reuses Kanban Code chat-rendering lessons
     Then assistant text, tool_use, tool_result, thinking, plan-mode and ask-user-question blocks
       are parsed from the transcript the same way the Kanban Code chat view parses them
+    And a command-style tool call (Bash, Read, TaskCreate, ...) is shown in a fenced ``` code block
+    And emoji/prose tool labels (entered/exit plan mode, asking a question) are shown as plain text, not fenced
     And long content is truncated for Slack readability

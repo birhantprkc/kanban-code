@@ -61,6 +61,16 @@ export function toolLabel(name: string, input: Record<string, any> = {}): string
   }
 }
 
+/// Tools whose label is emoji-prefixed prose (status / plan / questions), not a
+/// command. These render as plain text; everything else is a command-style
+/// label shown in a fenced code block.
+const PROSE_TOOLS = new Set(["EnterPlanMode", "ExitPlanMode", "AskUserQuestion"]);
+
+/// Wrap a command-style tool label in a triple-backtick code block.
+function fenceBlock(label: string): string {
+  return "```\n" + label + "\n```";
+}
+
 /// Render one assistant message's content blocks into Slack mrkdwn.
 function renderAssistantContent(content: any): string {
   if (typeof content === "string") return truncate(content);
@@ -75,9 +85,11 @@ function renderAssistantContent(content: any): string {
       case "thinking":
         if (block.thinking?.trim()) parts.push(`💭 _${truncate(block.thinking, 280)}_`);
         break;
-      case "tool_use":
-        parts.push("`" + toolLabel(block.name, block.input ?? {}) + "`");
+      case "tool_use": {
+        const label = toolLabel(block.name, block.input ?? {});
+        parts.push(PROSE_TOOLS.has(block.name) ? label : fenceBlock(label));
         break;
+      }
       default:
         break;
     }

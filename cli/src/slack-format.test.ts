@@ -46,7 +46,16 @@ describe("formatTranscriptLines", () => {
     assert.equal(posts[0].role, "assistant");
     assert.match(posts[0].text, /💭 _let me check the deps_/);
     assert.match(posts[0].text, /Reviewing the bump\./);
-    assert.match(posts[0].text, /`Bash\(run tests\)`/);
+    // Command-style tool labels render in a fenced code block, not inline.
+    assert.match(posts[0].text, /```\nBash\(run tests\)\n```/);
+  });
+
+  test("emoji/prose tool labels are not fenced", () => {
+    const posts = formatTranscriptLines([
+      asst([{ type: "tool_use", name: "AskUserQuestion", input: { questions: [{ question: "Ship it?" }] } }]),
+    ]);
+    assert.doesNotMatch(posts[0].text, /```/);
+    assert.match(posts[0].text, /❓ asking:/);
   });
 
   test("a user turn between assistant turns splits them, and user turns are not emitted", () => {
