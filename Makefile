@@ -59,16 +59,17 @@ app: build cli install-cli web
 	@# its outbound network. The CLI uses an installed cloudflared when
 	@# available and falls back to `npx -y cloudflared`.
 	@# Ship only runtime artifacts:
-	@#  • dist/*.js (compiled TypeScript) minus *.test.js
+	@#  • the whole compiled dist tree (dist/**/*.js + .d.ts, including the
+	@#    agents/ and slack/ subdirs) minus the *.test.* files
 	@#  • package.json + lockfile so pnpm can reinstall deterministically
 	@#  • a PROD-only node_modules (no typescript/tsx/esbuild/@types/supertest —
 	@#    those are ~50 MB of dev-time tooling that has no business shipping)
 	@rm -rf $(BUNDLE_DIR)/Contents/Resources/cli
 	@mkdir -p $(BUNDLE_DIR)/Contents/Resources/cli/dist
-	@find cli/dist -maxdepth 1 -type f \
-		\( -name '*.js' -o -name '*.d.ts' \) \
-		! -name '*.test.js' ! -name '*.test.d.ts' \
-		-exec cp {} $(BUNDLE_DIR)/Contents/Resources/cli/dist/ \;
+	@rsync -a --prune-empty-dirs \
+		--exclude='*.test.js' --exclude='*.test.d.ts' \
+		--include='*/' --include='*.js' --include='*.d.ts' --exclude='*' \
+		cli/dist/ $(BUNDLE_DIR)/Contents/Resources/cli/dist/
 	@cp cli/package.json cli/pnpm-lock.yaml $(BUNDLE_DIR)/Contents/Resources/cli/
 	@cd $(BUNDLE_DIR)/Contents/Resources/cli && $(PNPM) install --prod --frozen-lockfile --ignore-scripts --reporter=silent
 	@# Bundle the built web client — served by the share-server at `/`.
