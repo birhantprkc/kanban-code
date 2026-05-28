@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { runtimeSpec, isRuntime } from "./agents/runtime.js";
+import { formatCodexRolloutLines } from "./slack/format.js";
 import { parseAgentsConfig } from "./agents/config.js";
 import { agentIdentity } from "./agents/identity.js";
 import { ensureAgentSession } from "./agents/launch.js";
@@ -55,6 +56,25 @@ describe("runtime descriptor", () => {
     assert.ok(isRuntime("codex"));
     assert.ok(!isRuntime("gemini"));
     assert.ok(!isRuntime(undefined));
+  });
+});
+
+describe("formatCodexRolloutLines", () => {
+  test("mirrors agent messages and exec commands, skips reasoning/system noise", () => {
+    const objs = [
+      { type: "session_meta", payload: { cwd: "/x" } },
+      { type: "event_msg", payload: { type: "task_started" } },
+      { type: "event_msg", payload: { type: "agent_message", message: "I'll review the PR now." } },
+      { type: "response_item", payload: { type: "reasoning", encrypted_content: "..." } },
+      { type: "event_msg", payload: { type: "exec_command_begin", command: ["gh", "pr", "view", "519"] } },
+      { type: "event_msg", payload: { type: "agent_message", message: "No blockers; 2 nits." } },
+    ];
+    const posts = formatCodexRolloutLines(objs);
+    assert.equal(posts.length, 3);
+    assert.equal(posts[0].text, "I'll review the PR now.");
+    assert.match(posts[1].text, /gh pr view 519/);
+    assert.equal(posts[2].text, "No blockers; 2 nits.");
+    assert.ok(posts.every((p) => p.role === "assistant"));
   });
 });
 

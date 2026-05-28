@@ -1,12 +1,14 @@
 import { existsSync, statSync, openSync, readSync, closeSync } from "node:fs";
+import { join } from "node:path";
 import { SocketModeClient } from "@slack/socket-mode";
 import { SlackClient } from "./client.js";
 import { routeSlackMessage, ChannelMapping } from "./inbound.js";
-import { formatTranscriptLines } from "./format.js";
+import { formatTranscriptLines, formatCodexRolloutLines } from "./format.js";
 import { loadAgentsConfig } from "../agents/config.js";
 import { agentIdentity } from "../agents/identity.js";
+import { Runtime } from "../agents/runtime.js";
 import { recordAnnounceSuppress } from "./announce-suppress.js";
-import { findSessionJsonl, pasteTmuxPrompt } from "../data.js";
+import { findSessionJsonl, findCodexRollout, pasteTmuxPrompt } from "../data.js";
 
 export interface BridgeOptions {
   botToken: string;
@@ -18,7 +20,10 @@ export interface BridgeOptions {
 
 interface TailState {
   slug: string;
+  runtime: Runtime;
   sessionId: string;
+  /// For Codex, the per-agent workspace used to locate its rollout by cwd.
+  cwd?: string;
   channelId: string;
   path?: string;
   offset: number;
@@ -71,24 +76,27 @@ export async function runSlackBridge(opts: BridgeOptions): Promise<void> {
       continue;
     }
     mapping[channelId] = a.slug;
-    const sessionId = agentIdentity(a.slug).sessionId;
-    const path = findSessionJsonl(sessionId);
+    const runtime = (a.runtime ?? "claude") as Runtime;
+    const sessionId = agentIdentity(a.slug, runtime).sessionId;
+    const cwd = join(file.workspacesDir, a.slug);
+    const path = runtime === "codex" ? findCodexRollout(cwd) : findSessionJsonl(sessionId);
     // Start at EOF so we mirror only new activity, not the whole backlog.
-    tails.push({ slug: a.slug, sessionId, channelId, path, offset: path ? statSync(path).size : 0 });
+    tails.push({ slug: a.slug, runtime, sessionId, cwd, channelId, path, offset: path ? statSync(path).size : 0 });
   }
 
   // agent -> slack
   setInterval(async () => {
     for (const t of tails) {
       if (!t.path) {
-        t.path = findSessionJsonl(t.sessionId);
+        t.path = t.runtime === "codex" ? findCodexRollout(t.cwd!) : findSessionJsonl(t.sessionId);
         if (t.path) t.offset = statSync(t.path).size; // skip backlog on first discovery
         continue;
       }
       if (!existsSync(t.path)) continue;
       const { objs, newOffset } = readAppendedLines(t.path, t.offset);
       t.offset = newOffset;
-      for (const post of formatTranscriptLines(objs)) {
+      const posts = t.runtime === "codex" ? formatCodexRolloutLines(objs) : formatTranscriptLines(objs);
+      for (const post of posts) {
         try {
           await client.post(t.channelId, post.text);
         } catch (e) {

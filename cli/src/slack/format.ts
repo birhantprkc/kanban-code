@@ -127,3 +127,23 @@ export function formatTranscriptLines(objs: any[]): SlackPost[] {
   flush();
   return posts;
 }
+
+/// Format Codex rollout (.jsonl) records into Slack posts. Codex logs a stream
+/// of records; we mirror the agent's own messages (its "movement") and the
+/// commands it runs, skipping reasoning/system noise so the channel reads like
+/// the Claude mirror. Event shapes: event_msg{payload:{type:"agent_message",
+/// message}} for assistant text, and exec_command_begin{command} for shell runs.
+export function formatCodexRolloutLines(objs: any[]): SlackPost[] {
+  const posts: SlackPost[] = [];
+  for (const o of objs) {
+    if (o?.type !== "event_msg") continue;
+    const p = o.payload ?? {};
+    if (p.type === "agent_message" && typeof p.message === "string" && p.message.trim()) {
+      posts.push({ role: "assistant", text: truncate(p.message) });
+    } else if (p.type === "exec_command_begin") {
+      const cmd = Array.isArray(p.command) ? p.command.join(" ") : String(p.command ?? "");
+      if (cmd.trim()) posts.push({ role: "assistant", text: fenceBlock(`$ ${truncate(cmd, 300)}`) });
+    }
+  }
+  return posts;
+}

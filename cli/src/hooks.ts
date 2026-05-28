@@ -166,10 +166,13 @@ export function installHooks(opts: InstallHooksOptions = {}): InstallHooksResult
   mkdirSync(dirname(settingsPath), { recursive: true });
   writeFileSync(settingsPath, sortedStringify(root));
 
-  // Install the Codex equivalent too (harmless if no Codex agent runs): Codex
-  // mirrors Claude's hook structure but reads ~/.codex/hooks.json and runs the
-  // same hook.sh, so its events land in the same hook-events.jsonl.
-  installCodexHooks({ hookScriptPath });
+  // NOTE: Codex hooks are intentionally NOT installed here. Codex 0.134.0 gates
+  // command hooks behind an interactive trust prompt that --dangerously-bypass-
+  // hook-trust does not reliably suppress in the inline TUI, which hangs the
+  // headless session on a modal. Codex agents are instead mirrored to Slack via
+  // their rollout transcript (see findCodexRollout / formatCodexRolloutLines in
+  // the bridge), and steered via tmux paste, so no Codex hooks are needed.
+  // installCodexHooks() remains available for when Codex honors trust bypass.
 
   return { settingsPath, hookScriptPath, statuslinePath, events: HOOK_EVENTS };
 }
