@@ -8,8 +8,8 @@ import { readLinks, killTmuxSession } from "../data.js";
 import { upsertCard, isoNow } from "../cards.js";
 
 export interface ReconcileOptions {
-  /// Override the claude binary (tests).
-  claudeBin?: string;
+  /// Override the agent binary (tests).
+  bin?: string;
   /// Tear down agent-managed sessions/cards/worktrees no longer in config.
   prune?: boolean;
 }
@@ -61,10 +61,10 @@ export function reconcileAgent(
     repos.push({ name, worktreeCreated: created, worktree });
   }
 
-  const launch = ensureAgentSession(agentIdentity(agent.slug), {
+  const launch = ensureAgentSession(agentIdentity(agent.slug, agent.runtime), {
     cwd: workspace,
     model: agent.model,
-    claudeBin: opts.claudeBin,
+    bin: opts.bin,
   });
 
   return { slug: agent.slug, workspace, repos, launch };

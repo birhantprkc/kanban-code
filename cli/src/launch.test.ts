@@ -53,7 +53,7 @@ describe("headless agent launch/resume (real tmux)", skipIfNoTmux, () => {
   });
 
   test("fresh launch creates a tmux session and a stable card", () => {
-    const result = ensureAgentSession(identity, { cwd: workspace, claudeBin: "true" });
+    const result = ensureAgentSession(identity, { cwd: workspace, bin: "true" });
     assert.equal(result.action, "launched");
     assert.match(result.command!, /true --session-id .* --name /);
 
@@ -72,10 +72,10 @@ describe("headless agent launch/resume (real tmux)", skipIfNoTmux, () => {
   });
 
   test("re-running while alive is a no-op: no restart, no duplicate card", () => {
-    const first = ensureAgentSession(identity, { cwd: workspace, claudeBin: "true" });
+    const first = ensureAgentSession(identity, { cwd: workspace, bin: "true" });
     const firstCardId = first.card.id;
 
-    const second = ensureAgentSession(identity, { cwd: workspace, claudeBin: "true" });
+    const second = ensureAgentSession(identity, { cwd: workspace, bin: "true" });
     assert.equal(second.action, "noop-running");
     assert.equal(second.command, undefined, "must not build a launch command when already running");
 
@@ -90,7 +90,7 @@ describe("headless agent launch/resume (real tmux)", skipIfNoTmux, () => {
     mkdirSync(projDir, { recursive: true });
     writeFileSync(join(projDir, `${identity.sessionId}.jsonl`), '{"type":"user"}\n');
 
-    const result = ensureAgentSession(identity, { cwd: workspace, claudeBin: "true" });
+    const result = ensureAgentSession(identity, { cwd: workspace, bin: "true" });
     assert.equal(result.action, "resumed");
     assert.match(result.command!, new RegExp(`true --resume ${identity.sessionId}`));
     execSync(`tmux has-session -t ${identity.tmuxName}`);

@@ -87,7 +87,7 @@ describe("reconciler (real git + tmux)", skipIfNoTmux, () => {
   test("creates a per-agent worktree on agent/<slug> and launches the session", () => {
     provisionRepo(root, reposDir, "myrepo");
     const slug = trackSlug(`recon-a-${Date.now()}`);
-    const result = reconcileAll(makeFile([{ slug, repos: ["acme/myrepo"] }]), { claudeBin: "true" });
+    const result = reconcileAll(makeFile([{ slug, repos: ["acme/myrepo"] }]), { bin: "true" });
 
     const agent = result.agents[0];
     assert.equal(agent.launch.action, "launched");
@@ -107,7 +107,7 @@ describe("reconciler (real git + tmux)", skipIfNoTmux, () => {
   test("the agent worktree structurally cannot check out main", () => {
     provisionRepo(root, reposDir, "myrepo");
     const slug = trackSlug(`recon-main-${Date.now()}`);
-    reconcileAll(makeFile([{ slug, repos: ["acme/myrepo"] }]), { claudeBin: "true" });
+    reconcileAll(makeFile([{ slug, repos: ["acme/myrepo"] }]), { bin: "true" });
     const worktree = join(workspacesDir, slug, "myrepo");
     // main is checked out in the canonical clone, so git refuses it here.
     assert.throws(() => g(["-C", worktree, "checkout", "main"]), /already (used|checked out)/i);
@@ -118,8 +118,8 @@ describe("reconciler (real git + tmux)", skipIfNoTmux, () => {
     const slug = trackSlug(`recon-idem-${Date.now()}`);
     const file = makeFile([{ slug, repos: ["acme/myrepo"] }]);
 
-    const first = reconcileAll(file, { claudeBin: "true" });
-    const second = reconcileAll(file, { claudeBin: "true" });
+    const first = reconcileAll(file, { bin: "true" });
+    const second = reconcileAll(file, { bin: "true" });
 
     assert.equal(second.agents[0].launch.action, "noop-running");
     assert.equal(second.agents[0].repos[0].worktreeCreated, false);
@@ -130,7 +130,7 @@ describe("reconciler (real git + tmux)", skipIfNoTmux, () => {
   test("a missing canonical clone is a loud error (IaC owns provisioning)", () => {
     const slug = trackSlug(`recon-missing-${Date.now()}`);
     assert.throws(
-      () => reconcileAgent({ slug, repos: ["acme/nope"] }, makeFile([]), { claudeBin: "true" }),
+      () => reconcileAgent({ slug, repos: ["acme/nope"] }, makeFile([]), { bin: "true" }),
       /Canonical clone .* is missing/
     );
   });
@@ -138,10 +138,10 @@ describe("reconciler (real git + tmux)", skipIfNoTmux, () => {
   test("prune tears down an agent removed from config", () => {
     provisionRepo(root, reposDir, "myrepo");
     const slug = trackSlug(`recon-prune-${Date.now()}`);
-    reconcileAll(makeFile([{ slug, repos: ["acme/myrepo"] }]), { claudeBin: "true" });
+    reconcileAll(makeFile([{ slug, repos: ["acme/myrepo"] }]), { bin: "true" });
     execSync(`tmux has-session -t ${slug}`);
 
-    const pruneResult = reconcileAll(makeFile([]), { claudeBin: "true", prune: true });
+    const pruneResult = reconcileAll(makeFile([]), { bin: "true", prune: true });
     assert.deepEqual(pruneResult.pruned, [slug]);
 
     assert.throws(() => execSync(`tmux has-session -t ${slug} 2>/dev/null`), "tmux session should be gone");

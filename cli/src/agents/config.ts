@@ -3,12 +3,15 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { isValidSlug } from "./identity.js";
+import { Runtime, isRuntime } from "./runtime.js";
 
 /// One long-lived agent, defined declaratively. Used by the reconciler (slug,
 /// repos, model), the scheduler (schedule, dailyPrompt) and the Slack bridge
 /// (slackChannel). Prompts live here so the whole agent is one config object.
 export interface AgentConfig {
   slug: string;
+  /// Which agent CLI drives this agent. Optional; defaults to "claude".
+  runtime?: Runtime;
   /// GitHub repos the agent works on, as "owner/name".
   repos: string[];
   /// Model alias or full name (claude --model). Optional.
@@ -49,6 +52,10 @@ export function parseAgentsConfig(text: string): AgentsFile {
     if (!isValidSlug(a.slug)) throw new Error(`agents[${i}].slug invalid: ${JSON.stringify(a.slug)}`);
     if (seen.has(a.slug)) throw new Error(`duplicate agent slug: ${a.slug}`);
     seen.add(a.slug);
+    const runtime = a.runtime ?? "claude";
+    if (!isRuntime(runtime)) {
+      throw new Error(`agents[${i}] (${a.slug}) has invalid runtime ${JSON.stringify(a.runtime)} (expected "claude" or "codex")`);
+    }
     const repos = Array.isArray(a.repos) ? a.repos : [];
     for (const r of repos) {
       if (typeof r !== "string" || !REPO_RE.test(r)) {
@@ -57,6 +64,7 @@ export function parseAgentsConfig(text: string): AgentsFile {
     }
     return {
       slug: a.slug,
+      runtime,
       repos,
       model: a.model,
       slackChannel: a.slackChannel,

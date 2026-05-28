@@ -8,20 +8,21 @@ import {
 import { upsertCard, isoNow } from "../cards.js";
 import { generateKsuid } from "../ksuid.js";
 import { Link, ManualOverrides } from "../types.js";
+import { runtimeSpec } from "./runtime.js";
 
 export interface LaunchOptions {
   /// Working directory for the session (the agent's workspace / worktree root).
   cwd: string;
-  /// Extra args appended to the claude invocation.
+  /// Extra args appended to the agent invocation.
   extraArgs?: string[];
   /// Environment variables exported into the tmux session.
   env?: Record<string, string>;
-  /// Model alias or full name (claude --model).
+  /// Model alias or full name.
   model?: string;
   /// Autonomous agents skip permission prompts by default.
   skipPermissions?: boolean;
-  /// Override the claude binary (tests).
-  claudeBin?: string;
+  /// Override the agent binary (tests).
+  bin?: string;
 }
 
 export type LaunchAction = "noop-running" | "launched" | "resumed";
@@ -44,20 +45,23 @@ const DEFAULT_OVERRIDES: ManualOverrides = {
   issueLink: false,
 };
 
-/// Idempotently ensure an agent's Claude session is running in tmux and its
-/// kanban card reflects reality. Decides launch vs resume vs no-op:
-///   - tmux session already alive          -> no-op (never restart a live agent)
-///   - a transcript exists for the session  -> resume (--resume <uuid>)
-///   - neither                               -> fresh launch (--session-id <uuid>)
+/// Idempotently ensure an agent's session is running in tmux and its kanban card
+/// reflects reality. Decides launch vs resume vs no-op:
+///   - tmux session already alive            -> no-op (never restart a live agent)
+///   - runtime can resume + transcript exists -> resume
+///   - otherwise                              -> fresh launch
+/// Codex mints its own session id and the reviewer is per-PR, so it always
+/// launches fresh (canResume=false); tmux keeps it alive between prompts.
 export function ensureAgentSession(
   identity: AgentIdentity,
   opts: LaunchOptions
 ): LaunchResult {
-  const claudeBin = opts.claudeBin ?? "claude";
+  const spec = runtimeSpec(identity.runtime);
+  const bin = opts.bin ?? spec.bin;
   const skipPerms = opts.skipPermissions ?? true;
 
   const tmuxAlive = hasTmuxSession(identity.tmuxName);
-  const sessionExists = !!findSessionJsonl(identity.sessionId);
+  const sessionExists = spec.canResume && !!findSessionJsonl(identity.sessionId);
 
   let action: LaunchAction;
   let command: string | undefined;
@@ -65,20 +69,22 @@ export function ensureAgentSession(
   if (tmuxAlive) {
     action = "noop-running";
   } else {
-    const args: string[] = [];
-    if (sessionExists) {
-      action = "resumed";
-      args.push("--resume", identity.sessionId);
-    } else {
-      action = "launched";
-      args.push("--session-id", identity.sessionId, "--name", identity.slug);
-    }
-    if (skipPerms) args.push("--dangerously-skip-permissions");
-    if (opts.model) args.push("--model", opts.model);
+    const args = spec.buildArgs({
+      sessionId: identity.sessionId,
+      slug: identity.slug,
+      resume: sessionExists,
+      skipPermissions: skipPerms,
+      model: opts.model,
+    });
+    action = sessionExists ? "resumed" : "launched";
     if (opts.extraArgs?.length) args.push(...opts.extraArgs);
-    command = [claudeBin, ...args].join(" ");
+    command = [bin, ...args].join(" ");
 
-    const res = createTmuxSession(identity.tmuxName, opts.cwd, command, opts.env ?? {});
+    // Both runtimes' hooks correlate events to this agent via this env var, so
+    // the daemon/bridge key on our stable session id regardless of the id the
+    // runtime mints internally.
+    const env = { ...(opts.env ?? {}), KANBAN_SESSION_ID: identity.sessionId, KANBAN_SLUG: identity.slug };
+    const res = createTmuxSession(identity.tmuxName, opts.cwd, command, env);
     if (!res.ok) {
       throw new Error(`Failed to create tmux session "${identity.tmuxName}": ${res.error}`);
     }
@@ -124,7 +130,7 @@ function upsertAgentCard(identity: AgentIdentity, cwd: string): Link {
     sessionLink: { sessionId: identity.sessionId, sessionPath },
     tmuxLink: { sessionName: identity.tmuxName },
     worktreeLink: { path: cwd },
-    assistant: "claude",
+    assistant: identity.runtime,
     isRemote: false,
   };
   upsertCard(card);

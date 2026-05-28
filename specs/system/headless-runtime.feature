@@ -44,3 +44,12 @@ Feature: Headless runtime engine (no macOS app)
     When the box finishes booting
     Then reconcile-on-boot resumes every configured agent with "--resume <uuid>"
     And the daemon is restarted by the service manager
+
+  Scenario: An agent can be driven by the Codex runtime instead of Claude
+    Given an agent declares "runtime: codex" in the agents config
+    When the reconciler launches it
+    Then it runs "codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust" in tmux (no Claude --session-id/--resume)
+    And the launcher exports KANBAN_SESSION_ID so the shared hook.sh correlates Codex events to the agent's card
+    And Codex hooks (~/.codex/hooks.json) feed the same hook-events.jsonl, so Slack steering and auto-send still work
+    And the daemon's context-threshold self-compaction is skipped for it (Codex auto-compacts and exposes no context usage)
+    And sending and Slack-inbound steering work unchanged because they paste into the tmux session by slug
