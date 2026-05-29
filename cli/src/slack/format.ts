@@ -147,9 +147,15 @@ export function formatTranscriptLines(objs: any[]): SlackPost[] {
 /// a received prompt is announced (the Claude path uses the UserPromptSubmit
 /// hook). Event shapes: event_msg{payload:{type:"user_message",message}} for an
 /// injected prompt, {type:"agent_message",message} for assistant text, and
-/// {type:"exec_command_begin",command} for shell runs.
+/// {type:"exec_command_begin",command} for shell runs. When Codex is out of
+/// credits the turn ends with task_complete{last_agent_message:null} and the
+/// preceding token_count carries rate_limits.credits.has_credits=false; we
+/// mirror that as an explicit warning so the channel does not sit on a bare
+/// "Received user message" with no explanation.
 export function formatCodexRolloutLines(objs: any[]): SlackPost[] {
   const posts: SlackPost[] = [];
+  let credits: { has_credits?: boolean; balance?: string } | undefined;
+  let planType: string | undefined;
   for (const o of objs) {
     if (o?.type !== "event_msg") continue;
     const p = o.payload ?? {};
@@ -160,6 +166,17 @@ export function formatCodexRolloutLines(objs: any[]): SlackPost[] {
     } else if (p.type === "exec_command_begin") {
       const cmd = Array.isArray(p.command) ? p.command.join(" ") : String(p.command ?? "");
       if (cmd.trim()) posts.push({ role: "assistant", text: fenceBlock(`$ ${truncate(cmd, 300)}`) });
+    } else if (p.type === "token_count" && p.rate_limits?.credits) {
+      credits = p.rate_limits.credits;
+      planType = p.rate_limits.plan_type;
+    } else if (p.type === "task_complete" && p.last_agent_message == null && credits?.has_credits === false) {
+      // Prompt was received but the turn produced no output because Codex ran
+      // out of credits. Surface it instead of mirroring silence.
+      const plan = planType ? ` (plan: ${planType}, balance ${credits.balance ?? "0"})` : "";
+      posts.push({
+        role: "assistant",
+        text: `:warning: Codex is out of credits${plan}. The prompt was received but no output was produced, and this will keep failing until credits are topped up at https://chatgpt.com/codex/settings/usage`,
+      });
     }
   }
   return posts;

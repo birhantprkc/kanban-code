@@ -81,6 +81,41 @@ describe("formatCodexRolloutLines", () => {
     assert.equal(posts[3].text, "No blockers; 2 nits.");
     assert.ok(posts.slice(1).every((p) => p.role === "assistant"));
   });
+
+  test("mirrors an out-of-credits failure when a turn produces no output", () => {
+    const objs = [
+      { type: "event_msg", payload: { type: "user_message", message: "Please review PR 4288.", images: [] } },
+      { type: "event_msg", payload: { type: "task_started" } },
+      {
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          rate_limits: { plan_type: "plus", credits: { has_credits: false, balance: "0" } },
+        },
+      },
+      { type: "event_msg", payload: { type: "task_complete", last_agent_message: null } },
+    ];
+    const posts = formatCodexRolloutLines(objs);
+    assert.equal(posts.length, 2);
+    assert.equal(posts[0].role, "user");
+    assert.match(posts[1].text, /out of credits/i);
+    assert.match(posts[1].text, /plan: plus, balance 0/);
+    assert.match(posts[1].text, /chatgpt\.com\/codex\/settings\/usage/);
+  });
+
+  test("does not warn when a turn completes with output", () => {
+    const objs = [
+      {
+        type: "event_msg",
+        payload: { type: "token_count", rate_limits: { plan_type: "plus", credits: { has_credits: true, balance: "5" } } },
+      },
+      { type: "event_msg", payload: { type: "agent_message", message: "Reviewed, LGTM." } },
+      { type: "event_msg", payload: { type: "task_complete", last_agent_message: "Reviewed, LGTM." } },
+    ];
+    const posts = formatCodexRolloutLines(objs);
+    assert.equal(posts.length, 1);
+    assert.equal(posts[0].text, "Reviewed, LGTM.");
+  });
 });
 
 describe("agents config runtime field", () => {
