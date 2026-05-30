@@ -43,58 +43,75 @@ export function stripAnsi(s: string): string {
 }
 
 /// Locate the picker block in the pane snapshot, returning null when none is
-/// active. Walks bottom-up so the most recent picker wins when an older one
-/// is still in scrollback (tmux capture-pane can include both).
+/// active. We anchor on the bottom-most `❯ N. <text>` line — Claude Code only
+/// uses that caret for the active picker, so it's a high-precision signal
+/// across both picker variants (with or without the `Enter to select` footer
+/// and the Type-something / Chat-about-this escape hatches).
 export function parsePicker(paneText: string): Picker | null {
   const lines = paneText.split("\n").map((l) => stripAnsi(l).trimEnd());
 
-  // 1. Footer position — bottom-most occurrence is the active picker.
-  let footerIdx = -1;
+  // 1. Bottom-most caret line. If a stale picker is still in scrollback its
+  // caret is earlier, so the bottom-most one is the active picker.
+  let caretIdx = -1;
   for (let i = lines.length - 1; i >= 0; i--) {
-    if (lines[i].includes(PICKER_FOOTER)) {
-      footerIdx = i;
+    const t = lines[i].trim();
+    if ((t.startsWith("❯") || t.startsWith("›")) && parseNumberedLine(t)) {
+      caretIdx = i;
       break;
     }
   }
-  if (footerIdx < 0) return null;
+  if (caretIdx < 0) return null;
 
-  // 2. Walk up from the footer collecting numbered option lines. A picker is
-  // a run of `N. <title>` lines (sometimes separated by a horizontal rule and
-  // with indented description lines below each). The first non-numbered,
-  // non-blank, non-decor, non-indented line we hit going up IS the question.
-  //
-  // Description lines live BELOW their parent option, so when walking
-  // bottom-up we collect them into a buffer and assign them to the next
-  // numbered option we hit.
-  type Raw = { number: number; title: string; descLines: string[] };
-  const raw: Raw[] = [];
-  let pendingDesc: string[] = [];
+  // 2. Expand the picker block bounds outward from the caret. A picker block
+  // is a contiguous run of (numbered | indented | decor) lines. A blank line
+  // terminates the block on either side; the line just above the block is
+  // the question. The footer line (if present) also terminates.
+  const isPickerLine = (i: number): boolean => {
+    const line = lines[i];
+    const trimmed = line.trim();
+    if (!trimmed) return false;
+    if (trimmed.includes(PICKER_FOOTER)) return false;
+    if (parseNumberedLine(trimmed)) return true;
+    if (BOX_DECOR_RE.test(line)) return true;
+    if (line.startsWith("     ") || line.startsWith("\t")) return true;
+    return false;
+  };
+  let start = caretIdx;
+  while (start > 0 && isPickerLine(start - 1)) start--;
+  let end = caretIdx;
+  while (end < lines.length - 1 && isPickerLine(end + 1)) end++;
+
+  // 3. The question is the first non-blank, non-decor line above the block.
   let question = "";
-  for (let i = footerIdx - 1; i >= 0; i--) {
+  for (let i = start - 1; i >= 0; i--) {
     const line = lines[i];
     const trimmed = line.trim();
     if (!trimmed) continue;
-    if (BOX_DECOR_RE.test(line)) {
-      // Horizontal rule inside the picker or above the question. Skip and
-      // keep walking — the question (or the run-out top of the snapshot)
-      // tells us where to stop.
-      continue;
-    }
-    const m = parseNumberedLine(trimmed);
-    if (m) {
-      raw.unshift({ number: m.number, title: m.title, descLines: pendingDesc });
-      pendingDesc = [];
-      continue;
-    }
-    const isIndented = line.startsWith("     ") || line.startsWith("\t");
-    if (isIndented) {
-      pendingDesc.unshift(trimmed);
-      continue;
-    }
-    // Non-blank, non-decor, non-indented, non-numbered: this is the question.
+    if (BOX_DECOR_RE.test(line)) continue;
     question = trimmed;
     break;
   }
+
+  // 4. Linear parse of the block: numbered lines start options, indented
+  // lines append to the current option's description, decor lines are skipped.
+  type Raw = { number: number; title: string; descLines: string[] };
+  const raw: Raw[] = [];
+  let current: Raw | null = null;
+  for (let i = start; i <= end; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    if (BOX_DECOR_RE.test(line) || !trimmed) continue;
+    const m = parseNumberedLine(trimmed);
+    if (m) {
+      if (current) raw.push(current);
+      current = { number: m.number, title: m.title, descLines: [] };
+      continue;
+    }
+    if (current && (line.startsWith("     ") || line.startsWith("\t"))) {
+      current.descLines.push(trimmed);
+    }
+  }
+  if (current) raw.push(current);
   if (raw.length === 0) return null;
   return assemble(question, raw);
 }

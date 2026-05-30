@@ -90,6 +90,20 @@ describe("parsePicker", () => {
     assert.equal(parsePicker(benign), null);
   });
 
+  test("parses the footer-less 'Review your answers' submit picker", () => {
+    const pane = fixture("picker-review-answers.txt");
+    const picker = parsePicker(pane);
+    assert.ok(picker, "should detect the submit picker even without 'Enter to select' footer");
+    assert.equal(picker!.question, "Ready to submit your answers?");
+    assert.deepEqual(
+      picker!.options.map((o) => ({ n: o.number, t: o.title })),
+      [
+        { n: 1, t: "Submit answers" },
+        { n: 2, t: "Cancel" },
+      ]
+    );
+  });
+
   test("strips ANSI before matching so a colored ❯ caret still counts", () => {
     const pane = [
       "Pick one?",
