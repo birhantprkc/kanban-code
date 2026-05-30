@@ -27,6 +27,18 @@ export class SlackClient {
     return r.ts as string | undefined;
   }
 
+  /// Set the "working…" pill on a thread (Slack's Agents & Assistants UI).
+  /// An empty status clears the pill explicitly; a normal post in the same
+  /// thread also clears it automatically. Slack drops the pill on its own
+  /// after a 2-minute idle TTL, so callers need to refresh it for long turns.
+  async setStatus(channelId: string, threadTs: string, status: string): Promise<void> {
+    await this.web.apiCall("assistant.threads.setStatus", {
+      channel_id: channelId,
+      thread_ts: threadTs,
+      status,
+    });
+  }
+
   /// Resolve "#name" / "name" to a channel id. Ids (C…/G…) are returned as-is.
   async resolveChannelId(nameOrId: string): Promise<string | undefined> {
     if (/^[CG][A-Z0-9]+$/.test(nameOrId)) return nameOrId;

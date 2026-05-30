@@ -59,7 +59,19 @@ export async function announceToSlack(slug: string, text: string, opts: Announce
     // The received-prompt message opens the thread for this turn; record its
     // ts so the bridge threads the agent's assistant turns under it.
     const ts = await c.post(channel, formatReceivedMessage(text));
-    if (ts) writeThreadRoot(slug, ts);
+    if (ts) {
+      writeThreadRoot(slug, ts);
+      // Light the "💭 thinking…" pill immediately so the channel reflects
+      // that the agent has started before its first tool call appears in
+      // the transcript a couple of poll ticks later. The bridge takes over
+      // refreshing (and updating with tool labels) once it sees activity.
+      // Failures are non-fatal — the pill is a UX nicety, not the message.
+      try {
+        await c.setStatus(channel, ts, "💭 thinking…");
+      } catch {
+        /* setStatus is best-effort; channel + thread already exist */
+      }
+    }
     return true;
   } catch {
     return false;

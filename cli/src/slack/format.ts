@@ -1,10 +1,20 @@
 /// Formats Claude Code transcript (.jsonl) lines into Slack messages, porting
 /// the rendering lessons from Kanban Code's chat view (TranscriptReader):
-/// compact tool labels, merged consecutive assistant lines, summarized results.
+/// compact tool labels, summarized results.
 
 export interface SlackPost {
   role: "assistant" | "user";
+  /// "text"     -> assistant or user prose (lands in the channel root and
+  ///               becomes the new thread anchor for following tool calls).
+  /// "tool"     -> a tool_use / shell-exec block (lands in the thread under
+  ///               the most recent text post; consecutive ones coalesce).
+  /// "thinking" -> a brief thinking-trace excerpt (also lands in the thread).
+  kind: "text" | "tool" | "thinking";
   text: string; // Slack mrkdwn
+  /// Short label suitable for the Slack "working…" pill (assistant.threads.
+  /// setStatus). Populated only for tool/thinking posts. Bridge uses it to
+  /// reflect the current activity in the pill (e.g. "🛠️ Bash(view PR)…").
+  statusLabel?: string;
 }
 
 const MAX_TEXT = 2800; // keep individual posts readable / within Slack block limits
@@ -82,61 +92,90 @@ function fenceBlock(label: string): string {
   return "```\n" + label + "\n```";
 }
 
-/// Render one assistant message's content blocks into Slack mrkdwn.
-function renderAssistantContent(content: any): string {
-  if (typeof content === "string") return truncate(content);
-  if (!Array.isArray(content)) return "";
-
-  const parts: string[] = [];
-  for (const block of content) {
-    switch (block?.type) {
-      case "text":
-        if (block.text?.trim()) parts.push(truncate(block.text));
-        break;
-      case "thinking":
-        if (block.thinking?.trim()) parts.push(`💭 _${truncate(block.thinking, 280)}_`);
-        break;
-      case "tool_use": {
-        const label = toolLabel(block.name, block.input ?? {});
-        parts.push(PROSE_TOOLS.has(block.name) ? label : fenceBlock(label));
-        break;
-      }
-      default:
-        break;
-    }
-  }
-  return parts.join("\n");
+/// Compose the Slack "working…" pill label for a tool block. Short, prefixed
+/// with a hammer for a visual cue, and capped so a noisy Bash description does
+/// not overflow Slack's status width.
+function statusLabelForTool(label: string): string {
+  const trimmed = label.length > 80 ? label.slice(0, 80) + "…" : label;
+  return `🛠️ ${trimmed}…`;
 }
 
 function role(obj: any): string | undefined {
   return obj?.type ?? obj?.message?.role;
 }
 
-/// Convert a batch of transcript lines into Slack posts, merging consecutive
-/// assistant lines (Claude writes thinking and the reply on separate lines) into
-/// one logical message. User turns and tool_result lines are not emitted here —
-/// the bridge posts agent activity; relayed human messages already appear in
-/// Slack, and automated prompts are announced separately.
-export function formatTranscriptLines(objs: any[]): SlackPost[] {
-  const posts: SlackPost[] = [];
-  let buffer: string[] = [];
-
-  const flush = () => {
-    const text = buffer.join("\n").trim();
-    if (text) posts.push({ role: "assistant", text });
-    buffer = [];
-  };
-
-  for (const obj of objs) {
-    if (role(obj) === "assistant") {
-      const rendered = renderAssistantContent(obj.message?.content ?? obj.content);
-      if (rendered) buffer.push(rendered);
-    } else {
-      flush();
+/// Emit one SlackPost per content block on an assistant turn. Each block keeps
+/// its own kind so the bridge can route it correctly (text -> channel root and
+/// new thread anchor, tool/thinking -> thread under the previous text).
+function emitAssistantBlocks(content: any, out: SlackPost[]): void {
+  if (typeof content === "string") {
+    const t = truncate(content);
+    if (t) out.push({ role: "assistant", kind: "text", text: t });
+    return;
+  }
+  if (!Array.isArray(content)) return;
+  for (const block of content) {
+    switch (block?.type) {
+      case "text": {
+        if (block.text?.trim()) out.push({ role: "assistant", kind: "text", text: truncate(block.text) });
+        break;
+      }
+      case "thinking": {
+        if (block.thinking?.trim()) {
+          out.push({
+            role: "assistant",
+            kind: "thinking",
+            text: `💭 _${truncate(block.thinking, 280)}_`,
+            statusLabel: "💭 thinking…",
+          });
+        }
+        break;
+      }
+      case "tool_use": {
+        const label = toolLabel(block.name, block.input ?? {});
+        const text = PROSE_TOOLS.has(block.name) ? label : fenceBlock(label);
+        out.push({ role: "assistant", kind: "tool", text, statusLabel: statusLabelForTool(label) });
+        break;
+      }
+      default:
+        break;
     }
   }
-  flush();
-  return posts;
+}
+
+/// Coalesce consecutive tool posts (same role) into a single post so a batch
+/// of N parallel/sequential tool_use blocks turns into ONE Slack message in the
+/// thread instead of N. Cuts API call volume — Slack's "high volume of
+/// activity, not displaying some messages" rate-limit kicks in fast otherwise.
+/// Text and thinking posts are NOT coalesced (text anchors a new thread, and
+/// thinking-as-italic-quote doesn't merge cleanly).
+function coalesceTools(posts: SlackPost[]): SlackPost[] {
+  const out: SlackPost[] = [];
+  for (const p of posts) {
+    const last = out[out.length - 1];
+    if (p.kind === "tool" && last?.kind === "tool" && last.role === p.role) {
+      last.text = last.text + "\n" + p.text;
+      // The pill should reflect the LATEST tool in the run, not the first;
+      // a "🛠️ Bash(view checks)…" replaces "🛠️ Bash(view PR)…".
+      if (p.statusLabel) last.statusLabel = p.statusLabel;
+    } else {
+      out.push({ ...p });
+    }
+  }
+  return out;
+}
+
+/// Convert a batch of transcript lines into Slack posts. User turns and
+/// tool_result lines are skipped: relayed human messages already appear in
+/// Slack as that human's own message, and automated prompts are announced
+/// separately by the daemon.
+export function formatTranscriptLines(objs: any[]): SlackPost[] {
+  const posts: SlackPost[] = [];
+  for (const obj of objs) {
+    if (role(obj) !== "assistant") continue;
+    emitAssistantBlocks(obj.message?.content ?? obj.content, posts);
+  }
+  return coalesceTools(posts);
 }
 
 /// Format Codex rollout (.jsonl) records into Slack posts. Codex logs a stream
@@ -160,24 +199,33 @@ export function formatCodexRolloutLines(objs: any[]): SlackPost[] {
     if (o?.type !== "event_msg") continue;
     const p = o.payload ?? {};
     if (p.type === "user_message" && typeof p.message === "string" && p.message.trim()) {
-      posts.push({ role: "user", text: formatReceivedMessage(truncate(p.message)) });
+      posts.push({ role: "user", kind: "text", text: formatReceivedMessage(truncate(p.message)) });
     } else if (p.type === "agent_message" && typeof p.message === "string" && p.message.trim()) {
-      posts.push({ role: "assistant", text: truncate(p.message) });
+      posts.push({ role: "assistant", kind: "text", text: truncate(p.message) });
     } else if (p.type === "exec_command_begin") {
       const cmd = Array.isArray(p.command) ? p.command.join(" ") : String(p.command ?? "");
-      if (cmd.trim()) posts.push({ role: "assistant", text: fenceBlock(`$ ${truncate(cmd, 300)}`) });
+      if (cmd.trim()) {
+        posts.push({
+          role: "assistant",
+          kind: "tool",
+          text: fenceBlock(`$ ${truncate(cmd, 300)}`),
+          statusLabel: statusLabelForTool(`$ ${truncate(cmd, 60)}`),
+        });
+      }
     } else if (p.type === "token_count" && p.rate_limits?.credits) {
       credits = p.rate_limits.credits;
       planType = p.rate_limits.plan_type;
     } else if (p.type === "task_complete" && p.last_agent_message == null && credits?.has_credits === false) {
       // Prompt was received but the turn produced no output because Codex ran
-      // out of credits. Surface it instead of mirroring silence.
+      // out of credits. Surface it instead of mirroring silence. Routed as
+      // text so it anchors at the channel root (operators need to see it).
       const plan = planType ? ` (plan: ${planType}, balance ${credits.balance ?? "0"})` : "";
       posts.push({
         role: "assistant",
+        kind: "text",
         text: `:warning: Codex is out of credits${plan}. The prompt was received but no output was produced, and this will keep failing until credits are topped up at https://chatgpt.com/codex/settings/usage`,
       });
     }
   }
-  return posts;
+  return coalesceTools(posts);
 }
