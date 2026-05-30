@@ -9,6 +9,7 @@ import { agentIdentity } from "../agents/identity.js";
 import { Runtime } from "../agents/runtime.js";
 import { recordAnnounceSuppress } from "./announce-suppress.js";
 import { writeThreadRoot, readThreadRoot } from "./thread-root.js";
+import { downloadSlackFile, formatPromptWithAttachments, DownloadedFile } from "./inbox.js";
 import { findSessionJsonl, findCodexRollout, pasteTmuxPrompt } from "../data.js";
 
 export interface BridgeOptions {
@@ -214,17 +215,32 @@ export async function runSlackBridge(opts: BridgeOptions): Promise<void> {
   socket.on("message", async ({ event, ack }: any) => {
     if (ack) await ack();
     const decision = routeSlackMessage(event, mapping, botUserId);
-    if (decision.action === "deliver") {
-      // Mark this relay so the daemon does not echo it back to the channel
-      // (it already appears there as that person's Slack message). Recorded
-      // before the paste so the marker is in place before UserPromptSubmit.
-      recordAnnounceSuppress(agentIdentity(decision.slug).sessionId);
-      // Also remember it for the in-process Codex rollout-echo guard above.
-      const relays = recentRelays.get(decision.slug) ?? [];
-      relays.push({ text: decision.text, ts: Date.now() });
-      recentRelays.set(decision.slug, relays);
-      pasteTmuxPrompt(decision.slug, decision.text); // tmux session name == slug
+    if (decision.action !== "deliver") return;
+
+    // Slack file attachments: download each into the per-agent inbox and
+    // inline the local paths into the prompt. The agent reads them with its
+    // own tools (Read handles images natively; PDFs/zips work file-by-file).
+    // Per-file errors are reported but never block the text delivery.
+    const downloaded: DownloadedFile[] = [];
+    for (const f of decision.files) {
+      try {
+        downloaded.push(await downloadSlackFile(f, { botToken: opts.botToken, slug: decision.slug }));
+      } catch (e) {
+        console.error(`download for ${decision.slug} (${f.name ?? f.id}) failed:`, e);
+      }
     }
+    const prompt = formatPromptWithAttachments(decision.text, downloaded);
+    if (!prompt) return; // text empty AND every attachment failed -> nothing to relay
+
+    // Mark this relay so the daemon does not echo it back to the channel
+    // (it already appears there as that person's Slack message). Recorded
+    // before the paste so the marker is in place before UserPromptSubmit.
+    recordAnnounceSuppress(agentIdentity(decision.slug).sessionId);
+    // Also remember it for the in-process Codex rollout-echo guard above.
+    const relays = recentRelays.get(decision.slug) ?? [];
+    relays.push({ text: prompt, ts: Date.now() });
+    recentRelays.set(decision.slug, relays);
+    pasteTmuxPrompt(decision.slug, prompt); // tmux session name == slug
   });
   await socket.start();
   console.error(`Slack bridge connected. Mirroring ${tails.length} agent(s).`);

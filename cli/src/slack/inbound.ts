@@ -5,6 +5,16 @@
 /// Maps a Slack channel id to an agent slug.
 export type ChannelMapping = Record<string, string>;
 
+export interface SlackFile {
+  id?: string;
+  name?: string;
+  mimetype?: string;
+  size?: number;
+  /// Auth-required download URL (Authorization: Bearer <bot token>).
+  url_private?: string;
+  url_private_download?: string;
+}
+
 export interface SlackMessageEvent {
   type?: string;
   subtype?: string;
@@ -12,11 +22,12 @@ export interface SlackMessageEvent {
   user?: string;
   text?: string;
   bot_id?: string;
+  files?: SlackFile[];
 }
 
 export type InboundDecision =
   | { action: "ignore"; reason: string }
-  | { action: "deliver"; slug: string; text: string };
+  | { action: "deliver"; slug: string; text: string; files: SlackFile[] };
 
 /// Convert Slack mrkdwn to plain text for the agent: unwrap links/mentions and
 /// unescape HTML entities Slack adds.
@@ -34,14 +45,17 @@ export function slackToPlain(text: string): string {
 
 /// Decide what to do with a Slack message event. Ignores anything that would
 /// cause a loop (our own / any bot message), non-message events, edits/joins
-/// (subtypes), unmapped channels, and empties.
+/// (subtypes), unmapped channels, and (text-empty AND no files) messages.
 export function routeSlackMessage(
   event: SlackMessageEvent | undefined,
   mapping: ChannelMapping,
   botUserId?: string
 ): InboundDecision {
   if (!event || event.type !== "message") return { action: "ignore", reason: "not-a-message" };
-  if (event.subtype) return { action: "ignore", reason: `subtype:${event.subtype}` };
+  // Slack delivers file uploads as type=message subtype=file_share with the
+  // attachment in event.files. Treat that as a normal delivery so the bridge
+  // can fetch the file; other subtypes (edits, joins, ...) still skip.
+  if (event.subtype && event.subtype !== "file_share") return { action: "ignore", reason: `subtype:${event.subtype}` };
   if (event.bot_id) return { action: "ignore", reason: "bot-message" };
   if (botUserId && event.user === botUserId) return { action: "ignore", reason: "self" };
 
@@ -49,7 +63,8 @@ export function routeSlackMessage(
   if (!slug) return { action: "ignore", reason: "unmapped-channel" };
 
   const text = slackToPlain(event.text ?? "");
-  if (!text) return { action: "ignore", reason: "empty" };
+  const files = event.files ?? [];
+  if (!text && files.length === 0) return { action: "ignore", reason: "empty" };
 
-  return { action: "deliver", slug, text };
+  return { action: "deliver", slug, text, files };
 }

@@ -11,7 +11,19 @@ const reasonOf = (d: ReturnType<typeof routeSlackMessage>) => (d.action === "ign
 describe("routeSlackMessage", () => {
   test("delivers a human message in a mapped channel to the right agent", () => {
     const d = routeSlackMessage({ type: "message", channel: "C123", user: "U1", text: "focus on the lodash PR" }, MAPPING, "UBOT");
-    assert.deepEqual(d, { action: "deliver", slug: "dependabot-scout", text: "focus on the lodash PR" });
+    assert.deepEqual(d, { action: "deliver", slug: "dependabot-scout", text: "focus on the lodash PR", files: [] });
+  });
+
+  test("delivers a file_share with attachments even when the text is empty", () => {
+    const files = [{ id: "F1", name: "screenshot.png", mimetype: "image/png", url_private: "https://files.slack.com/F1" }];
+    const d = routeSlackMessage({ type: "message", subtype: "file_share", channel: "C123", user: "U1", text: "", files }, MAPPING);
+    assert.deepEqual(d, { action: "deliver", slug: "dependabot-scout", text: "", files });
+  });
+
+  test("delivers a file_share with text and attachments together", () => {
+    const files = [{ id: "F2", name: "ticket.pdf", mimetype: "application/pdf", url_private: "https://files.slack.com/F2" }];
+    const d = routeSlackMessage({ type: "message", subtype: "file_share", channel: "C123", user: "U1", text: "read this", files }, MAPPING);
+    assert.deepEqual(d, { action: "deliver", slug: "dependabot-scout", text: "read this", files });
   });
 
   test("ignores the bot's own messages (no loops)", () => {
@@ -24,6 +36,7 @@ describe("routeSlackMessage", () => {
     assert.equal(reasonOf(routeSlackMessage({ type: "reaction_added", channel: "C123" }, MAPPING)), "not-a-message");
     assert.equal(reasonOf(routeSlackMessage({ type: "message", channel: "CXXX", user: "U1", text: "hi" }, MAPPING)), "unmapped-channel");
     assert.equal(reasonOf(routeSlackMessage({ type: "message", channel: "C123", user: "U1", text: "   " }, MAPPING)), "empty");
+    assert.equal(reasonOf(routeSlackMessage({ type: "message", subtype: "file_share", channel: "C123", user: "U1", text: "" }, MAPPING)), "empty");
   });
 
   test("slackToPlain unwraps links/mentions and unescapes entities", () => {
