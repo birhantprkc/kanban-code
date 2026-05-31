@@ -165,6 +165,11 @@ describe("formatCodexRolloutLines", () => {
     assert.match(posts[1].text, /out of credits/i);
     assert.match(posts[1].text, /plan: plus, balance 0/);
     assert.match(posts[1].text, /chatgpt\.com\/codex\/settings\/usage/);
+    // Terminal flag tells the bridge to skip the working pill — no more
+    // output is coming this turn, the pill would sit on the channel
+    // indefinitely otherwise. Without this, the channel keeps showing
+    // "is working…" against a state that's already finished.
+    assert.equal(posts[1].terminal, true);
   });
 
   test("does not warn when a turn completes with output", () => {
