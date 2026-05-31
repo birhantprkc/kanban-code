@@ -14,6 +14,12 @@ export { RECEIVED_MESSAGE_HEADER, formatReceivedMessage } from "./format.js";
 import { formatReceivedMessage } from "./format.js";
 import { writeThreadRoot } from "./thread-root.js";
 
+/// Single plain label shown for the entire "agent is working" state — no
+/// tool name, no emoji. Slack's setStatus already renders its own animated
+/// indicator next to the text. Shared between announce + bridge so they
+/// don't drift.
+export const WORKING_PILL_LABEL = "is working…";
+
 function defaultConfigPath(): string {
   return process.env.KANBAN_AGENTS_CONFIG || join(homedir(), ".kanban-code", "agents.yaml");
 }
@@ -51,23 +57,25 @@ export interface AnnounceOptions {
 /// Announce text to an agent's channel. No-op (returns false) if no token is
 /// configured or the agent has no resolvable channel.
 export async function announceToSlack(slug: string, text: string, opts: AnnounceOptions = {}): Promise<boolean> {
+  return announceRawToSlack(slug, formatReceivedMessage(text), opts);
+}
+
+/// Same as announceToSlack but posts the body verbatim (no "Received user
+/// message" header). Used for system-style notifications like self-compact
+/// triggers where the wording is fully owned by the caller. Still opens the
+/// thread for the turn and lights the pill so the bridge's later assistant
+/// posts thread under this anchor.
+export async function announceRawToSlack(slug: string, text: string, opts: AnnounceOptions = {}): Promise<boolean> {
   const c = client(opts.token);
   if (!c) return false;
   const channel = await channelForSlug(slug, opts.configPath ?? defaultConfigPath(), c);
   if (!channel) return false;
   try {
-    // The received-prompt message opens the thread for this turn; record its
-    // ts so the bridge threads the agent's assistant turns under it.
-    const ts = await c.post(channel, formatReceivedMessage(text));
+    const ts = await c.post(channel, text);
     if (ts) {
       writeThreadRoot(slug, ts);
-      // Light the "💭 thinking…" pill immediately so the channel reflects
-      // that the agent has started before its first tool call appears in
-      // the transcript a couple of poll ticks later. The bridge takes over
-      // refreshing (and updating with tool labels) once it sees activity.
-      // Failures are non-fatal — the pill is a UX nicety, not the message.
       try {
-        await c.setStatus(channel, ts, "💭 thinking…");
+        await c.setStatus(channel, ts, WORKING_PILL_LABEL);
       } catch {
         /* setStatus is best-effort; channel + thread already exist */
       }

@@ -36,7 +36,7 @@ import { installHooks } from "./hooks.js";
 import { Daemon } from "./agents/daemon.js";
 import { slackAppManifest, MANIFEST_INSTRUCTIONS } from "./slack/manifest.js";
 import { runSlackBridge } from "./slack/bridge.js";
-import { announceToSlack } from "./slack/announce.js";
+import { announceToSlack, announceRawToSlack } from "./slack/announce.js";
 import { SlackClient } from "./slack/client.js";
 import { postToSlack } from "./slack/post.js";
 import type { KanbanColumn, Link } from "./types.js";
@@ -605,6 +605,19 @@ Examples:
         "schedule self-compact",
         scheduleTmuxSelfCompact(tmuxSession, followUp, Number.isFinite(followUpDelay) ? followUpDelay : 1)
       );
+
+      // Surface the compact in Slack — the bridge's buffer-until-next-text
+      // would otherwise hold the agent's "I'm compacting" Bash tool entry
+      // until the post-compact session produces a fresh text post, leaving
+      // the channel silent for the entire compact + warm-up window. Also
+      // opens a new thread anchor for the resumed session and lights the
+      // pill so the post-compact tool calls don't end up under a stale
+      // pre-compact thread. Fire-and-forget; the CLI exits when scheduling
+      // is done, the announce flushes in the background.
+      const announceText = followUp.trim()
+        ? `:arrows_counterclockwise: Self-compact triggered — context refresh, resuming with: _${followUp.trim()}_`
+        : ":arrows_counterclockwise: Self-compact triggered — context refresh in progress.";
+      void announceRawToSlack(tmuxSession, announceText);
 
       const result = {
         ok: true,

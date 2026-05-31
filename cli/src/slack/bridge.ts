@@ -8,6 +8,7 @@ import { loadAgentsConfig } from "../agents/config.js";
 import { agentIdentity } from "../agents/identity.js";
 import { Runtime } from "../agents/runtime.js";
 import { recordAnnounceSuppress } from "./announce-suppress.js";
+import { WORKING_PILL_LABEL } from "./announce.js";
 import { writeThreadRoot, readThreadRoot } from "./thread-root.js";
 import { downloadSlackFile, formatPromptWithAttachments, DownloadedFile, sweepInbox, DEFAULT_RETENTION_DAYS } from "./inbox.js";
 import { parsePicker, Picker } from "./picker.js";
@@ -158,10 +159,10 @@ export async function runSlackBridge(opts: BridgeOptions): Promise<void> {
   // every REFRESH_MS while a turn is open so the TTL does not drop the pill
   // mid-turn during long bash bursts or large diffs.
   const REFRESH_MS = 60_000;
-  /// Single plain label shown for the entire "agent is working" state — no
-  /// tool name, no emoji. Slack's setStatus already shows its own animated
-  /// indicator next to the text.
-  const WORKING_LABEL = "is working…";
+  /// Alias for the shared pill label (kept local for readability in the
+  /// dense post loop below). Defined in announce.ts so the bridge and the
+  /// kanban CLI's announce path can't drift on what text the pill carries.
+  const WORKING_LABEL = WORKING_PILL_LABEL;
   interface ActivePill { channelId: string; threadTs: string; label: string; lastSetMs: number; }
   const active = new Map<string /* slug */, ActivePill>();
 
