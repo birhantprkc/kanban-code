@@ -280,6 +280,44 @@ struct ReducerTests {
         #expect(state.links["card_n1"]?.manualOverrides.name == true)
     }
 
+    // MARK: - Pin Card
+
+    @Test("setCardPinned preserves real column and controls pinned presentation")
+    func setCardPinnedPreservesColumn() {
+        let link = makeLink(id: "card_pin1", column: .waiting)
+        var state = stateWith([link])
+
+        let pinEffects = Reducer.reduce(state: &state, action: .setCardPinned(cardId: "card_pin1", isPinned: true))
+        state.rebuildCards()
+
+        #expect(state.links["card_pin1"]?.column == .waiting)
+        #expect(state.links["card_pin1"]?.isPinned == true)
+        #expect(state.pinnedCards.map(\.id) == ["card_pin1"])
+        #expect(state.unpinnedCards(in: .waiting).isEmpty)
+        #expect(pinEffects.contains(where: { if case .upsertLink = $0 { return true }; return false }))
+
+        let unpinEffects = Reducer.reduce(state: &state, action: .setCardPinned(cardId: "card_pin1", isPinned: false))
+        state.rebuildCards()
+
+        #expect(state.links["card_pin1"]?.column == .waiting)
+        #expect(state.links["card_pin1"]?.isPinned == false)
+        #expect(state.pinnedCards.isEmpty)
+        #expect(state.unpinnedCards(in: .waiting).map(\.id) == ["card_pin1"])
+        #expect(unpinEffects.contains(where: { if case .upsertLink = $0 { return true }; return false }))
+    }
+
+    @Test("archiving a pinned card clears its pin")
+    func archivePinnedCardClearsPin() {
+        var link = makeLink(id: "card_pin2", column: .inProgress)
+        link.pinnedAt = .now
+        var state = stateWith([link])
+
+        let _ = Reducer.reduce(state: &state, action: .archiveCard(cardId: "card_pin2"))
+
+        #expect(state.links["card_pin2"]?.manuallyArchived == true)
+        #expect(state.links["card_pin2"]?.isPinned == false)
+    }
+
     // MARK: - Unlink
 
     @Test("unlinkFromCard clears the specified link type")

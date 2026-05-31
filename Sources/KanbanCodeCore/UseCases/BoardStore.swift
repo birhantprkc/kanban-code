@@ -222,6 +222,9 @@ public final class AppState: @unchecked Sendable {
     /// Visible columns — cached for independent observation.
     public internal(set) var visibleColumns: [KanbanCodeColumn] = []
 
+    /// Cards presented above the normal lanes while retaining their real column.
+    public internal(set) var pinnedCards: [KanbanCodeCard] = []
+
     /// Rebuild all cached card arrays from current state.
     /// Only assigns when the result differs — prevents unnecessary SwiftUI re-renders.
     func rebuildCards() {
@@ -238,6 +241,11 @@ public final class AppState: @unchecked Sendable {
 
         let newFiltered = cards.filter { cardMatchesProjectFilter($0) }
         if newFiltered != filteredCards { filteredCards = newFiltered }
+
+        let newPinned = newFiltered.filter(\.link.isPinned).sorted {
+            ($0.link.pinnedAt ?? .distantPast) > ($1.link.pinnedAt ?? .distantPast)
+        }
+        if newPinned != pinnedCards { pinnedCards = newPinned }
 
         // Per-column sorted arrays
         var newByColumn: [KanbanCodeColumn: [KanbanCodeCard]] = [:]
@@ -267,6 +275,11 @@ public final class AppState: @unchecked Sendable {
     /// Cards for a specific column (pre-computed, cached).
     public func cards(in column: KanbanCodeColumn) -> [KanbanCodeCard] {
         cardsByColumn[column] ?? []
+    }
+
+    /// Lane presentation excludes pinned cards, but their underlying column is unchanged.
+    public func unpinnedCards(in column: KanbanCodeColumn) -> [KanbanCodeCard] {
+        cards(in: column).filter { !$0.link.isPinned }
     }
 
     public func cardCount(in column: KanbanCodeColumn) -> Int {
@@ -336,6 +349,7 @@ public enum Action: Sendable {
     case resumeCard(cardId: String)
     case moveCard(cardId: String, to: KanbanCodeColumn)
     case renameCard(cardId: String, name: String)
+    case setCardPinned(cardId: String, isPinned: Bool)
     case archiveCard(cardId: String)
     case deleteCard(cardId: String)
     case selectCard(cardId: String?)
@@ -668,6 +682,7 @@ public enum Reducer {
             link.manualOverrides.column = true
             if column == .allSessions {
                 link.manuallyArchived = true
+                link.pinnedAt = nil
             } else if link.manuallyArchived {
                 link.manuallyArchived = false
             }
@@ -714,6 +729,19 @@ public enum Reducer {
             }
             return effects
 
+        case .setCardPinned(let cardId, let isPinned):
+            guard var link = state.links[cardId] else { return [] }
+            if isPinned {
+                if link.pinnedAt != nil { return [] }
+                link.pinnedAt = .now
+            } else {
+                if link.pinnedAt == nil { return [] }
+                link.pinnedAt = nil
+            }
+            link.updatedAt = .now
+            state.links[cardId] = link
+            return [.upsertLink(link)]
+
         case .updatePrompt(let cardId, let body, let imagePaths):
             guard var link = state.links[cardId] else { return [] }
             let oldImages = link.promptImagePaths ?? []
@@ -733,6 +761,7 @@ public enum Reducer {
             guard var link = state.links[cardId] else { return [] }
             link.manuallyArchived = true
             link.column = .allSessions
+            link.pinnedAt = nil
             link.updatedAt = .now
             // Kill tmux sessions on archive — user expects cleanup
             var effects: [Effect] = []
@@ -1501,6 +1530,7 @@ public enum Reducer {
             if target.projectPath == nil { target.projectPath = source.projectPath }
             if target.name == nil { target.name = source.name }
             if target.promptBody == nil { target.promptBody = source.promptBody }
+            if target.pinnedAt == nil { target.pinnedAt = source.pinnedAt }
             // Merge PR links (deduplicate by PR number)
             let existingPRNumbers = Set(target.prLinks.map(\.number))
             for pr in source.prLinks where !existingPRNumbers.contains(pr.number) {

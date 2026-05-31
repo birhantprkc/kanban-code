@@ -190,6 +190,12 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
     /// (lower first); cards without fall back to time-based sort.
     public var sortOrder: Int?
 
+    /// When set, show this card in the pinned section while preserving its real column.
+    /// The timestamp provides a stable newest-pinned-first display order.
+    public var pinnedAt: Date?
+
+    public var isPinned: Bool { pinnedAt != nil }
+
     /// Which coding assistant this card uses. nil defaults to .claude for backward compat.
     public var assistant: CodingAssistant?
 
@@ -309,6 +315,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         isRemote: Bool = false,
         isLaunching: Bool? = nil,
         sortOrder: Int? = nil,
+        pinnedAt: Date? = nil,
         discoveredBranches: [String]? = nil,
         discoveredRepos: [String: String]? = nil
     ) {
@@ -336,6 +343,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         self.isRemote = isRemote
         self.isLaunching = isLaunching
         self.sortOrder = sortOrder
+        self.pinnedAt = pinnedAt
         self.discoveredBranches = discoveredBranches
         self.discoveredRepos = discoveredRepos
     }
@@ -345,7 +353,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
     private enum CodingKeys: String, CodingKey {
         // Card-level
         case id, name, projectPath, column, createdAt, updatedAt, lastActivity, lastOpenedAt
-        case manualOverrides, manuallyArchived, source, promptBody, promptImagePaths, isRemote, isLaunching, sortOrder
+        case manualOverrides, manuallyArchived, source, promptBody, promptImagePaths, isRemote, isLaunching, sortOrder, pinnedAt
         case discoveredBranches, discoveredRepos, assistant, apiServiceId
         // Typed links (new nested format)
         case sessionLink, tmuxLink, worktreeLink, prLinks, issueLink, queuedPrompts, browserTabs
@@ -374,6 +382,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         isRemote = try c.decodeIfPresent(Bool.self, forKey: .isRemote) ?? false
         isLaunching = try c.decodeIfPresent(Bool.self, forKey: .isLaunching)
         sortOrder = try c.decodeIfPresent(Int.self, forKey: .sortOrder)
+        pinnedAt = try c.decodeIfPresent(Date.self, forKey: .pinnedAt)
         discoveredBranches = try c.decodeIfPresent([String].self, forKey: .discoveredBranches)
         discoveredRepos = try c.decodeIfPresent([String: String].self, forKey: .discoveredRepos)
         assistant = try c.decodeIfPresent(CodingAssistant.self, forKey: .assistant)
@@ -461,6 +470,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         try c.encode(isRemote, forKey: .isRemote)
         try c.encodeIfPresent(isLaunching, forKey: .isLaunching)
         try c.encodeIfPresent(sortOrder, forKey: .sortOrder)
+        try c.encodeIfPresent(pinnedAt, forKey: .pinnedAt)
         try c.encodeIfPresent(discoveredBranches, forKey: .discoveredBranches)
         try c.encodeIfPresent(discoveredRepos, forKey: .discoveredRepos)
         try c.encodeIfPresent(assistant, forKey: .assistant)

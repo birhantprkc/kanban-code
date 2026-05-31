@@ -6,6 +6,7 @@ struct ColumnView: View {
     let cards: [KanbanCodeCard]
     @Binding var selectedCardId: String?
     let onCopyConversationMarkdown: (String) -> Void
+    let onSetCardPinned: (String, Bool) -> Void
 
     var body: some View {
         // Card list with header pill overlaid on top
@@ -16,6 +17,7 @@ struct ColumnView: View {
                         card: card,
                         isSelected: card.id == selectedCardId,
                         onCopyConversationMarkdown: { onCopyConversationMarkdown(card.id) },
+                        onSetPinned: { isPinned in onSetCardPinned(card.id, isPinned) },
                         onSelect: {
                             if selectedCardId == card.id {
                                 selectedCardId = nil

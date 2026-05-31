@@ -391,6 +391,9 @@ struct ContentView: View {
             },
             onArchiveCard: { cardId in archiveCard(cardId: cardId) },
             onDeleteCard: { cardId in presentDialog(.confirmDelete(cardId: cardId)) },
+            onSetCardPinned: { cardId, isPinned in
+                store.dispatch(.setCardPinned(cardId: cardId, isPinned: isPinned))
+            },
             availableProjects: projectList,
             onMoveToProject: { cardId, projectPath in
                 let name = projectList.first(where: { $0.path == projectPath })?.name ?? (projectPath as NSString).lastPathComponent
@@ -453,6 +456,9 @@ struct ContentView: View {
                 NSPasteboard.general.setString(cmd, forType: .string)
             },
             onCopyConversationMarkdown: { cardId in copyConversationMarkdown(cardId: cardId) },
+            onSetCardPinned: { cardId, isPinned in
+                store.dispatch(.setCardPinned(cardId: cardId, isPinned: isPinned))
+            },
             onDiscoverCard: { cardId in
                 Task {
                     store.dispatch(.setBusy(cardId: cardId, busy: true))
@@ -557,6 +563,9 @@ struct ContentView: View {
             },
             onRename: { name in
                 store.dispatch(.renameCard(cardId: card.id, name: name))
+            },
+            onSetPinned: { isPinned in
+                store.dispatch(.setCardPinned(cardId: card.id, isPinned: isPinned))
             },
             onFork: { keepWorktree in forkCard(cardId: card.id, keepWorktree: keepWorktree) },
             onDismiss: { store.dispatch(.selectCard(cardId: nil)) },
@@ -2121,6 +2130,9 @@ struct ContentView: View {
                     onResume: { resumeCard(cardId: card.id) },
                     onFork: { keepWorktree in forkCard(cardId: card.id, keepWorktree: keepWorktree) },
                     onRenameRequest: { renamingCardId = card.id },
+                    onSetPinned: { isPinned in
+                        store.dispatch(.setCardPinned(cardId: card.id, isPinned: isPinned))
+                    },
                     onCopyResumeCmd: {
                         var cmd = ""
                         if let pp = card.link.projectPath { cmd += "cd \(pp) && " }

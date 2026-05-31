@@ -176,6 +176,41 @@ struct LinkAssistantCodableTests {
         #expect(!json.contains("\"apiServiceId\""))
     }
 
+    // MARK: - pinnedAt
+
+    @Test("Link with pinnedAt round-trips through JSON")
+    func linkPinnedAtRoundTrip() throws {
+        let pinnedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let link = Link(id: "card_pin1", pinnedAt: pinnedAt)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .secondsSince1970
+        let data = try encoder.encode(link)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        let decoded = try decoder.decode(Link.self, from: data)
+        #expect(decoded.pinnedAt == pinnedAt)
+        #expect(decoded.isPinned)
+    }
+
+    @Test("Link without pinnedAt decodes as unpinned")
+    func backwardCompatNoPinnedAt() throws {
+        let json = """
+        {
+            "id": "card_old_pin",
+            "column": "requires_attention",
+            "manualOverrides": {},
+            "manuallyArchived": false,
+            "source": "manual",
+            "isRemote": false
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        let decoded = try decoder.decode(Link.self, from: json.data(using: .utf8)!)
+        #expect(decoded.pinnedAt == nil)
+        #expect(!decoded.isPinned)
+    }
+
     // MARK: - effectiveAssistant
 
     @Test("effectiveAssistant returns .claude when assistant is nil")

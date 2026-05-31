@@ -5,6 +5,7 @@ import KanbanCodeCore
 struct ListBoardView: View {
     var store: BoardStore
     @State private var dragState = DragState()
+    @State private var renamingPinnedCardId: String?
     var onOpenChannel: (String) -> Void = { _ in }
     var onNewChannel: () -> Void = {}
     var onDeleteChannel: (String) -> Void = { _ in }
@@ -16,6 +17,7 @@ struct ListBoardView: View {
     var onForkCard: (String, Bool) -> Void = { _, _ in }
     var onCopyResumeCmd: (String) -> Void = { _ in }
     var onCopyConversationMarkdown: (String) -> Void = { _ in }
+    let onSetCardPinned: (String, Bool) -> Void
     var onDiscoverCard: (String) -> Void = { _ in }
     var onCleanupWorktree: (String) -> Void = { _ in }
     var canCleanupWorktree: (String) -> Bool = { _ in true }
@@ -38,7 +40,7 @@ struct ListBoardView: View {
 
     private var sections: [ListBoardSection] {
         ListBoardSection.make(columns: store.state.visibleColumns) { column in
-            store.state.cards(in: column)
+            store.state.unpinnedCards(in: column)
         }
     }
 
@@ -52,6 +54,22 @@ struct ListBoardView: View {
         .overlay(alignment: .bottom) { errorOverlay }
         .animation(.easeInOut(duration: 0.25), value: store.state.error != nil)
         .overlay { emptyStateOverlay }
+        .sheet(isPresented: Binding(
+            get: { renamingPinnedCardId != nil },
+            set: { if !$0 { renamingPinnedCardId = nil } }
+        )) {
+            if let cardId = renamingPinnedCardId,
+               let card = store.state.pinnedCards.first(where: { $0.id == cardId }) {
+                RenameSessionDialog(
+                    currentName: card.link.name ?? card.displayTitle,
+                    isPresented: Binding(
+                        get: { renamingPinnedCardId != nil },
+                        set: { if !$0 { renamingPinnedCardId = nil } }
+                    ),
+                    onRename: { name in onRenameCard(cardId, name) }
+                )
+            }
+        }
     }
 
     private var listContent: some View {
@@ -62,12 +80,67 @@ struct ListBoardView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
                 channelsSection
+                pinnedCardsSection
                 ForEach(sections, id: \.column) { section in
                     sectionView(for: section)
                 }
             }
             .padding(.top, inSidebar ? 0 : 52)
         }
+    }
+
+    @ViewBuilder
+    private var pinnedCardsSection: some View {
+        let cards = store.state.pinnedCards
+        if !cards.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Image(systemName: "pin.fill")
+                    Text("Pinned")
+                    Spacer()
+                    Text("\(cards.count)")
+                        .fontWeight(.medium)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color.secondary.opacity(0.2)))
+                }
+                .font(.app(.caption, weight: .semibold))
+                .foregroundStyle(.tertiary)
+                .textCase(.uppercase)
+                .padding(.horizontal, 18)
+
+                ForEach(cards) { card in
+                    pinnedCardRow(for: card)
+                        .padding(.horizontal, 8)
+                }
+            }
+            .padding(.bottom, 8)
+        }
+    }
+
+    private func pinnedCardRow(for card: KanbanCodeCard) -> ListCardRowView {
+        ListCardRowView(
+            card: card,
+            isSelected: card.id == store.state.selectedCardId,
+            onCopyConversationMarkdown: { onCopyConversationMarkdown(card.id) },
+            onSetPinned: { isPinned in onSetCardPinned(card.id, isPinned) },
+            onSelect: { handleCardSelection(card.id) },
+            onStart: { onStartCard(card.id) },
+            onResume: { onResumeCard(card.id) },
+            onFork: { keepWorktree in onForkCard(card.id, keepWorktree) },
+            onCopyResumeCmd: { onCopyResumeCmd(card.id) },
+            onDiscover: { onDiscoverCard(card.id) },
+            onCleanupWorktree: { onCleanupWorktree(card.id) },
+            canCleanupWorktree: canCleanupWorktree(card.id),
+            onArchive: { onArchiveCard(card.id) },
+            onDelete: { onDeleteCard(card.id) },
+            availableProjects: availableProjects,
+            onMoveToProject: { projectPath in onMoveToProject(card.id, projectPath) },
+            onMoveToFolder: { onMoveToFolder(card.id) },
+            enabledAssistants: enabledAssistants,
+            onMigrateAssistant: { target in onMigrateAssistant(card.id, target) },
+            onRenameRequest: { renamingPinnedCardId = card.id }
+        )
     }
 
     @ViewBuilder
@@ -126,6 +199,7 @@ struct ListBoardView: View {
             onForkCard: onForkCard,
             onCopyResumeCmd: onCopyResumeCmd,
             onCopyConversationMarkdown: onCopyConversationMarkdown,
+            onSetCardPinned: onSetCardPinned,
             onDiscoverCard: onDiscoverCard,
             onCleanupWorktree: onCleanupWorktree,
             canCleanupWorktree: canCleanupWorktree,
@@ -234,6 +308,7 @@ private struct ListBoardSectionView: View {
     let onForkCard: (String, Bool) -> Void
     let onCopyResumeCmd: (String) -> Void
     let onCopyConversationMarkdown: (String) -> Void
+    let onSetCardPinned: (String, Bool) -> Void
     let onDiscoverCard: (String) -> Void
     let onCleanupWorktree: (String) -> Void
     let canCleanupWorktree: (String) -> Bool
@@ -354,6 +429,7 @@ private struct ListBoardSectionView: View {
                         card: card,
                         isSelected: card.id == selectedCardId,
                         onCopyConversationMarkdown: { onCopyConversationMarkdown(card.id) },
+                        onSetPinned: { isPinned in onSetCardPinned(card.id, isPinned) },
                         onSelect: { onSelectCard(card.id) },
                         onStart: { onStartCard(card.id) },
                         onResume: { onResumeCard(card.id) },
@@ -617,6 +693,7 @@ private struct ListCardRowView: View {
     let card: KanbanCodeCard
     let isSelected: Bool
     let onCopyConversationMarkdown: () -> Void
+    let onSetPinned: (_ isPinned: Bool) -> Void
     var onSelect: () -> Void = {}
     var onStart: () -> Void = {}
     var onResume: () -> Void = {}
@@ -639,6 +716,12 @@ private struct ListCardRowView: View {
             VStack(alignment: .leading, spacing: 3) {
                 // Row 1: title + badge + time
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    if card.link.isPinned {
+                        Image(systemName: "pin.fill")
+                            .font(.app(.caption2))
+                            .foregroundStyle(.secondary)
+                    }
+
                     Text(card.displayTitle)
                         .font(.app(.subheadline))
                         .foregroundStyle(.primary)
@@ -706,6 +789,7 @@ private struct ListCardRowView: View {
                     onResume: onResume,
                     onFork: onFork,
                     onRenameRequest: onRenameRequest,
+                    onSetPinned: onSetPinned,
                     onCopyResumeCmd: onCopyResumeCmd,
                     onCopyConversationMarkdown: onCopyConversationMarkdown,
                     onCheckpoint: nil,

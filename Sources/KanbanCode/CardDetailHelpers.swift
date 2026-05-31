@@ -16,6 +16,7 @@ struct CardActionsMenuActions {
     let onResume: () -> Void
     let onFork: (_ keepWorktree: Bool) -> Void
     let onRenameRequest: () -> Void
+    let onSetPinned: (_ isPinned: Bool) -> Void
     let onCopyResumeCmd: () -> Void
     let onCopyConversationMarkdown: () -> Void
     let onCheckpoint: (() -> Void)?
@@ -35,6 +36,7 @@ struct CardActionsMenuActions {
         onResume: @escaping () -> Void,
         onFork: @escaping (_ keepWorktree: Bool) -> Void,
         onRenameRequest: @escaping () -> Void,
+        onSetPinned: @escaping (_ isPinned: Bool) -> Void,
         onCopyResumeCmd: @escaping () -> Void,
         onCopyConversationMarkdown: @escaping () -> Void,
         onCheckpoint: (() -> Void)?,
@@ -53,6 +55,7 @@ struct CardActionsMenuActions {
         self.onResume = onResume
         self.onFork = onFork
         self.onRenameRequest = onRenameRequest
+        self.onSetPinned = onSetPinned
         self.onCopyResumeCmd = onCopyResumeCmd
         self.onCopyConversationMarkdown = onCopyConversationMarkdown
         self.onCheckpoint = onCheckpoint
@@ -200,6 +203,13 @@ struct CardActionsMenu: View {
 
         Button(action: actions.onRenameRequest) {
             Label("Rename", systemImage: "pencil")
+        }
+
+        Button(action: { actions.onSetPinned(!card.link.isPinned) }) {
+            Label(
+                card.link.isPinned ? "Unpin Card" : "Pin Card",
+                systemImage: card.link.isPinned ? "pin.slash" : "pin"
+            )
         }
 
         if let onCheckpoint = actions.onCheckpoint {

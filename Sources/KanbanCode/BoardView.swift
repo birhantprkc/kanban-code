@@ -4,6 +4,7 @@ import KanbanCodeCore
 struct BoardView: View {
     var store: BoardStore
     @State private var dragState = DragState()
+    @State private var renamingPinnedCardId: String?
     var onOpenChannel: (String) -> Void = { _ in }
     var onNewChannel: () -> Void = {}
     var onDeleteChannel: (String) -> Void = { _ in }
@@ -20,6 +21,7 @@ struct BoardView: View {
     var canCleanupWorktree: (String) -> Bool = { _ in true }
     var onArchiveCard: (String) -> Void = { _ in }
     var onDeleteCard: (String) -> Void = { _ in }
+    let onSetCardPinned: (String, Bool) -> Void
     var availableProjects: [(name: String, path: String)] = []
     var onMoveToProject: (String, String) -> Void = { _, _ in }
     var onMoveToFolder: (String) -> Void = { _ in }
@@ -41,40 +43,61 @@ struct BoardView: View {
     @ViewBuilder
     private var channelsPseudoColumn: some View {
         let channels = store.state.channels
-        if !channels.isEmpty {
+        let pinnedCards = store.state.pinnedCards
+        if !channels.isEmpty || !pinnedCards.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
-                // Subtle header so the column reads as "Channels" without competing with real columns.
-                HStack(spacing: 6) {
-                    Text("Channels")
-                        .font(.app(.caption, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                        .textCase(.uppercase)
-                    Spacer(minLength: 0)
-                    Button(action: onNewChannel) {
-                        Image(systemName: "plus")
-                            .font(.app(.caption))
+                if !channels.isEmpty {
+                    // Subtle header so the column reads as "Channels" without competing with real columns.
+                    HStack(spacing: 6) {
+                        Text("Channels")
+                            .font(.app(.caption, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                            .textCase(.uppercase)
+                        Spacer(minLength: 0)
+                        Button(action: onNewChannel) {
+                            Image(systemName: "plus")
+                                .font(.app(.caption))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .help("New chat channel")
                     }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .help("New chat channel")
-                }
-                .padding(.horizontal, 10)
-                .padding(.top, 2)
+                    .padding(.horizontal, 10)
+                    .padding(.top, 2)
 
-                ForEach(channels) { ch in
-                    let msgs = store.state.channelMessages[ch.name]
-                    let last = msgs?.last
-                    ChannelTile(
-                        channel: ch,
-                        onlineCount: onlineCountForChannel(ch),
-                        lastMessageAt: last?.ts,
-                        lastMessageBody: last?.body,
-                        isSelected: store.state.selectedChannelName == ch.name,
-                        unreadCount: unreadCountForChannel(ch),
-                        onOpen: { onOpenChannel(ch.name) },
-                        onDelete: { onDeleteChannel(ch.name) },
-                        onRename: { onRenameChannel(ch.name) }
-                    )
+                    ForEach(channels) { ch in
+                        let msgs = store.state.channelMessages[ch.name]
+                        let last = msgs?.last
+                        ChannelTile(
+                            channel: ch,
+                            onlineCount: onlineCountForChannel(ch),
+                            lastMessageAt: last?.ts,
+                            lastMessageBody: last?.body,
+                            isSelected: store.state.selectedChannelName == ch.name,
+                            unreadCount: unreadCountForChannel(ch),
+                            onOpen: { onOpenChannel(ch.name) },
+                            onDelete: { onDeleteChannel(ch.name) },
+                            onRename: { onRenameChannel(ch.name) }
+                        )
+                    }
+                }
+
+                if !pinnedCards.isEmpty {
+                    HStack(spacing: 6) {
+                        Image(systemName: "pin.fill")
+                        Text("Pinned")
+                        Spacer(minLength: 0)
+                        Text("\(pinnedCards.count)")
+                    }
+                    .font(.app(.caption, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .textCase(.uppercase)
+                    .padding(.horizontal, 10)
+                    .padding(.top, channels.isEmpty ? 2 : 6)
+
+                    ForEach(pinnedCards) { card in
+                        pinnedCardView(for: card)
+                    }
                 }
             }
             .padding(.horizontal, 6)
@@ -87,10 +110,11 @@ struct BoardView: View {
             ScrollView(.horizontal, showsIndicators: true) {
                 HStack(alignment: .top, spacing: 6) {
                     channelsPseudoColumn
+                        .id("channels")
                     ForEach(store.state.visibleColumns, id: \.self) { column in
                         DroppableColumnView(
                             column: column,
-                            cards: store.state.cards(in: column),
+                            cards: store.state.unpinnedCards(in: column),
                             selectedCardId: Binding(
                                 get: { store.state.selectedCardId },
                                 set: { store.dispatch(.selectCard(cardId: $0)) }
@@ -118,6 +142,7 @@ struct BoardView: View {
                             onForkCard: onForkCard,
                             onCopyResumeCmd: onCopyResumeCmd,
                             onCopyConversationMarkdown: onCopyConversationMarkdown,
+                            onSetCardPinned: onSetCardPinned,
                             onDiscoverCard: onDiscoverCard,
                             onCleanupWorktree: onCleanupWorktree,
                             canCleanupWorktree: canCleanupWorktree,
@@ -141,6 +166,12 @@ struct BoardView: View {
             .onChange(of: store.state.selectedCardId) {
                 // Scroll to the column containing the selected card
                 guard let selectedId = store.state.selectedCardId else { return }
+                if store.state.pinnedCards.contains(where: { $0.id == selectedId }) {
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        proxy.scrollTo("channels", anchor: .leading)
+                    }
+                    return
+                }
                 for col in store.state.visibleColumns {
                     if store.state.cards(in: col).contains(where: { $0.id == selectedId }) {
                         withAnimation(.easeInOut(duration: 0.25)) {
@@ -205,5 +236,50 @@ struct BoardView: View {
                 }
             }
         }
+        .sheet(isPresented: Binding(
+            get: { renamingPinnedCardId != nil },
+            set: { if !$0 { renamingPinnedCardId = nil } }
+        )) {
+            if let cardId = renamingPinnedCardId,
+               let card = store.state.pinnedCards.first(where: { $0.id == cardId }) {
+                RenameSessionDialog(
+                    currentName: card.link.name ?? card.displayTitle,
+                    isPresented: Binding(
+                        get: { renamingPinnedCardId != nil },
+                        set: { if !$0 { renamingPinnedCardId = nil } }
+                    ),
+                    onRename: { name in store.dispatch(.renameCard(cardId: cardId, name: name)) }
+                )
+            }
+        }
+    }
+
+    private func pinnedCardView(for card: KanbanCodeCard) -> CardView {
+        CardView(
+            card: card,
+            isSelected: card.id == store.state.selectedCardId,
+            onCopyConversationMarkdown: { onCopyConversationMarkdown(card.id) },
+            onSetPinned: { isPinned in onSetCardPinned(card.id, isPinned) },
+            onSelect: {
+                let newId = store.state.selectedCardId == card.id ? nil : card.id
+                store.dispatch(.selectCard(cardId: newId))
+                if newId != nil { onCardClicked(card.id) }
+            },
+            onStart: { onStartCard(card.id) },
+            onResume: { onResumeCard(card.id) },
+            onFork: { keepWorktree in onForkCard(card.id, keepWorktree) },
+            onRenameRequest: { renamingPinnedCardId = card.id },
+            onCopyResumeCmd: { onCopyResumeCmd(card.id) },
+            onDiscover: { onDiscoverCard(card.id) },
+            onCleanupWorktree: { onCleanupWorktree(card.id) },
+            canCleanupWorktree: canCleanupWorktree(card.id),
+            onArchive: { onArchiveCard(card.id) },
+            onDelete: { onDeleteCard(card.id) },
+            availableProjects: availableProjects,
+            onMoveToProject: { projectPath in onMoveToProject(card.id, projectPath) },
+            onMoveToFolder: { onMoveToFolder(card.id) },
+            enabledAssistants: enabledAssistants,
+            onMigrateAssistant: { target in onMigrateAssistant(card.id, target) }
+        )
     }
 }

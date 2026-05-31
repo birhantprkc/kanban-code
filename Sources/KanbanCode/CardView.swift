@@ -6,6 +6,7 @@ struct CardView: View {
     let card: KanbanCodeCard
     let isSelected: Bool
     let onCopyConversationMarkdown: () -> Void
+    let onSetPinned: (_ isPinned: Bool) -> Void
     var onSelect: () -> Void = {}
     var onStart: () -> Void = {}
     var onResume: () -> Void = {}
@@ -26,10 +27,17 @@ struct CardView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             // Title
-            Text(card.displayTitle)
-                .font(.app(.body, weight: .medium))
-                .lineLimit(2)
-                .foregroundStyle(.primary)
+            HStack(spacing: 5) {
+                if card.link.isPinned {
+                    Image(systemName: "pin.fill")
+                        .font(.app(.caption))
+                        .foregroundStyle(.secondary)
+                }
+                Text(card.displayTitle)
+                    .font(.app(.body, weight: .medium))
+                    .lineLimit(2)
+                    .foregroundStyle(.primary)
+            }
 
             // Project + branch + link icons
             HStack(spacing: 4) {
@@ -102,6 +110,7 @@ struct CardView: View {
                     onResume: onResume,
                     onFork: onFork,
                     onRenameRequest: onRenameRequest,
+                    onSetPinned: onSetPinned,
                     onCopyResumeCmd: onCopyResumeCmd,
                     onCopyConversationMarkdown: onCopyConversationMarkdown,
                     onCheckpoint: nil,
