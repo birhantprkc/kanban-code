@@ -11,6 +11,12 @@ export interface SlackPost {
   /// "thinking" -> a brief thinking-trace excerpt (also lands in the thread).
   kind: "text" | "tool" | "thinking";
   text: string; // Slack mrkdwn
+  /// True when this post is the final output of the turn — no more work is
+  /// coming. The bridge uses this to suppress the "is working…" pill that
+  /// would otherwise sit on the channel indefinitely. Currently set on the
+  /// codex out-of-credits sentinel; could be extended to normal task_complete
+  /// once we're sure Claude-runtime parity is covered.
+  terminal?: boolean;
 }
 
 const MAX_TEXT = 2800; // keep individual posts readable / within Slack block limits
@@ -198,10 +204,15 @@ export function formatCodexRolloutLines(objs: any[]): SlackPost[] {
       // Prompt was received but the turn produced no output because Codex ran
       // out of credits. Surface it instead of mirroring silence. Routed as
       // text so it anchors at the channel root (operators need to see it).
+      // `terminal: true` tells the bridge not to attach the working pill to
+      // this anchor — no more output is coming this turn, the pill would
+      // otherwise sit on the channel indefinitely (Slack auto-clears the
+      // built-in 2-min TTL but the refresh loop re-applies it forever).
       const plan = planType ? ` (plan: ${planType}, balance ${credits.balance ?? "0"})` : "";
       posts.push({
         role: "assistant",
         kind: "text",
+        terminal: true,
         text: `:warning: Codex is out of credits${plan}. The prompt was received but no output was produced, and this will keep failing until credits are topped up at https://chatgpt.com/codex/settings/usage`,
       });
     }

@@ -241,7 +241,12 @@ export async function runSlackBridge(opts: BridgeOptions): Promise<void> {
             const ts = await client.post(t.channelId, post.text);
             if (ts) writeThreadRoot(t.slug, ts);
             active.delete(t.slug);
-            if (ts) {
+            // `terminal: true` posts (currently only the codex out-of-credits
+            // sentinel) are the final word of the turn — no more work coming.
+            // Skip the WORKING pill entirely so the channel doesn't show a
+            // perpetual "is working…" against a state that's already finished.
+            // The previous anchor's pill was already cleared above.
+            if (ts && !post.terminal) {
               try {
                 await client.setStatus(t.channelId, ts, WORKING_LABEL);
                 active.set(t.slug, { channelId: t.channelId, threadTs: ts, label: WORKING_LABEL, lastSetMs: Date.now() });
