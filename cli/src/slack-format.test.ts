@@ -129,6 +129,52 @@ describe("formatTranscriptLines", () => {
     assert.equal(posts.length, 0);
   });
 
+  test("marks the last text post terminal when the message ends with end_turn", () => {
+    const obj = {
+      type: "assistant",
+      message: {
+        role: "assistant",
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: "Done." }],
+      },
+    };
+    const posts = formatTranscriptLines([obj]);
+    assert.equal(posts.length, 1);
+    assert.equal(posts[0].kind, "text");
+    assert.equal(posts[0].terminal, true);
+  });
+
+  test("does NOT mark terminal on stop_reason: tool_use (the agent will continue)", () => {
+    const obj = {
+      type: "assistant",
+      message: {
+        role: "assistant",
+        stop_reason: "tool_use",
+        content: [{ type: "text", text: "Looking it up..." }, { type: "tool_use", name: "Read", input: { file_path: "x.ts" } }],
+      },
+    };
+    const posts = formatTranscriptLines([obj]);
+    for (const p of posts) assert.notEqual(p.terminal, true);
+  });
+
+  test("marks ONLY the last text post terminal even if there are multiple text blocks in one turn", () => {
+    const obj = {
+      type: "assistant",
+      message: {
+        role: "assistant",
+        stop_reason: "end_turn",
+        content: [
+          { type: "text", text: "First paragraph." },
+          { type: "text", text: "Second and final paragraph." },
+        ],
+      },
+    };
+    const posts = formatTranscriptLines([obj]);
+    assert.equal(posts.length, 2);
+    assert.notEqual(posts[0].terminal, true);
+    assert.equal(posts[1].terminal, true);
+  });
+
   test("translates GFM markdown in assistant text to Slack mrkdwn", () => {
     const posts = formatTranscriptLines([
       asst([{ type: "text", text: "**hono 4.12.23**: serves, responds 200" }]),

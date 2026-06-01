@@ -218,6 +218,11 @@ function coalesceTools(posts: SlackPost[]): SlackPost[] {
   return out;
 }
 
+/// Claude `stop_reason` values that mean "the agent is done; this turn won't
+/// produce more output". `tool_use` / `max_tokens` / `pause_turn` are NOT
+/// terminal — the agent will continue on the next call.
+const TERMINAL_STOP_REASONS = new Set(["end_turn", "stop_sequence", "refusal"]);
+
 /// Convert a batch of transcript lines into Slack posts. User turns and
 /// tool_result lines are skipped: relayed human messages already appear in
 /// Slack as that human's own message, and automated prompts are announced
@@ -226,7 +231,24 @@ export function formatTranscriptLines(objs: any[]): SlackPost[] {
   const posts: SlackPost[] = [];
   for (const obj of objs) {
     if (role(obj) !== "assistant") continue;
+    const before = posts.length;
     emitAssistantBlocks(obj.message?.content ?? obj.content, posts);
+    // When the assistant finishes its turn (stop_reason: end_turn et al.),
+    // mark the LAST text post we just emitted as terminal. The bridge reads
+    // that flag and drops the "is working…" pill instead of re-attaching it
+    // — otherwise the pill stays on the channel forever after the agent
+    // completes a turn with a final text post. Without this, every Claude
+    // run leaves a stale pill hanging under the last message; previously
+    // only the codex out-of-credits sentinel set this flag.
+    const stopReason = obj?.message?.stop_reason;
+    if (typeof stopReason === "string" && TERMINAL_STOP_REASONS.has(stopReason)) {
+      for (let i = posts.length - 1; i >= before; i--) {
+        if (posts[i].kind === "text") {
+          posts[i].terminal = true;
+          break;
+        }
+      }
+    }
   }
   return coalesceTools(posts);
 }
