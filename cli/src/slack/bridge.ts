@@ -489,6 +489,37 @@ export async function runSlackBridge(opts: BridgeOptions): Promise<void> {
     relays.push({ text: prompt, ts: Date.now() });
     recentRelays.set(decision.slug, relays);
     pasteTmuxPrompt(decision.slug, prompt); // tmux session name == slug
+
+    // Post a tiny bot-authored anchor so the working pill has something to
+    // attach to immediately. Without this the channel looks dead for the
+    // 10-20s between the human typing and the agent's first text post (which
+    // is the natural pill anchor for the existing flow). Slack's
+    // assistant.threads.setStatus only accepts thread roots authored by the
+    // app itself, so we cannot pin the pill to the human's own message
+    // (that would 400 with invalid_thread_ts).
+    //
+    // The eyes emoji is chosen for minimal noise: a single character that
+    // reads as "received, on it" and renders cleanly next to the working
+    // pill ("is working…"). The agent's first real text post will become
+    // the new thread root via the existing post loop, draining any tools
+    // accumulated in the meantime under this anchor and moving the pill
+    // onto the narrative text.
+    if (event.channel) {
+      try {
+        const ts = await client.post(event.channel, "👀");
+        if (ts) {
+          writeThreadRoot(decision.slug, ts);
+          try {
+            await client.setStatus(event.channel, ts, WORKING_LABEL);
+            setActivePill(decision.slug, { channelId: event.channel, threadTs: ts, label: WORKING_LABEL, lastSetMs: Date.now() });
+          } catch (e) {
+            console.error(`setStatus on relay anchor for ${decision.slug} failed:`, e);
+          }
+        }
+      } catch (e) {
+        console.error(`relay anchor post for ${decision.slug} failed:`, e);
+      }
+    }
   });
   await socket.start();
   console.error(`Slack bridge connected. Mirroring ${tails.length} agent(s).`);
