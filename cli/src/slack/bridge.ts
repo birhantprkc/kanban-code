@@ -657,16 +657,24 @@ export async function runSlackBridge(opts: BridgeOptions): Promise<void> {
     recentRelays.set(decision.slug, relays);
     pasteTmuxPrompt(decision.slug, prompt); // tmux session name == slug
 
-    // Post a 👀 ack and light the working pill on it. The eyes give the
-    // channel a visible "received" beat while the agent grinds through the
-    // 10-20s before its first reply, and it doubles as the app-authored
-    // anchor that assistant.threads.setStatus requires (Slack rejects the
+    // Post a 👀 ack and light the working pill on it, ONLY if the agent
+    // isn't already mid-turn. The eyes give the channel a visible
+    // "received" beat in the 10-20s gap before the agent's first reply
+    // for the cold-start case, and double as the app-authored anchor
+    // that assistant.threads.setStatus requires (Slack rejects the
     // human's own message ts with invalid_thread_ts). The agent's first
-    // real text post in this turn will become the new thread root in the
-    // post loop, which is also where we delete this eyes message — so the
-    // ack disappears the moment the agent actually replies, leaving just
-    // the conversation behind.
-    if (event.channel) {
+    // real text post in this turn will become the new thread root in
+    // the post loop, which is also where we delete this eyes message —
+    // so the ack disappears the moment the agent actually replies.
+    //
+    // If a pill is already active for this slug, the agent IS already
+    // working: its existing anchor is the truth, an eyes ack just
+    // produces a double-pill flash (one on the eyes, one on the agent's
+    // ongoing text) and adds a noise emoji that never gets cleaned up
+    // because the next text post will land naturally without consuming
+    // a freshly-pushed eyes. Skip the ack entirely in that case — the
+    // current pill already says the agent is on it.
+    if (event.channel && !active.has(decision.slug)) {
       try {
         const ts = await client.post(event.channel, "👀");
         if (ts) {
