@@ -563,6 +563,21 @@ export async function runSlackBridge(opts: BridgeOptions): Promise<void> {
     } catch (e) {
       console.error(`/stop announce for ${slug} failed:`, e);
     }
+    // The user explicitly interrupted, so the agent will not produce a
+    // terminal stop_reason / task_complete event the post loop could read
+    // to drop the pill. Clear it directly. Also remove the 👀 ack if one
+    // is still pending — same reason: no real reply is coming so the eyes
+    // would orphan.
+    const pill = active.get(slug);
+    if (pill) {
+      try {
+        await client.setStatus(pill.channelId, pill.threadTs, "");
+      } catch (e) {
+        console.error(`/stop clear pill for ${slug} failed:`, e);
+      }
+      dropActivePill(slug);
+    }
+    await consumePendingEyes(slug);
   });
 
   // Block Kit button clicks land here over the same socket connection. The
