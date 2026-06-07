@@ -11,6 +11,7 @@ import { recordAnnounceSuppress } from "./announce-suppress.js";
 import { WORKING_PILL_LABEL } from "./announce.js";
 import { writeThreadRoot, readThreadRoot } from "./thread-root.js";
 import { writeActivePill, readActivePill, clearActivePill } from "./active-pill.js";
+import { writeEyesAnchor, readEyesAnchor, clearEyesAnchor, PersistedEyesAnchor } from "./eyes-anchor.js";
 import { downloadSlackFile, formatPromptWithAttachments, DownloadedFile, sweepInbox, DEFAULT_RETENTION_DAYS } from "./inbox.js";
 import { parsePicker, Picker } from "./picker.js";
 import { findSessionJsonl, findCodexRollout, pasteTmuxPrompt, captureTmuxPane, sendTmuxKey } from "../data.js";
@@ -270,6 +271,11 @@ export async function runSlackBridge(opts: BridgeOptions): Promise<void> {
         console.error(`clear stale pill on restore for ${a.slug} failed:`, e);
       }
       clearActivePill(a.slug);
+      // If the pill was anchored on a 👀 ack and the agent's turn already
+      // ended without ever posting text (rare: hooks failed, agent crashed,
+      // or codex turn produced only tool calls), the ack would orphan in
+      // the channel. Delete it too so the restart leaves the channel clean.
+      await consumePendingEyes(a.slug);
       continue;
     }
     active.set(a.slug, pill);
@@ -291,6 +297,30 @@ export async function runSlackBridge(opts: BridgeOptions): Promise<void> {
   function dropActivePill(slug: string): void {
     active.delete(slug);
     clearActivePill(slug);
+  }
+
+  /// 👀 ack messages we posted on Slack-relayed prompts, awaiting deletion
+  /// once the agent posts its first real reply. Persisted to disk via
+  /// eyes-anchor so a bridge restart still gets to finish the cleanup.
+  const pendingEyes = new Map<string /* slug */, PersistedEyesAnchor>();
+  for (const a of agents) {
+    const anchor = readEyesAnchor(a.slug);
+    if (anchor) pendingEyes.set(a.slug, anchor);
+  }
+  function setPendingEyes(slug: string, anchor: PersistedEyesAnchor): void {
+    pendingEyes.set(slug, anchor);
+    writeEyesAnchor(slug, anchor);
+  }
+  async function consumePendingEyes(slug: string): Promise<void> {
+    const anchor = pendingEyes.get(slug);
+    if (!anchor) return;
+    pendingEyes.delete(slug);
+    clearEyesAnchor(slug);
+    try {
+      await client.deleteMessage(anchor.channelId, anchor.ts);
+    } catch (e) {
+      console.error(`delete eyes anchor for ${slug} failed:`, e);
+    }
   }
 
   // Per-agent buffer of tool/thinking posts that have NOT yet been sent. We
@@ -361,7 +391,11 @@ export async function runSlackBridge(opts: BridgeOptions): Promise<void> {
             // A text post (user prompt OR assistant narrative) is the natural
             // beat: first drain the tools that piled up under the PREVIOUS
             // text into its thread, then post this text as the new channel-
-            // root anchor and move the "working…" pill onto it.
+            // root anchor and move the "working…" pill onto it. Delete the
+            // 👀 ack message (if any) BEFORE posting so the new reply lands
+            // next to the human's message instead of below an ack we're
+            // about to remove.
+            await consumePendingEyes(t.slug);
             await drainBuffer(t.slug, t.channelId);
             // Explicitly clear the pill on the previous anchor. Draining the
             // buffer above auto-clears it (Slack drops the pill when the bot
@@ -608,30 +642,29 @@ export async function runSlackBridge(opts: BridgeOptions): Promise<void> {
     recentRelays.set(decision.slug, relays);
     pasteTmuxPrompt(decision.slug, prompt); // tmux session name == slug
 
-    // Light the working pill immediately so the channel shows activity
-    // within seconds of the relay, instead of looking dead until the
-    // agent's first text post (10-20s later). Slack's
-    // assistant.threads.setStatus only accepts thread roots authored by
-    // the app itself, so the human's own message ts is not a valid
-    // anchor. Instead, reuse the most recent app-authored anchor for the
-    // slug (the previous turn's text post). No new bot message is
-    // posted — the pill rides on the existing prior reply. The agent's
-    // first text post in this turn will then become the new anchor via
-    // the existing post loop, moving the pill onto it.
-    //
-    // If there is no prior anchor (very first interaction with the
-    // agent), skip: the pill will appear the natural way on the first
-    // reply. That happens once per agent lifetime, so the one-time
-    // delay is acceptable to avoid a noise-only bot post.
+    // Post a 👀 ack and light the working pill on it. The eyes give the
+    // channel a visible "received" beat while the agent grinds through the
+    // 10-20s before its first reply, and it doubles as the app-authored
+    // anchor that assistant.threads.setStatus requires (Slack rejects the
+    // human's own message ts with invalid_thread_ts). The agent's first
+    // real text post in this turn will become the new thread root in the
+    // post loop, which is also where we delete this eyes message — so the
+    // ack disappears the moment the agent actually replies, leaving just
+    // the conversation behind.
     if (event.channel) {
-      const prevAnchor = readThreadRoot(decision.slug);
-      if (prevAnchor) {
-        try {
-          await client.setStatus(event.channel, prevAnchor, WORKING_LABEL);
-          setActivePill(decision.slug, { channelId: event.channel, threadTs: prevAnchor, label: WORKING_LABEL, lastSetMs: Date.now() });
-        } catch (e) {
-          console.error(`setStatus on prior anchor for ${decision.slug} failed:`, e);
+      try {
+        const ts = await client.post(event.channel, "👀");
+        if (ts) {
+          setPendingEyes(decision.slug, { channelId: event.channel, ts });
+          try {
+            await client.setStatus(event.channel, ts, WORKING_LABEL);
+            setActivePill(decision.slug, { channelId: event.channel, threadTs: ts, label: WORKING_LABEL, lastSetMs: Date.now() });
+          } catch (e) {
+            console.error(`setStatus on eyes anchor for ${decision.slug} failed:`, e);
+          }
         }
+      } catch (e) {
+        console.error(`eyes anchor post for ${decision.slug} failed:`, e);
       }
     }
   });
