@@ -380,24 +380,33 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
 
     private func shouldDropStaleSelfCompactPrompt(_ prompt: QueuedPrompt, link: Link) async -> Bool {
         let body = prompt.body.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !body.isEmpty,
-              let sessionId = link.sessionLink?.sessionId else {
+        guard let sessionId = link.sessionLink?.sessionId else {
             return false
         }
 
         let settings = (try? await SettingsStore().read()) ?? Settings()
         guard settings.selfCompact.enabled else { return false }
 
-        guard let rule = settings.selfCompact.rules
-            .filter({ $0.action == .queuePrompt })
-            .first(where: { $0.message.trimmingCharacters(in: .whitespacesAndNewlines) == body }) else {
+        let queueRules = settings.selfCompact.rules.filter { $0.action == .queuePrompt }
+        let threshold: Int?
+        if let promptThreshold = prompt.selfCompactThresholdTokens {
+            threshold = queueRules.first(where: { $0.thresholdTokens == promptThreshold })?.thresholdTokens
+                ?? promptThreshold
+        } else {
+            guard !body.isEmpty else { return false }
+            threshold = queueRules
+                .first(where: { $0.message.trimmingCharacters(in: .whitespacesAndNewlines) == body })?
+                .thresholdTokens
+        }
+
+        guard let threshold else {
             return false
         }
 
         guard let usage = ContextUsageReader.read(sessionId: sessionId) else {
             return true
         }
-        return usage.currentContextTokens < rule.thresholdTokens
+        return usage.currentContextTokens < threshold
     }
 
     /// Slow background tick: poll activity states for sessions without hook events.

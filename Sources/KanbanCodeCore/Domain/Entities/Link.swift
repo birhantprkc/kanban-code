@@ -125,12 +125,23 @@ public struct QueuedPrompt: Codable, Sendable, Equatable, Identifiable {
     public var body: String
     public var sendAutomatically: Bool
     public var imagePaths: [String]?
+    /// Set only for prompts created by the self-compact guard. Manual/user
+    /// queued prompts keep this nil so stale compact nudges can be removed
+    /// without touching unrelated queue items.
+    public var selfCompactThresholdTokens: Int?
 
-    public init(id: String = KSUID.generate(prefix: "prompt"), body: String, sendAutomatically: Bool = true, imagePaths: [String]? = nil) {
+    public init(
+        id: String = KSUID.generate(prefix: "prompt"),
+        body: String,
+        sendAutomatically: Bool = true,
+        imagePaths: [String]? = nil,
+        selfCompactThresholdTokens: Int? = nil
+    ) {
         self.id = id
         self.body = body
         self.sendAutomatically = sendAutomatically
         self.imagePaths = imagePaths
+        self.selfCompactThresholdTokens = selfCompactThresholdTokens
     }
 }
 

@@ -607,7 +607,7 @@ struct ContentView: View {
                 store.dispatch(.cancelLaunch(cardId: card.id))
             },
             onAddQueuedPrompt: { prompt in
-                store.dispatch(.addQueuedPrompt(cardId: card.id, prompt: prompt))
+                store.dispatch(.addQueuedPrompt(cardId: card.id, prompt: prompt, placement: .back))
             },
             onUpdateQueuedPrompt: { promptId, body, sendAuto in
                 store.dispatch(.updateQueuedPrompt(cardId: card.id, promptId: promptId, body: body, sendAutomatically: sendAuto))
@@ -2914,24 +2914,29 @@ struct ContentView: View {
             var updatedSeen = seen
             updatedSeen.formUnion(rules.filter { $0.thresholdTokens <= rule.thresholdTokens }.map(\.thresholdTokens))
             selfCompactTriggeredThresholds[candidate.sessionId] = updatedSeen
-            await triggerSelfCompactRule(rule, cardId: candidate.cardId, sessionName: candidate.sessionName, usedTokens: usedTokens)
+            await triggerSelfCompactRule(rule, allRules: rules, cardId: candidate.cardId, sessionName: candidate.sessionName, usedTokens: usedTokens)
         }
 
         selfCompactTriggeredThresholds = selfCompactTriggeredThresholds.filter { liveSessionIds.contains($0.key) }
         return interval
     }
 
-    private func triggerSelfCompactRule(_ rule: SelfCompactRule, cardId: String, sessionName: String, usedTokens: Int) async {
+    private func triggerSelfCompactRule(_ rule: SelfCompactRule, allRules: [SelfCompactRule], cardId: String, sessionName: String, usedTokens: Int) async {
         switch rule.action {
         case .queuePrompt:
             let body = rule.message.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !body.isEmpty else { return }
-            if let link = store.state.links[cardId],
-               link.queuedPrompts?.contains(where: { $0.body == body }) == true {
-                return
-            }
+            removeQueuedSelfCompactWarnings(cardId: cardId, rules: allRules, throughThreshold: rule.thresholdTokens)
             KanbanCodeLog.info("self-compact", "Queueing context warning for \(cardId.prefix(12)) at \(usedTokens) tokens")
-            store.dispatch(.addQueuedPrompt(cardId: cardId, prompt: QueuedPrompt(body: body, sendAutomatically: true)))
+            store.dispatch(.addQueuedPrompt(
+                cardId: cardId,
+                prompt: QueuedPrompt(
+                    body: body,
+                    sendAutomatically: true,
+                    selfCompactThresholdTokens: rule.thresholdTokens
+                ),
+                placement: .front
+            ))
 
         case .compactNow:
             let command = rule.message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "/compact" : rule.message
@@ -2940,21 +2945,59 @@ struct ContentView: View {
         }
     }
 
-    private func removeQueuedSelfCompactWarnings(cardId: String, rules: [SelfCompactRule]) {
+    private func removeQueuedSelfCompactWarnings(cardId: String, rules: [SelfCompactRule], throughThreshold: Int? = nil) {
         let warningBodies = Set(
             rules
                 .filter { $0.action == .queuePrompt }
+                .filter { rule in
+                    guard let throughThreshold else { return true }
+                    return rule.thresholdTokens <= throughThreshold
+                }
                 .map { $0.message.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
         )
-        guard !warningBodies.isEmpty,
-              let prompts = store.state.links[cardId]?.queuedPrompts else {
+        guard let prompts = store.state.links[cardId]?.queuedPrompts else {
             return
         }
-        for prompt in prompts where warningBodies.contains(prompt.body.trimmingCharacters(in: .whitespacesAndNewlines)) {
+        let promptIds = Self.queuedSelfCompactWarningIdsToRemove(
+            prompts: prompts,
+            warningBodies: warningBodies,
+            throughThreshold: throughThreshold
+        )
+        for promptId in promptIds {
             KanbanCodeLog.info("self-compact", "Removing stale context warning for \(cardId.prefix(12))")
-            store.dispatch(.removeQueuedPrompt(cardId: cardId, promptId: prompt.id))
+            store.dispatch(.removeQueuedPrompt(cardId: cardId, promptId: promptId))
         }
+    }
+
+    nonisolated static func queuedSelfCompactWarningIdsToRemove(
+        prompts: [QueuedPrompt],
+        warningBodies: Set<String>,
+        throughThreshold: Int?
+    ) -> [String] {
+        prompts
+            .filter {
+                isQueuedSelfCompactWarning(
+                    $0,
+                    warningBodies: warningBodies,
+                    throughThreshold: throughThreshold
+                )
+            }
+            .map(\.id)
+    }
+
+    nonisolated private static func isQueuedSelfCompactWarning(_ prompt: QueuedPrompt, warningBodies: Set<String>, throughThreshold: Int?) -> Bool {
+        if let threshold = prompt.selfCompactThresholdTokens {
+            guard let throughThreshold else { return true }
+            return threshold <= throughThreshold
+        }
+
+        // Backward compatibility for warnings queued by older builds before
+        // selfCompactThresholdTokens existed. New manual prompts do not get this
+        // path unless they exactly match a configured compact warning body.
+        return prompt.imagePaths?.isEmpty != false
+            && prompt.sendAutomatically
+            && warningBodies.contains(prompt.body.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     // Launch, resume, fork, migration, worktree cleanup, and sync status

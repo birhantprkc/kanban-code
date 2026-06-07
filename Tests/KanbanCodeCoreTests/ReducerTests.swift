@@ -202,6 +202,53 @@ struct ReducerTests {
         #expect(state.error == "Launch failed: Connection refused")
     }
 
+    // MARK: - Queued Prompts
+
+    @Test("addQueuedPrompt appends when placement is back")
+    func addQueuedPromptBackPlacement() {
+        var link = makeLink(id: "card_q1")
+        link.queuedPrompts = [
+            QueuedPrompt(id: "prompt_existing", body: "existing")
+        ]
+        var state = stateWith([link])
+
+        let _ = Reducer.reduce(
+            state: &state,
+            action: .addQueuedPrompt(
+                cardId: "card_q1",
+                prompt: QueuedPrompt(id: "prompt_new", body: "new"),
+                placement: .back
+            )
+        )
+
+        #expect(state.links["card_q1"]?.queuedPrompts?.map(\.id) == ["prompt_existing", "prompt_new"])
+    }
+
+    @Test("addQueuedPrompt prepends when placement is front")
+    func addQueuedPromptFrontPlacement() {
+        var link = makeLink(id: "card_q2")
+        link.queuedPrompts = [
+            QueuedPrompt(id: "prompt_user", body: "user queued follow-up")
+        ]
+        var state = stateWith([link])
+
+        let _ = Reducer.reduce(
+            state: &state,
+            action: .addQueuedPrompt(
+                cardId: "card_q2",
+                prompt: QueuedPrompt(
+                    id: "prompt_compact",
+                    body: "compact soon",
+                    selfCompactThresholdTokens: 600_000
+                ),
+                placement: .front
+            )
+        )
+
+        #expect(state.links["card_q2"]?.queuedPrompts?.map(\.id) == ["prompt_compact", "prompt_user"])
+        #expect(state.links["card_q2"]?.queuedPrompts?.first?.selfCompactThresholdTokens == 600_000)
+    }
+
     // MARK: - Move Card
 
     @Test("moveCard sets column and manual override")

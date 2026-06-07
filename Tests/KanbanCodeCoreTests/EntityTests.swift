@@ -172,6 +172,30 @@ struct EntityTests {
         #expect(decoded.body == "some body")
     }
 
+    @Test("QueuedPrompt self-compact metadata round-trips")
+    func queuedPromptSelfCompactMetadataCodable() throws {
+        let prompt = QueuedPrompt(
+            id: "prompt_compact",
+            body: "compact soon",
+            sendAutomatically: true,
+            selfCompactThresholdTokens: 600_000
+        )
+        let data = try JSONEncoder().encode(prompt)
+        let decoded = try JSONDecoder().decode(QueuedPrompt.self, from: data)
+        #expect(decoded == prompt)
+        #expect(decoded.selfCompactThresholdTokens == 600_000)
+    }
+
+    @Test("QueuedPrompt backward-compat decodes without self-compact metadata")
+    func queuedPromptBackwardCompatNoSelfCompactMetadata() throws {
+        let json = #"{"id":"prompt_old","body":"hello","sendAutomatically":true}"#
+        let decoded = try JSONDecoder().decode(QueuedPrompt.self, from: json.data(using: .utf8)!)
+        #expect(decoded.id == "prompt_old")
+        #expect(decoded.body == "hello")
+        #expect(decoded.sendAutomatically)
+        #expect(decoded.selfCompactThresholdTokens == nil)
+    }
+
     // MARK: - TmuxLink
 
     @Test("TmuxLink defaults to Claude session (not shell-only)")

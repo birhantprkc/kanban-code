@@ -383,7 +383,7 @@ public enum Action: Sendable {
     case reorderPinnedCard(cardId: String, targetCardId: String?, above: Bool)
 
     // Queued prompts
-    case addQueuedPrompt(cardId: String, prompt: QueuedPrompt)
+    case addQueuedPrompt(cardId: String, prompt: QueuedPrompt, placement: QueuedPromptPlacement)
     case updateQueuedPrompt(cardId: String, promptId: String, body: String, sendAutomatically: Bool)
     case removeQueuedPrompt(cardId: String, promptId: String)
     case sendQueuedPrompt(cardId: String, promptId: String)
@@ -463,6 +463,11 @@ public enum Action: Sendable {
     public enum LinkType: Sendable {
         case pr(number: Int), issue, worktree, tmux
     }
+}
+
+public enum QueuedPromptPlacement: Sendable, Equatable {
+    case front
+    case back
 }
 
 /// Bundles the result of a full background reconciliation cycle.
@@ -1379,10 +1384,15 @@ public enum Reducer {
             state.links[cardId] = link
             return [.upsertLink(link)]
 
-        case .addQueuedPrompt(let cardId, let prompt):
+        case .addQueuedPrompt(let cardId, let prompt, let placement):
             guard var link = state.links[cardId] else { return [] }
             var prompts = link.queuedPrompts ?? []
-            prompts.append(prompt)
+            switch placement {
+            case .front:
+                prompts.insert(prompt, at: 0)
+            case .back:
+                prompts.append(prompt)
+            }
             link.queuedPrompts = prompts
             link.updatedAt = .now
             state.links[cardId] = link
