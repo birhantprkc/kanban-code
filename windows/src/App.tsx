@@ -3,6 +3,7 @@ import BoardView from "./components/BoardView";
 import CardDetailView from "./components/CardDetailView";
 import NewTaskDialog from "./components/NewTaskDialog";
 import OnboardingWizard from "./components/OnboardingWizard";
+import ProjectSwitcher from "./components/ProjectSwitcher";
 import SearchOverlay from "./components/SearchOverlay";
 import SettingsView from "./components/SettingsView";
 import { getSettings, initBoardEventListener, useBoardStore } from "./store/boardStore";
@@ -104,11 +105,14 @@ export default function App() {
         className="flex items-center justify-between px-4 h-12 shrink-0"
         style={{ background: c.bgHeader, borderBottom: `1px solid ${c.border}` }}
       >
-        <div className="flex items-center gap-2.5">
-          <div className="w-3.5 h-3.5 rounded bg-gradient-to-br from-[#4f8ef7] to-[#a371f7]" />
-          <span className="text-[15px] font-semibold" style={{ color: c.textPrimary }}>
-            Kanban Code
-          </span>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2.5">
+            <div className="w-3.5 h-3.5 rounded bg-gradient-to-br from-[#4f8ef7] to-[#a371f7]" />
+            <span className="text-[15px] font-semibold" style={{ color: c.textPrimary }}>
+              Kanban Code
+            </span>
+          </div>
+          <ProjectSwitcher />
         </div>
 
         <div className="flex items-center gap-2">
