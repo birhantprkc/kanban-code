@@ -175,11 +175,16 @@ fn default_issue_template() -> String {
 }
 
 /// First time the settings file is read on this process, peek at the raw JSON
-/// to see whether it came from the macOS app — macOS doesn't write
-/// `terminalShell` or `terminalFontSize`, so when those keys are absent serde's
-/// `#[serde(default)]` silently backfills the Windows defaults. We log that fact
-/// once so users (and bug reports) have a paper trail. No schema_version field —
-/// that would break the macOS byte-compat invariant.
+/// to see whether it came from the macOS app. macOS doesn't write the
+/// Windows-only keys (`terminalShell`, `terminalFontSize`, `editor`); when
+/// they're absent serde's `#[serde(default)]` silently backfills the Windows
+/// defaults. We use `terminalShell` alone as the sentinel — adding more keys
+/// to the AND would just create false negatives if a Windows user explicitly
+/// cleared one. A new Windows-only field does NOT need to be added to the
+/// check; just keep this comment up to date.
+///
+/// No `schema_version` field is added — that would break the macOS byte-compat
+/// invariant (sortedKeys+prettyPrinted JSON shared with the Swift app).
 fn log_cross_platform_backfill_once(raw: &[u8]) {
     static LOGGED: OnceLock<()> = OnceLock::new();
     if LOGGED.get().is_some() {

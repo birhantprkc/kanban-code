@@ -101,7 +101,6 @@ pub fn error(subsystem: &str, message: &str) {
 }
 
 /// Verbose diagnostics; suppressed unless the debug env var is set.
-#[allow(dead_code)] // public logging API; first callers land in later phases
 pub fn debug(subsystem: &str, message: &str) {
     if debug_enabled() {
         write("DEBUG", subsystem, message);
