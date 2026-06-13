@@ -24,6 +24,10 @@ export interface LaunchOptions {
   skipPermissions?: boolean;
   /// Override the agent binary (tests).
   bin?: string;
+  /// Force a fresh session even if a prior one could be resumed. For ephemeral
+  /// agents (e.g. a room's swarm) whose readable slug is recycled: resuming
+  /// would reload a stale or unrelated conversation under the same id.
+  forceFresh?: boolean;
 }
 
 export type LaunchAction = "noop-running" | "launched" | "resumed";
@@ -65,6 +69,7 @@ export function ensureAgentSession(
   const tmuxAlive = hasTmuxSession(identity.tmuxName);
   const sessionExists =
     spec.canResume &&
+    !opts.forceFresh &&
     (identity.runtime === "codex"
       ? !!findCodexRollout(opts.cwd)
       : !!findSessionJsonl(identity.sessionId));

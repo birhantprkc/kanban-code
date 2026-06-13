@@ -358,6 +358,7 @@ program
   .requiredOption("--cwd <path>", "Working directory for the session (the agent's worktree/workspace)")
   .option("--model <model>", "Model alias or full name")
   .option("--no-skip-permissions", "Do NOT pass --dangerously-skip-permissions")
+  .option("--no-resume", "Always start a fresh session, never resume a prior one under this slug (for ephemeral agents)")
   .option("-j, --json", "Output as JSON")
   .action((slug: string, opts) => {
     try {
@@ -368,6 +369,7 @@ program
         cwd,
         model: opts.model,
         skipPermissions: opts.skipPermissions,
+        forceFresh: opts.resume === false,
       });
       if (opts.json) {
         output(result, opts);
