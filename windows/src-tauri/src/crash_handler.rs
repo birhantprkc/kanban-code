@@ -13,8 +13,7 @@
 use std::backtrace::Backtrace;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-
-use crate::coordination_store::kanban_data_dir;
+use std::path::PathBuf;
 
 /// Set the panic hook. Call exactly once, as the first statement in `main()`.
 pub fn install() {
@@ -70,20 +69,37 @@ fn panic_payload(info: &std::panic::PanicHookInfo<'_>) -> String {
     }
 }
 
+/// Resolve the crash-log directory without going through `kanban_data_dir()` —
+/// that helper `.expect()`s on `dirs::data_dir()`, which would cause a recursive
+/// panic in the very situation this hook exists to defend against. Fall back to
+/// the system temp dir so we always have *somewhere* to write evidence.
+fn crash_log_dir() -> PathBuf {
+    let base = dirs::data_dir()
+        .map(|d| d.join("kanban-code"))
+        .unwrap_or_else(|| std::env::temp_dir().join("kanban-code"));
+    base.join("logs")
+}
+
 fn write_crash_log(report: &str) -> std::io::Result<()> {
-    let dir = kanban_data_dir().join("logs");
+    let dir = crash_log_dir();
     fs::create_dir_all(&dir)?;
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S-%3f");
-    let path = dir.join(format!("crash-{stamp}.log"));
+    // PID-suffix the filename: two Kanban Code processes panicking in the same
+    // millisecond would otherwise clobber each other's reports.
+    let pid = std::process::id();
+    let path = dir.join(format!("crash-{stamp}-{pid}.log"));
     let mut f = OpenOptions::new()
-        .create(true)
+        .create_new(true)
         .write(true)
-        .truncate(true)
         .open(&path)?;
     writeln!(f, "Kanban Code crash report — {}", chrono::Local::now().to_rfc3339())?;
     writeln!(f, "version: {}", env!("CARGO_PKG_VERSION"))?;
+    writeln!(f, "pid: {pid}")?;
     writeln!(f)?;
     f.write_all(report.as_bytes())?;
     f.write_all(b"\n")?;
+    // Force a flush to the kernel before we return — std::process::abort() may
+    // follow immediately and we want the bytes on disk, not in a libc buffer.
+    f.sync_all()?;
     Ok(())
 }
