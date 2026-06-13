@@ -232,6 +232,10 @@ export function deleteChannel(name: string, baseDir: string = defaultBaseDir()):
   file.channels = file.channels.filter((c) => c.name !== clean);
   if (file.channels.length === before) return false;
   saveChannelsFile(file, baseDir);
+  // Remove the append-only log too. Otherwise a channel re-created with the
+  // same name re-attaches to the old log and replays stale history.
+  const logPath = channelLogPath(clean, baseDir);
+  if (existsSync(logPath)) unlinkSync(logPath);
   return true;
 }
 

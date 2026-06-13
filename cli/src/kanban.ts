@@ -1176,7 +1176,7 @@ channelCmd
 
 channelCmd
   .command("delete")
-  .description("Delete a channel (does not delete history file)")
+  .description("Delete a channel and its history log")
   .argument("<name>", "Channel name")
   .option("-j, --json", "Output as JSON")
   .action((name: string, opts) => {

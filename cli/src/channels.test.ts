@@ -107,10 +107,17 @@ describe("channel CRUD", () => {
     assert.equal(getChannel("nonexistent", base), undefined);
   });
 
-  test("deleteChannel removes metadata", () => {
+  test("deleteChannel removes metadata and the history log", () => {
     createChannel("general", {}, base);
+    sendMessage("general", { cardId: null, handle: "me" }, "hi", base);
+    const log = channelLogPath("general", base);
+    assert.ok(existsSync(log));
+
     assert.equal(deleteChannel("general", base), true);
     assert.equal(listChannels(base).length, 0);
+    // The log is gone, so a channel re-created with the same name starts fresh
+    // instead of replaying stale history.
+    assert.ok(!existsSync(log));
     assert.equal(deleteChannel("general", base), false);
   });
 
