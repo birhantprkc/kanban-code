@@ -646,10 +646,21 @@ fn start_pr_polling(app: tauri::AppHandle) {
                                         url: Some(pr.url.clone()),
                                         status: Some(pr.state.clone()),
                                         title: Some(pr.title.clone()),
-                                        body: None,
-                                        approval_count: None,
+                                        body: pr.body.clone(),
+                                        approval_count: pr.approval_count,
+                                        // unresolved_threads needs raw GraphQL —
+                                        // gh's --json doesn't surface it for
+                                        // `pr list`. Tracked as a follow-up.
                                         unresolved_threads: None,
                                         merge_state_status: pr.merge_state_status.clone(),
+                                        review_decision: pr.review_decision.clone(),
+                                        check_runs: pr.check_runs
+                                            .iter()
+                                            .map(|cr| coordination_store::PrCheckRun {
+                                                name: cr.name.clone(),
+                                                conclusion: cr.conclusion.clone(),
+                                            })
+                                            .collect(),
                                     };
                                     // Update if number matches, otherwise add
                                     if let Some(existing) =

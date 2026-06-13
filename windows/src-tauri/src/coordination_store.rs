@@ -35,6 +35,13 @@ pub struct WorktreeLink {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PrCheckRun {
+    pub name: String,
+    pub conclusion: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PrLink {
     pub number: i64,
     pub url: Option<String>,
@@ -44,6 +51,14 @@ pub struct PrLink {
     pub approval_count: Option<i64>,
     pub unresolved_threads: Option<i64>,
     pub merge_state_status: Option<String>,
+    /// APPROVED / CHANGES_REQUESTED / REVIEW_REQUIRED — populated from
+    /// `gh pr list --json reviewDecision`. None when no review yet.
+    #[serde(default)]
+    pub review_decision: Option<String>,
+    /// Flattened statusCheckRollup so the card UI doesn't have to fork out
+    /// per-PR. Empty Vec when no CI is configured.
+    #[serde(default)]
+    pub check_runs: Vec<PrCheckRun>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

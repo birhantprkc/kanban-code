@@ -37,6 +37,11 @@ export interface WorktreeLink {
   branch?: string;
 }
 
+export interface PrCheckRun {
+  name: string;
+  conclusion?: string;
+}
+
 export interface PrLink {
   number: number;
   url?: string;
@@ -46,6 +51,10 @@ export interface PrLink {
   approvalCount?: number;
   unresolvedThreads?: number;
   mergeStateStatus?: string;
+  /** APPROVED / CHANGES_REQUESTED / REVIEW_REQUIRED */
+  reviewDecision?: string;
+  /** Flattened statusCheckRollup. Empty when no CI configured. */
+  checkRuns?: PrCheckRun[];
 }
 
 export interface IssueLink {

@@ -633,6 +633,12 @@ export default function CardDetailView() {
                   ? { onMerge: () => mergePr(projectPath, pr.number), number: pr.number }
                   : undefined
               }
+              prMeta={{
+                reviewDecision: pr.reviewDecision,
+                approvalCount: pr.approvalCount,
+                mergeStateStatus: pr.mergeStateStatus,
+                checkRuns: pr.checkRuns ?? [],
+              }}
             />
           </div>
         )}
@@ -802,6 +808,103 @@ const CardMoreMenu = forwardRef<HTMLDivElement, {
     </div>
   );
 });
+
+function PrMetaRow({
+  meta,
+  c,
+}: {
+  meta: {
+    reviewDecision?: string;
+    approvalCount?: number;
+    mergeStateStatus?: string;
+    checkRuns: { name: string; conclusion?: string }[];
+  };
+  c: ReturnType<typeof t>;
+}) {
+  const checks = meta.checkRuns;
+  const checksByConclusion = checks.reduce<Record<string, number>>((acc, r) => {
+    const key = r.conclusion ?? "PENDING";
+    acc[key] = (acc[key] ?? 0) + 1;
+    return acc;
+  }, {});
+  const failedCount =
+    (checksByConclusion["FAILURE"] ?? 0) +
+    (checksByConclusion["CANCELLED"] ?? 0) +
+    (checksByConclusion["TIMED_OUT"] ?? 0) +
+    (checksByConclusion["STARTUP_FAILURE"] ?? 0) +
+    (checksByConclusion["ACTION_REQUIRED"] ?? 0);
+  const pendingCount =
+    (checksByConclusion["PENDING"] ?? 0) +
+    (checksByConclusion["QUEUED"] ?? 0) +
+    (checksByConclusion["IN_PROGRESS"] ?? 0);
+  const successCount = checksByConclusion["SUCCESS"] ?? 0;
+
+  const reviewColor =
+    meta.reviewDecision === "APPROVED" ? "#3fb950"
+    : meta.reviewDecision === "CHANGES_REQUESTED" ? "#f85149"
+    : meta.reviewDecision === "REVIEW_REQUIRED" ? "#d29922"
+    : c.textMuted;
+
+  const mergeColor =
+    meta.mergeStateStatus === "CLEAN" ? "#3fb950"
+    : meta.mergeStateStatus === "BLOCKED" || meta.mergeStateStatus === "DIRTY" ? "#f85149"
+    : meta.mergeStateStatus === "UNSTABLE" || meta.mergeStateStatus === "BEHIND" ? "#d29922"
+    : c.textMuted;
+
+  if (!meta.reviewDecision && !meta.mergeStateStatus && checks.length === 0 && meta.approvalCount == null) {
+    return null;
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      {meta.reviewDecision && (
+        <Chip color={reviewColor} c={c}>
+          {meta.reviewDecision.replace(/_/g, " ").toLowerCase()}
+          {meta.approvalCount != null && meta.approvalCount > 0 ? ` · ${meta.approvalCount}✓` : ""}
+        </Chip>
+      )}
+      {meta.mergeStateStatus && (
+        <Chip color={mergeColor} c={c}>merge: {meta.mergeStateStatus.toLowerCase()}</Chip>
+      )}
+      {checks.length > 0 && (
+        <Chip
+          color={failedCount > 0 ? "#f85149" : pendingCount > 0 ? "#d29922" : "#3fb950"}
+          c={c}
+          title={checks.map((r) => `${r.name}: ${r.conclusion ?? "pending"}`).join("\n")}
+        >
+          {failedCount > 0
+            ? `${failedCount}/${checks.length} failing`
+            : pendingCount > 0
+              ? `${pendingCount}/${checks.length} running`
+              : `${successCount}/${checks.length} passing`}
+        </Chip>
+      )}
+    </div>
+  );
+}
+
+function Chip({
+  children,
+  color,
+  c,
+  title,
+}: {
+  children: React.ReactNode;
+  color: string;
+  c: ReturnType<typeof t>;
+  title?: string;
+}) {
+  const _ = c; // theme reserved for future per-mode tinting
+  return (
+    <span
+      className="text-[11px] font-semibold px-2 py-0.5 rounded-md cursor-default"
+      style={{ color, background: color + "1f", border: `1px solid ${color}33` }}
+      title={title}
+    >
+      {children}
+    </span>
+  );
+}
 
 function MetaBadge({ label, color, theme, title }: { label: string; color: string; theme: string; title?: string }) {
   return (
@@ -1144,12 +1247,19 @@ function ContentTab({
   url,
   onOpenInBrowser,
   mergeAction,
+  prMeta,
 }: {
   title: string;
   body?: string;
   url?: string;
   onOpenInBrowser?: () => void;
   mergeAction?: { onMerge: () => Promise<string>; number: number };
+  prMeta?: {
+    reviewDecision?: string;
+    approvalCount?: number;
+    mergeStateStatus?: string;
+    checkRuns: { name: string; conclusion?: string }[];
+  };
 }) {
   const { theme } = useTheme();
   const c = t(theme);
@@ -1221,6 +1331,8 @@ function ContentTab({
           )}
         </div>
       </div>
+
+      {prMeta && <PrMetaRow meta={prMeta} c={c} />}
 
       {mergeOk && (
         <div
