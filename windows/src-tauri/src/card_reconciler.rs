@@ -1,7 +1,7 @@
 use crate::coordination_store::{Link, SessionLink, WorktreeLink};
+use crate::ksuid;
 use crate::session_discovery::Session;
 use std::collections::HashMap;
-use uuid::Uuid;
 
 /// Port of CardReconciler.swift.
 ///
@@ -231,7 +231,7 @@ fn strip_refs_heads(branch: &str) -> &str {
 
 fn new_discovered_link(session: &Session) -> Link {
     let now = chrono::Utc::now();
-    let id = format!("card_{}", Uuid::new_v4().simple());
+    let id = ksuid::generate(Some("card"));
     Link {
         id,
         name: session.name.clone(),

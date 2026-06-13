@@ -3,7 +3,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::fs;
-use uuid::Uuid;
+
+use crate::ksuid;
 
 // ── Queued Prompt ────────────────────────────────────────────────────────────
 
@@ -151,7 +152,10 @@ impl Link {
 
     fn new_card(prompt: String, title: Option<String>, project: String) -> Self {
         let now = Utc::now();
-        let id = format!("card_{}", Uuid::new_v4().simple());
+        // KSUID matches the macOS format (chronologically sortable across the
+        // links.json file). Legacy UUID-style ids still parse since `id` is
+        // just a string — readers don't validate the format.
+        let id = ksuid::generate(Some("card"));
         Link {
             id,
             name: title,
@@ -180,7 +184,7 @@ impl Link {
 impl QueuedPrompt {
     pub fn new(body: String, send_automatically: bool) -> Self {
         Self {
-            id: format!("prompt_{}", Uuid::new_v4().simple()),
+            id: ksuid::generate(Some("prompt")),
             body,
             send_automatically,
         }
@@ -234,8 +238,30 @@ impl CoordinationStore {
         let data = fs::read(&self.file_path)
             .await
             .context("read links.json")?;
-        let container: LinksContainer = serde_json::from_slice(&data).unwrap_or_default();
-        Ok(container.links)
+        // Try the normal parse first.
+        if let Ok(container) = serde_json::from_slice::<LinksContainer>(&data) {
+            return Ok(container.links);
+        }
+        // Corruption recovery: copy the bad file to links.json.bkp and start
+        // fresh, mirroring macOS CoordinationStore.swift (~L105). Losing all
+        // cards is bad, but at least the user can inspect the .bkp afterwards
+        // — silently returning empty without a backup is worse.
+        let backup_path = self.file_path.with_extension("json.bkp");
+        if let Err(e) = fs::copy(&self.file_path, &backup_path).await {
+            crate::logging::error(
+                "coordination",
+                &format!("failed to back up corrupt links.json to {:?}: {e}", backup_path),
+            );
+        } else {
+            crate::logging::warn(
+                "coordination",
+                &format!(
+                    "links.json failed to parse; copied to {:?} and resetting to empty",
+                    backup_path
+                ),
+            );
+        }
+        Ok(vec![])
     }
 
     pub async fn write_links(&self, links: &[Link]) -> Result<()> {
@@ -360,7 +386,7 @@ impl CoordinationStore {
         prompt_body: &str,
     ) -> Result<Link> {
         let now = Utc::now();
-        let id = format!("card_{}", Uuid::new_v4().simple());
+        let id = ksuid::generate(Some("card"));
         let link = Link {
             id,
             name: Some(format!("#{}: {}", issue_number, issue_title)),

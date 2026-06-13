@@ -6,6 +6,7 @@ mod coordination_store;
 mod gh_cli;
 mod git_worktree;
 mod jsonl_parser;
+mod ksuid;
 mod logging;
 mod session_discovery;
 mod settings_store;
