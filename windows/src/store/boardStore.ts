@@ -351,6 +351,11 @@ export async function forkSession(sessionPath: string, targetDir?: string): Prom
   return invoke<string>("fork_session", { sessionPath, targetDir: targetDir ?? null });
 }
 
+/** Project paths discovered from existing session data, deduped + sorted. */
+export async function discoverProjects(): Promise<string[]> {
+  return invoke<string[]>("discover_projects");
+}
+
 /** Truncate a session .jsonl to keep only the first `turnCount` user/assistant turns. */
 export async function truncateSession(sessionPath: string, turnCount: number): Promise<void> {
   return invoke("truncate_session", { sessionPath, turnCount });

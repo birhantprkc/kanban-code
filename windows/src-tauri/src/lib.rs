@@ -392,6 +392,27 @@ async fn gh_is_authed() -> bool {
 }
 
 #[tauri::command]
+async fn discover_projects(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
+    // Project discovery for the Settings UI suggestions: walk every session
+    // discovered so far, collect unique project_path values, return sorted.
+    // The Settings UI filters out paths already configured.
+    let sessions = state
+        .session_discovery
+        .discover_sessions()
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for s in sessions {
+        if let Some(p) = s.project_path {
+            if !p.is_empty() {
+                seen.insert(p);
+            }
+        }
+    }
+    Ok(seen.into_iter().collect())
+}
+
+#[tauri::command]
 async fn fork_session(session_path: String, target_dir: Option<String>) -> Result<String, String> {
     session_ops::fork_session(&session_path, target_dir.as_deref())
         .await
@@ -1020,6 +1041,7 @@ pub fn run() {
             remove_worktree,
             fork_session,
             truncate_session,
+            discover_projects,
         ])
         .setup(|app| {
             logging::info(

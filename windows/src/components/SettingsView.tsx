@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { getSettings, saveSettings, useBoardStore } from "../store/boardStore";
+import { discoverProjects, getSettings, saveSettings, useBoardStore } from "../store/boardStore";
 import { useTheme, t } from "../theme";
 import type { Settings } from "../types";
 
@@ -268,6 +268,22 @@ function ProjectsSection({
 }) {
   const [typedPath, setTypedPath] = useState("");
   const [expandedPath, setExpandedPath] = useState<string | null>(null);
+  const [discovered, setDiscovered] = useState<string[]>([]);
+
+  useEffect(() => {
+    discoverProjects().then(setDiscovered).catch(() => setDiscovered([]));
+  }, []);
+
+  const configuredPaths = new Set(settings.projects.map((p) => p.path));
+  const suggestions = discovered.filter((p) => !configuredPaths.has(p)).slice(0, 8);
+
+  const addSuggestion = (path: string) => {
+    onChange({
+      ...settings,
+      projects: [...settings.projects, { path }],
+    });
+    setExpandedPath(path);
+  };
 
   const addProjectViaDialog = async () => {
     const selected = await open({ directory: true, multiple: false, title: "Select project folder" });
@@ -339,6 +355,41 @@ function ProjectsSection({
             <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z" />
           </svg>
           <p className="text-sm" style={{ color: c.textMuted }}>No projects configured yet.</p>
+        </div>
+      )}
+
+      {suggestions.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          <p
+            className="text-[10.5px] uppercase tracking-wider font-medium"
+            style={{ color: c.textDim }}
+          >
+            Discovered from your sessions
+          </p>
+          {suggestions.map((path) => (
+            <div
+              key={path}
+              className="flex items-center justify-between px-3 py-2 rounded-lg"
+              style={{ background: c.bgAccent("0.03"), border: `1px dashed ${c.border}` }}
+            >
+              <span
+                className="text-[12px] font-mono truncate min-w-0 mr-2"
+                style={{ color: c.textMuted }}
+                title={path}
+              >
+                {path}
+              </span>
+              <button
+                onClick={() => addSuggestion(path)}
+                className="text-[11px] px-2 py-1 rounded-md font-medium shrink-0 transition-colors"
+                style={{ background: "rgba(79,142,247,0.15)", color: "#4f8ef7" }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(79,142,247,0.25)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(79,142,247,0.15)"; }}
+              >
+                + Add
+              </button>
+            </div>
+          ))}
         </div>
       )}
 
