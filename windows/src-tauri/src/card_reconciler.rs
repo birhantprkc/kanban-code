@@ -266,5 +266,6 @@ fn new_discovered_link(session: &Session) -> Link {
         is_remote: false,
         is_launching: None,
         queued_prompts: None,
+        sort_order: None,
     }
 }

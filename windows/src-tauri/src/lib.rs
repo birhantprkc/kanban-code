@@ -64,6 +64,18 @@ async fn move_card(
 }
 
 #[tauri::command]
+async fn reorder_cards(
+    ordered_ids: Vec<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    state
+        .coordination_store
+        .reorder_cards(&ordered_ids)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn create_card(
     prompt: String,
     title: Option<String>,
@@ -733,6 +745,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_board_state,
             move_card,
+            reorder_cards,
             create_card,
             delete_card,
             archive_card,

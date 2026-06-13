@@ -92,6 +92,8 @@ export interface Link {
   isRemote: boolean;
   isLaunching?: boolean;
   queuedPrompts?: QueuedPrompt[];
+  /** Manual sort position within a column; undefined = time-based ordering. */
+  sortOrder?: number;
 }
 
 export interface Session {

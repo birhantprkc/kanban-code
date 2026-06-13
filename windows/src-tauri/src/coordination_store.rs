@@ -103,6 +103,10 @@ pub struct Link {
     pub is_launching: Option<bool>,
     #[serde(default)]
     pub queued_prompts: Option<Vec<QueuedPrompt>>,
+    /// Manual sort position within a column. `None` = fall back to time-based
+    /// ordering. Set by drag-to-reorder; persisted so it survives refresh.
+    #[serde(default)]
+    pub sort_order: Option<f64>,
 }
 
 fn default_source() -> String {
@@ -168,6 +172,7 @@ impl Link {
             is_remote: false,
             is_launching: None,
             queued_prompts: None,
+            sort_order: None,
         }
     }
 }
@@ -381,6 +386,7 @@ impl CoordinationStore {
             is_remote: false,
             is_launching: None,
             queued_prompts: None,
+            sort_order: None,
         };
         self.upsert_link(&link).await?;
         Ok(link)
@@ -396,6 +402,19 @@ impl CoordinationStore {
                 }
             }
             link.updated_at = Utc::now();
+        }
+        self.write_links(&links).await
+    }
+
+    /// Persist a manual ordering by assigning each card its index in
+    /// `ordered_ids` as `sort_order`. Intentionally does NOT bump `updated_at`,
+    /// so reordering never reshuffles time-based sorting elsewhere.
+    pub async fn reorder_cards(&self, ordered_ids: &[String]) -> Result<()> {
+        let mut links = self.read_links().await?;
+        for (idx, id) in ordered_ids.iter().enumerate() {
+            if let Some(link) = links.iter_mut().find(|l| &l.id == id) {
+                link.sort_order = Some(idx as f64);
+            }
         }
         self.write_links(&links).await
     }

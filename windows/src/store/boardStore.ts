@@ -23,7 +23,6 @@ interface BoardStore {
   lastRefresh: string | null;
   error: string | null;
   selectedProjectPath: string | null;
-  columnOrder: Record<string, string[]>;
 
   // Actions
   refresh: () => Promise<void>;
@@ -60,7 +59,6 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
   lastRefresh: null,
   error: null,
   selectedProjectPath: null,
-  columnOrder: {},
 
   refresh: async () => {
     set({ isLoading: true, error: null });
@@ -93,10 +91,18 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
     }
   },
 
-  reorderCards: (column, orderedIds) => {
+  reorderCards: (_column, orderedIds) => {
+    // Optimistically assign sortOrder by index for instant feedback…
     set((state) => ({
-      columnOrder: { ...state.columnOrder, [column]: orderedIds },
+      cards: state.cards.map((c) => {
+        const idx = orderedIds.indexOf(c.id);
+        return idx === -1 ? c : { ...c, link: { ...c.link, sortOrder: idx } };
+      }),
     }));
+    // …then persist so the order survives refresh/relaunch.
+    invoke("reorder_cards", { orderedIds }).catch((e) =>
+      set({ error: String(e) })
+    );
   },
 
   deleteCard: async (cardId) => {
@@ -159,7 +165,7 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
   clearError: () => set({ error: null }),
 
   cardsInColumn: (column) => {
-    const { cards, selectedProjectPath, columnOrder } = get();
+    const { cards, selectedProjectPath } = get();
     const filtered = cards
       .filter((c) => c.link.column === column)
       .filter((c) => {
@@ -173,27 +179,24 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
         );
       });
 
-    const order = columnOrder[column];
-    if (order && order.length > 0) {
-      const orderMap = new Map(order.map((id, idx) => [id, idx]));
-      return filtered.sort((a, b) => {
-        const ia = orderMap.get(a.id);
-        const ib = orderMap.get(b.id);
-        // Cards with stored order come first, in their stored positions
-        if (ia !== undefined && ib !== undefined) return ia - ib;
-        if (ia !== undefined) return -1;
-        if (ib !== undefined) return 1;
-        // Fallback: newest first
-        const ta = a.link.lastActivity ?? a.link.updatedAt;
-        const tb = b.link.lastActivity ?? b.link.updatedAt;
-        return tb.localeCompare(ta);
-      });
-    }
-
-    return filtered.sort((a, b) => {
+    const byTimeDesc = (a: CardDto, b: CardDto) => {
       const ta = a.link.lastActivity ?? a.link.updatedAt;
       const tb = b.link.lastActivity ?? b.link.updatedAt;
       return tb.localeCompare(ta);
+    };
+
+    // If any card in this column has a persisted sortOrder, honor the manual
+    // order (ascending); cards without one fall to the end, newest first.
+    const hasManualOrder = filtered.some((c) => c.link.sortOrder != null);
+    if (!hasManualOrder) return filtered.sort(byTimeDesc);
+
+    return filtered.sort((a, b) => {
+      const sa = a.link.sortOrder;
+      const sb = b.link.sortOrder;
+      if (sa != null && sb != null) return sa - sb;
+      if (sa != null) return -1;
+      if (sb != null) return 1;
+      return byTimeDesc(a, b);
     });
   },
 
