@@ -10,6 +10,10 @@ pub struct Project {
     pub name: Option<String>,
     pub github_filter: Option<String>,
     pub repo_root: Option<String>,
+    /// Per-project prompt prefix. When set, overrides Settings.promptTemplate
+    /// for tasks created against this project. Optional.
+    #[serde(default)]
+    pub prompt_template: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

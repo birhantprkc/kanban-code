@@ -266,6 +266,9 @@ function ProjectsSection({
   onChange: (s: Settings) => void;
   themeTokens: ThemeTokens;
 }) {
+  const [typedPath, setTypedPath] = useState("");
+  const [expandedPath, setExpandedPath] = useState<string | null>(null);
+
   const addProjectViaDialog = async () => {
     const selected = await open({ directory: true, multiple: false, title: "Select project folder" });
     if (!selected || typeof selected !== "string") return;
@@ -276,24 +279,59 @@ function ProjectsSection({
     });
   };
 
+  const addTypedPath = () => {
+    const path = typedPath.trim();
+    if (!path) return;
+    if (settings.projects.find((p) => p.path === path)) {
+      setTypedPath("");
+      return;
+    }
+    onChange({
+      ...settings,
+      projects: [...settings.projects, { path }],
+    });
+    setTypedPath("");
+    setExpandedPath(path);
+  };
+
+  const updateProject = (path: string, patch: Partial<import("../types").Project>) => {
+    onChange({
+      ...settings,
+      projects: settings.projects.map((p) => (p.path === path ? { ...p, ...patch } : p)),
+    });
+  };
+
   const removeProject = (path: string) => {
     onChange({
       ...settings,
       projects: settings.projects.filter((p) => p.path !== path),
     });
+    if (expandedPath === path) setExpandedPath(null);
   };
 
   return (
     <div className="flex flex-col gap-4 max-w-lg">
-      <button
-        onClick={addProjectViaDialog}
-        className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-[#4f8ef7]/90 hover:bg-[#4f8ef7] text-white text-xs font-medium transition-all shadow-lg shadow-[#4f8ef7]/15"
-      >
-        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-        </svg>
-        Add Project Folder
-      </button>
+      <div className="flex gap-2">
+        <button
+          onClick={addProjectViaDialog}
+          className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-[#4f8ef7]/90 hover:bg-[#4f8ef7] text-white text-xs font-medium transition-all shadow-lg shadow-[#4f8ef7]/15"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+          </svg>
+          Browse…
+        </button>
+        <input
+          type="text"
+          value={typedPath}
+          onChange={(e) => setTypedPath(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") addTypedPath(); }}
+          placeholder="…or type a path and press Enter"
+          spellCheck={false}
+          className="flex-1 rounded-xl px-3 py-2 text-sm font-mono outline-none transition-colors"
+          style={inputStyle(c)}
+        />
+      </div>
 
       {settings.projects.length === 0 && (
         <div className="text-center py-8">
@@ -305,31 +343,113 @@ function ProjectsSection({
       )}
 
       <div className="flex flex-col gap-1.5">
-        {settings.projects.map((p) => (
-          <div
-            key={p.path}
-            className="flex items-center justify-between px-3 py-3 rounded-xl"
-            style={{ background: c.bgCard, border: `1px solid ${c.borderCard}` }}
-          >
-            <div>
-              <p className="text-sm" style={{ color: c.textSecondary }}>
-                {p.name ?? p.path.split(/[/\\]/).pop() ?? p.path}
-              </p>
-              <p className="text-[11px] font-mono" style={{ color: c.textMuted }}>{p.path}</p>
-            </div>
-            <button
-              onClick={() => removeProject(p.path)}
-              className="ml-3 transition-colors"
-              style={{ color: c.textDim }}
-              onMouseEnter={(e) => { e.currentTarget.style.color = "#f85149"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.color = c.textDim; }}
+        {settings.projects.map((p) => {
+          const expanded = expandedPath === p.path;
+          return (
+            <div
+              key={p.path}
+              className="rounded-xl overflow-hidden"
+              style={{ background: c.bgCard, border: `1px solid ${c.borderCard}` }}
             >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
-              </svg>
-            </button>
-          </div>
-        ))}
+              <button
+                onClick={() => setExpandedPath(expanded ? null : p.path)}
+                className="w-full flex items-center justify-between px-3 py-3 text-left transition-colors"
+                onMouseEnter={(e) => { e.currentTarget.style.background = c.hoverBg; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = ""; }}
+              >
+                <div className="min-w-0">
+                  <p className="text-sm" style={{ color: c.textSecondary }}>
+                    {p.name ?? p.path.split(/[/\\]/).pop() ?? p.path}
+                  </p>
+                  <p className="text-[11px] font-mono truncate" style={{ color: c.textMuted }}>{p.path}</p>
+                </div>
+                <div className="flex items-center gap-2 ml-3 shrink-0">
+                  <svg
+                    className={`w-3.5 h-3.5 transition-transform ${expanded ? "rotate-90" : ""}`}
+                    style={{ color: c.textDim }}
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" />
+                  </svg>
+                  <span
+                    onClick={(e) => { e.stopPropagation(); removeProject(p.path); }}
+                    role="button"
+                    className="transition-colors p-0.5"
+                    style={{ color: c.textDim }}
+                    onMouseEnter={(e) => { e.currentTarget.style.color = "#f85149"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.color = c.textDim; }}
+                    title="Remove this project"
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                    </svg>
+                  </span>
+                </div>
+              </button>
+
+              {expanded && (
+                <div
+                  className="px-3 pb-3 pt-1 flex flex-col gap-3"
+                  style={{ borderTop: `1px solid ${c.border}` }}
+                >
+                  <FieldGroup label="Display name" themeTokens={c}>
+                    <input
+                      type="text"
+                      value={p.name ?? ""}
+                      onChange={(e) => updateProject(p.path, { name: e.target.value || undefined })}
+                      placeholder={p.path.split(/[/\\]/).pop() ?? p.path}
+                      className="w-full rounded-lg px-3 py-2 text-sm outline-none transition-colors"
+                      style={inputStyle(c)}
+                    />
+                  </FieldGroup>
+                  <FieldGroup label="Repo root" themeTokens={c}>
+                    <input
+                      type="text"
+                      value={p.repoRoot ?? ""}
+                      onChange={(e) => updateProject(p.path, { repoRoot: e.target.value || undefined })}
+                      placeholder={p.path}
+                      spellCheck={false}
+                      className="w-full rounded-lg px-3 py-2 text-sm font-mono outline-none transition-colors"
+                      style={inputStyle(c)}
+                    />
+                    <p className="text-[11px] mt-1" style={{ color: c.textMuted }}>
+                      Override when the project path is a sub-dir of the git repo (used for `git remote`, `gh`, worktrees).
+                    </p>
+                  </FieldGroup>
+                  <FieldGroup label="GitHub issue filter" themeTokens={c}>
+                    <input
+                      type="text"
+                      value={p.githubFilter ?? ""}
+                      onChange={(e) => updateProject(p.path, { githubFilter: e.target.value || undefined })}
+                      placeholder={settings.github.defaultFilter || "assignee:@me is:open"}
+                      className="w-full rounded-lg px-3 py-2 text-sm outline-none transition-colors"
+                      style={inputStyle(c)}
+                    />
+                    <p className="text-[11px] mt-1" style={{ color: c.textMuted }}>
+                      Falls back to the default in GitHub settings when empty.
+                    </p>
+                  </FieldGroup>
+                  <FieldGroup label="Prompt template" themeTokens={c}>
+                    <textarea
+                      rows={3}
+                      value={p.promptTemplate ?? ""}
+                      onChange={(e) => updateProject(p.path, { promptTemplate: e.target.value || undefined })}
+                      placeholder={settings.promptTemplate || "Project-specific prompt prefix…"}
+                      className="w-full rounded-lg px-3 py-2 text-sm outline-none resize-none transition-colors"
+                      style={inputStyle(c)}
+                    />
+                    <p className="text-[11px] mt-1" style={{ color: c.textMuted }}>
+                      Falls back to the global Prompt template (General settings) when empty.
+                    </p>
+                  </FieldGroup>
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

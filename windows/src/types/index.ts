@@ -144,6 +144,8 @@ export interface Project {
   name?: string;
   githubFilter?: string;
   repoRoot?: string;
+  /** Per-project prompt prefix override (falls back to Settings.promptTemplate). */
+  promptTemplate?: string;
 }
 
 export interface GlobalViewSettings {
