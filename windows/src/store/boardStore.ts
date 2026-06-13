@@ -31,6 +31,7 @@ interface BoardStore {
   selectedCardId: string | null;
   searchOpen: boolean;
   settingsOpen: boolean;
+  chatOpen: boolean;
   newTaskOpen: boolean;
   isLoading: boolean;
   lastRefresh: string | null;
@@ -59,6 +60,7 @@ interface BoardStore {
   ) => Promise<string | null>;
   setSearchOpen: (open: boolean) => void;
   setSettingsOpen: (open: boolean) => void;
+  setChatOpen: (open: boolean) => void;
   setNewTaskOpen: (open: boolean) => void;
   setSelectedProject: (path: string | null) => void;
   setViewMode: (mode: BoardViewMode) => void;
@@ -75,6 +77,7 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
   selectedCardId: null,
   searchOpen: false,
   settingsOpen: false,
+  chatOpen: false,
   newTaskOpen: false,
   isLoading: false,
   lastRefresh: null,
@@ -196,7 +199,8 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
   },
 
   setSearchOpen: (open) => set({ searchOpen: open }),
-  setSettingsOpen: (open) => set({ settingsOpen: open }),
+  setSettingsOpen: (open) => set({ settingsOpen: open, chatOpen: open ? false : get().chatOpen }),
+  setChatOpen: (open) => set({ chatOpen: open, settingsOpen: open ? false : get().settingsOpen }),
   setNewTaskOpen: (open) => set({ newTaskOpen: open }),
   setSelectedProject: (path) => set({ selectedProjectPath: path }),
   setViewMode: (mode) => {

@@ -3,6 +3,10 @@ mod assign_column;
 mod bm25;
 mod board_state;
 mod card_reconciler;
+pub mod channels;
+pub mod channels_store;
+mod channels_watcher;
+mod chat_bootstrap;
 mod coding_assistant;
 pub mod crash_handler;
 mod coordination_store;
@@ -28,6 +32,8 @@ mod tmux;
 mod transcript_reader;
 
 use board_state::BoardState;
+use channels::{Channel, ChannelMessage, ChannelParticipant};
+use channels_store::{ChannelsStore, DraftsState, ReadState};
 use coordination_store::CoordinationStore;
 use session_discovery::SessionDiscovery;
 use settings_store::SettingsStore;
@@ -46,6 +52,7 @@ pub struct AppState {
     pub coordination_store: Arc<CoordinationStore>,
     pub settings_store: Arc<SettingsStore>,
     pub session_discovery: Arc<SessionDiscovery>,
+    pub channels_store: Arc<ChannelsStore>,
 }
 
 // ── Tauri Commands ───────────────────────────────────────────────────────────
@@ -738,6 +745,145 @@ async fn search_transcript(
         .map_err(|e| e.to_string())
 }
 
+// ── Channels commands ────────────────────────────────────────────────────────
+
+#[tauri::command]
+async fn list_channels(state: tauri::State<'_, AppState>) -> Result<Vec<Channel>, String> {
+    state.channels_store.list_channels().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn create_channel(
+    name: String,
+    by: ChannelParticipant,
+    state: tauri::State<'_, AppState>,
+) -> Result<Channel, String> {
+    state.channels_store.create_channel(&name, by).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn delete_channel(
+    name: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<bool, String> {
+    state.channels_store.delete_channel(&name).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn rename_channel(
+    old: String,
+    new: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<bool, String> {
+    state.channels_store.rename_channel(&old, &new).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn join_channel(
+    name: String,
+    member: ChannelParticipant,
+    state: tauri::State<'_, AppState>,
+) -> Result<(Channel, bool), String> {
+    state.channels_store.join_channel(&name, member).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn leave_channel(
+    name: String,
+    member: ChannelParticipant,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<Channel>, String> {
+    state.channels_store.leave_channel(&name, member).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn send_channel_message(
+    channel: String,
+    from: ChannelParticipant,
+    body: String,
+    image_paths: Option<Vec<String>>,
+    state: tauri::State<'_, AppState>,
+) -> Result<ChannelMessage, String> {
+    state
+        .channels_store
+        .send_message(&channel, from, body, image_paths.unwrap_or_default())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn read_channel_messages(
+    channel: String,
+    limit: Option<usize>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<ChannelMessage>, String> {
+    state
+        .channels_store
+        .read_messages(&channel, limit)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn send_dm(
+    from: ChannelParticipant,
+    to: ChannelParticipant,
+    body: String,
+    image_paths: Option<Vec<String>>,
+    state: tauri::State<'_, AppState>,
+) -> Result<ChannelMessage, String> {
+    state
+        .channels_store
+        .send_dm(from, to, body, image_paths.unwrap_or_default())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn read_dm_messages(
+    a: ChannelParticipant,
+    b: ChannelParticipant,
+    limit: Option<usize>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<ChannelMessage>, String> {
+    state
+        .channels_store
+        .read_dm_messages(&a, &b, limit)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn list_dm_pairs(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
+    state.channels_store.list_dm_pairs().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_read_state(state: tauri::State<'_, AppState>) -> Result<ReadState, String> {
+    state.channels_store.load_read_state().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn save_read_state(
+    state_data: ReadState,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    state.channels_store.save_read_state(&state_data).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_drafts(state: tauri::State<'_, AppState>) -> Result<DraftsState, String> {
+    state.channels_store.load_drafts().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn save_drafts(
+    drafts: DraftsState,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    state.channels_store.save_drafts(&drafts).await.map_err(|e| e.to_string())
+}
+
 // ── Background polling ───────────────────────────────────────────────────────
 
 fn start_polling(app: tauri::AppHandle) {
@@ -1286,6 +1432,7 @@ pub fn run() {
     let settings_store = Arc::new(SettingsStore::new(None));
     let session_discovery = Arc::new(SessionDiscovery::new(None));
     let board_state = Arc::new(Mutex::new(BoardState::default()));
+    let channels_store = Arc::new(ChannelsStore::new(None));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
@@ -1297,6 +1444,7 @@ pub fn run() {
             coordination_store,
             settings_store,
             session_discovery,
+            channels_store,
         })
         .invoke_handler(tauri::generate_handler![
             get_board_state,
@@ -1346,6 +1494,21 @@ pub fn run() {
             mutagen_stop,
             mutagen_reset,
             mutagen_flush,
+            list_channels,
+            create_channel,
+            delete_channel,
+            rename_channel,
+            join_channel,
+            leave_channel,
+            send_channel_message,
+            read_channel_messages,
+            send_dm,
+            read_dm_messages,
+            list_dm_pairs,
+            get_read_state,
+            save_read_state,
+            get_drafts,
+            save_drafts,
         ])
         .setup(|app| {
             logging::info(
@@ -1357,6 +1520,13 @@ pub fn run() {
                 ),
             );
             build_tray(app)?;
+            chat_bootstrap::run();
+            let channels_base = app
+                .state::<AppState>()
+                .channels_store
+                .base_dir()
+                .to_path_buf();
+            channels_watcher::start(app.handle().clone(), channels_base);
             start_polling(app.handle().clone());
             start_pr_polling(app.handle().clone());
             start_issue_polling(app.handle().clone());

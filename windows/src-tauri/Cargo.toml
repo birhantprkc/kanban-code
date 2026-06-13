@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Kanban Code — Windows port"
 authors = ["LangWatch"]
 edition = "2021"
+default-run = "kanban-code"
 
 [lib]
 name = "kanban_code_lib"
@@ -12,6 +13,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [[bin]]
 name = "kanban-code"
 path = "src/main.rs"
+
+[[bin]]
+name = "kanban"
+path = "src/bin/kanban.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -34,6 +39,9 @@ rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 tauri-plugin-pty = "0.1"
 tauri-plugin-dialog = "2"
+notify = "6"
+notify-debouncer-mini = "0.4"
+clap = { version = "4", features = ["derive"] }
 
 [profile.dev]
 incremental = true
