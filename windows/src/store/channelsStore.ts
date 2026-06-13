@@ -8,6 +8,7 @@ import type {
   ChannelParticipant,
   ChannelReadState,
 } from "../types";
+import { useBoardStore } from "./boardStore";
 
 /// The local identity the Tauri app sends as — matches macOS where the GUI
 /// always posts as the human user. Card-scoped sends come through the
@@ -45,6 +46,149 @@ export function otherPartyOfPair(
 export function partyDisplayName(p: ChannelParticipant): string {
   if (p.cardId) return p.cardId;
   return `@${p.handle}`;
+}
+
+// ── Notification dispatch ───────────────────────────────────────────────────
+//
+// State below is module-scoped (not zustand) because it's pure bookkeeping:
+// `lastSeenIdByThread` lets us identify *which* tail messages are new since
+// the last event, and `lastNotifyAtByThread` enforces the per-thread debounce
+// the issue calls for (5 messages within 2s = 1 notification).
+
+const NOTIFY_DEBOUNCE_MS = 2000;
+const lastSeenIdByThread = new Map<string, string>();
+const lastNotifyAtByThread = new Map<string, number>();
+
+function isSelf(p: ChannelParticipant): boolean {
+  return p.cardId === SELF.cardId && p.handle === SELF.handle;
+}
+
+function selfIsMember(channel: Channel): boolean {
+  return channel.members.some((m) => m.cardId === null && m.handle === SELF.handle);
+}
+
+/// Returns the messages in `msgs` that are newer than the last one we observed
+/// for `threadKey`. Also updates the lastSeenId bookmark. On the very first
+/// event for a thread, only the single newest message is treated as new — that
+/// way historical messages already on disk at app start don't trigger a flood.
+function takeNewMessages(threadKey: string, msgs: ChannelMessage[]): ChannelMessage[] {
+  if (msgs.length === 0) return [];
+  const prev = lastSeenIdByThread.get(threadKey);
+  const latestId = msgs[msgs.length - 1].id;
+  let fresh: ChannelMessage[];
+  if (prev === undefined) {
+    fresh = [msgs[msgs.length - 1]];
+  } else {
+    const idx = msgs.findIndex((m) => m.id === prev);
+    fresh = idx < 0 ? msgs.slice() : msgs.slice(idx + 1);
+  }
+  lastSeenIdByThread.set(threadKey, latestId);
+  return fresh;
+}
+
+async function dispatchChatNotification(
+  threadKey: string,
+  title: string,
+  body: string
+): Promise<void> {
+  const now = performance.now();
+  const last = lastNotifyAtByThread.get(threadKey);
+  if (last !== undefined && now - last < NOTIFY_DEBOUNCE_MS) return;
+  lastNotifyAtByThread.set(threadKey, now);
+  try {
+    await invoke("notify_chat_message", {
+      title,
+      body,
+      threadId: threadKey,
+    });
+  } catch {
+    // best-effort
+  }
+}
+
+function chatPanelOpen(): boolean {
+  try {
+    return useBoardStore.getState().chatOpen;
+  } catch {
+    return false;
+  }
+}
+
+function snippet(body: string, max = 120): string {
+  const oneLine = body.replace(/\s+/g, " ").trim();
+  return oneLine.length > max ? oneLine.slice(0, max - 1) + "…" : oneLine;
+}
+
+async function maybeNotifyChannel(
+  name: string,
+  get: () => ReturnType<typeof useChannelsStore.getState>
+): Promise<void> {
+  const channel = get().channels.find((c) => c.name === name);
+  if (!channel) return;
+  if (!selfIsMember(channel)) return;
+  let msgs: ChannelMessage[];
+  try {
+    msgs = await invoke<ChannelMessage[]>("read_channel_messages", {
+      channel: name,
+      limit: 20,
+    });
+  } catch {
+    return;
+  }
+  const threadKey = `ch:${name}`;
+  const fresh = takeNewMessages(threadKey, msgs);
+  if (fresh.length === 0) return;
+  const panelOpen = chatPanelOpen();
+  const focused = panelOpen && get().selectedChannel === name;
+  if (focused) return;
+  const candidate = fresh
+    .filter((m) => (m.type ?? "message") === "message")
+    .filter((m) => !isSelf(m.from))
+    .pop();
+  if (!candidate) return;
+  await dispatchChatNotification(
+    threadKey,
+    `#${name} — @${candidate.from.handle}`,
+    snippet(candidate.body)
+  );
+}
+
+async function maybeNotifyDm(
+  pairKey: string,
+  get: () => ReturnType<typeof useChannelsStore.getState>
+): Promise<void> {
+  // SELF must be one of the two parties; pair keys that don't contain SELF
+  // belong to other parties (e.g. card-to-card) and aren't ours to notify on.
+  const halves = pairKey.split("__");
+  const selfKey = partyKey(SELF);
+  if (!halves.includes(selfKey)) return;
+  const other = otherPartyOfPair(pairKey, SELF);
+  let msgs: ChannelMessage[];
+  try {
+    msgs = await invoke<ChannelMessage[]>("read_dm_messages", {
+      a: SELF,
+      b: other,
+      limit: 20,
+    });
+  } catch {
+    return;
+  }
+  const threadKey = `dm:${pairKey}`;
+  const fresh = takeNewMessages(threadKey, msgs);
+  if (fresh.length === 0) return;
+  const panelOpen = chatPanelOpen();
+  const focused = panelOpen && get().selectedDm === pairKey;
+  if (focused) return;
+  const candidate = fresh
+    .filter((m) => (m.type ?? "message") === "message")
+    .filter((m) => !isSelf(m.from))
+    .pop();
+  if (!candidate) return;
+  await dispatchChatNotification(
+    threadKey,
+    `DM from ${partyDisplayName(candidate.from)}`,
+    snippet(candidate.body)
+  );
 }
 
 interface ChannelsStore {
@@ -119,15 +263,15 @@ export const useChannelsStore = create<ChannelsStore>((set, get) => ({
     });
     const unsubMessages = await listen<{ channelName: string }>(
       "channel-messages-changed",
-      (event) => {
+      async (event) => {
         const name = event.payload?.channelName;
         if (!name) return;
-        // Only refetch if this channel is currently loaded — avoids burning
-        // I/O for channels the user hasn't opened yet.
         const loaded = get().messagesByChannel[name] !== undefined;
-        if (loaded || name === get().selectedChannel) {
-          get().loadMessages(name);
+        const isSelected = name === get().selectedChannel;
+        if (loaded || isSelected) {
+          await get().loadMessages(name);
         }
+        await maybeNotifyChannel(name, get);
       }
     );
     const unsubReadState = await listen("read-state-changed", async () => {
@@ -151,7 +295,6 @@ export const useChannelsStore = create<ChannelsStore>((set, get) => ({
       async (event) => {
         const key = event.payload?.dmKey;
         if (!key) return;
-        // Re-emit on the window so anything outside the store can still hook in.
         window.dispatchEvent(
           new CustomEvent("kanban:dm-logs-changed", { detail: { dmKey: key } })
         );
@@ -163,6 +306,7 @@ export const useChannelsStore = create<ChannelsStore>((set, get) => ({
         if (loaded || isSelected) {
           await get().loadDmMessages(key);
         }
+        await maybeNotifyDm(key, get);
       }
     );
     set({
@@ -235,7 +379,6 @@ export const useChannelsStore = create<ChannelsStore>((set, get) => ({
       set((state) => ({
         messagesByChannel: { ...state.messagesByChannel, [name]: msgs },
       }));
-      // Auto-mark-read on refresh of the currently-open channel.
       if (get().selectedChannel === name) {
         get().markRead(name);
       }
@@ -267,8 +410,6 @@ export const useChannelsStore = create<ChannelsStore>((set, get) => ({
     const trimmed = body.trim();
     if (!trimmed) return;
     try {
-      // Optimistic: append locally; the watcher will trigger a refetch shortly
-      // and replace the optimistic entry with the canonical row.
       const optimistic: ChannelMessage = {
         id: `local_${crypto.randomUUID().slice(0, 12)}`,
         ts: new Date().toISOString(),
@@ -288,7 +429,6 @@ export const useChannelsStore = create<ChannelsStore>((set, get) => ({
         body: trimmed,
         imagePaths: null,
       });
-      // Clear the draft on successful send.
       const newDrafts = {
         ...get().drafts,
         channels: { ...get().drafts.channels, [name]: "" },
@@ -297,7 +437,6 @@ export const useChannelsStore = create<ChannelsStore>((set, get) => ({
       await invoke("save_drafts", { drafts: newDrafts });
     } catch (e) {
       set({ error: String(e) });
-      // Roll back the optimistic entry by refetching.
       get().loadMessages(name);
     }
   },
@@ -352,7 +491,6 @@ export const useChannelsStore = create<ChannelsStore>((set, get) => ({
         name,
         by: SELF,
       });
-      // Auto-join the creator so messages we send aren't from a non-member.
       await invoke("join_channel", { name: channel.name, member: SELF });
       await get().refreshChannels();
       await get().selectChannel(channel.name);
