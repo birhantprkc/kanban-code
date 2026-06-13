@@ -13,6 +13,8 @@ import {
   openGithubPr,
   openGithubIssue,
   removeWorktree,
+  forkSession,
+  truncateSession,
 } from "../store/boardStore";
 import { useTheme, t } from "../theme";
 import type { Turn, TranscriptPage, QueuedPrompt } from "../types";
@@ -199,6 +201,41 @@ export default function CardDetailView() {
       cancelLabel: "Cancel",
     });
     if (ok) deleteCard(card.id);
+  };
+
+  const handleFork = async () => {
+    if (!card) return;
+    const sessionPath = card.link.sessionLink?.sessionPath;
+    if (!sessionPath) return;
+    setMoreMenuOpen(false);
+    try {
+      const newId = await forkSession(sessionPath);
+      // Trigger a board refresh so the new session shows up.
+      useBoardStore.getState().refresh();
+      useBoardStore.setState({ error: `Forked session → ${newId}` });
+    } catch (e) {
+      useBoardStore.setState({ error: String(e) });
+    }
+  };
+
+  const handleCheckpoint = async (turnIndex: number) => {
+    if (!card) return;
+    const sessionPath = card.link.sessionLink?.sessionPath;
+    if (!sessionPath) return;
+    // turnIndex is 0-based; truncateSession keeps the first N turns (1-based).
+    const turnCount = turnIndex + 1;
+    const ok = await ask(
+      `Checkpoint session to turn ${turnCount}?\n\nEverything after this turn is removed from the .jsonl. The original is backed up next to it as <session>.jsonl.bkp.`,
+      { title: "Checkpoint session", kind: "warning", okLabel: "Checkpoint", cancelLabel: "Cancel" }
+    );
+    if (!ok) return;
+    try {
+      await truncateSession(sessionPath, turnCount);
+      // Re-read the transcript so the drawer view reflects the new tail.
+      loadTranscript(card.link.sessionLink!.sessionId, 0, true);
+    } catch (e) {
+      useBoardStore.setState({ error: String(e) });
+    }
   };
 
   const handleRemoveWorktree = async () => {
@@ -420,6 +457,7 @@ export default function CardDetailView() {
                 prUrl={pr?.url}
                 worktreePath={card.link.worktreeLink?.path}
                 onRemoveWorktree={handleRemoveWorktree}
+                onFork={sessionId ? handleFork : undefined}
                 copiedLabel={copiedLabel}
                 themeTokens={c}
               />
@@ -599,6 +637,7 @@ export default function CardDetailView() {
               onSearchChange={setSearchText}
               onNextMatch={() => goToMatch("next")}
               onPrevMatch={() => goToMatch("prev")}
+              onCheckpoint={sessionId ? handleCheckpoint : undefined}
             />
           </div>
         )}
@@ -684,10 +723,11 @@ const CardMoreMenu = forwardRef<HTMLDivElement, {
   prUrl?: string;
   worktreePath?: string;
   onRemoveWorktree?: () => void | Promise<void>;
+  onFork?: () => void | Promise<void>;
   copiedLabel: string | null;
   themeTokens: ReturnType<typeof t>;
 }>(function CardMoreMenu(
-  { anchorRef, onClose, onCopy, cardId, sessionId, projectPath, branch, prUrl, worktreePath, onRemoveWorktree, copiedLabel, themeTokens: c },
+  { anchorRef, onClose, onCopy, cardId, sessionId, projectPath, branch, prUrl, worktreePath, onRemoveWorktree, onFork, copiedLabel, themeTokens: c },
   ref
 ) {
   useEffect(() => {
@@ -780,6 +820,31 @@ const CardMoreMenu = forwardRef<HTMLDivElement, {
           </button>
         );
       })}
+      {onFork && (
+        <>
+          <div className="my-1 mx-2 h-px" style={{ background: c.border }} />
+          <button
+            onClick={() => onFork()}
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-left transition-colors"
+            onMouseEnter={(e) => { e.currentTarget.style.background = c.hoverBg; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = ""; }}
+          >
+            <span className="w-3.5 h-3.5 flex-shrink-0 flex items-center justify-center" style={{ color: "#4f8ef7" }}>
+              <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 3v12m0 0a2.25 2.25 0 1 0 0 4.5 2.25 2.25 0 0 0 0-4.5Zm12-9a2.25 2.25 0 1 0 0 4.5 2.25 2.25 0 0 0 0-4.5Zm0 0v6.75a3 3 0 0 1-3 3h-4.5" />
+              </svg>
+            </span>
+            <span className="flex-1 min-w-0">
+              <span className="block text-[12.5px]" style={{ color: c.textPrimary, fontWeight: 500 }}>
+                Fork session
+              </span>
+              <span className="block text-[10.5px] truncate" style={{ color: c.textDim }}>
+                Duplicate the .jsonl with a new id
+              </span>
+            </span>
+          </button>
+        </>
+      )}
       {worktreePath && onRemoveWorktree && (
         <>
           <div className="my-1 mx-2 h-px" style={{ background: c.border }} />
@@ -923,7 +988,7 @@ function MetaBadge({ label, color, theme, title }: { label: string; color: strin
 
 /* ── History Tab with Search ────────────────────────────────────── */
 
-function HistoryTab({ turns, transcriptPage, loading, onLoadMore, searchText, searchMatches, currentMatchIdx, isSearching, onSearchChange, onNextMatch, onPrevMatch }: {
+function HistoryTab({ turns, transcriptPage, loading, onLoadMore, searchText, searchMatches, currentMatchIdx, isSearching, onSearchChange, onNextMatch, onPrevMatch, onCheckpoint }: {
   turns: Turn[];
   transcriptPage: TranscriptPage | null;
   loading: boolean;
@@ -935,6 +1000,7 @@ function HistoryTab({ turns, transcriptPage, loading, onLoadMore, searchText, se
   onSearchChange: (q: string) => void;
   onNextMatch: () => void;
   onPrevMatch: () => void;
+  onCheckpoint?: (turnIndex: number) => void | Promise<void>;
 }) {
   const { theme } = useTheme();
   const c = t(theme);
@@ -1046,6 +1112,7 @@ function HistoryTab({ turns, transcriptPage, loading, onLoadMore, searchText, se
                   searchQuery={searchText.length >= 2 ? searchText : ""}
                   isSearchMatch={isMatch}
                   isCurrentMatch={isCurrent}
+                  onCheckpoint={onCheckpoint}
                 />
               </div>
             );
@@ -1070,14 +1137,16 @@ function HistoryTab({ turns, transcriptPage, loading, onLoadMore, searchText, se
 
 /* ── Turn rendering with search highlighting ────────────────────── */
 
-function TurnItem({ turn, searchQuery, isSearchMatch, isCurrentMatch }: {
+function TurnItem({ turn, searchQuery, isSearchMatch, isCurrentMatch, onCheckpoint }: {
   turn: Turn;
   searchQuery: string;
   isSearchMatch: boolean;
   isCurrentMatch: boolean;
+  onCheckpoint?: (turnIndex: number) => void | Promise<void>;
 }) {
   const isUser = turn.role === "user";
   const blocks = turn.contentBlocks;
+  const [hovered, setHovered] = useState(false);
 
   let borderStyle: string | undefined;
   if (isCurrentMatch) borderStyle = "rgba(249,115,22,0.5)";
@@ -1085,7 +1154,7 @@ function TurnItem({ turn, searchQuery, isSearchMatch, isCurrentMatch }: {
 
   return (
     <div
-      className="rounded px-2 py-1 transition-colors duration-100"
+      className="rounded px-2 py-1 transition-colors duration-100 relative group"
       style={{
         background: isCurrentMatch
           ? "rgba(249,115,22,0.08)"
@@ -1097,14 +1166,30 @@ function TurnItem({ turn, searchQuery, isSearchMatch, isCurrentMatch }: {
         outline: borderStyle ? `1px solid ${borderStyle}` : undefined,
       }}
       onMouseEnter={(e) => {
+        setHovered(true);
         if (!isCurrentMatch && !isSearchMatch) e.currentTarget.style.background = "rgba(255,255,255,0.06)";
       }}
       onMouseLeave={(e) => {
+        setHovered(false);
         if (!isCurrentMatch && !isSearchMatch) {
           e.currentTarget.style.background = isUser && blocks.some(b => b.kind === "text") ? "rgba(255,255,255,0.04)" : "";
         }
       }}
     >
+      {onCheckpoint && hovered && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onCheckpoint(turn.index); }}
+          className="absolute right-1 top-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-medium transition-colors"
+          style={{
+            background: "rgba(163,113,247,0.18)",
+            color: "#c9a5ff",
+            border: "1px solid rgba(163,113,247,0.35)",
+          }}
+          title={`Truncate session to keep through turn ${turn.index + 1}. Original is backed up as <session>.jsonl.bkp.`}
+        >
+          ✂ Checkpoint
+        </button>
+      )}
       {blocks.length > 0 ? (
         blocks.map((block, i) => (
           <BlockLine key={i} block={block} isUser={isUser} isFirst={i === 0} searchQuery={searchQuery} />

@@ -345,3 +345,13 @@ export async function removeWorktree(
 ): Promise<void> {
   return invoke("remove_worktree", { path, repoRoot, force });
 }
+
+/** Duplicate a session .jsonl with a fresh UUID, returning the new session id. */
+export async function forkSession(sessionPath: string, targetDir?: string): Promise<string> {
+  return invoke<string>("fork_session", { sessionPath, targetDir: targetDir ?? null });
+}
+
+/** Truncate a session .jsonl to keep only the first `turnCount` user/assistant turns. */
+export async function truncateSession(sessionPath: string, turnCount: number): Promise<void> {
+  return invoke("truncate_session", { sessionPath, turnCount });
+}

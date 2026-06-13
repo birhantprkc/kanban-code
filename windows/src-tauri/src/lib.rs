@@ -10,6 +10,7 @@ mod jsonl_parser;
 mod ksuid;
 mod logging;
 mod pushover;
+mod session_ops;
 mod session_discovery;
 mod settings_store;
 mod shell_command;
@@ -330,6 +331,20 @@ async fn gh_is_authed() -> bool {
         .await
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+#[tauri::command]
+async fn fork_session(session_path: String, target_dir: Option<String>) -> Result<String, String> {
+    session_ops::fork_session(&session_path, target_dir.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn truncate_session(session_path: String, turn_count: usize) -> Result<(), String> {
+    session_ops::truncate_session(&session_path, turn_count)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -945,6 +960,8 @@ pub fn run() {
             list_worktrees,
             create_worktree,
             remove_worktree,
+            fork_session,
+            truncate_session,
         ])
         .setup(|app| {
             logging::info(
