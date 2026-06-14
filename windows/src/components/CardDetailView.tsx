@@ -72,6 +72,7 @@ export default function CardDetailView() {
 
   // Settings
   const [terminalFontSize, setTerminalFontSize] = useState(15);
+  const [sessionDetailFontSize, setSessionDetailFontSize] = useState(12);
   const [terminalShell, setTerminalShell] = useState<string>("cmd.exe");
   // Whether `tmux -V` succeeds in the user's WSL environment. When true AND
   // the chosen shell is a Unix shell, terminals are wrapped in
@@ -142,6 +143,7 @@ export default function CardDetailView() {
     getSettings()
       .then((s) => {
         setTerminalFontSize(s.terminalFontSize || 15);
+        setSessionDetailFontSize(s.sessionDetailFontSize || 12);
         setTerminalShell((s.terminalShell && s.terminalShell.trim()) || "cmd.exe");
         setAvailableProjects(s.projects ?? []);
       })
@@ -995,6 +997,7 @@ export default function CardDetailView() {
               turns={turns}
               transcriptPage={transcriptPage}
               loading={loadingTranscript}
+              fontSize={sessionDetailFontSize}
               onLoadMore={() => {
                 if (sessionId && transcriptPage?.hasMore)
                   loadTranscript(sessionId, transcriptPage.nextOffset, false);
@@ -1426,10 +1429,11 @@ function MetaBadge({ label, color, theme, title }: { label: string; color: strin
 
 /* ── History Tab with Search ────────────────────────────────────── */
 
-function HistoryTab({ turns, transcriptPage, loading, onLoadMore, searchText, searchMatches, currentMatchIdx, isSearching, onSearchChange, onNextMatch, onPrevMatch, onCheckpoint }: {
+function HistoryTab({ turns, transcriptPage, loading, fontSize, onLoadMore, searchText, searchMatches, currentMatchIdx, isSearching, onSearchChange, onNextMatch, onPrevMatch, onCheckpoint }: {
   turns: Turn[];
   transcriptPage: TranscriptPage | null;
   loading: boolean;
+  fontSize: number;
   onLoadMore: () => void;
   searchText: string;
   searchMatches: number[];
@@ -1444,6 +1448,7 @@ function HistoryTab({ turns, transcriptPage, loading, onLoadMore, searchText, se
   const c = t(theme);
   const currentMatchTurnIdx = searchMatches.length > 0 ? searchMatches[currentMatchIdx] : -1;
   const matchRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   // Scroll to current match
   useEffect(() => {
@@ -1451,6 +1456,16 @@ function HistoryTab({ turns, transcriptPage, loading, onLoadMore, searchText, se
       matchRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   }, [currentMatchIdx, searchMatches]);
+
+  // Auto-load earlier turns when the scroll position is near the top, matching
+  // the macOS pattern. We throttle by checking `loading` so a slow backend
+  // doesn't fire a stampede of overlapping requests.
+  const onScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    if (loading) return;
+    if (!transcriptPage?.hasMore) return;
+    if (el.scrollTop < 120) onLoadMore();
+  };
 
   return (
     <>
@@ -1537,9 +1552,25 @@ function HistoryTab({ turns, transcriptPage, loading, onLoadMore, searchText, se
         </div>
       ) : (
         <div
+          ref={scrollRef}
+          onScroll={onScroll}
           className="flex flex-col px-3 pt-2 pb-3 gap-0.5 font-mono overflow-y-auto flex-1"
-          style={{ background: "#141416" }}
+          style={{ background: "#141416", fontSize: `${fontSize}px` }}
         >
+          {/* Auto-load indicator when scrolled near top — replaces the macOS
+              ProgressView at top of the SessionHistoryView. */}
+          {transcriptPage?.hasMore && (
+            <div className="flex items-center justify-center py-2 text-[10px] font-mono" style={{ color: "#555" }}>
+              {loading ? (
+                <span className="flex items-center gap-2">
+                  <div className="w-3 h-3 border-2 border-[#4f8ef7] border-t-transparent rounded-full animate-spin" />
+                  Loading earlier turns…
+                </span>
+              ) : (
+                <span>{transcriptPage.totalTurns - turns.length} earlier turns — scroll up to load</span>
+              )}
+            </div>
+          )}
           {turns.map((turn) => {
             const isMatch = searchMatches.includes(turn.index);
             const isCurrent = turn.index === currentMatchTurnIdx;
@@ -1555,18 +1586,6 @@ function HistoryTab({ turns, transcriptPage, loading, onLoadMore, searchText, se
               </div>
             );
           })}
-          {transcriptPage?.hasMore && (
-            <button
-              onClick={onLoadMore}
-              disabled={loading}
-              className="mt-2 py-2 rounded-lg text-[11px] font-mono font-medium transition-all duration-150 disabled:opacity-40"
-              style={{ color: "#666", background: "rgba(255,255,255,0.03)" }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.06)"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.03)"; }}
-            >
-              {loading ? "Loading..." : `Load more (${transcriptPage.totalTurns - turns.length} remaining)`}
-            </button>
-          )}
         </div>
       )}
     </>

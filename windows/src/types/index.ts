@@ -257,6 +257,9 @@ export interface Settings {
   hasCompletedOnboarding: boolean;
   editor: string;
   terminalFontSize: number;
+  /** Font size for the History tab transcript (8-20). Mirrors macOS
+   *  `sessionDetailFontSize` AppStorage; defaults to 12. */
+  sessionDetailFontSize?: number;
   /** Shell command for the embedded terminal — space-separated tokens. Default "cmd.exe". */
   terminalShell: string;
   remote?: RemoteSettings;

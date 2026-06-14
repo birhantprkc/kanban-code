@@ -241,6 +241,28 @@ function GeneralSection({
         </p>
       </FieldGroup>
 
+      <FieldGroup label="Transcript font size" themeTokens={c}>
+        <div className="flex items-center gap-3">
+          <input
+            type="range"
+            min={8}
+            max={20}
+            step={1}
+            value={settings.sessionDetailFontSize || 12}
+            onChange={(e) =>
+              onChange({ ...settings, sessionDetailFontSize: parseInt(e.target.value) })
+            }
+            className="flex-1 accent-[#4f8ef7] h-1.5 rounded-full cursor-pointer"
+          />
+          <span className="text-sm font-mono w-8 text-right" style={{ color: c.textSecondary }}>
+            {settings.sessionDetailFontSize || 12}
+          </span>
+        </div>
+        <p className="text-[11px] mt-1" style={{ color: c.textMuted }}>
+          Font size for the History tab transcript view (8–20pt). Mirrors the macOS preference.
+        </p>
+      </FieldGroup>
+
       <FieldGroup label="Terminal shell" themeTokens={c}>
         <input
           type="text"

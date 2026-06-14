@@ -219,6 +219,11 @@ pub struct Settings {
     /// Terminal font size (8-24)
     #[serde(default = "default_terminal_font_size")]
     pub terminal_font_size: u32,
+    /// Font size for the History tab transcript view (8-20). Matches the
+    /// macOS `sessionDetailFontSize` AppStorage so a settings round-trip
+    /// between platforms preserves the preference.
+    #[serde(default = "default_session_detail_font_size")]
+    pub session_detail_font_size: u32,
     /// Shell command used by the embedded terminal — space-separated tokens.
     /// Defaults to `cmd.exe` for a native Windows experience. Set to
     /// `wsl.exe` (or `pwsh.exe -NoLogo`, etc.) to run Claude in a different
@@ -236,6 +241,10 @@ pub struct Settings {
 
 fn default_terminal_font_size() -> u32 {
     15
+}
+
+fn default_session_detail_font_size() -> u32 {
+    12
 }
 
 fn default_terminal_shell() -> String {
