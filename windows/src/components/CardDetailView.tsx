@@ -1653,10 +1653,12 @@ function TurnItem({ turn, searchQuery, isSearchMatch, isCurrentMatch, onCheckpoi
         ))
       ) : (
         <div className="flex gap-1.5 items-start">
-          <span className="text-[12px] leading-[1.6] shrink-0" style={{ color: isUser ? "#3fb950" : "#d4d4d4" }}>
+          {/* No hardcoded text-[Npx] \u2014 font size cascades from the History
+              scroll container so the Settings slider takes effect. */}
+          <span className="leading-[1.6] shrink-0" style={{ color: isUser ? "#3fb950" : "#d4d4d4" }}>
             {isUser ? "\u276F" : "\u25CF"}
           </span>
-          <span className="text-[12px] leading-[1.6] line-clamp-6" style={{ color: isUser ? "#e4e4e7" : "rgba(220,220,220,0.85)" }}>
+          <span className="leading-[1.6] line-clamp-6" style={{ color: isUser ? "#e4e4e7" : "rgba(220,220,220,0.85)" }}>
             <HighlightedText text={turn.textPreview || "(empty)"} query={searchQuery} />
           </span>
         </div>
@@ -1671,16 +1673,19 @@ function BlockLine({ block, isUser, isFirst, searchQuery }: {
   isFirst: boolean;
   searchQuery: string;
 }) {
+  // Every span below drops the hardcoded text-[12px] class so the History
+  // scroll container's inline fontSize cascades \u2014 that's what makes the
+  // Settings "Transcript font size" slider actually do something visible.
   if (block.kind === "text") {
     const trimmed = block.text.trim();
     if (!trimmed) return null;
     return (
       <div className="flex gap-1.5 items-start">
-        <span className="text-[12px] leading-[1.6] shrink-0" style={{ color: isUser ? "#3fb950" : "#d4d4d4" }}>
+        <span className="leading-[1.6] shrink-0" style={{ color: isUser ? "#3fb950" : "#d4d4d4" }}>
           {isFirst ? (isUser ? "\u276F" : "\u25CF") : "\u00A0\u00A0"}
         </span>
         <span
-          className="text-[12px] leading-[1.6]"
+          className="leading-[1.6]"
           style={{
             color: isUser ? "#e4e4e7" : "rgba(220,220,220,0.85)",
             display: "-webkit-box",
@@ -1700,8 +1705,8 @@ function BlockLine({ block, isUser, isFirst, searchQuery }: {
     const args = block.text.includes("(") ? block.text.slice(block.text.indexOf("(")) : "";
     return (
       <div className="flex gap-1.5 items-start">
-        <span className="text-[12px] leading-[1.6] shrink-0 text-[#3fb950]">{"\u00A0\u00A0\u25CF"}</span>
-        <span className="text-[12px] leading-[1.6]">
+        <span className="leading-[1.6] shrink-0 text-[#3fb950]">{"\u00A0\u00A0\u25CF"}</span>
+        <span className="leading-[1.6]">
           <span style={{ color: "rgba(63,185,80,0.8)" }}><HighlightedText text={name} query={searchQuery} /></span>
           {args && <span className="line-clamp-2" style={{ color: "#555" }}>{args}</span>}
         </span>
@@ -1712,8 +1717,8 @@ function BlockLine({ block, isUser, isFirst, searchQuery }: {
   if (block.kind === "tool_result") {
     return (
       <div className="flex gap-1.5 items-start">
-        <span className="text-[12px] leading-[1.6] shrink-0" style={{ color: "#444" }}>{"\u00A0\u00A0\u23BF"}</span>
-        <span className="text-[12px] leading-[1.6] line-clamp-3" style={{ color: "#444" }}>
+        <span className="leading-[1.6] shrink-0" style={{ color: "#444" }}>{"\u00A0\u00A0\u23BF"}</span>
+        <span className="leading-[1.6] line-clamp-3" style={{ color: "#444" }}>
           <HighlightedText text={block.text} query={searchQuery} />
         </span>
       </div>
@@ -1723,8 +1728,8 @@ function BlockLine({ block, isUser, isFirst, searchQuery }: {
   if (block.kind === "thinking") {
     return (
       <div className="flex gap-1.5 items-start">
-        <span className="text-[12px] leading-[1.6] shrink-0" style={{ color: "#444" }}>{"\u00A0\u00A0\u2234"}</span>
-        <span className="text-[12px] leading-[1.6] italic" style={{ color: "#444" }}>Thinking...</span>
+        <span className="leading-[1.6] shrink-0" style={{ color: "#444" }}>{"\u00A0\u00A0\u2234"}</span>
+        <span className="leading-[1.6] italic" style={{ color: "#444" }}>Thinking...</span>
       </div>
     );
   }
