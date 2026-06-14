@@ -8,6 +8,7 @@ pub mod channels_store;
 mod channels_watcher;
 mod chat_bootstrap;
 mod coding_assistant;
+mod context_usage;
 pub mod crash_handler;
 mod coordination_store;
 mod gh_cli;
@@ -158,6 +159,31 @@ async fn rename_card(
     state
         .coordination_store
         .rename_link(&card_id, &name)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn set_card_pinned(
+    card_id: String,
+    is_pinned: bool,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    state
+        .coordination_store
+        .set_card_pinned(&card_id, is_pinned)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn reorder_pinned_cards(
+    ordered_ids: Vec<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    state
+        .coordination_store
+        .reorder_pinned_cards(&ordered_ids)
         .await
         .map_err(|e| e.to_string())
 }
@@ -346,6 +372,91 @@ async fn update_queued_prompt(
         .update_queued_prompt(&card_id, &prompt_id, &body, send_automatically)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// True when the given queued prompt was enqueued by the self-compact
+/// guard AND the session's current context usage has dropped back below
+/// the prompt's threshold (i.e. a compaction already happened and the
+/// nudge would be a false alarm). Mirrors macOS
+/// `BackgroundOrchestrator.shouldDropStaleSelfCompactPrompt`.
+///
+/// Returns false on every uncertainty (settings unreadable, prompt not
+/// found, no statusline JSON yet) — better to deliver a benign nudge
+/// than to silently swallow a real one.
+#[tauri::command]
+async fn should_drop_self_compact_prompt(
+    card_id: String,
+    prompt_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<bool, String> {
+    let settings_store = settings_store::SettingsStore::new(None);
+    let settings = match settings_store.read().await {
+        Ok(s) => s,
+        Err(_) => return Ok(false),
+    };
+    if !settings.self_compact.enabled {
+        return Ok(false);
+    }
+
+    let links = state
+        .coordination_store
+        .read_links()
+        .await
+        .map_err(|e| e.to_string())?;
+    let Some(link) = links.iter().find(|l| l.id == card_id) else {
+        return Ok(false);
+    };
+    let Some(session_id) = link.session_link.as_ref().map(|s| s.session_id.clone()) else {
+        return Ok(false);
+    };
+    let Some(prompt) = link
+        .queued_prompts
+        .as_ref()
+        .and_then(|p| p.iter().find(|p| p.id == prompt_id))
+    else {
+        return Ok(false);
+    };
+
+    let queue_rules: Vec<&settings_store::SelfCompactRule> = settings
+        .self_compact
+        .rules
+        .iter()
+        .filter(|r| r.action == settings_store::SelfCompactAction::QueuePrompt)
+        .collect();
+
+    // Resolve the threshold: prefer the field on the prompt, then fall
+    // back to body-text match for prompts written by older builds (or by
+    // macOS, which always stamps the field).
+    let threshold: Option<i64> = if let Some(t) = prompt.self_compact_threshold_tokens {
+        Some(
+            queue_rules
+                .iter()
+                .find(|r| r.threshold_tokens == t)
+                .map(|r| r.threshold_tokens)
+                .unwrap_or(t),
+        )
+    } else {
+        let body = prompt.body.trim();
+        if body.is_empty() {
+            None
+        } else {
+            queue_rules
+                .iter()
+                .find(|r| r.message.trim() == body)
+                .map(|r| r.threshold_tokens)
+        }
+    };
+
+    let Some(threshold) = threshold else {
+        return Ok(false);
+    };
+
+    // No statusline JSON yet → match macOS: assume the nudge is stale
+    // (the alternative is hounding the user forever in absence of data).
+    let Some(usage) = context_usage::read(&session_id) else {
+        return Ok(true);
+    };
+    Ok(usage.current_context_tokens() < threshold)
 }
 
 #[tauri::command]
@@ -824,6 +935,53 @@ async fn read_channel_messages(
         .map_err(|e| e.to_string())
 }
 
+/// Append-only edit; render layer collapses (#113).
+#[tauri::command]
+async fn edit_channel_message(
+    channel: String,
+    target_id: String,
+    from: ChannelParticipant,
+    new_body: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<ChannelMessage, String> {
+    state
+        .channels_store
+        .edit_channel_message(&channel, &target_id, from, new_body)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Append-only soft-delete (#113).
+#[tauri::command]
+async fn delete_channel_message(
+    channel: String,
+    target_id: String,
+    from: ChannelParticipant,
+    state: tauri::State<'_, AppState>,
+) -> Result<ChannelMessage, String> {
+    state
+        .channels_store
+        .delete_channel_message(&channel, &target_id, from)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Append-only reaction toggle (count parity per sender) (#113).
+#[tauri::command]
+async fn react_channel_message(
+    channel: String,
+    target_id: String,
+    from: ChannelParticipant,
+    emoji: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<ChannelMessage, String> {
+    state
+        .channels_store
+        .react_channel_message(&channel, &target_id, from, emoji)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn send_dm(
     from: ChannelParticipant,
@@ -849,6 +1007,53 @@ async fn read_dm_messages(
     state
         .channels_store
         .read_dm_messages(&a, &b, limit)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn edit_dm_message(
+    a: ChannelParticipant,
+    b: ChannelParticipant,
+    target_id: String,
+    from: ChannelParticipant,
+    new_body: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<ChannelMessage, String> {
+    state
+        .channels_store
+        .edit_dm_message(&a, &b, &target_id, from, new_body)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn delete_dm_message(
+    a: ChannelParticipant,
+    b: ChannelParticipant,
+    target_id: String,
+    from: ChannelParticipant,
+    state: tauri::State<'_, AppState>,
+) -> Result<ChannelMessage, String> {
+    state
+        .channels_store
+        .delete_dm_message(&a, &b, &target_id, from)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn react_dm_message(
+    a: ChannelParticipant,
+    b: ChannelParticipant,
+    target_id: String,
+    from: ChannelParticipant,
+    emoji: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<ChannelMessage, String> {
+    state
+        .channels_store
+        .react_dm_message(&a, &b, &target_id, from, emoji)
         .await
         .map_err(|e| e.to_string())
 }
@@ -882,6 +1087,113 @@ async fn save_drafts(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     state.channels_store.save_drafts(&drafts).await.map_err(|e| e.to_string())
+}
+
+/// Dispatch an OS + Pushover notification for an inbound chat message. The
+/// frontend decides *whether* to notify (foreground suppression, debounce,
+/// SELF-skip etc); this command just executes the dispatch, gated by the same
+/// settings toggles the card-finish path honors.
+#[tauri::command]
+async fn notify_chat_message(
+    app: tauri::AppHandle,
+    title: String,
+    body: String,
+    thread_id: Option<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let settings = state.settings_store.read().await.ok();
+    let os_enabled = settings
+        .as_ref()
+        .map(|s| s.notifications.notifications_enabled)
+        .unwrap_or(true);
+    let push_cfg = settings.and_then(|s| {
+        if s.notifications.pushover_enabled {
+            Some((
+                s.notifications.pushover_token.clone(),
+                s.notifications.pushover_user_key.clone(),
+            ))
+        } else {
+            None
+        }
+    });
+
+    if os_enabled {
+        let _ = app
+            .notification()
+            .builder()
+            .title(title.clone())
+            .body(body.clone())
+            .show();
+    }
+    if let Some((Some(token), Some(user))) =
+        push_cfg.as_ref().map(|(t, u)| (t.clone(), u.clone()))
+    {
+        let t = title.clone();
+        let b = body.clone();
+        let tid = thread_id.clone();
+        tokio::spawn(async move {
+            match pushover::send(&token, &user, &t, &b, tid.as_deref()).await {
+                Ok(()) => logging::info(
+                    "pushover",
+                    &format!("chat notification sent ({})", tid.as_deref().unwrap_or("-")),
+                ),
+                Err(e) => logging::warn(
+                    "pushover",
+                    &format!("chat notification failed: {e}"),
+                ),
+            }
+        });
+    }
+    Ok(())
+}
+
+/// Reads image bytes for rendering in the chat UI. The frontend wraps the
+/// returned bytes in a Blob URL. Used for both stored message attachments
+/// (paths under the channels images dir) and staged previews (paths from
+/// the file picker / drag-drop). Caps at 25 MB to avoid OOM if a bogus
+/// path is ever requested; #112.
+#[tauri::command]
+async fn read_image_bytes(path: String) -> Result<Vec<u8>, String> {
+    const MAX_BYTES: u64 = 25 * 1024 * 1024;
+    let meta = tokio::fs::metadata(&path)
+        .await
+        .map_err(|e| format!("stat image: {e}"))?;
+    if meta.len() > MAX_BYTES {
+        return Err(format!(
+            "image too large for preview ({} bytes, limit {MAX_BYTES})",
+            meta.len()
+        ));
+    }
+    tokio::fs::read(&path)
+        .await
+        .map_err(|e| format!("read image: {e}"))
+}
+
+/// Writes pasted/dropped clipboard bytes to a uniquely-named file in the
+/// system temp dir and returns its absolute path. The frontend then passes
+/// the path to send_channel_message / send_dm, which copies the file into
+/// the persistent images dir; #112.
+#[tauri::command]
+async fn persist_clipboard_image(
+    bytes: Vec<u8>,
+    ext: String,
+) -> Result<String, String> {
+    let safe_ext: String = ext
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(8)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    let ext = if safe_ext.is_empty() { "png".to_string() } else { safe_ext };
+    let dir = std::env::temp_dir().join("kanban-code-clipboard");
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| format!("create temp dir: {e}"))?;
+    let path = dir.join(format!("{}.{}", uuid::Uuid::new_v4().simple(), ext));
+    tokio::fs::write(&path, &bytes)
+        .await
+        .map_err(|e| format!("write temp image: {e}"))?;
+    Ok(path.to_string_lossy().into_owned())
 }
 
 // ── Background polling ───────────────────────────────────────────────────────
@@ -1450,6 +1762,8 @@ pub fn run() {
             get_board_state,
             move_card,
             reorder_cards,
+            set_card_pinned,
+            reorder_pinned_cards,
             create_card,
             delete_card,
             archive_card,
@@ -1463,6 +1777,7 @@ pub fn run() {
             add_queued_prompt,
             update_queued_prompt,
             remove_queued_prompt,
+            should_drop_self_compact_prompt,
             search_transcript,
             check_dependencies,
             resolve_github_base_url,
@@ -1502,13 +1817,22 @@ pub fn run() {
             leave_channel,
             send_channel_message,
             read_channel_messages,
+            edit_channel_message,
+            delete_channel_message,
+            react_channel_message,
             send_dm,
             read_dm_messages,
+            edit_dm_message,
+            delete_dm_message,
+            react_dm_message,
             list_dm_pairs,
             get_read_state,
             save_read_state,
             get_drafts,
             save_drafts,
+            notify_chat_message,
+            read_image_bytes,
+            persist_clipboard_image,
         ])
         .setup(|app| {
             logging::info(

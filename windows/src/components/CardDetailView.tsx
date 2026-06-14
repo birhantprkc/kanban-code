@@ -37,6 +37,17 @@ const TAB_LABELS: Record<Tab, string> = {
   prompt: "Prompt",
 };
 
+function slugifyHandle(title: string): string {
+  const slug = title
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 32)
+    .replace(/-+$/, "");
+  return slug || "card";
+}
+
 export default function CardDetailView() {
   const { selectedCard, selectCard, renameCard, deleteCard } = useBoardStore();
   const card = selectedCard();
@@ -312,6 +323,12 @@ export default function CardDetailView() {
   const assistantId: AssistantId = (card.link.assistantId ?? "claude") as AssistantId;
   const cli = ASSISTANT_CLI[assistantId] ?? "claude";
 
+  // Identity env injected into every card-launch shell so the in-card
+  // `kanban` CLI can resolve who it is without --as flags. Prepended first
+  // so a user-supplied entry in the launch dialog still overrides.
+  const kanbanHandle = slugifyHandle(card.displayTitle);
+  const cardId = card.id;
+
   // Effective prompt + flags after the launch dialog (if shown). For resumes,
   // the dialog is skipped — launchFlags stays null and the dialog defaults
   // apply (no skip-perm, no env prefix). The same builder also feeds the
@@ -328,14 +345,19 @@ export default function CardDetailView() {
       skipPerm: boolean,
       env: string[],
     ) => {
-      const envPrefix = env.length > 0 ? env.join(" ") + " " : "";
+      const allEnv = [
+        `KANBAN_CARD_ID=${cardId}`,
+        `KANBAN_HANDLE=${kanbanHandle}`,
+        ...env,
+      ];
+      const envPrefix = allEnv.join(" ") + " ";
       const cdCmd = cwd ? `cd ${cwd.replace(/ /g, "\\ ")} && ` : "";
       const skipFlag = skipPerm ? " --dangerously-skip-permissions" : "";
       return sid
         ? `${cdCmd}${envPrefix}${cli} --resume ${sid}${skipFlag}`
         : `${cdCmd}${envPrefix}${cli}${skipFlag} '${prompt.replace(/'/g, "'\\''")}'`;
     },
-    [cli],
+    [cli, cardId, kanbanHandle],
   );
 
   const buildInnerCmdShellCmd = useCallback(
@@ -348,14 +370,19 @@ export default function CardDetailView() {
     ) => {
       // `set VAR=val&&` chains in cmd.exe; pwsh accepts `$env:VAR='val';`,
       // but cmd is the default — stick with set-style.
-      const envPrefix = env.length > 0 ? env.map((kv) => `set ${kv}&& `).join("") : "";
+      const allEnv = [
+        `KANBAN_CARD_ID=${cardId}`,
+        `KANBAN_HANDLE=${kanbanHandle}`,
+        ...env,
+      ];
+      const envPrefix = allEnv.map((kv) => `set ${kv}&& `).join("");
       const cdCmd = cwd ? `cd "${cwd}" && ` : "";
       const skipFlag = skipPerm ? " --dangerously-skip-permissions" : "";
       return sid
         ? `${cdCmd}${envPrefix}${cli} --resume ${sid}${skipFlag}`
         : `${cdCmd}${envPrefix}${cli}${skipFlag} "${prompt.replace(/"/g, '""')}"`;
     },
-    [cli],
+    [cli, cardId, kanbanHandle],
   );
 
   // The inner bash command (`cd … && claude …`) — same for tmux + legacy
@@ -490,7 +517,7 @@ export default function CardDetailView() {
       if (p.eventName !== "Stop") return;
       const stopAt = Date.now();
       if (pending) clearTimeout(pending);
-      pending = setTimeout(() => {
+      pending = setTimeout(async () => {
         // User typed in the meantime — back off.
         if (Date.now() - lastUserPromptAt.current < 1100) return;
         // Resolve the freshest queue from the store (closure value would be
@@ -504,6 +531,29 @@ export default function CardDetailView() {
             (recentlyAutoSent.current.get(qp.id) ?? 0) + 62_000 < now,
         );
         if (!target || !terminalWriteRef.current) return;
+        // Self-compact drop-guard: a queued compact nudge becomes stale once
+        // the session's context usage drops back under its threshold (i.e.
+        // a compact already happened). Removing it here matches the macOS
+        // BackgroundOrchestrator behavior.
+        let drop = false;
+        if (target.selfCompactThresholdTokens != null) {
+          try {
+            drop = await invoke<boolean>("should_drop_self_compact_prompt", {
+              cardId: card.id,
+              promptId: target.id,
+            });
+          } catch {
+            drop = false;
+          }
+        }
+        if (drop) {
+          removeQueuedPrompt(card.id, target.id)
+            .then(() =>
+              setQueuedPrompts((prev) => prev.filter((p) => p.id !== target.id)),
+            )
+            .catch(() => {});
+          return;
+        }
         terminalWriteRef.current(target.body + "\r");
         recentlyAutoSent.current.set(target.id, now);
         // Garbage-collect dedup entries older than 5 minutes.
