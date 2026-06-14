@@ -22,6 +22,7 @@ mod ksuid;
 mod logging;
 mod merge_ops;
 mod mutagen;
+mod process_manager;
 mod pushover;
 mod remote_shell;
 mod remote_status;
@@ -164,6 +165,48 @@ async fn archive_card(
         .archive_link(&card_id)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// One-shot snapshot of running tmux sessions, Claude processes, and known
+/// worktrees. Backs the Process Manager modal. Each list is best-effort —
+/// e.g. when tmux/WSL is missing, `tmuxSessions` is empty rather than an
+/// error, so the UI can render the rest.
+#[tauri::command]
+async fn get_process_state(
+    state: tauri::State<'_, AppState>,
+) -> Result<process_manager::ProcessState, String> {
+    let settings = settings_store::SettingsStore::new(None)
+        .read()
+        .await
+        .map_err(|e| e.to_string())?;
+    let repo_roots: Vec<String> = settings
+        .projects
+        .iter()
+        .filter_map(|p| p.repo_root.clone().or(Some(p.path.clone())))
+        .collect();
+
+    let tmux_sessions = tokio::task::spawn_blocking(process_manager::list_tmux_sessions)
+        .await
+        .unwrap_or_default();
+    let claude_processes = tokio::task::spawn_blocking(process_manager::list_claude_processes)
+        .await
+        .unwrap_or_default();
+    let worktrees = process_manager::list_all_worktrees(repo_roots).await;
+    // Silence the unused warning when nothing on this struct needs `state` —
+    // we keep it in the signature so adding card-link annotations later
+    // doesn't require a Tauri command-shape change.
+    let _ = state;
+
+    Ok(process_manager::ProcessState {
+        tmux_sessions,
+        claude_processes,
+        worktrees,
+    })
+}
+
+#[tauri::command]
+async fn kill_claude_process(pid: u32) -> Result<(), String> {
+    process_manager::kill_claude_process(pid).await
 }
 
 #[tauri::command]
@@ -1796,6 +1839,8 @@ pub fn run() {
             delete_card,
             archive_card,
             rename_card,
+            get_process_state,
+            kill_claude_process,
             get_transcript,
             get_settings,
             save_settings,

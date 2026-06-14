@@ -5,6 +5,7 @@ import CardDetailView from "./components/CardDetailView";
 import Channels from "./components/Channels";
 import NewTaskDialog from "./components/NewTaskDialog";
 import OnboardingWizard from "./components/OnboardingWizard";
+import ProcessManagerView from "./components/ProcessManagerView";
 import ProjectSwitcher from "./components/ProjectSwitcher";
 import SearchOverlay from "./components/SearchOverlay";
 import SettingsView from "./components/SettingsView";
@@ -36,6 +37,8 @@ export default function App() {
     viewMode,
     setViewMode,
   } = useBoardStore();
+
+  const [processManagerOpen, setProcessManagerOpen] = useState(false);
 
   const channels = useChannelsStore((s) => s.channels);
   const messagesByChannel = useChannelsStore((s) => s.messagesByChannel);
@@ -140,19 +143,26 @@ export default function App() {
         setSettingsOpen(!open);
         return;
       }
+      // Ctrl+Shift+M — Process Manager modal (tmux / Claude / worktrees).
+      if (mod && e.shiftKey && (e.code === "KeyM" || keyLower === "m")) {
+        e.preventDefault();
+        setProcessManagerOpen((v) => !v);
+        return;
+      }
       if (e.key === "Escape" || e.code === "Escape") {
         // Close in stack order: dialog > settings > drawer. Each branch
         // returns so a single Esc only dismisses the topmost layer.
         const s = useBoardStore.getState();
         if (s.newTaskOpen) { setNewTaskOpen(false); return; }
         if (s.searchOpen) { setSearchOpen(false); return; }
+        if (processManagerOpen) { setProcessManagerOpen(false); return; }
         if (s.settingsOpen) { setSettingsOpen(false); return; }
         if (s.selectedCardId) { selectCard(null); return; }
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selectCard, setNewTaskOpen, setSearchOpen, setSettingsOpen]);
+  }, [selectCard, setNewTaskOpen, setSearchOpen, setSettingsOpen, processManagerOpen]);
 
   return (
     <div className="flex flex-col h-full overflow-hidden" style={{ background: c.bg, color: c.text }}>
@@ -327,6 +337,7 @@ export default function App() {
       {/* Overlays */}
       {searchOpen && <SearchOverlay />}
       {newTaskOpen && <NewTaskDialog />}
+      <ProcessManagerView open={processManagerOpen} onClose={() => setProcessManagerOpen(false)} />
 
       {/* Error toast */}
       {error && (
