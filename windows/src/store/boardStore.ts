@@ -428,9 +428,21 @@ export async function updateQueuedPrompt(
   cardId: string,
   promptId: string,
   body: string,
-  sendAutomatically: boolean
+  sendAutomatically: boolean,
+  imagePaths?: string[] | null,
 ): Promise<void> {
-  return invoke("update_queued_prompt", { cardId, promptId, body, sendAutomatically });
+  // `imagePaths === undefined` ⇒ leave attachments alone. `null` or `[]` ⇒
+  // clear them. A populated array replaces. The backend honors a
+  // `setImagePaths: true` flag to distinguish "don't touch" from "clear".
+  const setImagePaths = imagePaths !== undefined;
+  return invoke("update_queued_prompt", {
+    cardId,
+    promptId,
+    body,
+    sendAutomatically,
+    setImagePaths,
+    imagePaths: setImagePaths ? imagePaths ?? null : null,
+  });
 }
 
 export async function removeQueuedPrompt(

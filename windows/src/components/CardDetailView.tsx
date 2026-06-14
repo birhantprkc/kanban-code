@@ -637,14 +637,18 @@ export default function CardDetailView() {
   const handleUpdatePrompt = async (body: string, sendAutomatically: boolean, imagePaths?: string[]) => {
     if (!editingPrompt) return;
     try {
-      // update_queued_prompt doesn't accept imagePaths yet — for edits we
-      // keep the existing attachment set. Image changes during edit are a
-      // follow-up; for now the chip-remove path is the editor's way to
-      // detach an image (the marker stays as literal text on send).
-      void imagePaths;
-      await updateQueuedPrompt(card.id, editingPrompt.id, body, sendAutomatically);
+      // Pass imagePaths through so chip-remove in the edit dialog actually
+      // persists. The wrapper treats `undefined` as "don't touch", which is
+      // what legacy callers want — here we always pass an array (possibly
+      // empty) because the dialog tracks both states explicitly.
+      const nextPaths = imagePaths ?? [];
+      await updateQueuedPrompt(card.id, editingPrompt.id, body, sendAutomatically, nextPaths);
       setQueuedPrompts((prev) =>
-        prev.map((p) => p.id === editingPrompt.id ? { ...p, body, sendAutomatically } : p)
+        prev.map((p) =>
+          p.id === editingPrompt.id
+            ? { ...p, body, sendAutomatically, imagePaths: nextPaths.length > 0 ? nextPaths : undefined }
+            : p
+        )
       );
     } catch { /* silent */ }
   };

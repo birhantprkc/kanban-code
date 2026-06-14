@@ -435,6 +435,7 @@ impl CoordinationStore {
         prompt_id: &str,
         body: &str,
         send_automatically: bool,
+        image_paths: Option<Option<Vec<String>>>,
     ) -> Result<()> {
         let mut links = self.read_links().await?;
         if let Some(link) = links.iter_mut().find(|l| l.id == card_id) {
@@ -442,6 +443,13 @@ impl CoordinationStore {
                 if let Some(p) = prompts.iter_mut().find(|p| p.id == prompt_id) {
                     p.body = body.to_string();
                     p.send_automatically = send_automatically;
+                    // Three states for image_paths:
+                    //   None         — caller didn't pass; keep what's there
+                    //   Some(None)   — caller wants to clear the attachments
+                    //   Some(Some(v))— caller wants to replace with `v`
+                    if let Some(new_paths) = image_paths {
+                        p.image_paths = new_paths;
+                    }
                 }
             }
             link.updated_at = Utc::now();

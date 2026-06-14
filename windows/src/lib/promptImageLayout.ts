@@ -74,6 +74,33 @@ export function replaceMarkersWithMarkdown(text: string, imagePaths: string[]): 
     .join("");
 }
 
+/** Drop image `removedIdx` (0-based) and rewrite the body's markers so the
+ *  remaining attachments stay contiguous 1-based. Used by the chip-remove
+ *  button on both the New Task and Queued Prompt dialogs.
+ *
+ *  Returns the new body + the new paths. Doing this purely so the editor
+ *  state stays in sync with what `replaceMarkersWithMarkdown` would emit at
+ *  send time — without the renumber, a higher-numbered marker silently
+ *  becomes literal text on send and that image gets lost. */
+export function removeImageAtIndex(
+  body: string,
+  imagePaths: string[],
+  removedIdx: number,
+): { body: string; imagePaths: string[] } {
+  if (removedIdx < 0 || removedIdx >= imagePaths.length) {
+    return { body, imagePaths };
+  }
+  const nextPaths = imagePaths.filter((_, i) => i !== removedIdx);
+  let nextBody = body.split(imageMarker(removedIdx + 1)).join("");
+  // Shift every marker > removedIdx down by one. Walk in ascending order so
+  // we never collide with a not-yet-shifted higher number (since the new
+  // values are strictly smaller than the source values).
+  for (let i = removedIdx + 1; i < imagePaths.length; i++) {
+    nextBody = nextBody.split(imageMarker(i + 1)).join(imageMarker(i));
+  }
+  return { body: nextBody, imagePaths: nextPaths };
+}
+
 function coalesceAdjacentText(items: PromptPart[]): PromptPart[] {
   const out: PromptPart[] = [];
   for (const p of items) {

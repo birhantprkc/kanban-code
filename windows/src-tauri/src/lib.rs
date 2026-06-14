@@ -382,11 +382,22 @@ async fn update_queued_prompt(
     prompt_id: String,
     body: String,
     send_automatically: bool,
+    image_paths: Option<Vec<String>>,
+    set_image_paths: Option<bool>,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
+    // `set_image_paths` flips the outer wrapper: when false / absent we leave
+    // the stored attachments alone (legacy callers and pure body-edits).
+    // When true we replace with whatever `image_paths` carries — empty list
+    // and null both clear the attachments.
+    let paths_update = if set_image_paths.unwrap_or(false) {
+        Some(image_paths.filter(|v| !v.is_empty()))
+    } else {
+        None
+    };
     state
         .coordination_store
-        .update_queued_prompt(&card_id, &prompt_id, &body, send_automatically)
+        .update_queued_prompt(&card_id, &prompt_id, &body, send_automatically, paths_update)
         .await
         .map_err(|e| e.to_string())
 }

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { getSettings, saveClipboardImage, useBoardStore } from "../store/boardStore";
 import { useTheme, t } from "../theme";
 import { ASSISTANT_DISPLAY, type AssistantId } from "../types";
-import { imageMarker } from "../lib/promptImageLayout";
+import { imageMarker, removeImageAtIndex } from "../lib/promptImageLayout";
 
 export default function NewTaskDialog() {
   const { createCard, setNewTaskOpen, selectCard, cards } = useBoardStore();
@@ -46,12 +46,9 @@ export default function NewTaskDialog() {
   };
 
   const removeImageAt = (idx: number) => {
-    setImagePaths(imagePaths.filter((_, i) => i !== idx));
-    // Strip the corresponding marker text. We don't reindex remaining markers
-    // — `replaceMarkersWithMarkdown` only honors markers <= imagePaths.length,
-    // so stale higher-index markers turn into literal text on send. Users can
-    // edit them out by hand, which matches macOS's behavior.
-    setPrompt(prompt.replace(imageMarker(idx + 1), ""));
+    const { body, imagePaths: nextPaths } = removeImageAtIndex(prompt, imagePaths, idx);
+    setPrompt(body);
+    setImagePaths(nextPaths);
   };
 
   const cardProjects = [

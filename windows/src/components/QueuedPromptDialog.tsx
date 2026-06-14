@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useTheme, t } from "../theme";
 import { saveClipboardImage, useBoardStore } from "../store/boardStore";
-import { imageMarker } from "../lib/promptImageLayout";
+import { imageMarker, removeImageAtIndex } from "../lib/promptImageLayout";
 
 interface Props {
   open: boolean;
@@ -67,8 +67,9 @@ export default function QueuedPromptDialog({ open, onClose, onSave, editBody, ed
   };
 
   const removeImageAt = (idx: number) => {
-    setImagePaths(imagePaths.filter((_, i) => i !== idx));
-    setBody(body.replace(imageMarker(idx + 1), ""));
+    const next = removeImageAtIndex(body, imagePaths, idx);
+    setBody(next.body);
+    setImagePaths(next.imagePaths);
   };
 
   return (
