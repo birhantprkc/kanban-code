@@ -99,4 +99,28 @@ describe("headless agent launch/resume (real tmux)", skipIfNoTmux, () => {
     const card = readLinks()[0];
     assert.equal(card.sessionLink?.sessionPath, join(projDir, `${identity.sessionId}.jsonl`));
   });
+
+  test("forceFresh ignores a resumable transcript and mints a unique session id", () => {
+    // A prior session's transcript exists under this slug's stable id, so the
+    // default would resume it. A recycled ephemeral slug (a room reusing names)
+    // must not: forceFresh skips the resume AND mints a unique id, so it can't
+    // collide with the existing id ("Session ID already in use") and stays
+    // deliverable. The readable tmux name stays stable.
+    const projDir = join(claudeHome, "projects", "some-encoded-cwd");
+    mkdirSync(projDir, { recursive: true });
+    writeFileSync(join(projDir, `${identity.sessionId}.jsonl`), '{"type":"user"}\n');
+
+    const result = ensureAgentSession(identity, {
+      cwd: workspace,
+      bin: "true",
+      forceFresh: true,
+    });
+    assert.equal(result.action, "launched");
+    assert.doesNotMatch(result.command!, /--resume/);
+    assert.notEqual(result.sessionId, identity.sessionId);
+    assert.match(result.command!, new RegExp(`--session-id ${result.sessionId}`));
+    assert.equal(result.tmuxName, identity.tmuxName);
+    execSync(`tmux has-session -t ${identity.tmuxName}`);
+    assert.equal(readLinks()[0].sessionLink?.sessionId, result.sessionId);
+  });
 });
