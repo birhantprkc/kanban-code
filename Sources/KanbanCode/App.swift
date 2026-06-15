@@ -188,8 +188,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         }
     }
 
-    /// Check for a pending project open request from the CLI.
+    /// On activation, drain any pending CLI/gateway requests left as marker
+    /// files in ~/.kanban-code. Plain files, not deep links, so they never
+    /// relaunch the app (which would trip the quit-protection dialog).
     func applicationDidBecomeActive(_ notification: Notification) {
+        checkPendingOpenProject()
+        checkPendingFocusChannel()
+    }
+
+    /// Check for a pending project open request from the CLI.
+    private func checkPendingOpenProject() {
         let file = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".kanban-code/open-project")
         guard let path = try? String(contentsOf: file, encoding: .utf8)
@@ -199,6 +207,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         NotificationCenter.default.post(
             name: .kanbanCodeOpenProject, object: nil,
             userInfo: ["path": path]
+        )
+    }
+
+    /// Check for a pending channel-focus request: select the channel the
+    /// gateway wrote to ~/.kanban-code/focus-channel when a room spawned, so
+    /// the board snaps to the room's channel without a relaunching deep link.
+    private func checkPendingFocusChannel() {
+        let file = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".kanban-code/focus-channel")
+        guard let raw = try? String(contentsOf: file, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty else { return }
+        try? FileManager.default.removeItem(at: file)
+        let name = raw.hasPrefix("#") ? String(raw.dropFirst()) : raw
+        NotificationCenter.default.post(
+            name: .kanbanCodeSelectChannel, object: nil,
+            userInfo: ["channelName": name]
         )
     }
 
