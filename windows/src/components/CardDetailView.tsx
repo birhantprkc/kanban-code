@@ -2,6 +2,14 @@ import { forwardRef, useEffect, useState, useRef, useCallback, useMemo } from "r
 import { ask } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { open as openShell } from "@tauri-apps/plugin-shell";
+import {
+  DndContext, type DragEndEvent, PointerSensor, useSensor, useSensors, closestCenter,
+} from "@dnd-kit/core";
+import {
+  arrayMove, SortableContext, useSortable, horizontalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import {
   getTranscript,
   getSettings,
@@ -28,14 +36,14 @@ import {
   type Project,
 } from "../types";
 import { useTheme, t } from "../theme";
-import type { Turn, TranscriptPage, QueuedPrompt } from "../types";
+import type { Turn, TranscriptPage, QueuedPrompt, BrowserTabInfo } from "../types";
 import { replaceMarkersWithMarkdown } from "../lib/promptImageLayout";
 import TerminalView from "./Terminal";
 import QueuedPromptDialog from "./QueuedPromptDialog";
 import QueuedPromptsBar from "./QueuedPromptsBar";
 import LaunchConfirmationDialog, { type LaunchFlags } from "./LaunchConfirmationDialog";
 
-type Tab = "terminal" | "history" | "issue" | "pr" | "prompt";
+type Tab = "terminal" | "history" | "issue" | "pr" | "prompt" | "browser";
 
 const TAB_LABELS: Record<Tab, string> = {
   terminal: "Terminal",
@@ -43,6 +51,7 @@ const TAB_LABELS: Record<Tab, string> = {
   issue: "Issue",
   pr: "PR",
   prompt: "Prompt",
+  browser: "Browser",
 };
 
 function slugifyHandle(title: string): string {
@@ -747,13 +756,16 @@ export default function CardDetailView() {
     });
   };
 
-  // Only show tabs that have data
-  const availableTabs: Tab[] = (["terminal", "history", "issue", "pr", "prompt"] as Tab[]).filter((tab) => {
+  // Only show tabs that have data. Browser is always available — the tab
+  // is the entry point for adding the first tab, so it can't gate on
+  // there already being one.
+  const availableTabs: Tab[] = (["terminal", "history", "issue", "pr", "prompt", "browser"] as Tab[]).filter((tab) => {
     if (tab === "terminal") return canTerminal;
     if (tab === "history") return !!sessionId;
     if (tab === "issue") return !!issue;
     if (tab === "pr") return !!pr;
     if (tab === "prompt") return !!promptBody;
+    if (tab === "browser") return true;
     return false;
   });
 
@@ -1151,6 +1163,13 @@ export default function CardDetailView() {
               </pre>
             </div>
           </div>
+        )}
+        {activeTab === "browser" && (
+          <BrowserPanel
+            cardId={card.id}
+            tabs={card.link.browserTabs ?? []}
+            onChanged={() => useBoardStore.getState().refresh()}
+          />
         )}
       </div>
 
@@ -2024,4 +2043,251 @@ function ContentTab({
       )}
     </div>
   );
+}
+
+/* ── Browser panel (#125 step 2) ─────────────────────────────────────────────
+ * Renders the per-card browser tab strip + DnD reorder + URL display, on top
+ * of the data layer that landed in step 1. The actual WebView2 integration
+ * (steps 3-6: Path A vs B prototype, URL bar, back/forward, shortcuts,
+ * reopen-last-closed ring buffer) lands in follow-up PRs; this view is the
+ * stable surface that all those steps drop into.
+ */
+
+function BrowserPanel({
+  cardId,
+  tabs,
+  onChanged,
+}: {
+  cardId: string;
+  tabs: BrowserTabInfo[];
+  onChanged: () => void;
+}) {
+  const { theme } = useTheme();
+  const c = t(theme);
+  const [activeTabId, setActiveTabId] = useState<string | null>(tabs[0]?.id ?? null);
+  const [newTabUrl, setNewTabUrl] = useState("");
+  const [adding, setAdding] = useState(false);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
+  );
+
+  // Keep the selected tab id in sync as the underlying tab list mutates —
+  // if the currently active tab was removed, fall back to whatever's first
+  // (or null when the panel is empty).
+  useEffect(() => {
+    if (tabs.length === 0) {
+      if (activeTabId !== null) setActiveTabId(null);
+      return;
+    }
+    if (!activeTabId || !tabs.some((t) => t.id === activeTabId)) {
+      setActiveTabId(tabs[0].id);
+    }
+  }, [tabs, activeTabId]);
+
+  const addTab = async () => {
+    const url = normalizeUrl(newTabUrl);
+    if (!url) return;
+    setAdding(true);
+    try {
+      const created = await invoke<BrowserTabInfo | null>("add_browser_tab", { cardId, url });
+      setNewTabUrl("");
+      if (created) setActiveTabId(created.id);
+      onChanged();
+    } catch (e) {
+      useBoardStore.setState({ error: String(e) });
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const removeTab = async (tabId: string) => {
+    try {
+      await invoke("remove_browser_tab", { cardId, tabId });
+      onChanged();
+    } catch (e) {
+      useBoardStore.setState({ error: String(e) });
+    }
+  };
+
+  const handleDragEnd = async (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const oldIdx = tabs.findIndex((t) => t.id === active.id);
+    const newIdx = tabs.findIndex((t) => t.id === over.id);
+    if (oldIdx === -1 || newIdx === -1) return;
+    const reordered = arrayMove(tabs.map((t) => t.id), oldIdx, newIdx);
+    try {
+      await invoke("reorder_browser_tabs", { cardId, orderedIds: reordered });
+      onChanged();
+    } catch (e) {
+      useBoardStore.setState({ error: String(e) });
+    }
+  };
+
+  const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
+
+  return (
+    <div className="flex-1 flex flex-col min-h-0">
+      {/* Tab strip + add */}
+      <div
+        className="flex items-center gap-1 px-2 py-1 shrink-0 overflow-x-auto"
+        style={{ background: "#0a0a0c", borderBottom: `1px solid ${c.border}` }}
+      >
+        {tabs.length === 0 ? (
+          <div className="text-[11px] px-2 py-0.5" style={{ color: c.textDim }}>
+            No tabs yet — add a URL below.
+          </div>
+        ) : (
+          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+            <SortableContext items={tabs.map((t) => t.id)} strategy={horizontalListSortingStrategy}>
+              <div className="flex items-center gap-1">
+                {tabs.map((tab) => (
+                  <BrowserTabChip
+                    key={tab.id}
+                    tab={tab}
+                    active={tab.id === activeTabId}
+                    onActivate={() => setActiveTabId(tab.id)}
+                    onClose={() => removeTab(tab.id)}
+                    c={c}
+                  />
+                ))}
+              </div>
+            </SortableContext>
+          </DndContext>
+        )}
+      </div>
+
+      {/* URL bar + add new */}
+      <div
+        className="flex items-center gap-2 px-3 py-2 shrink-0"
+        style={{ background: c.bgCard, borderBottom: `1px solid ${c.border}` }}
+      >
+        <input
+          type="text"
+          value={newTabUrl}
+          onChange={(e) => setNewTabUrl(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") addTab(); }}
+          placeholder="https://github.com/… (Enter to open in new tab)"
+          className="flex-1 rounded px-2 py-1 text-[12px] font-mono outline-none"
+          style={{ background: c.bgInput, border: `1px solid ${c.border}`, color: c.textPrimary }}
+        />
+        <button
+          onClick={addTab}
+          disabled={adding || !newTabUrl.trim()}
+          className="px-2.5 py-1 rounded text-[12px] transition-colors disabled:opacity-40"
+          style={{ color: c.textSecondary, border: `1px solid ${c.border}` }}
+        >
+          {adding ? "…" : "Open"}
+        </button>
+      </div>
+
+      {/* Tab body — placeholder until the WebView2 integration lands.
+          Step 3 of #125 will replace this with either Tauri's WebviewWindow
+          (Path A) or an embedded WebView2 control (Path B). */}
+      <div className="flex-1 overflow-y-auto p-4">
+        {activeTab ? (
+          <div
+            className="rounded-lg p-4 flex flex-col gap-3"
+            style={{ background: c.bgAccent("0.03"), border: `1px solid ${c.border}` }}
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] uppercase tracking-wider" style={{ color: c.textDim }}>URL</span>
+              <a
+                href={activeTab.url}
+                onClick={(e) => {
+                  e.preventDefault();
+                  // System browser fallback until the embedded WebView lands.
+                  // Avoids a blank panel for users opening this tab today.
+                  openShell(activeTab.url).catch(() => {});
+                }}
+                className="font-mono text-[12px] underline-offset-2 hover:underline truncate"
+                style={{ color: c.textPrimary }}
+                title={activeTab.url}
+              >
+                {activeTab.url}
+              </a>
+            </div>
+            <div className="text-[12px]" style={{ color: c.textMuted }}>
+              The embedded WebView2 preview lands in step 3 of #125. Clicking
+              the URL above opens it in your system browser as a fallback so
+              the tab strip and persistence are usable today.
+            </div>
+          </div>
+        ) : (
+          <div className="text-[12px]" style={{ color: c.textMuted }}>
+            Type a URL above and press Enter (or Open) to add a tab. Tabs
+            persist on the card and survive restarts.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function BrowserTabChip({
+  tab,
+  active,
+  onActivate,
+  onClose,
+  c,
+}: {
+  tab: BrowserTabInfo;
+  active: boolean;
+  onActivate: () => void;
+  onClose: () => void;
+  c: ReturnType<typeof t>;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id: tab.id });
+  const label = tab.title ?? hostnameOf(tab.url) ?? tab.url;
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    background: active ? "#1a1a1f" : "transparent",
+    color: active ? "#e4e4e7" : "#9ca3af",
+    opacity: isDragging ? 0.5 : 1,
+    touchAction: "none",
+  };
+  return (
+    <div
+      ref={setNodeRef}
+      className="flex items-center gap-1 rounded px-2 py-0.5 text-[11px] cursor-pointer transition-colors"
+      style={style}
+      onClick={onActivate}
+      title={tab.url}
+      {...attributes}
+      {...listeners}
+    >
+      <span className="truncate max-w-[180px]">{label}</span>
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onClose();
+        }}
+        className="opacity-60 hover:opacity-100"
+        style={{ color: "#9ca3af" }}
+        title="Close tab"
+      >
+        ×
+      </button>
+    </div>
+  );
+}
+
+function normalizeUrl(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) return trimmed;
+  // Bare host / path — assume https. Matches what browsers default to in
+  // their address bar.
+  return `https://${trimmed}`;
+}
+
+function hostnameOf(url: string): string | null {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return null;
+  }
 }
