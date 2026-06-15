@@ -128,15 +128,17 @@ export interface Link {
   apiServiceId?: string;
 }
 
-export type AssistantId = "claude" | "gemini";
+export type AssistantId = "claude" | "codex" | "gemini";
 
 export const ASSISTANT_DISPLAY: Record<AssistantId, string> = {
   claude: "Claude Code",
+  codex: "Codex CLI",
   gemini: "Gemini CLI",
 };
 
 export const ASSISTANT_CLI: Record<AssistantId, string> = {
   claude: "claude",
+  codex: "codex",
   gemini: "gemini",
 };
 

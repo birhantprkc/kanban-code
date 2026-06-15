@@ -18,6 +18,7 @@ use std::path::PathBuf;
 #[serde(rename_all = "lowercase")]
 pub enum AssistantId {
     Claude,
+    Codex,
     Gemini,
 }
 
@@ -29,12 +30,13 @@ impl Default for AssistantId {
 
 impl AssistantId {
     pub fn all() -> &'static [AssistantId] {
-        &[AssistantId::Claude, AssistantId::Gemini]
+        &[AssistantId::Claude, AssistantId::Codex, AssistantId::Gemini]
     }
 
     pub fn as_str(&self) -> &'static str {
         match self {
             AssistantId::Claude => "claude",
+            AssistantId::Codex => "codex",
             AssistantId::Gemini => "gemini",
         }
     }
@@ -42,6 +44,7 @@ impl AssistantId {
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "claude" => Some(AssistantId::Claude),
+            "codex" => Some(AssistantId::Codex),
             "gemini" => Some(AssistantId::Gemini),
             _ => None,
         }
@@ -50,6 +53,7 @@ impl AssistantId {
     pub fn display_name(&self) -> &'static str {
         match self {
             AssistantId::Claude => "Claude Code",
+            AssistantId::Codex => "Codex CLI",
             AssistantId::Gemini => "Gemini CLI",
         }
     }
@@ -60,6 +64,7 @@ impl AssistantId {
     pub fn cli_command(&self) -> &'static str {
         match self {
             AssistantId::Claude => "claude",
+            AssistantId::Codex => "codex",
             AssistantId::Gemini => "gemini",
         }
     }
@@ -68,6 +73,9 @@ impl AssistantId {
     pub fn auto_approve_flag(&self) -> &'static str {
         match self {
             AssistantId::Claude => "--dangerously-skip-permissions",
+            // Codex's auto-approve is `--full-auto`. Mirrors macOS
+            // `CodingAssistant.codex.autoApproveFlag`.
+            AssistantId::Codex => "--full-auto",
             AssistantId::Gemini => "--yolo",
         }
     }
@@ -75,15 +83,18 @@ impl AssistantId {
     /// Resume an existing session id.
     pub fn resume_flag(&self) -> &'static str {
         match self {
-            AssistantId::Claude | AssistantId::Gemini => "--resume",
+            // Codex uses `--resume <id>` like the others; the `codex resume`
+            // subcommand exists too but the flag form composes with --full-auto.
+            AssistantId::Claude | AssistantId::Codex | AssistantId::Gemini => "--resume",
         }
     }
 
-    /// Config dir under $HOME (e.g. ".claude", ".gemini"). Used by discovery
-    /// and by the macOS `owns(sessionPath:)` check.
+    /// Config dir under $HOME (e.g. ".claude", ".codex", ".gemini"). Used by
+    /// discovery and by the macOS `owns(sessionPath:)` check.
     pub fn config_dir_name(&self) -> &'static str {
         match self {
             AssistantId::Claude => ".claude",
+            AssistantId::Codex => ".codex",
             AssistantId::Gemini => ".gemini",
         }
     }

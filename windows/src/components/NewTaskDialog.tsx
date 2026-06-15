@@ -256,11 +256,16 @@ export default function NewTaskDialog() {
                 );
               })}
             </div>
-            {assistantId === "gemini" && (
+            {(assistantId === "gemini" || assistantId === "codex") && (
               <p className="mt-2 text-[11.5px]" style={{ color: c.textDim }}>
-                Gemini support is minimal in this build — the embedded terminal
-                will invoke <code>gemini</code> from PATH. Activity detection
-                and hooks remain Claude-only.
+                {assistantId === "codex" ? "Codex" : "Gemini"} support is
+                partial in this build — the embedded terminal invokes{" "}
+                <code>{assistantId}</code> from PATH, and{" "}
+                {assistantId === "codex"
+                  ? "rollout sessions under ~/.codex/sessions are discovered."
+                  : "sessions are listed only."}{" "}
+                Activity detection and hooks remain Claude-only for now —
+                full parity lands in follow-up sub-PRs of #124.
               </p>
             )}
           </div>

@@ -227,6 +227,21 @@ impl SessionDiscovery {
             .filter(|s| s.message_count > 0)
             .collect();
 
+        // Composite step — merge in Codex sessions from `~/.codex/sessions/`.
+        // Codex ids are independently generated (rollout file path or
+        // session_meta.id) and won't collide with Claude's project-encoded
+        // ksuid ids in practice. We dedup on id to be safe and let the
+        // Claude-side scan win when both happen to claim the same id.
+        let codex_sessions = crate::codex_sessions::discover().await;
+        let claude_ids: std::collections::HashSet<String> =
+            sessions.iter().map(|s| s.id.clone()).collect();
+        for s in codex_sessions {
+            if claude_ids.contains(&s.id) {
+                continue;
+            }
+            sessions.push(s);
+        }
+
         sessions.sort_by(|a, b| b.modified_time.cmp(&a.modified_time));
         Ok(sessions)
     }

@@ -3,6 +3,7 @@ mod assign_column;
 mod bm25;
 mod board_state;
 mod card_reconciler;
+mod codex_sessions;
 pub mod channels;
 pub mod channels_store;
 mod channels_watcher;
