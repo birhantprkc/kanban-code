@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useState, useRef, useCallback } from "react";
+import { forwardRef, useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -19,7 +19,14 @@ import {
   truncateSession,
   moveCardToProject,
 } from "../store/boardStore";
-import { ASSISTANT_CLI, type Project, type AssistantId } from "../types";
+import {
+  ASSISTANT_CLI,
+  resolveAPIService,
+  apiServiceNeedsSeparator,
+  type APIService,
+  type AssistantId,
+  type Project,
+} from "../types";
 import { useTheme, t } from "../theme";
 import type { Turn, TranscriptPage, QueuedPrompt } from "../types";
 import { replaceMarkersWithMarkdown } from "../lib/promptImageLayout";
@@ -75,6 +82,11 @@ export default function CardDetailView() {
   const [terminalFontSize, setTerminalFontSize] = useState(15);
   const [sessionDetailFontSize, setSessionDetailFontSize] = useState(12);
   const [terminalShell, setTerminalShell] = useState<string>("cmd.exe");
+  // APIService bindings — captured once at mount and used to resolve the
+  // per-card endpoint at launch time. We don't refresh on every settings
+  // change to keep the resolved command stable during a live session.
+  const [apiServices, setApiServices] = useState<APIService[]>([]);
+  const [defaultAPIServiceIds, setDefaultAPIServiceIds] = useState<Record<string, string>>({});
   // Whether `tmux -V` succeeds in the user's WSL environment. When true AND
   // the chosen shell is a Unix shell, terminals are wrapped in
   // `tmux new-session -A -s <ksuid>` so closing the drawer detaches (the
@@ -147,6 +159,8 @@ export default function CardDetailView() {
         setSessionDetailFontSize(s.sessionDetailFontSize || 12);
         setTerminalShell((s.terminalShell && s.terminalShell.trim()) || "cmd.exe");
         setAvailableProjects(s.projects ?? []);
+        setApiServices(s.apiServices ?? []);
+        setDefaultAPIServiceIds(s.defaultAPIServiceIds ?? {});
       })
       .catch(() => {});
     invoke<boolean>("tmux_available")
@@ -326,6 +340,44 @@ export default function CardDetailView() {
   const assistantId: AssistantId = (card.link.assistantId ?? "claude") as AssistantId;
   const cli = ASSISTANT_CLI[assistantId] ?? "claude";
 
+  // Resolve the per-card APIService. May be undefined when nothing matches
+  // — that's the "vanilla CLI" path the app shipped with.
+  const resolvedService: APIService | undefined = useMemo(
+    () =>
+      resolveAPIService(
+        { apiServices, defaultAPIServiceIds } as never,
+        card.link.apiServiceId,
+        assistantId,
+      ),
+    [apiServices, defaultAPIServiceIds, card.link.apiServiceId, assistantId],
+  );
+
+  // Env vars + command-token wrap derived from the resolved service.
+  // baseURL → `ANTHROPIC_BASE_URL` for claude/codex (Anthropic-shaped APIs).
+  // Gemini and friends will get their own var when #124 ports them.
+  const serviceEnv: string[] = useMemo(() => {
+    if (!resolvedService?.baseURL) return [];
+    if (assistantId === "claude") return [`ANTHROPIC_BASE_URL=${resolvedService.baseURL}`];
+    // Future-proof: an unknown assistant gets the Anthropic-style var as a
+    // conservative default. Per-assistant overrides land with #124.
+    return [`ANTHROPIC_BASE_URL=${resolvedService.baseURL}`];
+  }, [resolvedService, assistantId]);
+
+  // CLI invocation, optionally wrapped by launcherPrefix and given a --model
+  // flag. The `--` separator is only emitted when the service actually needs
+  // it (see apiServiceNeedsSeparator).
+  const cliInvocation = useMemo(() => {
+    if (!resolvedService) return { exe: cli, modelFlag: "", separator: "" };
+    const exe = resolvedService.launcherPrefix
+      ? `${resolvedService.launcherPrefix} ${cli}`
+      : cli;
+    const modelFlag = resolvedService.modelFlag
+      ? ` --model ${resolvedService.modelFlag}`
+      : "";
+    const separator = apiServiceNeedsSeparator(resolvedService) ? " --" : "";
+    return { exe, modelFlag, separator };
+  }, [resolvedService, cli]);
+
   // Identity env injected into every card-launch shell so the in-card
   // `kanban` CLI can resolve who it is without --as flags. Prepended first
   // so a user-supplied entry in the launch dialog still overrides.
@@ -359,16 +411,20 @@ export default function CardDetailView() {
       const allEnv = [
         `KANBAN_CARD_ID=${cardId}`,
         `KANBAN_HANDLE=${kanbanHandle}`,
+        ...serviceEnv,
         ...env,
       ];
       const envPrefix = allEnv.join(" ") + " ";
       const cdCmd = cwd ? `cd ${cwd.replace(/ /g, "\\ ")} && ` : "";
       const skipFlag = skipPerm ? " --dangerously-skip-permissions" : "";
+      // Assistant-owned flags live after the optional `--` separator so a
+      // launcher prefix (e.g. `ollama launch`) doesn't swallow them.
+      const tail = `${cliInvocation.modelFlag}${cliInvocation.separator}${skipFlag}`;
       return sid
-        ? `${cdCmd}${envPrefix}${cli} --resume ${sid}${skipFlag}`
-        : `${cdCmd}${envPrefix}${cli}${skipFlag} '${prompt.replace(/'/g, "'\\''")}'`;
+        ? `${cdCmd}${envPrefix}${cliInvocation.exe} --resume ${sid}${tail}`
+        : `${cdCmd}${envPrefix}${cliInvocation.exe}${tail} '${prompt.replace(/'/g, "'\\''")}'`;
     },
-    [cli, cardId, kanbanHandle],
+    [cardId, kanbanHandle, serviceEnv, cliInvocation],
   );
 
   const buildInnerCmdShellCmd = useCallback(
@@ -384,16 +440,18 @@ export default function CardDetailView() {
       const allEnv = [
         `KANBAN_CARD_ID=${cardId}`,
         `KANBAN_HANDLE=${kanbanHandle}`,
+        ...serviceEnv,
         ...env,
       ];
       const envPrefix = allEnv.map((kv) => `set ${kv}&& `).join("");
       const cdCmd = cwd ? `cd "${cwd}" && ` : "";
       const skipFlag = skipPerm ? " --dangerously-skip-permissions" : "";
+      const tail = `${cliInvocation.modelFlag}${cliInvocation.separator}${skipFlag}`;
       return sid
-        ? `${cdCmd}${envPrefix}${cli} --resume ${sid}${skipFlag}`
-        : `${cdCmd}${envPrefix}${cli}${skipFlag} "${prompt.replace(/"/g, '""')}"`;
+        ? `${cdCmd}${envPrefix}${cliInvocation.exe} --resume ${sid}${tail}`
+        : `${cdCmd}${envPrefix}${cliInvocation.exe}${tail} "${prompt.replace(/"/g, '""')}"`;
     },
-    [cli, cardId, kanbanHandle],
+    [cardId, kanbanHandle, serviceEnv, cliInvocation],
   );
 
   // The inner bash command (`cd … && claude …`) — same for tmux + legacy

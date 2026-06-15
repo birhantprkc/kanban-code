@@ -11,7 +11,8 @@ import {
   saveSettings,
   useBoardStore,
 } from "../store/boardStore";
-import type { RemotePrereqs, RemoteSettings } from "../types";
+import type { APIService, AssistantId, RemotePrereqs, RemoteSettings } from "../types";
+import { ASSISTANT_DISPLAY } from "../types";
 import { useTheme, t } from "../theme";
 import type { Settings } from "../types";
 
@@ -32,7 +33,7 @@ export default function SettingsView() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [activeSection, setActiveSection] = useState<"projects" | "general" | "github" | "notifications" | "remote">("general");
+  const [activeSection, setActiveSection] = useState<"projects" | "general" | "github" | "notifications" | "remote" | "apis">("general");
 
   useEffect(() => {
     getSettings().then(setSettings).catch(console.error);
@@ -63,13 +64,14 @@ export default function SettingsView() {
     );
   }
 
-  const sections = ["general", "projects", "github", "notifications", "remote"] as const;
+  const sections = ["general", "projects", "github", "notifications", "remote", "apis"] as const;
   const sectionIcons: Record<string, string> = {
     general: "M10.343 3.94c.09-.542.56-.94 1.11-.94h1.093c.55 0 1.02.398 1.11.94l.149.894c.07.424.384.764.78.93.398.164.855.142 1.205-.108l.737-.527a1.125 1.125 0 0 1 1.45.12l.773.774c.39.389.44 1.002.12 1.45l-.527.737c-.25.35-.272.806-.107 1.204.165.397.505.71.93.78l.893.15c.543.09.94.56.94 1.109v1.094c0 .55-.397 1.02-.94 1.11l-.893.149c-.425.07-.765.383-.93.78-.165.398-.143.854.107 1.204l.527.738c.32.447.269 1.06-.12 1.45l-.774.773a1.125 1.125 0 0 1-1.449.12l-.738-.527c-.35-.25-.806-.272-1.203-.107-.397.165-.71.505-.781.929l-.149.894c-.09.542-.56.94-1.11.94h-1.094c-.55 0-1.019-.398-1.11-.94l-.148-.894c-.071-.424-.384-.764-.781-.93-.398-.164-.854-.142-1.204.108l-.738.527c-.447.32-1.06.269-1.45-.12l-.773-.774a1.125 1.125 0 0 1-.12-1.45l.527-.737c.25-.35.273-.806.108-1.204-.165-.397-.505-.71-.93-.78l-.894-.15c-.542-.09-.94-.56-.94-1.109v-1.094c0-.55.398-1.02.94-1.11l.894-.149c.424-.07.765-.383.93-.78.165-.398.143-.854-.107-1.204l-.527-.738a1.125 1.125 0 0 1 .12-1.45l.773-.773a1.125 1.125 0 0 1 1.45-.12l.737.527c.35.25.807.272 1.204.107.397-.165.71-.505.78-.929l.15-.894Z M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z",
     projects: "M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z",
     github: "M10 6H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4M14 4h6m0 0v6m0-6L10 14",
     notifications: "M14.857 17.082a23.848 23.848 0 0 0 5.454-1.31A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6 9v.75a8.967 8.967 0 0 1-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 0 1-5.714 0m5.714 0a3 3 0 1 1-5.714 0",
     remote: "M12 21a9 9 0 1 0-9-9m9 9a9 9 0 0 1-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9h18",
+    apis: "M13.5 16.875h3.375m0 0h3.375m-3.375 0V13.5m0 3.375v3.375M6 10.5h2.25a2.25 2.25 0 0 0 2.25-2.25V6a2.25 2.25 0 0 0-2.25-2.25H6A2.25 2.25 0 0 0 3.75 6v2.25A2.25 2.25 0 0 0 6 10.5Zm0 9.75h2.25A2.25 2.25 0 0 0 10.5 18v-2.25a2.25 2.25 0 0 0-2.25-2.25H6a2.25 2.25 0 0 0-2.25 2.25V18A2.25 2.25 0 0 0 6 20.25Zm9.75-9.75H18a2.25 2.25 0 0 0 2.25-2.25V6A2.25 2.25 0 0 0 18 3.75h-2.25A2.25 2.25 0 0 0 13.5 6v2.25a2.25 2.25 0 0 0 2.25 2.25Z",
   };
 
   return (
@@ -169,6 +171,9 @@ export default function SettingsView() {
           )}
           {activeSection === "remote" && (
             <RemoteSection settings={settings} onChange={setSettings} themeTokens={c} />
+          )}
+          {activeSection === "apis" && (
+            <APIsSection settings={settings} onChange={setSettings} themeTokens={c} />
           )}
         </div>
       </div>
@@ -986,5 +991,199 @@ function Code({ children, c }: { children: ReactNode; c: ThemeTokens }) {
     <code className="font-mono" style={{ color: c.textSecondary }}>
       {children}
     </code>
+  );
+}
+
+// ── APIs section ───────────────────────────────────────────────────────────
+
+function APIsSection({
+  settings,
+  onChange,
+  themeTokens: c,
+}: {
+  settings: Settings;
+  onChange: (s: Settings) => void;
+  themeTokens: ThemeTokens;
+}) {
+  const services = settings.apiServices ?? [];
+  const defaults = settings.defaultAPIServiceIds ?? {};
+  // Both Claude and Gemini are known assistant ids today; #124 adds more.
+  const assistants: AssistantId[] = ["claude", "gemini"];
+
+  const update = (next: APIService[], nextDefaults?: Record<string, string>) => {
+    onChange({
+      ...settings,
+      apiServices: next,
+      defaultAPIServiceIds: nextDefaults ?? defaults,
+    });
+  };
+
+  const addService = () => {
+    const fresh: APIService = {
+      id: `svc_${Date.now().toString(36)}`,
+      name: "New service",
+      assistant: "claude",
+    };
+    update([...services, fresh]);
+  };
+
+  const updateOne = (idx: number, patch: Partial<APIService>) => {
+    const next = services.map((s, i) => (i === idx ? { ...s, ...patch } : s));
+    update(next);
+  };
+
+  const removeOne = (idx: number) => {
+    const removed = services[idx];
+    const next = services.filter((_, i) => i !== idx);
+    // Also clear any per-assistant default that pointed at this service.
+    const cleanedDefaults = { ...defaults };
+    for (const k of Object.keys(cleanedDefaults)) {
+      if (cleanedDefaults[k] === removed.id) delete cleanedDefaults[k];
+    }
+    update(next, cleanedDefaults);
+  };
+
+  return (
+    <div className="flex flex-col gap-5 max-w-3xl">
+      <div className="text-[12px]" style={{ color: c.textMuted }}>
+        Define API services that wrap the assistant CLI with a launcher prefix,
+        model override, or a custom base URL — e.g. routing Claude through Ollama
+        or a self-hosted proxy. Per-assistant defaults are applied when a card
+        doesn't carry its own override.
+        <br />
+        <span style={{ color: c.textSecondary }}>
+          Heads-up:
+        </span>{" "}
+        API keys live in <Code c={c}>settings.json</Code> as plaintext for now —
+        same as macOS. Windows Credential Manager storage is a follow-up.
+      </div>
+
+      {/* Defaults per assistant */}
+      <div className="flex flex-col gap-3">
+        <div className="text-[11px] font-medium uppercase tracking-wider" style={{ color: c.textSecondary }}>
+          Per-assistant default
+        </div>
+        {assistants.map((a) => {
+          const eligible = services.filter((s) => s.assistant === a);
+          const value = defaults[a] ?? "";
+          return (
+            <div key={a} className="flex items-center gap-3">
+              <span className="w-32 text-[12px]" style={{ color: c.textSecondary }}>
+                {ASSISTANT_DISPLAY[a] ?? a}
+              </span>
+              <select
+                value={value}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  const nextDefaults = { ...defaults };
+                  if (v) nextDefaults[a] = v;
+                  else delete nextDefaults[a];
+                  update(services, nextDefaults);
+                }}
+                className="flex-1 rounded-lg px-2 py-1.5 text-[12px] outline-none"
+                style={inputStyle(c)}
+              >
+                <option value="">(none — use bare {a} CLI)</option>
+                {eligible.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Service list */}
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center justify-between">
+          <div className="text-[11px] font-medium uppercase tracking-wider" style={{ color: c.textSecondary }}>
+            Services
+          </div>
+          <button
+            onClick={addService}
+            className="px-2.5 py-1 rounded text-[12px] transition-colors"
+            style={{ color: c.textSecondary, border: `1px solid ${c.border}` }}
+          >
+            + Add service
+          </button>
+        </div>
+        {services.length === 0 ? (
+          <div
+            className="flex items-center justify-center py-8 rounded-lg text-[12px]"
+            style={{ color: c.textDim, border: `1px dashed ${c.border}` }}
+          >
+            No API services defined yet.
+          </div>
+        ) : (
+          services.map((svc, idx) => (
+            <div
+              key={svc.id}
+              className="rounded-xl p-3 flex flex-col gap-2"
+              style={{ background: c.bgAccent("0.02"), border: `1px solid ${c.border}` }}
+            >
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={svc.name}
+                  onChange={(e) => updateOne(idx, { name: e.target.value })}
+                  placeholder="Service name"
+                  className="flex-1 rounded-lg px-2 py-1.5 text-[12px] outline-none"
+                  style={inputStyle(c)}
+                />
+                <select
+                  value={svc.assistant}
+                  onChange={(e) => updateOne(idx, { assistant: e.target.value })}
+                  className="rounded-lg px-2 py-1.5 text-[12px] outline-none"
+                  style={inputStyle(c)}
+                >
+                  {assistants.map((a) => (
+                    <option key={a} value={a}>{ASSISTANT_DISPLAY[a] ?? a}</option>
+                  ))}
+                </select>
+                <button
+                  onClick={() => removeOne(idx)}
+                  className="px-2 py-1 rounded text-[12px] transition-colors shrink-0"
+                  style={{ color: "#f85149", border: "1px solid #f8514940" }}
+                >
+                  Remove
+                </button>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <input
+                  type="text"
+                  value={svc.launcherPrefix ?? ""}
+                  onChange={(e) =>
+                    updateOne(idx, { launcherPrefix: e.target.value || undefined })
+                  }
+                  placeholder="Launcher prefix (e.g. ollama launch)"
+                  className="rounded-lg px-2 py-1.5 text-[12px] font-mono outline-none"
+                  style={inputStyle(c)}
+                />
+                <input
+                  type="text"
+                  value={svc.modelFlag ?? ""}
+                  onChange={(e) =>
+                    updateOne(idx, { modelFlag: e.target.value || undefined })
+                  }
+                  placeholder="--model value (e.g. qwen3-coder)"
+                  className="rounded-lg px-2 py-1.5 text-[12px] font-mono outline-none"
+                  style={inputStyle(c)}
+                />
+              </div>
+              <input
+                type="text"
+                value={svc.baseURL ?? ""}
+                onChange={(e) =>
+                  updateOne(idx, { baseURL: e.target.value || undefined })
+                }
+                placeholder="Base URL (e.g. http://localhost:11434/v1)"
+                className="rounded-lg px-2 py-1.5 text-[12px] font-mono outline-none"
+                style={inputStyle(c)}
+              />
+            </div>
+          ))
+        )}
+      </div>
+    </div>
   );
 }

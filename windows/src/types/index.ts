@@ -122,6 +122,10 @@ export interface Link {
   /** ISO timestamp of the last drawer open. Stamped by `mark_card_opened`
    *  on selectCard. Mirrors macOS Link.lastOpenedAt. */
   lastOpenedAt?: string;
+  /** Per-card override for the resolved APIService. Falls back to
+   *  Settings.defaultAPIServiceIds[assistantId]. Mirrors macOS
+   *  Link.apiServiceId. */
+  apiServiceId?: string;
 }
 
 export type AssistantId = "claude" | "gemini";
@@ -255,6 +259,22 @@ export interface SelfCompactSettings {
   rules: SelfCompactRule[];
 }
 
+/** Byte-compatible with macOS APIService. Wraps a coding assistant CLI with
+ *  a launcher prefix, model override, and optional base URL injected as an
+ *  env var at launch time. */
+export interface APIService {
+  id: string;
+  name: string;
+  assistant: AssistantId | string;
+  /** Shell command prepended before the assistant CLI (e.g. "ollama launch"). */
+  launcherPrefix?: string;
+  /** Value passed to `--model`. Omits the flag when undefined. */
+  modelFlag?: string;
+  /** Base URL injected as `ANTHROPIC_BASE_URL` (or the assistant's
+   *  equivalent) at launch time. */
+  baseURL?: string;
+}
+
 export interface Settings {
   projects: Project[];
   globalView: GlobalViewSettings;
@@ -274,6 +294,37 @@ export interface Settings {
   remote?: RemoteSettings;
   /** Automatic context-limit guard for Claude sessions (mirrors macOS). */
   selfCompact?: SelfCompactSettings;
+  /** Named API service bindings — see APIService. */
+  apiServices?: APIService[];
+  /** Per-assistant default APIService id (assistant id → service id). */
+  defaultAPIServiceIds?: Record<string, string>;
+}
+
+/** Mirrors macOS APIService.needsSeparator — a `--` separator before the
+ *  assistant's own flags is required iff a launcher prefix or model flag is
+ *  set. */
+export function apiServiceNeedsSeparator(svc: APIService): boolean {
+  return Boolean(svc.launcherPrefix || svc.modelFlag);
+}
+
+/** Resolves an APIService for a launch. Per-card override → per-assistant
+ *  default → undefined. Mirrors the Rust `Settings::resolve_api_service`
+ *  logic; both must stay in sync. */
+export function resolveAPIService(
+  settings: Settings,
+  cardOverride: string | undefined,
+  assistantId: string,
+): APIService | undefined {
+  const services = settings.apiServices ?? [];
+  if (cardOverride) {
+    const hit = services.find((s) => s.id === cardOverride);
+    if (hit) return hit;
+    // stale override — fall through so a deleted service doesn't brick the card
+  }
+  const defaults = settings.defaultAPIServiceIds ?? {};
+  const defaultId = defaults[assistantId];
+  if (!defaultId) return undefined;
+  return services.find((s) => s.id === defaultId);
 }
 
 export interface DependencyStatus {

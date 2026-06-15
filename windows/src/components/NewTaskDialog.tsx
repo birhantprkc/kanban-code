@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { getSettings, saveClipboardImage, useBoardStore } from "../store/boardStore";
 import { useTheme, t } from "../theme";
-import { ASSISTANT_DISPLAY, type AssistantId } from "../types";
+import { ASSISTANT_DISPLAY, type APIService, type AssistantId } from "../types";
 import { imageMarker, removeImageAtIndex } from "../lib/promptImageLayout";
 
 export default function NewTaskDialog() {
@@ -16,6 +16,11 @@ export default function NewTaskDialog() {
   const [submitting, setSubmitting] = useState(false);
   const [settingsProjects, setSettingsProjects] = useState<string[]>([]);
   const [imagePaths, setImagePaths] = useState<string[]>([]);
+  const [apiServices, setApiServices] = useState<APIService[]>([]);
+  const [defaultAPIServiceIds, setDefaultAPIServiceIds] = useState<Record<string, string>>({});
+  // null = "use the per-assistant default"; a service id pins this card's
+  // override regardless of the default.
+  const [apiServiceId, setApiServiceId] = useState<string | null>(null);
   const promptRef = useRef<HTMLTextAreaElement>(null);
 
   const handlePromptPaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -70,6 +75,8 @@ export default function NewTaskDialog() {
         if (!project && paths.length > 0) {
           setProject(paths[0]);
         }
+        setApiServices(s.apiServices ?? []);
+        setDefaultAPIServiceIds(s.defaultAPIServiceIds ?? {});
       })
       .catch(console.error);
     if (cardProjects.length > 0 && !project) {
@@ -89,6 +96,7 @@ export default function NewTaskDialog() {
         launch,
         assistantId,
         imagePaths.length > 0 ? imagePaths : undefined,
+        apiServiceId,
       );
       setNewTaskOpen(false);
       if (launch && cardId) {
@@ -256,6 +264,36 @@ export default function NewTaskDialog() {
               </p>
             )}
           </div>
+
+          {/* APIService picker — only render when at least one service exists
+              for the chosen assistant. Eligible list excludes services bound
+              to other assistants so launching never crosses streams. */}
+          {apiServices.filter((s) => s.assistant === assistantId).length > 0 && (
+            <div>
+              <label className="block text-[13px] font-medium mb-2" style={{ color: c.textSecondary }}>
+                API service
+              </label>
+              <select
+                value={apiServiceId ?? ""}
+                onChange={(e) => setApiServiceId(e.target.value || null)}
+                className="w-full rounded-lg px-3.5 py-2.5 text-[14px] outline-none transition-colors"
+                style={inputStyle}
+              >
+                <option value="">
+                  {defaultAPIServiceIds[assistantId]
+                    ? `Default — ${
+                        apiServices.find((s) => s.id === defaultAPIServiceIds[assistantId])?.name ?? "configured default"
+                      }`
+                    : "Default — bare CLI"}
+                </option>
+                {apiServices
+                  .filter((s) => s.assistant === assistantId)
+                  .map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+              </select>
+            </div>
+          )}
 
           <label className="flex items-center gap-3 cursor-pointer select-none">
             <input

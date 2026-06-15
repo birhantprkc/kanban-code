@@ -120,6 +120,7 @@ async fn create_card(
     launch: Option<bool>,
     assistant_id: Option<String>,
     prompt_image_paths: Option<Vec<String>>,
+    api_service_id: Option<String>,
     state: tauri::State<'_, AppState>,
 ) -> Result<coordination_store::Link, String> {
     let assistant = assistant_id
@@ -136,6 +137,7 @@ async fn create_card(
             project.clone(),
             assistant,
             prompt_image_paths,
+            api_service_id,
         )
         .await
         .map_err(|e| e.to_string())?;
@@ -145,6 +147,19 @@ async fn create_card(
     let _ = launch; // suppress unused warning
 
     Ok(link)
+}
+
+#[tauri::command]
+async fn set_card_api_service(
+    card_id: String,
+    api_service_id: Option<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    state
+        .coordination_store
+        .set_card_api_service(&card_id, api_service_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Save raw image bytes (e.g. from clipboard paste) to disk under
@@ -1861,6 +1876,7 @@ pub fn run() {
             set_card_pinned,
             reorder_pinned_cards,
             create_card,
+            set_card_api_service,
             delete_card,
             archive_card,
             rename_card,

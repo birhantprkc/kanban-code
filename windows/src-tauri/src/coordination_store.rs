@@ -156,6 +156,11 @@ pub struct Link {
     /// `mark_card_opened` on selectCard. Mirrors macOS Link.lastOpenedAt.
     #[serde(default)]
     pub last_opened_at: Option<DateTime<Utc>>,
+    /// Per-card override for the resolved APIService (see Settings). `None`
+    /// falls back to `Settings.default_api_service_ids[assistant_id]`, then
+    /// to no service. Mirrors macOS Link.apiServiceId.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_service_id: Option<String>,
 }
 
 fn default_assistant() -> String {
@@ -240,6 +245,7 @@ impl Link {
             pinned_sort_order: None,
             assistant_id,
             last_opened_at: None,
+            api_service_id: None,
         }
     }
 
@@ -385,10 +391,27 @@ impl CoordinationStore {
         project: String,
         assistant_id: String,
         prompt_image_paths: Option<Vec<String>>,
+        api_service_id: Option<String>,
     ) -> Result<Link> {
-        let link = Link::new_card(prompt, title, project, assistant_id, prompt_image_paths);
+        let mut link = Link::new_card(prompt, title, project, assistant_id, prompt_image_paths);
+        link.api_service_id = api_service_id;
         self.upsert_link(&link).await?;
         Ok(link)
+    }
+
+    /// Set or clear the per-card APIService override. Passing `None` clears
+    /// the override (card falls back to the per-assistant default).
+    pub async fn set_card_api_service(
+        &self,
+        card_id: &str,
+        api_service_id: Option<String>,
+    ) -> Result<()> {
+        let mut links = self.read_links().await?;
+        if let Some(link) = links.iter_mut().find(|l| l.id == card_id) {
+            link.api_service_id = api_service_id;
+            link.updated_at = Utc::now();
+        }
+        self.write_links(&links).await
     }
 
     pub async fn remove_link(&self, card_id: &str) -> Result<()> {
@@ -505,6 +528,7 @@ impl CoordinationStore {
             pinned_sort_order: None,
             assistant_id: default_assistant(),
             last_opened_at: None,
+            api_service_id: None,
         };
         self.upsert_link(&link).await?;
         Ok(link)

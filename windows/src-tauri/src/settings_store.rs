@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use tokio::fs;
@@ -194,6 +195,38 @@ impl Default for SelfCompactSettings {
     }
 }
 
+/// Named API service binding for a coding assistant. Wraps the CLI with an
+/// optional launcher prefix (e.g. `ollama launch`), a `--model` value, and
+/// an optional base URL that becomes `ANTHROPIC_BASE_URL` (or the assistant's
+/// equivalent) at launch time. Byte-compatible with macOS APIService.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct APIService {
+    pub id: String,
+    pub name: String,
+    /// CodingAssistant raw value ("claude", "gemini", …). Stored as a string
+    /// so an unknown id from a future macOS-built settings.json still parses.
+    pub assistant: String,
+    /// Shell command prepended before the assistant CLI. `None` = call the
+    /// CLI directly. Example: `Some("ollama launch")`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launcher_prefix: Option<String>,
+    /// Value passed to `--model`. `None` omits the flag entirely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_flag: Option<String>,
+    /// Base URL injected as an env var at launch (e.g. `ANTHROPIC_BASE_URL`).
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "baseURL")]
+    pub base_url: Option<String>,
+}
+
+impl APIService {
+    /// Whether a `--` separator is required before the assistant's own flags.
+    /// Mirrors macOS APIService.needsSeparator.
+    pub fn needs_separator(&self) -> bool {
+        self.launcher_prefix.is_some() || self.model_flag.is_some()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
@@ -237,6 +270,36 @@ pub struct Settings {
     /// and Windows keeps its rule set.
     #[serde(default)]
     pub self_compact: SelfCompactSettings,
+    /// Named API service bindings — see APIService for shape. Byte-compatible
+    /// with macOS Settings.apiServices.
+    #[serde(default)]
+    pub api_services: Vec<APIService>,
+    /// Maps `CodingAssistant.rawValue` → `APIService.id` for the per-assistant
+    /// default service. Matches macOS Settings.defaultAPIServiceIds.
+    #[serde(default)]
+    pub default_api_service_ids: HashMap<String, String>,
+}
+
+impl Settings {
+    /// Resolves the APIService to use for a card launch. Resolution order:
+    /// per-card override → per-assistant default → none. Returns `None` when
+    /// no binding exists or the referenced id no longer points at anything
+    /// (e.g. the service was deleted but a card's override is stale).
+    pub fn resolve_api_service(
+        &self,
+        card_override: Option<&str>,
+        assistant_id: &str,
+    ) -> Option<&APIService> {
+        // Per-card override wins. Stale override → fall through to default
+        // so deleting a service doesn't leave cards unlaunchable.
+        if let Some(id) = card_override {
+            if let Some(svc) = self.api_services.iter().find(|s| s.id == id) {
+                return Some(svc);
+            }
+        }
+        let default_id = self.default_api_service_ids.get(assistant_id)?;
+        self.api_services.iter().find(|s| &s.id == default_id)
+    }
 }
 
 fn default_terminal_font_size() -> u32 {
@@ -326,5 +389,95 @@ impl SettingsStore {
         fs::write(&tmp, &data).await.context("write settings tmp")?;
         fs::rename(&tmp, &self.file_path).await.context("rename settings tmp")?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn svc(id: &str, assistant: &str) -> APIService {
+        APIService {
+            id: id.into(),
+            name: format!("svc-{id}"),
+            assistant: assistant.into(),
+            launcher_prefix: None,
+            model_flag: None,
+            base_url: None,
+        }
+    }
+
+    #[test]
+    fn resolve_prefers_card_override() {
+        let mut s = Settings::default();
+        s.api_services = vec![svc("a", "claude"), svc("b", "claude")];
+        s.default_api_service_ids.insert("claude".into(), "a".into());
+        let resolved = s.resolve_api_service(Some("b"), "claude").unwrap();
+        assert_eq!(resolved.id, "b");
+    }
+
+    #[test]
+    fn resolve_falls_back_to_per_assistant_default_when_no_override() {
+        let mut s = Settings::default();
+        s.api_services = vec![svc("a", "claude")];
+        s.default_api_service_ids.insert("claude".into(), "a".into());
+        let resolved = s.resolve_api_service(None, "claude").unwrap();
+        assert_eq!(resolved.id, "a");
+    }
+
+    #[test]
+    fn resolve_stale_override_falls_back_to_default_instead_of_failing() {
+        // A card holds an override pointing at a deleted service. Without the
+        // fallback the card would be unlaunchable; with it the per-assistant
+        // default takes over. Matches macOS resolveAPIService.
+        let mut s = Settings::default();
+        s.api_services = vec![svc("kept", "claude")];
+        s.default_api_service_ids.insert("claude".into(), "kept".into());
+        let resolved = s.resolve_api_service(Some("deleted"), "claude").unwrap();
+        assert_eq!(resolved.id, "kept");
+    }
+
+    #[test]
+    fn resolve_returns_none_when_no_default_and_no_override() {
+        let s = Settings::default();
+        assert!(s.resolve_api_service(None, "claude").is_none());
+    }
+
+    #[test]
+    fn settings_round_trip_preserves_api_services_and_defaults() {
+        let mut s = Settings::default();
+        s.api_services = vec![APIService {
+            id: "ollama-1".into(),
+            name: "Local Ollama".into(),
+            assistant: "claude".into(),
+            launcher_prefix: Some("ollama launch".into()),
+            model_flag: Some("qwen3-coder-next:cloud".into()),
+            base_url: Some("http://localhost:11434/v1".into()),
+        }];
+        s.default_api_service_ids.insert("claude".into(), "ollama-1".into());
+        let json = serde_json::to_string(&s).unwrap();
+        // baseURL key — explicit serde rename, mirrors macOS spelling.
+        assert!(json.contains("\"baseURL\":"));
+        let s2: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(s2.api_services.len(), 1);
+        assert_eq!(s2.api_services[0].id, "ollama-1");
+        assert_eq!(
+            s2.default_api_service_ids.get("claude"),
+            Some(&"ollama-1".to_string())
+        );
+        assert!(s2.api_services[0].needs_separator());
+    }
+
+    #[test]
+    fn needs_separator_only_when_launcher_or_model_flag_set() {
+        let bare = APIService {
+            id: "bare".into(),
+            name: "Bare".into(),
+            assistant: "claude".into(),
+            launcher_prefix: None,
+            model_flag: None,
+            base_url: Some("http://localhost".into()),
+        };
+        assert!(!bare.needs_separator(), "base_url alone never needs --");
     }
 }

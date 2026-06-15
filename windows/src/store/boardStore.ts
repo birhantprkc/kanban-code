@@ -59,7 +59,8 @@ interface BoardStore {
     project: string,
     launch?: boolean,
     assistantId?: string,
-    promptImagePaths?: string[]
+    promptImagePaths?: string[],
+    apiServiceId?: string | null,
   ) => Promise<string | null>;
   setSearchOpen: (open: boolean) => void;
   setSettingsOpen: (open: boolean) => void;
@@ -241,7 +242,15 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
     );
   },
 
-  createCard: async (prompt, title, project, launch = false, assistantId, promptImagePaths) => {
+  createCard: async (
+    prompt,
+    title,
+    project,
+    launch = false,
+    assistantId,
+    promptImagePaths,
+    apiServiceId,
+  ) => {
     try {
       const link = await invoke<{ id: string }>("create_card", {
         prompt,
@@ -250,6 +259,7 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
         launch,
         assistantId: assistantId ?? null,
         promptImagePaths: promptImagePaths && promptImagePaths.length > 0 ? promptImagePaths : null,
+        apiServiceId: apiServiceId ?? null,
       });
       await get().refresh();
       return link.id;
