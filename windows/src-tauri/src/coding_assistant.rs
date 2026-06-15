@@ -100,21 +100,15 @@ impl AssistantId {
     }
 }
 
-/// Scaffolding for Gemini session discovery. Returns an empty list for
-/// now — wiring through to the board state requires the full session
-/// adapter that macOS has and is intentionally deferred. Existing in this
-/// shape so the trait surface is stable for the follow-up PR.
-///
-/// Gemini stores sessions at:
-///   `~/.gemini/tmp/<slug>/chats/session-<timestamp>.json`
-/// with the slug→absolute-path mapping in `~/.gemini/projects.json`.
+/// Thin compatibility shim. Real discovery lives in `gemini_sessions`,
+/// where it's also fold into the composite SessionDiscovery output. This
+/// function is kept so existing callers (and future #124 sub-PR 3 wiring)
+/// have a single entry point that's stable across reorgs.
 pub async fn discover_gemini_sessions() -> Vec<crate::session_discovery::Session> {
-    // TODO(phase-4-followup): implement parser mirroring
-    // Sources/KanbanCodeCore/Adapters/Gemini/GeminiSessionParser.swift
-    let _ = gemini_dir();
-    vec![]
+    crate::gemini_sessions::discover().await
 }
 
+#[allow(dead_code)]
 fn gemini_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".gemini"))
 }
