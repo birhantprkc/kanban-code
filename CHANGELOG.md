@@ -1,5 +1,103 @@
 # Changelog
 
+## [0.1.30](https://github.com/langwatch/kanban-code/compare/v0.1.29...v0.1.30) (2026-06-16)
+
+
+### Features
+
+* **app:** board auto-selects a room's channel via a focus-channel marker ([507826e](https://github.com/langwatch/kanban-code/commit/507826ec0c8eec18bc65c1288830b0433a7dfbde))
+* **app:** board auto-selects a room's channel via a focus-channel marker ([9f6add7](https://github.com/langwatch/kanban-code/commit/9f6add7c5a11c2242c9749dfdff83736808807f2))
+* **cli:** kanban launch --no-resume for fresh ephemeral agents ([8133764](https://github.com/langwatch/kanban-code/commit/81337642600d076246f5b5206d9624eb7db25b97))
+* **slack:** post a 👀 ack on relay and delete it on the agent's first reply ([c512824](https://github.com/langwatch/kanban-code/commit/c5128247280eb1bc3eac077f6dbc6478181e1cf5))
+* **windows:** add project switcher dropdown to board header ([0dd340b](https://github.com/langwatch/kanban-code/commit/0dd340b5183c0818a459aec527e37a327a1b8c9e))
+* **windows:** add structured logging + verify Phase 0 baseline ([982e412](https://github.com/langwatch/kanban-code/commit/982e412cee1ace0f99dbef14806a5b17a48ccdfb))
+* **windows:** APIService entity + per-card endpoint binding ([#130](https://github.com/langwatch/kanban-code/issues/130)) ([30eb132](https://github.com/langwatch/kanban-code/commit/30eb132127e6981db1cfc0cde9035458fe017fae))
+* **windows:** app-wide font scaling (Ctrl+/-/0) and list view mode ([ccbd139](https://github.com/langwatch/kanban-code/commit/ccbd139218af3cc2348f3e0495d1cb90aec35a44))
+* **windows:** BM25 deep transcript search wired into SearchOverlay ([db4a28f](https://github.com/langwatch/kanban-code/commit/db4a28f6c492633f648ecdef32b2925b2dfb9a6b))
+* **windows:** browser keyboard shortcuts + reopen-last-closed ring ([#125](https://github.com/langwatch/kanban-code/issues/125) steps 5+6) ([#137](https://github.com/langwatch/kanban-code/issues/137)) ([816a860](https://github.com/langwatch/kanban-code/commit/816a86041a4de9545e8035e4c6792506751a7946))
+* **windows:** browser tabs data layer + Tauri CRUD ([#125](https://github.com/langwatch/kanban-code/issues/125) step 1) ([#134](https://github.com/langwatch/kanban-code/issues/134)) ([10dc02d](https://github.com/langwatch/kanban-code/commit/10dc02dca4afacd16469d17e27d356f2e3bec244))
+* **windows:** browser tabs UI shell — tab strip + URL bar + DnD reorder ([#125](https://github.com/langwatch/kanban-code/issues/125) step 2) ([#135](https://github.com/langwatch/kanban-code/issues/135)) ([b37f39f](https://github.com/langwatch/kanban-code/commit/b37f39f37810e0194eaed3b91c8c2aa5401f8d00))
+* **windows:** card merge via drop-onto-card ([c8249a6](https://github.com/langwatch/kanban-code/commit/c8249a667650d1d26324adc9064fc197cc43c15d))
+* **windows:** chat message actions — edit/delete/reactions/mentions ([#113](https://github.com/langwatch/kanban-code/issues/113)) ([bad627f](https://github.com/langwatch/kanban-code/commit/bad627f2241c6bb6d5cb741e0d8d3f44dc4b7c0e))
+* **windows:** Codex adapter — discovery + AssistantId wiring ([#124](https://github.com/langwatch/kanban-code/issues/124) sub-PR 1/3) ([#132](https://github.com/langwatch/kanban-code/issues/132)) ([bdf3a5c](https://github.com/langwatch/kanban-code/commit/bdf3a5ca47a78d404528792b5aa5edcaba32f229))
+* **windows:** confirm card delete + auto-select neighbor after delete/archive ([b43bc8f](https://github.com/langwatch/kanban-code/commit/b43bc8fd7e011cc7fbcb6c72f84a16d52ed43150))
+* **windows:** copy-to-clipboard menu in card drawer header ([8a3d3fb](https://github.com/langwatch/kanban-code/commit/8a3d3fb571257ff8a84695e1a84a146219922bf4))
+* **windows:** discovered-projects suggestions in Settings → Projects ([926a94d](https://github.com/langwatch/kanban-code/commit/926a94dccd0abe3d78edf6e3a4c09196d6df00fa))
+* **windows:** DM panel in chat UI ([#109](https://github.com/langwatch/kanban-code/issues/109)) ([2d9c81c](https://github.com/langwatch/kanban-code/commit/2d9c81c4718d8461337e19dcac8b4b9b951bdd1f))
+* **windows:** embedded WebView2 per browser tab + back/forward/reload ([#125](https://github.com/langwatch/kanban-code/issues/125) steps 3+4) ([#138](https://github.com/langwatch/kanban-code/issues/138)) ([fdab015](https://github.com/langwatch/kanban-code/commit/fdab0151330cd8c1b877a7cd58163f855b34314c))
+* **windows:** emit drafts-changed watcher event ([#111](https://github.com/langwatch/kanban-code/issues/111)) ([c73078e](https://github.com/langwatch/kanban-code/commit/c73078e72d82897492711eea1346815b370609db))
+* **windows:** fork_session + truncate_session — Fork in drawer menu, Checkpoint per turn ([b2827fc](https://github.com/langwatch/kanban-code/commit/b2827fcac072a9b49d9a8fe51c6dfb626b4942e6))
+* **windows:** Gemini adapter — discovery + projects.json mapping ([#124](https://github.com/langwatch/kanban-code/issues/124) sub-PR 2/3) ([#133](https://github.com/langwatch/kanban-code/issues/133)) ([acab542](https://github.com/langwatch/kanban-code/commit/acab542e9a3f97241591aac6c528cf0b63d9c89d))
+* **windows:** git_remote.rs + Tauri commands for canonical GitHub URLs ([da2e20a](https://github.com/langwatch/kanban-code/commit/da2e20a9ee5f378bc5d8c0f9adc58ffddd4b6011))
+* **windows:** image upload in chat + CLI --image ([#112](https://github.com/langwatch/kanban-code/issues/112)) ([1a7d760](https://github.com/langwatch/kanban-code/commit/1a7d760af8faecc4cd9d25e839235befc31cd47d))
+* **windows:** image-paste pipeline for prompts ([075f2f6](https://github.com/langwatch/kanban-code/commit/075f2f6aaa80f717ffe4e274baa2fd057dd8bff5))
+* **windows:** image-paste pipeline for prompts and queued prompts ([8c4bc88](https://github.com/langwatch/kanban-code/commit/8c4bc88ce62ec08982afa3ce6b1d1d84bef6ffb2))
+* **windows:** in-app merge_pr command + Merge pill in PR drawer tab ([406d411](https://github.com/langwatch/kanban-code/commit/406d41130308b9ee833ba5a475af0e64b6fa2925))
+* **windows:** inject KANBAN_CARD_ID/HANDLE into card tmux launch ([#106](https://github.com/langwatch/kanban-code/issues/106)) ([2118df4](https://github.com/langwatch/kanban-code/commit/2118df440c9ce7cedcd03d0ae1c726a972ca14e7))
+* **windows:** keyboard polish — Ctrl+, opens settings, Esc layer-pop ([f3a367f](https://github.com/langwatch/kanban-code/commit/f3a367f5d9c4a4e63b86cb5e46acc1b9889e9a72))
+* **windows:** launch confirmation dialog + richer command builder ([8cde8e6](https://github.com/langwatch/kanban-code/commit/8cde8e63c35850dc41c5d6037295725173d4cae1))
+* **windows:** log when settings.json appears to originate from macOS ([710c8da](https://github.com/langwatch/kanban-code/commit/710c8da7feb40f86dc2a8b7fe4d6dfdf4b806327))
+* **windows:** make terminal shell configurable; default to native cmd.exe ([73fad21](https://github.com/langwatch/kanban-code/commit/73fad212d63662536e6ecb93b9454340352e760d))
+* **windows:** move card to another project ([2e928b4](https://github.com/langwatch/kanban-code/commit/2e928b48997e53da9499f7c4c577e01c301c2e02))
+* **windows:** multi-assistant abstraction (Claude + Gemini scaffolding) ([8e01c21](https://github.com/langwatch/kanban-code/commit/8e01c21454f86c0fd57afe743fdc51fb601a8e78))
+* **windows:** multi-tab shells per card via tmux windows ([3bf5bf5](https://github.com/langwatch/kanban-code/commit/3bf5bf5ed5dfa79cf3704907f6093d98c9549469))
+* **windows:** notification polish — last-message body + 62s dedup ([2ac5984](https://github.com/langwatch/kanban-code/commit/2ac59847294aea93214520d25083ff403064d418))
+* **windows:** notifications for inbound chat messages ([#110](https://github.com/langwatch/kanban-code/issues/110)) ([c395f60](https://github.com/langwatch/kanban-code/commit/c395f604e8fa01a28ce2b61b2af55b58072212c3))
+* **windows:** panic hook writes crash-*.log before abort ([d6713fd](https://github.com/langwatch/kanban-code/commit/d6713fd0684a6ce764ff951a2f219bbaafb7c1d5))
+* **windows:** per-card runtime gate + in-terminal history + auto-resume ([#140](https://github.com/langwatch/kanban-code/issues/140)) ([0523d42](https://github.com/langwatch/kanban-code/commit/0523d429ffa000d84f6bfead13524aaba3150d98))
+* **windows:** per-project settings — name, repoRoot, githubFilter, promptTemplate ([5718791](https://github.com/langwatch/kanban-code/commit/5718791f51e604a621e2efe37c81f92b489e40fc))
+* **windows:** persist same-column reorder via reorder_cards command ([34e9b8a](https://github.com/langwatch/kanban-code/commit/34e9b8a90821cfc64b22f12a5b22a106babd22d3))
+* **windows:** Phase 5 — Mutagen sync, remote status, bash wrapper deploy ([c0d59ba](https://github.com/langwatch/kanban-code/commit/c0d59ba3fec6eadba9c46fa2a0cc1c6e2fd6da3d)), closes [#96](https://github.com/langwatch/kanban-code/issues/96)
+* **windows:** Phase 7 — channels + kanban CLI ([7ebda6b](https://github.com/langwatch/kanban-code/commit/7ebda6be6b0fe797f2197f48c74f6c82e2b9c6fe))
+* **windows:** Phase 7 follow-ups (Parts 1–4) ([43daa0a](https://github.com/langwatch/kanban-code/commit/43daa0acba50e792f77600e047f8b4b66ea5bd90))
+* **windows:** pinned cards + self-compact settings ([2d2a4c3](https://github.com/langwatch/kanban-code/commit/2d2a4c3dacaee46db5417c7aa81b7df858bd3c00))
+* **windows:** pinned cards section + self-compact settings ([67d270a](https://github.com/langwatch/kanban-code/commit/67d270a41852020e7bedffd34f9ca94fc16f0d67))
+* **windows:** port KSUID + add links.json .bkp corruption recovery ([6fd7739](https://github.com/langwatch/kanban-code/commit/6fd7739786d9923555022843b42a8b722db6a2c6))
+* **windows:** Process Manager modal (Ctrl+Shift+M) ([a639cc2](https://github.com/langwatch/kanban-code/commit/a639cc2fcda8fc66ee41085a19c29e45e83413fe))
+* **windows:** Process Manager modal (tmux / Claude / worktrees) ([a713e05](https://github.com/langwatch/kanban-code/commit/a713e05ae2017136f39296169c63c85711eb8baf))
+* **windows:** Pushover delivery wired into notification path ([f831597](https://github.com/langwatch/kanban-code/commit/f831597ab1b05f36403c13ba308e93a884fcd37d))
+* **windows:** queued-prompt auto-send driven by hook Stop events ([ca66f91](https://github.com/langwatch/kanban-code/commit/ca66f9122e32bc0669aede9685ef040f6b399b12))
+* **windows:** rich PR enrichment — body, CI checks, review decision, approvals ([37deb36](https://github.com/langwatch/kanban-code/commit/37deb362a4846dbd1e2f9530dc74918170ed2856))
+* **windows:** self-compact generation loop + Claude Code statusline ([#131](https://github.com/langwatch/kanban-code/issues/131)) ([6f6956f](https://github.com/langwatch/kanban-code/commit/6f6956f2576a3c41893e16c81ee447176ae434b6))
+* **windows:** Session History parity — transcript font + auto-load ([770c5e4](https://github.com/langwatch/kanban-code/commit/770c5e4520cff2f56003305c41d74f345eee1f74))
+* **windows:** Session History parity — transcript font size + auto-load ([cfea354](https://github.com/langwatch/kanban-code/commit/cfea354b0d5375407043d8b268761347d2efcde9))
+* **windows:** standalone parity gaps — lastOpenedAt, channel reorder, bulk kill, Ctrl+click checkpoint ([#129](https://github.com/langwatch/kanban-code/issues/129)) ([7826c89](https://github.com/langwatch/kanban-code/commit/7826c893ead0a5a8d757ff97dc1f7708adca0153))
+* **windows:** tmux-in-WSL adapter for terminal persistence (Phase 3) ([965a797](https://github.com/langwatch/kanban-code/commit/965a797ef4728c6b58944bec487cab6494b141bf))
+* **windows:** unresolved-thread count + worst-CI dot on card ([06dc71b](https://github.com/langwatch/kanban-code/commit/06dc71b495fde60126f402a0c806a94148674042))
+* **windows:** wire git worktree discovery + add Remove worktree action ([e00f29d](https://github.com/langwatch/kanban-code/commit/e00f29d37c03cd93270815529673aabe1e6f8d18))
+* **windows:** wrap embedded terminal in tmux for reattach across drawer close ([f7e4edb](https://github.com/langwatch/kanban-code/commit/f7e4edb738341547750f024668e4a10fc82af2d1))
+* **windows:** WSL terminal-shell hint in onboarding ClaudeCodeStep ([8659440](https://github.com/langwatch/kanban-code/commit/8659440f6dd49e5ffe43f720e48e014e5ab7b5c6))
+* **windows:** WSL-side hook.sh install + JSONL event tail ([7fff195](https://github.com/langwatch/kanban-code/commit/7fff19502e271d082fd64e98f85c01293c928095))
+
+
+### Bug Fixes
+
+* **cli:** delete a channel's history log on channel delete ([d1fb6bf](https://github.com/langwatch/kanban-code/commit/d1fb6bf7fc6967ef2c05ee038909e107b84fa35b))
+* **cli:** forceFresh mints a unique session id, not uuidv5(slug) ([2775ef7](https://github.com/langwatch/kanban-code/commit/2775ef7b1f87a465c12807036407c370ddb750c1))
+* **cli:** fresh ephemeral room agents + clean channel teardown ([9ae55af](https://github.com/langwatch/kanban-code/commit/9ae55af24892d8e4fed03944d071f8f87eab7c12))
+* **cli:** prioritize channel help over low-level send ([3410a9f](https://github.com/langwatch/kanban-code/commit/3410a9fbe726ecec18ff699d8db5a94ef85f278a))
+* **self-compact:** prioritize compact queue prompts ([263caaf](https://github.com/langwatch/kanban-code/commit/263caaf1df0c1dad0ca4ef769700194df41d94a1))
+* **slack:** clear pill + delete 👀 when the user runs /stop ([6b9fc4c](https://github.com/langwatch/kanban-code/commit/6b9fc4ca2e06216c91625a5fb79cbc91590e6051))
+* **slack:** drop stale pill on bridge restore when the agent's turn already ended ([f9e0fc1](https://github.com/langwatch/kanban-code/commit/f9e0fc1c03dcbd33cb92fab6211e65b2676620a4))
+* **slack:** skip the 👀 ack on relay when the agent is already mid-turn ([a988068](https://github.com/langwatch/kanban-code/commit/a98806835dbf82b8fe25c2a1635ad40864d5d9dc))
+* **tmux:** route every paste through a uniquely-named buffer ([ed3f458](https://github.com/langwatch/kanban-code/commit/ed3f458836ff6619ba08567a4cd3b0f713b93e0b))
+* **windows:** harden crash handler against recursive panic + cross-PID race ([1c8ea43](https://github.com/langwatch/kanban-code/commit/1c8ea436602dd1158154a3ba048f793fc4c47ba0))
+* **windows:** image-paste review fixes — renumber on remove + persist edits ([24a403b](https://github.com/langwatch/kanban-code/commit/24a403b32aef88edffddf5f55c10e1484eab6a8a))
+* **windows:** keyboard shortcuts also match on physical key code ([0145fc5](https://github.com/langwatch/kanban-code/commit/0145fc5e182be47a6ed3d2d4689778ddf7d5a4e4))
+* **windows:** make Transcript font size slider actually take effect ([809b3a7](https://github.com/langwatch/kanban-code/commit/809b3a7347fefb96bb9cd78d9f5b94a036217682))
+* **windows:** process-manager review fixes — tighten filter + flag boundary ([545625d](https://github.com/langwatch/kanban-code/commit/545625da09b2fb19e7e30efcad3b28b4e008963f))
+* **windows:** thread theme tokens through dark-hardcoded views ([b2081a8](https://github.com/langwatch/kanban-code/commit/b2081a8088a8703b2b912c7ac11295f74fb159e1))
+
+
+### Performance
+
+* **windows:** chunked reverse-tail in read_jsonl ([#114](https://github.com/langwatch/kanban-code/issues/114)) ([c440955](https://github.com/langwatch/kanban-code/commit/c440955b4ae10fc23cc496b8809487293ff8c8b9))
+
+
+### Refactoring
+
+* **windows:** collapse tail_messages into read_messages ([#107](https://github.com/langwatch/kanban-code/issues/107)) ([35a4771](https://github.com/langwatch/kanban-code/commit/35a4771e3bcae166384c3dd6825b034696c4702b))
+
 ## [0.1.29](https://github.com/langwatch/kanban-code/compare/v0.1.28...v0.1.29) (2026-06-07)
 
 
