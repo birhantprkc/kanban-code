@@ -2,7 +2,7 @@ import { existsSync, statSync, openSync, readSync, closeSync } from "node:fs";
 import { join } from "node:path";
 import { SocketModeClient } from "@slack/socket-mode";
 import { SlackClient } from "./client.js";
-import { routeSlackMessage, ChannelMapping } from "./inbound.js";
+import { routeSlackMessage, prefixAuthor, ChannelMapping } from "./inbound.js";
 import { formatTranscriptLines, formatCodexRolloutLines, TERMINAL_STOP_REASONS } from "./format.js";
 import { loadAgentsConfig } from "../agents/config.js";
 import { agentIdentity } from "../agents/identity.js";
@@ -197,6 +197,17 @@ export async function runSlackBridge(opts: BridgeOptions): Promise<void> {
   // track recent relays here and drop the matching echo. Keyed by slug.
   const recentRelays = new Map<string, { text: string; ts: number }[]>();
   const RELAY_ECHO_TTL_MS = 90_000;
+  // Resolve a Slack user id to a display name once and reuse it, so the agent
+  // sees who is steering it on every inbound message without an API call per
+  // message. A failed lookup is not cached, so a transient error can recover.
+  const userNameCache = new Map<string, string>();
+  const resolveUserNameCached = async (userId: string): Promise<string | undefined> => {
+    const hit = userNameCache.get(userId);
+    if (hit) return hit;
+    const name = await client.resolveUserName(userId);
+    if (name) userNameCache.set(userId, name);
+    return name;
+  };
   const consumeRelayEcho = (slug: string, mirrored: string): boolean => {
     const list = recentRelays.get(slug);
     if (!list?.length) return false;
@@ -647,15 +658,21 @@ export async function runSlackBridge(opts: BridgeOptions): Promise<void> {
     const prompt = formatPromptWithAttachments(decision.text, downloaded);
     if (!prompt) return; // text empty AND every attachment failed -> nothing to relay
 
+    // Prefix the sender so the agent can see who is steering it. Only human
+    // messages reach here (bot posts are dropped upstream), so this never
+    // double-labels an agent's own "From <Agent>:" line.
+    const authorName = decision.user ? await resolveUserNameCached(decision.user) : undefined;
+    const authored = prefixAuthor(prompt, authorName);
+
     // Mark this relay so the daemon does not echo it back to the channel
     // (it already appears there as that person's Slack message). Recorded
     // before the paste so the marker is in place before UserPromptSubmit.
     recordAnnounceSuppress(agentIdentity(decision.slug).sessionId);
     // Also remember it for the in-process Codex rollout-echo guard above.
     const relays = recentRelays.get(decision.slug) ?? [];
-    relays.push({ text: prompt, ts: Date.now() });
+    relays.push({ text: authored, ts: Date.now() });
     recentRelays.set(decision.slug, relays);
-    pasteTmuxPrompt(decision.slug, prompt); // tmux session name == slug
+    pasteTmuxPrompt(decision.slug, authored); // tmux session name == slug
 
     // Post a 👀 ack and light the working pill on it, ONLY if the agent
     // isn't already mid-turn. The eyes give the channel a visible

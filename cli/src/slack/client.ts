@@ -65,6 +65,20 @@ export class SlackClient {
     });
   }
 
+  /// Resolve a Slack user id to a human-readable name (display name preferred,
+  /// then real name, then the handle). Returns undefined if the lookup fails so
+  /// callers can fall back gracefully.
+  async resolveUserName(userId: string): Promise<string | undefined> {
+    try {
+      const r = await this.web.users.info({ user: userId });
+      const u = r.user as any;
+      const p = u?.profile ?? {};
+      return p.display_name || p.real_name || u?.real_name || u?.name || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   /// Resolve "#name" / "name" to a channel id. Ids (C…/G…) are returned as-is.
   async resolveChannelId(nameOrId: string): Promise<string | undefined> {
     if (/^[CG][A-Z0-9]+$/.test(nameOrId)) return nameOrId;

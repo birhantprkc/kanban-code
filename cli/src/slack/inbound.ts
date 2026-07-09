@@ -27,7 +27,18 @@ export interface SlackMessageEvent {
 
 export type InboundDecision =
   | { action: "ignore"; reason: string }
-  | { action: "deliver"; slug: string; text: string; files: SlackFile[] };
+  | { action: "deliver"; slug: string; text: string; files: SlackFile[]; user?: string };
+
+/// Prefix an inbound message with its Slack author so the agent can see who is
+/// steering it. Agent-to-agent posts go through the bot token and are dropped
+/// as bot messages before they reach here, so this only labels human messages
+/// and never double-prefixes an agent's own "From <Agent>:" line. With no
+/// resolved name the text is returned unchanged.
+export function prefixAuthor(text: string, authorName?: string): string {
+  const name = authorName?.trim();
+  if (!name) return text;
+  return `From ${name} (Slack):\n${text}`;
+}
 
 /// Convert Slack mrkdwn to plain text for the agent: unwrap links/mentions and
 /// unescape HTML entities Slack adds.
@@ -66,5 +77,5 @@ export function routeSlackMessage(
   const files = event.files ?? [];
   if (!text && files.length === 0) return { action: "ignore", reason: "empty" };
 
-  return { action: "deliver", slug, text, files };
+  return { action: "deliver", slug, text, files, user: event.user };
 }

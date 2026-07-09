@@ -1,7 +1,7 @@
 import { test, describe } from "node:test";
 import { strict as assert } from "node:assert";
 import { parse as parseYaml } from "yaml";
-import { routeSlackMessage, slackToPlain } from "./slack/inbound.js";
+import { routeSlackMessage, slackToPlain, prefixAuthor } from "./slack/inbound.js";
 import { slackAppManifest } from "./slack/manifest.js";
 import { formatReceivedMessage, RECEIVED_MESSAGE_HEADER } from "./slack/announce.js";
 
@@ -11,19 +11,24 @@ const reasonOf = (d: ReturnType<typeof routeSlackMessage>) => (d.action === "ign
 describe("routeSlackMessage", () => {
   test("delivers a human message in a mapped channel to the right agent", () => {
     const d = routeSlackMessage({ type: "message", channel: "C123", user: "U1", text: "focus on the lodash PR" }, MAPPING, "UBOT");
-    assert.deepEqual(d, { action: "deliver", slug: "dependabot-scout", text: "focus on the lodash PR", files: [] });
+    assert.deepEqual(d, { action: "deliver", slug: "dependabot-scout", text: "focus on the lodash PR", files: [], user: "U1" });
   });
 
   test("delivers a file_share with attachments even when the text is empty", () => {
     const files = [{ id: "F1", name: "screenshot.png", mimetype: "image/png", url_private: "https://files.slack.com/F1" }];
     const d = routeSlackMessage({ type: "message", subtype: "file_share", channel: "C123", user: "U1", text: "", files }, MAPPING);
-    assert.deepEqual(d, { action: "deliver", slug: "dependabot-scout", text: "", files });
+    assert.deepEqual(d, { action: "deliver", slug: "dependabot-scout", text: "", files, user: "U1" });
   });
 
   test("delivers a file_share with text and attachments together", () => {
     const files = [{ id: "F2", name: "ticket.pdf", mimetype: "application/pdf", url_private: "https://files.slack.com/F2" }];
     const d = routeSlackMessage({ type: "message", subtype: "file_share", channel: "C123", user: "U1", text: "read this", files }, MAPPING);
-    assert.deepEqual(d, { action: "deliver", slug: "dependabot-scout", text: "read this", files });
+    assert.deepEqual(d, { action: "deliver", slug: "dependabot-scout", text: "read this", files, user: "U1" });
+  });
+
+  test("carries the Slack sender id so the bridge can attribute the message", () => {
+    const d = routeSlackMessage({ type: "message", channel: "C123", user: "UDREW", text: "who am I" }, MAPPING);
+    assert.equal(d.action === "deliver" ? d.user : undefined, "UDREW");
   });
 
   test("ignores the bot's own messages (no loops)", () => {
@@ -43,6 +48,17 @@ describe("routeSlackMessage", () => {
     assert.equal(slackToPlain("see <https://x.com|the docs> &amp; retry"), "see the docs (https://x.com) & retry");
     assert.match(slackToPlain("ping <@U123> now"), /ping\s+now/);
     assert.equal(slackToPlain("<https://ci.example/run>"), "https://ci.example/run");
+  });
+});
+
+describe("prefixAuthor", () => {
+  test("labels a message with its resolved Slack author", () => {
+    assert.equal(prefixAuthor("focus on the lodash PR", "Drew"), "From Drew (Slack):\nfocus on the lodash PR");
+  });
+
+  test("returns the text unchanged when no name resolved", () => {
+    assert.equal(prefixAuthor("hello", undefined), "hello");
+    assert.equal(prefixAuthor("hello", "   "), "hello");
   });
 });
 
