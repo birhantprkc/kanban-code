@@ -6192,12 +6192,23 @@ open class Terminal {
             if rawLimit <= 0 {
                 continue
             }
-            let lineLimit = min(rawLimit, line.getTrimmedLength())
+            // A row followed by a soft-wrapped continuation was completely filled
+            // by the app's output stream, so its trailing blanks are real
+            // characters. Trimming them would glue the wrap boundary together
+            // ("769. " + "I'll" becoming "769.I'll") and defeat the regex's
+            // trailing-punctuation guard.
+            let nextRowIsWrapped = row + 1 < buffer.lines.count && buffer.lines[row + 1].isWrapped
+            let lineLimit = nextRowIsWrapped ? rawLimit : min(rawLimit, line.getTrimmedLength())
             if lineLimit <= 0 {
                 continue
             }
             let isContinuationRow = isImplicitContinuationRow(row, startRow: startRow, in: buffer)
-            let startCol = isContinuationRow ? firstNonWhitespaceColumn(in: line, lineLimit: lineLimit) : 0
+            // Soft-wrapped continuations are contiguous screen text: their leading
+            // whitespace is content (e.g. the space separating a URL from the next
+            // sentence). Only heuristically joined hard rows carry TUI indentation
+            // that should be skipped.
+            let skipIndent = isContinuationRow && !line.isWrapped
+            let startCol = skipIndent ? firstNonWhitespaceColumn(in: line, lineLimit: lineLimit) : 0
             guard startCol < lineLimit else {
                 continue
             }

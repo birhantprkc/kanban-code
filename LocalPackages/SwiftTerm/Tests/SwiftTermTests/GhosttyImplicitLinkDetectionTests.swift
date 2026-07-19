@@ -145,4 +145,44 @@ final class GhosttyImplicitLinkDetectionTests: TerminalDelegate {
         let wrappedRowLink = terminal.link(at: .buffer(Position(col: 10, row: 1)), mode: .explicitAndImplicit)
         #expect(wrappedRowLink == input)
     }
+
+    /// Sentence-ending punctuation right at a soft-wrap boundary must not be
+    /// glued to the next row's text. The space separating "769." from "I'll"
+    /// is real content on the wrapped row, so the regex's trailing-punctuation
+    /// guard has to see it — otherwise cmd+click opens ".../pull/769.I".
+    @Test func testTrailingSentencePeriodAtWrapBoundary() {
+        let prefix = "CodeRabbit triggers: "
+        let url = "https://github.com/langwatch/langwatch-saas/pull/769"
+
+        // Wrap right after the trailing dot: row 2 starts with " I'll…"
+        let colsAfterDot = prefix.count + url.count + 1
+        let terminal1 = Terminal(delegate: self, options: TerminalOptions(cols: colsAfterDot, rows: 6))
+        terminal1.feed(text: prefix + url + ". I'll watch it for review comments here")
+        let link1 = terminal1.link(at: .buffer(Position(col: prefix.count + 5, row: 0)), mode: .explicitAndImplicit)
+        #expect(link1 == url)
+
+        // Wrap right after the separating space: row 1 ends with "769. "
+        let colsAfterSpace = prefix.count + url.count + 2
+        let terminal2 = Terminal(delegate: self, options: TerminalOptions(cols: colsAfterSpace, rows: 6))
+        terminal2.feed(text: prefix + url + ". I'll watch it for review comments here")
+        let link2 = terminal2.link(at: .buffer(Position(col: prefix.count + 5, row: 0)), mode: .explicitAndImplicit)
+        #expect(link2 == url)
+    }
+
+    /// Same paragraph shape as the wrap case, but written as hard TUI rows —
+    /// trailing periods must still be excluded and the indented second row must
+    /// not join into the URL.
+    @Test func testTrailingSentencePeriodOnHardRows() {
+        let row1 = "  suite: 194/194 green. The PR is up: https://github.com/langwatch/langwatch-saas/pull/769. I'll watch it"
+        let row2 = "  for review comments here since /drive-pr isn't available in this session."
+        let terminal = Terminal(delegate: self, options: TerminalOptions(cols: 160, rows: 6))
+        terminal.feed(text: row1 + "\r\n" + row2)
+        guard let urlStart = row1.range(of: "https://") else {
+            Issue.record("url not found in fixture")
+            return
+        }
+        let off = row1.distance(from: row1.startIndex, to: urlStart.lowerBound)
+        let link = terminal.link(at: .buffer(Position(col: off + 5, row: 0)), mode: .explicitAndImplicit)
+        #expect(link == "https://github.com/langwatch/langwatch-saas/pull/769")
+    }
 }
