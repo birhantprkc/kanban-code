@@ -536,10 +536,12 @@ struct ChannelChatView: View {
         }
         .onAppear {
             syncLocalDraftIfNeeded()
-            cmdMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
-                let cmd = event.modifierFlags.contains(.command)
-                if cmd != isCmdHeld { isCmdHeld = cmd }
-                return event
+            if cmdMonitor == nil {
+                cmdMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
+                    let cmd = event.modifierFlags.contains(.command)
+                    if cmd != isCmdHeld { isCmdHeld = cmd }
+                    return event
+                }
             }
         }
         .onDisappear {
@@ -1553,7 +1555,15 @@ private struct ChatMessageImageThumbnail: View {
     private static func loadImage(path: String) async -> NSImage? {
         await Task.detached(priority: .utility) {
             guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return nil }
-            return NSImage(data: data)
+            let image = NSImage(data: data)
+            if data.count >= 5 * 1024 * 1024 {
+                let size = image?.size ?? .zero
+                KanbanCodeLog.warn(
+                    "memory-context",
+                    "channel image decoded path=\((path as NSString).lastPathComponent) bytes=\(data.count) points=\(Int(size.width))x\(Int(size.height))"
+                )
+            }
+            return image
         }.value
     }
 }
@@ -1598,10 +1608,12 @@ struct DMChatView: View {
         .background(Color(nsColor: .windowBackgroundColor))
         .onAppear {
             syncLocalDraftIfNeeded()
-            cmdMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
-                let cmd = event.modifierFlags.contains(.command)
-                if cmd != isCmdHeld { isCmdHeld = cmd }
-                return event
+            if cmdMonitor == nil {
+                cmdMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
+                    let cmd = event.modifierFlags.contains(.command)
+                    if cmd != isCmdHeld { isCmdHeld = cmd }
+                    return event
+                }
             }
         }
         .onDisappear {

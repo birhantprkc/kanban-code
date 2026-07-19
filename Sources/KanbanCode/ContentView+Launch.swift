@@ -172,34 +172,42 @@ extension ContentView {
                 // from spinner to terminal view without waiting for session detection.
                 store.dispatch(.launchTmuxReady(cardId: cardId))
 
-                // Send images + prompt via send-keys after assistant is ready
+                // Send images + prompt via send-keys after assistant is ready.
+                // Once tmux exists, prompt delivery is best-effort: a readiness
+                // timeout must not turn a live Codex session into a failed launch.
+                var promptDeliveryError: String?
                 if !prompt.isEmpty || !images.isEmpty {
-                    let imageSender = ImageSender(tmux: self.tmuxAdapter)
-                    try await imageSender.waitForReady(sessionName: tmuxName, assistant: assistant)
+                    do {
+                        let imageSender = ImageSender(tmux: self.tmuxAdapter)
+                        try await imageSender.waitForReady(sessionName: tmuxName, assistant: assistant)
 
-                    if !images.isEmpty && assistant.supportsImageUpload {
-                        try await imageSender.sendPromptWithImages(
-                            sessionName: tmuxName,
-                            prompt: prompt,
-                            images: images,
-                            assistant: assistant,
-                            setClipboard: { data in
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setData(data, forType: .png)
+                        if !images.isEmpty && assistant.supportsImageUpload {
+                            try await imageSender.sendPromptWithImages(
+                                sessionName: tmuxName,
+                                prompt: prompt,
+                                images: images,
+                                assistant: assistant,
+                                setClipboard: { data in
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setData(data, forType: .png)
+                                }
+                            )
+                        } else if !prompt.isEmpty {
+                            let imagePaths = images.compactMap { image -> String? in
+                                if let tempPath = image.tempPath { return tempPath }
+                                var copy = image
+                                return try? copy.saveToTemp()
                             }
-                        )
-                    } else if !prompt.isEmpty {
-                        let imagePaths = images.compactMap { image -> String? in
-                            if let tempPath = image.tempPath { return tempPath }
-                            var copy = image
-                            return try? copy.saveToTemp()
+                            let promptToSend = PromptImageLayout.replacingMarkersWithMarkdown(in: prompt, imagePaths: imagePaths)
+                            if assistant.submitsPromptWithPaste {
+                                try await self.tmuxAdapter.pastePrompt(to: tmuxName, text: promptToSend)
+                            } else {
+                                try await self.tmuxAdapter.sendPrompt(to: tmuxName, text: promptToSend)
+                            }
                         }
-                        let promptToSend = PromptImageLayout.replacingMarkersWithMarkdown(in: prompt, imagePaths: imagePaths)
-                        if assistant.submitsPromptWithPaste {
-                            try await self.tmuxAdapter.pastePrompt(to: tmuxName, text: promptToSend)
-                        } else {
-                            try await self.tmuxAdapter.sendPrompt(to: tmuxName, text: promptToSend)
-                        }
+                    } catch {
+                        promptDeliveryError = error.localizedDescription
+                        KanbanCodeLog.warn("launch", "Initial prompt delivery failed for card=\(cardId.prefix(12)) tmux=\(tmuxName): \(error.localizedDescription)")
                     }
                 }
 
@@ -276,6 +284,9 @@ extension ContentView {
                 }
 
                 store.dispatch(.launchCompleted(cardId: cardId, tmuxName: tmuxName, sessionLink: sessionLink, worktreeLink: worktreeLink, isRemote: isRemote))
+                if let promptDeliveryError, assistant.supportsImageUpload && !images.isEmpty {
+                    store.dispatch(.setError("Initial prompt/image delivery failed: \(promptDeliveryError)"))
+                }
             } catch {
                 KanbanCodeLog.error("launch", "Launch failed for card=\(cardId.prefix(12)): \(error.localizedDescription)")
                 store.dispatch(.launchFailed(cardId: cardId, error: error.localizedDescription))
@@ -368,7 +379,7 @@ extension ContentView {
         }
     }
 
-    func executeMigration(cardId: String, targetAssistant: CodingAssistant) async {
+    func executeMigration(cardId: String, targetAssistant: CodingAssistant, recentTurnLimit: Int? = nil) async {
         guard let card = store.state.cards.first(where: { $0.id == cardId }),
               let sessionLink = card.link.sessionLink,
               let sessionPath = sessionLink.sessionPath else { return }
@@ -386,7 +397,8 @@ extension ContentView {
                 sourceSessionPath: sessionPath,
                 sourceStore: sourceStore,
                 targetStore: targetStore,
-                projectPath: card.link.projectPath
+                projectPath: card.link.projectPath,
+                recentTurnLimit: recentTurnLimit
             )
             // Update the card's link to point to the new session and kill tmux
             store.dispatch(.migrateSession(
@@ -395,7 +407,10 @@ extension ContentView {
                 newSessionId: result.newSessionId,
                 newSessionPath: result.newSessionPath
             ))
-            KanbanCodeLog.info("migrate", "Migrated card=\(cardId.prefix(12)) from \(sourceAssistant) to \(targetAssistant), backup=\(result.backupPath)")
+            let trimSummary = result.migratedTurnCount == result.sourceTurnCount
+                ? "full history"
+                : "trimmed \(result.sourceTurnCount)→\(result.migratedTurnCount) turns"
+            KanbanCodeLog.info("migrate", "Migrated card=\(cardId.prefix(12)) from \(sourceAssistant) to \(targetAssistant), \(trimSummary), backup=\(result.backupPath)")
 
             // Resume the session with the new assistant right away
             executeResume(
@@ -408,6 +423,44 @@ extension ContentView {
         } catch {
             store.dispatch(.migrationFailed(cardId: cardId, error: error.localizedDescription))
             KanbanCodeLog.info("migrate", "Migration failed for card=\(cardId.prefix(12)): \(error.localizedDescription)")
+        }
+    }
+
+    func executeTrimSession(cardId: String, recentTurnLimit: Int) async {
+        guard let card = store.state.cards.first(where: { $0.id == cardId }),
+              let sessionLink = card.link.sessionLink,
+              let sessionPath = sessionLink.sessionPath else { return }
+        let assistant = card.link.effectiveAssistant
+        let runRemotely = card.link.isRemote
+        guard let sessionStore = assistantRegistry.store(for: assistant) else { return }
+
+        store.dispatch(.beginMigration(cardId: cardId))
+        do {
+            let result = try await SessionMigrator.migrate(
+                sourceSessionPath: sessionPath,
+                sourceStore: sessionStore,
+                targetStore: sessionStore,
+                projectPath: card.link.projectPath,
+                recentTurnLimit: recentTurnLimit
+            )
+            store.dispatch(.migrateSession(
+                cardId: cardId,
+                newAssistant: assistant,
+                newSessionId: result.newSessionId,
+                newSessionPath: result.newSessionPath
+            ))
+            KanbanCodeLog.info("migrate", "Trimmed card=\(cardId.prefix(12)) assistant=\(assistant) \(result.sourceTurnCount)→\(result.migratedTurnCount) turns, backup=\(result.backupPath)")
+
+            executeResume(
+                cardId: cardId,
+                runRemotely: runRemotely,
+                skipPermissions: true,
+                commandOverride: nil,
+                assistant: assistant
+            )
+        } catch {
+            store.dispatch(.migrationFailed(cardId: cardId, error: error.localizedDescription))
+            KanbanCodeLog.info("migrate", "Trim failed for card=\(cardId.prefix(12)): \(error.localizedDescription)")
         }
     }
 
@@ -498,8 +551,10 @@ extension ContentView {
                     lastActivity: card.link.lastActivity,
                     source: .discovered,
                     sessionLink: SessionLink(sessionId: newSessionId, sessionPath: newPath),
-                    worktreeLink: keepWorktree ? card.link.worktreeLink : nil
+                    worktreeLink: keepWorktree ? card.link.worktreeLink : nil,
+                    assistant: card.link.effectiveAssistant
                 )
+                newLink.apiServiceId = card.link.apiServiceId
                 // Set watermark so reconciler ignores parent's baked-in gitBranch
                 if !keepWorktree && card.link.worktreeLink != nil {
                     if let path = card.link.sessionLink?.sessionPath {

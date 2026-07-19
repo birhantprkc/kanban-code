@@ -370,6 +370,7 @@ struct ContentView: View {
                 NSPasteboard.general.setString(cmd, forType: .string)
             },
             onCopyConversationMarkdown: { cardId in copyConversationMarkdown(cardId: cardId) },
+            onTrimSession: { cardId in presentDialog(.confirmTrimSession(cardId: cardId)) },
             onDiscoverCard: { cardId in
                 Task {
                     store.dispatch(.setBusy(cardId: cardId, busy: true))
@@ -402,7 +403,7 @@ struct ContentView: View {
             onMoveToFolder: { cardId in selectFolderForMove(cardId: cardId) },
             enabledAssistants: assistantRegistry.available,
             onMigrateAssistant: { cardId, target in
-                presentDialog(.confirmMigration(cardId: cardId, targetAssistant: target))
+                presentDialog(.confirmMigration(cardId: cardId, targetAssistant: target, recentTurnLimit: nil))
             },
             onRefreshBacklog: { Task { await store.refreshBacklog() } },
             canDropCard: { card, column in
@@ -456,6 +457,7 @@ struct ContentView: View {
                 NSPasteboard.general.setString(cmd, forType: .string)
             },
             onCopyConversationMarkdown: { cardId in copyConversationMarkdown(cardId: cardId) },
+            onTrimSession: { cardId in presentDialog(.confirmTrimSession(cardId: cardId)) },
             onSetCardPinned: { cardId, isPinned in
                 store.dispatch(.setCardPinned(cardId: cardId, isPinned: isPinned))
             },
@@ -488,7 +490,7 @@ struct ContentView: View {
             onMoveToFolder: { cardId in selectFolderForMove(cardId: cardId) },
             enabledAssistants: assistantRegistry.available,
             onMigrateAssistant: { cardId, target in
-                presentDialog(.confirmMigration(cardId: cardId, targetAssistant: target))
+                presentDialog(.confirmMigration(cardId: cardId, targetAssistant: target, recentTurnLimit: nil))
             },
             onRefreshBacklog: { Task { await store.refreshBacklog() } },
             onDropCard: { cardId, column in handleDrop(cardId: cardId, to: column) },
@@ -660,7 +662,10 @@ struct ContentView: View {
             onMoveToFolder: { selectFolderForMove(cardId: card.id) },
             enabledAssistants: assistantRegistry.available,
             onMigrateAssistant: { target in
-                presentDialog(.confirmMigration(cardId: card.id, targetAssistant: target))
+                presentDialog(.confirmMigration(cardId: card.id, targetAssistant: target, recentTurnLimit: nil))
+            },
+            onTrimSession: {
+                presentDialog(.confirmTrimSession(cardId: card.id))
             },
             actionsMenuProvider: actionsMenuProvider,
             focusTerminal: $shouldFocusTerminal,
@@ -1015,6 +1020,7 @@ struct ContentView: View {
         case .confirmMoveToProject: return "Move to Project?"
         case .confirmMoveToFolder: return "Move to Folder?"
         case .confirmMigration: return "Migrate Session?"
+        case .confirmTrimSession: return "Trim Session History?"
         case .remoteWorktreeCleanup: return "Remote Worktree"
         case .confirmDeleteChannel(let name): return "Delete #\(name)?"
         }
@@ -1078,10 +1084,36 @@ struct ContentView: View {
                 store.dispatch(.moveCardToFolder(cardId: cardId, folderPath: folderPath, parentProjectPath: parentProjectPath))
                 dismissDialog()
             }
-        case .confirmMigration(let cardId, let targetAssistant):
+        case .confirmMigration(let cardId, let targetAssistant, _):
             Button("Cancel", role: .cancel) { dismissDialog() }
-            Button("Migrate") {
-                Task { await executeMigration(cardId: cardId, targetAssistant: targetAssistant) }
+            Button("Full History") {
+                Task { await executeMigration(cardId: cardId, targetAssistant: targetAssistant, recentTurnLimit: nil) }
+                dismissDialog()
+            }
+            Button("Last 500 Messages") {
+                Task { await executeMigration(cardId: cardId, targetAssistant: targetAssistant, recentTurnLimit: 500) }
+                dismissDialog()
+            }
+            Button("Last 250 Messages") {
+                Task { await executeMigration(cardId: cardId, targetAssistant: targetAssistant, recentTurnLimit: 250) }
+                dismissDialog()
+            }
+            Button("Last 100 Messages") {
+                Task { await executeMigration(cardId: cardId, targetAssistant: targetAssistant, recentTurnLimit: 100) }
+                dismissDialog()
+            }
+        case .confirmTrimSession(let cardId):
+            Button("Cancel", role: .cancel) { dismissDialog() }
+            Button("Last 500 Messages") {
+                Task { await executeTrimSession(cardId: cardId, recentTurnLimit: 500) }
+                dismissDialog()
+            }
+            Button("Last 250 Messages") {
+                Task { await executeTrimSession(cardId: cardId, recentTurnLimit: 250) }
+                dismissDialog()
+            }
+            Button("Last 100 Messages", role: .destructive) {
+                Task { await executeTrimSession(cardId: cardId, recentTurnLimit: 100) }
                 dismissDialog()
             }
         case .remoteWorktreeCleanup(let cardId, _, let localPath, _):
@@ -1122,10 +1154,12 @@ struct ContentView: View {
             } else {
                 Text("Move session to \(displayName)?")
             }
-        case .confirmMigration(let cardId, let targetAssistant):
+        case .confirmMigration(let cardId, let targetAssistant, _):
             let card = store.state.cards.first(where: { $0.id == cardId })
             let source = card?.link.effectiveAssistant.displayName ?? "current assistant"
-            Text("Migrate from \(source) to \(targetAssistant.displayName)? A backup will be kept.")
+            Text("Migrate from \(source) to \(targetAssistant.displayName)? Choose full history or keep only recent messages to fit smaller context windows. The source file is kept as a .bak backup.")
+        case .confirmTrimSession:
+            Text("Rewrite this session with only the most recent messages. The current session file is kept as a .bak backup, and any running terminal for this card will be restarted from the trimmed session.")
         case .remoteWorktreeCleanup(_, _, _, let errorMessage): Text(errorMessage)
         case .confirmDeleteChannel(let name):
             Text("This removes the channel and its membership metadata. Messages in \(name).jsonl are left on disk so you can recover them manually if needed.")
@@ -1219,6 +1253,7 @@ struct ContentView: View {
                 BrowserTabCacheRelay.removeAllHandler = { cardId in
                     BrowserTabCache.shared.removeAllForCard(cardId)
                 }
+                registerMemoryDiagnosticsProviders()
                 systemTray.setup(store: store)
                 await store.loadSettingsAndCache()
                 await store.reconcile()
@@ -2118,6 +2153,7 @@ struct ContentView: View {
                         NSPasteboard.general.setString(cmd, forType: .string)
                     },
                     onCopyConversationMarkdown: { copyConversationMarkdown(cardId: card.id) },
+                    onTrimSession: { presentDialog(.confirmTrimSession(cardId: card.id)) },
                     onCheckpoint: {
                         detailTab = .history
                         // CardDetailView picks up checkpointMode from its own menu
@@ -2142,7 +2178,7 @@ struct ContentView: View {
                     onMoveToProject: { path in store.dispatch(.moveCardToProject(cardId: card.id, projectPath: path)) },
                     onMoveToFolder: { selectFolderForMove(cardId: card.id) },
                     onMigrateAssistant: { target in
-                        presentDialog(.confirmMigration(cardId: card.id, targetAssistant: target))
+                        presentDialog(.confirmMigration(cardId: card.id, targetAssistant: target, recentTurnLimit: nil))
                     }
                 ),
                 showBranchInfo: true,
@@ -2998,6 +3034,69 @@ struct ContentView: View {
         return prompt.imagePaths?.isEmpty != false
             && prompt.sendAutomatically
             && warningBodies.contains(prompt.body.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    @MainActor
+    private func registerMemoryDiagnosticsProviders() {
+        MemoryDiagnostics.shared.registerMainActorMetricProvider(name: "app-state") {
+            let state = store.state
+            let channelMessageCounts = state.channelMessages.mapValues(\.count)
+            let totalChannelMessages = channelMessageCounts.values.reduce(0, +)
+            let largestChannel = channelMessageCounts.max { $0.value < $1.value }
+            let dmMessageCounts = state.dmMessages.mapValues(\.count)
+            let totalDMMessages = dmMessageCounts.values.reduce(0, +)
+            let largestDM = dmMessageCounts.max { $0.value < $1.value }
+            let queuedPrompts = state.links.values.reduce(0) { $0 + ($1.queuedPrompts?.count ?? 0) }
+            let browserTabLinks = state.links.values.reduce(0) { $0 + ($1.browserTabs?.count ?? 0) }
+            let prLinks = state.links.values.reduce(0) { $0 + $1.prLinks.count }
+            let channelDraftChars = state.channelDrafts.values.reduce(0) { $0 + $1.count }
+            let dmDraftChars = state.dmDrafts.values.reduce(0) { $0 + $1.count }
+            return [
+                "links=\(state.links.count)",
+                "cards=\(state.cards.count)",
+                "filtered=\(state.filteredCards.count)",
+                "sessions=\(state.sessions.count)",
+                "activity=\(state.activityMap.count)",
+                "channels=\(state.channels.count)",
+                "loadedChannels=\(state.channelMessages.count)",
+                "channelMessages=\(totalChannelMessages)",
+                "largestChannel=\(largestChannel.map { "#\($0.key):\($0.value)" } ?? "none")",
+                "loadedDMs=\(state.dmMessages.count)",
+                "dmMessages=\(totalDMMessages)",
+                "largestDM=\(largestDM.map { "\($0.key):\($0.value)" } ?? "none")",
+                "channelDrafts=\(state.channelDrafts.count)/\(channelDraftChars)chars",
+                "dmDrafts=\(state.dmDrafts.count)/\(dmDraftChars)chars",
+                "queuedPrompts=\(queuedPrompts)",
+                "browserTabLinks=\(browserTabLinks)",
+                "prLinks=\(prLinks)",
+                "busyCards=\(state.busyCards.count)",
+                "pinned=\(state.pinnedCards.count)"
+            ].joined(separator: " ")
+        }
+        MemoryDiagnostics.shared.registerMainActorMetricProvider(name: "ui-caches") {
+            [
+                TerminalCache.shared.diagnosticSummary(),
+                BrowserTabCache.shared.diagnosticSummary(),
+                self.draftImageDiagnosticSummary()
+            ].joined(separator: " ")
+        }
+    }
+
+    @MainActor
+    private func draftImageDiagnosticSummary() -> String {
+        let channelImageCount = channelDraftImages.values.reduce(0) { $0 + $1.count }
+        let channelImageBytes = channelDraftImages.values.flatMap { $0 }.reduce(0) { $0 + $1.count }
+        let dmImageCount = dmDraftImages.values.reduce(0) { $0 + $1.count }
+        let dmImageBytes = dmDraftImages.values.flatMap { $0 }.reduce(0) { $0 + $1.count }
+        return "draftImages channels=\(channelDraftImages.count)/\(channelImageCount)/\(Self.formatBytes(channelImageBytes)) dms=\(dmDraftImages.count)/\(dmImageCount)/\(Self.formatBytes(dmImageBytes))"
+    }
+
+    nonisolated private static func formatBytes(_ bytes: Int) -> String {
+        let mib = Double(bytes) / 1024 / 1024
+        if mib >= 1024 {
+            return String(format: "%.2fGiB", mib / 1024)
+        }
+        return String(format: "%.1fMiB", mib)
     }
 
     // Launch, resume, fork, migration, worktree cleanup, and sync status

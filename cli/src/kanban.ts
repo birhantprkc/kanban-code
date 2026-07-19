@@ -862,7 +862,16 @@ function resolveCaller(
     if (opts.asCardId) {
       return { cardId: opts.asCardId, handle };
     }
-    // Prefer a live card whose handle matches in the target channel.
+    // `--as` is a handle override, not a request to become a userlike
+    // participant. When an agent runs inside its Kanban tmux session, preserve
+    // that card identity so channel fanout and mention navigation keep working.
+    const session = currentTmuxSessionName();
+    if (session) {
+      const card = cardForTmuxSession(links, session);
+      if (card) return { cardId: card.id, handle };
+    }
+    // Outside tmux, prefer an existing channel member for this handle so
+    // helper scripts can keep posting as the same card-backed participant.
     if (channelName) {
       const ch = getChannel(channelName);
       const m = ch?.members.find((x) => x.handle === handle);

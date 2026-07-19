@@ -71,6 +71,19 @@ struct PaneOutputParserMultiAssistantTests {
         #expect(PaneOutputParser.isReady(output, assistant: .codex) == true)
     }
 
+    @Test("isReady detects Codex placeholder prompt")
+    func isReadyCodexPlaceholderPrompt() {
+        let output = """
+        │ model:     gpt-5.6-sol xhigh   /model to change   │
+        │ directory: /private/tmp/project                    │
+
+        › Implement {feature}
+
+          gpt-5.6-sol xhigh · /private/tmp/project
+        """
+        #expect(PaneOutputParser.isReady(output, assistant: .codex) == true)
+    }
+
     @Test("isWorking detects Codex while prompt is absent")
     func isWorkingCodexWhenPromptAbsent() {
         let output = """
@@ -95,10 +108,23 @@ struct PaneOutputParserMultiAssistantTests {
     func codexReadyIgnoresHistoricalUserMarker() {
         let output = """
         › previous user message
+        • Working (4m 21s • esc to interrupt)
         running command: git push origin branch
         """
         #expect(PaneOutputParser.isReady(output, assistant: .codex) == false)
         #expect(PaneOutputParser.isWorking(output, assistant: .codex) == true)
+    }
+
+    @Test("Codex startup confirmation is detected")
+    func codexStartupConfirmationDetected() {
+        let output = """
+        › 1. Yes, continue
+          2. No, quit
+
+          Press enter to continue
+        """
+        #expect(PaneOutputParser.codexNeedsStartupConfirmation(output) == true)
+        #expect(PaneOutputParser.isReady(output, assistant: .codex) == false)
     }
 
     @Test("isReady does not detect Claude prompt as Codex ready")

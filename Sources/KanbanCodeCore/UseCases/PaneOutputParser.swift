@@ -24,12 +24,45 @@ public enum PaneOutputParser {
             return paneOutput.contains(assistant.promptCharacter)
         case .codex:
             // Codex also prefixes historical user turns with `› text`; only a
-            // standalone prompt near the bottom means it is idle/ready.
-            return paneOutput
+            // prompt in the bottom input area means it is idle/ready. Current
+            // no-alt-screen Codex can render that input as either bare `›` or
+            // with a placeholder/suggestion like `› Implement {feature}`.
+            let lines = paneOutput
                 .components(separatedBy: .newlines)
-                .suffix(8)
-                .contains { stripAnsi($0).trimmingCharacters(in: .whitespacesAndNewlines) == assistant.promptCharacter }
+                .suffix(12)
+                .map { stripAnsi($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            if lines.contains(where: { $0.hasPrefix("• Working") }) {
+                return false
+            }
+            if lines.contains(assistant.promptCharacter) {
+                return true
+            }
+            guard let promptIndex = lines.lastIndex(where: { $0.hasPrefix("\(assistant.promptCharacter) ") }) else {
+                return false
+            }
+            let footerLines = lines.dropFirst(promptIndex + 1)
+            return footerLines.contains { line in
+                line.contains(" · ") && line.localizedCaseInsensitiveContains("gpt-")
+            }
         }
+    }
+
+    /// Codex can stop on startup confirmation screens before showing its input
+    /// prompt, for example when entering a new/untrusted project directory.
+    /// The default selected option is "Yes, continue", so pressing Enter is safe
+    /// and lets launch automation reach the real prompt.
+    public static func codexNeedsStartupConfirmation(_ paneOutput: String) -> Bool {
+        let lines = paneOutput
+            .components(separatedBy: .newlines)
+            .suffix(12)
+            .map { stripAnsi($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+
+        let hasContinueOption = lines.contains { line in
+            line == "› 1. Yes, continue" || line == "❯ 1. Yes, continue"
+        }
+        let hasQuitOption = lines.contains { $0 == "2. No, quit" }
+        let asksForEnter = lines.contains { $0.localizedCaseInsensitiveContains("press enter to continue") }
+        return hasContinueOption && hasQuitOption && asksForEnter
     }
 
     /// Backward-compatible: check if Claude Code's input prompt is visible.

@@ -133,4 +133,16 @@ final class GhosttyImplicitLinkDetectionTests: TerminalDelegate {
         let row2 = terminal.link(at: .buffer(Position(col: 2, row: 2)), mode: .explicitAndImplicit)
         #expect(row2 == input)
     }
+
+    @Test func testAbsoluteImagePathSpansWrappedRows() {
+        let input = "/Users/example/Projects/langwatch-worktrees/evaluations-experiments-ia-20260717/.claude/tmp/benchmark/braintrust-experiments.png"
+        let terminal = Terminal(delegate: self, options: TerminalOptions(cols: 60, rows: 4))
+        terminal.feed(text: input)
+
+        let firstRowLink = terminal.link(at: .buffer(Position(col: 10, row: 0)), mode: .explicitAndImplicit)
+        #expect(firstRowLink == input)
+
+        let wrappedRowLink = terminal.link(at: .buffer(Position(col: 10, row: 1)), mode: .explicitAndImplicit)
+        #expect(wrappedRowLink == input)
+    }
 }

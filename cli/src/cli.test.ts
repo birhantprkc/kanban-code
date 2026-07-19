@@ -160,6 +160,46 @@ describe("kanban channel (CLI e2e)", () => {
     assert.ok(handles.includes("bob"));
   });
 
+  test("join --as inside tmux preserves and repairs the current card id", () => {
+    seedLinks([
+      {
+        id: "card_alice",
+        name: "alice-card",
+        column: "in_progress",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        tmuxLink: { sessionName: "sess-alice" },
+        isRemote: false,
+        prLinks: [],
+        manualOverrides: {},
+        source: "manual",
+        manuallyArchived: false,
+      },
+    ]);
+    runCli(["channel", "create", "general", "--as-user"], { HOME: home });
+
+    let r = runCli(["channel", "join", "general", "--as", "alice"], { HOME: home });
+    assert.equal(r.code, 0, r.stderr);
+    r = runCli(["channel", "members", "general", "--json"], { HOME: home });
+    let members = JSON.parse(r.stdout);
+    assert.equal(members.find((m: any) => m.handle === "alice")?.cardId, null);
+
+    const { binDir, logPath } = seedFakeTmux("sess-alice");
+    const tmuxEnv = {
+      HOME: home,
+      PATH: `${binDir}:${process.env.PATH}`,
+      TMUX: "/tmp/tmux-test/default,1,0",
+      TMUX_LOG: logPath,
+      TMUX_SESSION_NAME: "sess-alice",
+    };
+
+    r = runCli(["channel", "join", "general", "--as", "alice"], tmuxEnv);
+    assert.equal(r.code, 0, r.stderr);
+    r = runCli(["channel", "members", "general", "--json"], { HOME: home });
+    members = JSON.parse(r.stdout);
+    assert.equal(members.find((m: any) => m.handle === "alice")?.cardId, "card_alice");
+  });
+
   test("create duplicate fails gracefully", () => {
     const env = { HOME: home };
     seedLinks([]);

@@ -38,9 +38,16 @@ public actor ImageSender {
         // Gemini and Codex can take longer to start (auth checks, banners, model setup).
         let effectiveTimeout = timeout ?? (assistant == .gemini || assistant == .codex ? .seconds(60) : .seconds(30))
         let start = ContinuousClock.now
+        var acceptedCodexStartupPrompt = false
         while ContinuousClock.now - start < effectiveTimeout {
             let output = try await tmux.capturePane(sessionName: sessionName)
             if PaneOutputParser.isReady(output, assistant: assistant) { return }
+            if assistant == .codex,
+               !acceptedCodexStartupPrompt,
+               PaneOutputParser.codexNeedsStartupConfirmation(output) {
+                acceptedCodexStartupPrompt = true
+                try await tmux.submitPrompt(to: sessionName)
+            }
             try await Task.sleep(for: pollInterval)
         }
         throw ImageSendError.assistantNotReady(assistant)

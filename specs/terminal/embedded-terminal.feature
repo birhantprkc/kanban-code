@@ -231,6 +231,16 @@ Feature: Embedded Terminal Emulator
     Then scrolling should be smooth
     And memory usage should be bounded
 
+  # ── Terminal Links ──
+
+  Scenario: Command-clicking an absolute file path opens the file
+    Given the terminal displays an existing absolute file path
+    And the path may wrap across multiple terminal rows
+    When I command-click any part of the path
+    Then Kanban Code should open it as a local file
+    And macOS should use the file's default application
+    And the path should not be treated as a web URL
+
   # ── Copy tmux attach command ──
 
   Scenario: Copy tmux command for external terminal

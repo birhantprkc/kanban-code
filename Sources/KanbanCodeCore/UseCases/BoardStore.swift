@@ -16,7 +16,8 @@ public enum DialogState: Equatable, Sendable {
     case confirmWorktreeCleanup(cardId: String)
     case confirmMoveToProject(cardId: String, projectPath: String, projectName: String)
     case confirmMoveToFolder(cardId: String, folderPath: String, parentProjectPath: String, displayName: String)
-    case confirmMigration(cardId: String, targetAssistant: CodingAssistant)
+    case confirmMigration(cardId: String, targetAssistant: CodingAssistant, recentTurnLimit: Int?)
+    case confirmTrimSession(cardId: String)
     case remoteWorktreeCleanup(cardId: String, remotePath: String, localPath: String, errorMessage: String)
     case confirmDeleteChannel(name: String)
 }
@@ -941,6 +942,7 @@ public enum Reducer {
             let messagesChanged = existingMessages != messages
             if messagesChanged {
                 state.channelMessages[name] = messages
+                Self.logChannelPayloadIfLarge(kind: "channel", name: name, messages: messages)
             }
             var effects: [Effect] = []
 
@@ -1085,6 +1087,7 @@ public enum Reducer {
             let messagesChanged = existingMessages != messages
             if messagesChanged {
                 state.dmMessages[key] = messages
+                Self.logChannelPayloadIfLarge(kind: "dm", name: key, messages: messages)
             }
             var effects: [Effect] = []
 
@@ -2035,6 +2038,16 @@ public enum Reducer {
             state.isRefreshingBacklog = refreshing
             return []
         }
+    }
+
+    private static func logChannelPayloadIfLarge(kind: String, name: String, messages: [ChannelMessage]) {
+        let bodyChars = messages.reduce(0) { $0 + $1.body.count }
+        let imageCount = messages.reduce(0) { $0 + ($1.imagePaths?.count ?? 0) }
+        guard messages.count >= 250 || bodyChars >= 250_000 || imageCount >= 25 else { return }
+        KanbanCodeLog.info(
+            "memory-context",
+            "\(kind)MessagesLoaded name=\(name) messages=\(messages.count) bodyChars=\(bodyChars) images=\(imageCount)"
+        )
     }
 }
 

@@ -13,6 +13,7 @@ struct CardView: View {
     var onFork: (_ keepWorktree: Bool) -> Void = { _ in }
     var onRenameRequest: () -> Void = {}
     var onCopyResumeCmd: () -> Void = {}
+    var onTrimSession: () -> Void = {}
     var onDiscover: () -> Void = {}
     var onCleanupWorktree: () -> Void = {}
     var canCleanupWorktree: Bool = true
@@ -108,6 +109,7 @@ struct CardView: View {
                     onSetPinned: onSetPinned,
                     onCopyResumeCmd: onCopyResumeCmd,
                     onCopyConversationMarkdown: onCopyConversationMarkdown,
+                    onTrimSession: onTrimSession,
                     onCheckpoint: nil,
                     onAddLink: nil,
                     onUnlink: nil,

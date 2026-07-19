@@ -17,6 +17,7 @@ struct BoardView: View {
     var onForkCard: (String, Bool) -> Void = { _, _ in }
     var onCopyResumeCmd: (String) -> Void = { _ in }
     var onCopyConversationMarkdown: (String) -> Void = { _ in }
+    var onTrimSession: (String) -> Void = { _ in }
     var onDiscoverCard: (String) -> Void = { _ in }
     var onCleanupWorktree: (String) -> Void = { _ in }
     var canCleanupWorktree: (String) -> Bool = { _ in true }
@@ -177,6 +178,7 @@ struct BoardView: View {
                             onForkCard: onForkCard,
                             onCopyResumeCmd: onCopyResumeCmd,
                             onCopyConversationMarkdown: onCopyConversationMarkdown,
+                            onTrimSession: onTrimSession,
                             onSetCardPinned: onSetCardPinned,
                             onDiscoverCard: onDiscoverCard,
                             onCleanupWorktree: onCleanupWorktree,
@@ -305,6 +307,7 @@ struct BoardView: View {
             onFork: { keepWorktree in onForkCard(card.id, keepWorktree) },
             onRenameRequest: { renamingPinnedCardId = card.id },
             onCopyResumeCmd: { onCopyResumeCmd(card.id) },
+            onTrimSession: { onTrimSession(card.id) },
             onDiscover: { onDiscoverCard(card.id) },
             onCleanupWorktree: { onCleanupWorktree(card.id) },
             canCleanupWorktree: canCleanupWorktree(card.id),

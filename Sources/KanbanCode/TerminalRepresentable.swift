@@ -17,6 +17,7 @@ import KanbanCodeCore
 final class BatchedTerminalView: LocalProcessTerminalView {
     private var pendingData: [UInt8] = []
     private var flushScheduled = false
+    private var lastPendingDataWarningAt: CFTimeInterval = 0
 
     // Strategy: for small interactive responses (typing, cursor moves), render
     // immediately. For heavy streaming (Claude output), batch and drop frames.
@@ -60,6 +61,16 @@ final class BatchedTerminalView: LocalProcessTerminalView {
         }
 
         let totalPending = pendingData.count - pendingOffset
+        if totalPending > 8 * 1024 * 1024 {
+            let now = CACurrentMediaTime()
+            if now - lastPendingDataWarningAt > 10 {
+                lastPendingDataWarningAt = now
+                KanbanCodeLog.warn(
+                    "memory-context",
+                    "terminal pendingData=\(totalPending / 1024)KiB passthrough=\(passthroughMode)"
+                )
+            }
+        }
 
         // Small chunks (typing, cursor moves): feed directly on this main-thread
         // call — zero scheduling overhead for instant keystroke response.
@@ -445,6 +456,7 @@ final class TerminalCache {
     private var shiftEnterMonitor: Any?
     private var scrollWheelMonitor: Any?
     private var fontSizeObserver: Any?
+    private var lastLoggedTerminalCount = 0
 
     private var currentFontSize: CGFloat = {
         let stored = UserDefaults.standard.double(forKey: TerminalCache.fontSizeKey)
@@ -672,6 +684,7 @@ final class TerminalCache {
         terminal.isHidden = true
         terminal.installURLMonitor()
         terminals[sessionName] = terminal
+        logGrowthIfNeeded(trigger: "create session=\(sessionName)")
         return terminal
     }
 
@@ -707,6 +720,20 @@ final class TerminalCache {
     /// Check if a terminal exists for this session.
     func has(_ sessionName: String) -> Bool {
         terminals[sessionName] != nil
+    }
+
+    func diagnosticSummary() -> String {
+        "terminalCache terminals=\(terminals.count) started=\(startedSessions.count) copyMode=\(copyModeSessions.count) copyModeCooldowns=\(copyModeExitTime.count)"
+    }
+
+    private func logGrowthIfNeeded(trigger: String) {
+        let terminalCount = terminals.count
+        guard terminalCount >= 8, terminalCount != lastLoggedTerminalCount else { return }
+        lastLoggedTerminalCount = terminalCount
+        KanbanCodeLog.warn(
+            "memory-context",
+            "terminalCache grew trigger=\(trigger) terminals=\(terminalCount) started=\(startedSessions.count) copyMode=\(copyModeSessions.count)"
+        )
     }
 
     /// Focus the terminal for a session directly (bypasses NSViewRepresentable update).

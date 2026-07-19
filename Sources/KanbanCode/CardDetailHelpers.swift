@@ -19,6 +19,7 @@ struct CardActionsMenuActions {
     let onSetPinned: (_ isPinned: Bool) -> Void
     let onCopyResumeCmd: () -> Void
     let onCopyConversationMarkdown: () -> Void
+    let onTrimSession: () -> Void
     let onCheckpoint: (() -> Void)?
     let onAddLink: (() -> Void)?
     let onUnlink: ((Action.LinkType) -> Void)?
@@ -39,6 +40,7 @@ struct CardActionsMenuActions {
         onSetPinned: @escaping (_ isPinned: Bool) -> Void,
         onCopyResumeCmd: @escaping () -> Void,
         onCopyConversationMarkdown: @escaping () -> Void,
+        onTrimSession: @escaping () -> Void,
         onCheckpoint: (() -> Void)?,
         onAddLink: (() -> Void)?,
         onUnlink: ((Action.LinkType) -> Void)?,
@@ -58,6 +60,7 @@ struct CardActionsMenuActions {
         self.onSetPinned = onSetPinned
         self.onCopyResumeCmd = onCopyResumeCmd
         self.onCopyConversationMarkdown = onCopyConversationMarkdown
+        self.onTrimSession = onTrimSession
         self.onCheckpoint = onCheckpoint
         self.onAddLink = onAddLink
         self.onUnlink = onUnlink
@@ -198,6 +201,11 @@ struct CardActionsMenu: View {
         }
         Button(action: { actions.onFork(true) }) {
             Label("Fork Session", systemImage: "arrow.branch")
+        }
+        .disabled(card.link.sessionLink?.sessionPath == nil)
+
+        Button(action: actions.onTrimSession) {
+            Label("Trim Session History", systemImage: "scissors")
         }
         .disabled(card.link.sessionLink?.sessionPath == nil)
 

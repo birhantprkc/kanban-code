@@ -67,6 +67,12 @@ public actor ChannelsStore {
         } else {
             guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return [] }
             lines = Array(text.split(separator: "\n", omittingEmptySubsequences: true))
+            if text.utf8.count >= 2_000_000 || lines.count >= 1_000 {
+                KanbanCodeLog.warn(
+                    "memory-context",
+                    "full channel log read path=\((path as NSString).lastPathComponent) bytes=\(text.utf8.count) lines=\(lines.count)"
+                )
+            }
         }
 
         return lines.compactMap { line -> ChannelMessage? in

@@ -33,6 +33,7 @@ struct SearchOverlay: View {
     @State private var isDeepSearching = false
     @State private var selectedId: String?
     @State private var searchTask: Task<Void, Never>?
+    @State private var focusRequestToken = 0
     @FocusState private var isSearchFocused: Bool
 
     var body: some View {
@@ -102,11 +103,12 @@ struct SearchOverlay: View {
     private func handleAppear() {
         snapshotCards = cards  // Freeze cards at open time
         cardSearchIndex = cards.map(CardSearchIndexItem.init(card:))
-        isSearchFocused = true
+        requestSearchFocus()
         if !initialQuery.isEmpty {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                 query = initialQuery
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
+                    requestSearchFocus()
                     moveCursorToEnd()
                 }
             }
@@ -213,6 +215,7 @@ struct SearchOverlay: View {
                 .textFieldStyle(.plain)
                 .font(.app(.title3))
                 .focused($isSearchFocused)
+                .background(SearchTextFieldFocusBridge(trigger: focusRequestToken))
 
             if isDeepSearching {
                 ProgressView()
@@ -519,6 +522,12 @@ struct SearchOverlay: View {
         guard let window = NSApp.keyWindow,
               let fieldEditor = window.fieldEditor(false, for: nil) as? NSTextView else { return }
         fieldEditor.setSelectedRange(NSRange(location: fieldEditor.string.count, length: 0))
+    }
+
+    private func requestSearchFocus() {
+        isSearchFocused = true
+        focusRequestToken += 1
+        DispatchQueue.main.async { isSearchFocused = true }
     }
 
     private func updateFilter(_ query: String) {
@@ -914,5 +923,46 @@ struct ChannelSearchRow: View {
                     .stroke(Color.accentColor.opacity(0.45), lineWidth: 1)
             }
         }
+    }
+}
+
+private struct SearchTextFieldFocusBridge: NSViewRepresentable {
+    let trigger: Int
+
+    func makeNSView(context: Context) -> NSView {
+        NSView(frame: .zero)
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        _ = trigger
+        let delays: [TimeInterval] = [0.0, 0.05, 0.15, 0.35]
+        for delay in delays {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                focusSearchField(from: nsView)
+            }
+        }
+    }
+
+    private func focusSearchField(from view: NSView) {
+        guard let window = view.window,
+              let field = findSearchField(in: window.contentView) else { return }
+        window.makeFirstResponder(field)
+        if let editor = window.fieldEditor(false, for: field) as? NSTextView {
+            editor.setSelectedRange(NSRange(location: editor.string.count, length: 0))
+        }
+    }
+
+    private func findSearchField(in view: NSView?) -> NSTextField? {
+        guard let view else { return nil }
+        if let field = view as? NSTextField,
+           field.placeholderString == "Search or type > for commands..." {
+            return field
+        }
+        for subview in view.subviews {
+            if let found = findSearchField(in: subview) {
+                return found
+            }
+        }
+        return nil
     }
 }

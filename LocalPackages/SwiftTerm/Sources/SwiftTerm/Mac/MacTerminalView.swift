@@ -2399,10 +2399,25 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
 
 // Default implementations for TerminalViewDelegate
 
+enum TerminalLinkResolver {
+    static func url(for link: String) -> URL? {
+        let trimmed = link.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if trimmed.hasPrefix("/") {
+            return URL(fileURLWithPath: trimmed)
+        }
+        if trimmed.hasPrefix("~/") {
+            return URL(fileURLWithPath: (trimmed as NSString).expandingTildeInPath)
+        }
+        return URL(string: trimmed)
+    }
+}
+
 extension TerminalViewDelegate {
     public func requestOpenLink (source: TerminalView, link: String, params: [String:String])
     {
-        if let url = URL(string: link) {
+        if let url = TerminalLinkResolver.url(for: link) {
             NSWorkspace.shared.open(url)
         }
     }

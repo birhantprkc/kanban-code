@@ -18,6 +18,7 @@ struct ListBoardView: View {
     var onForkCard: (String, Bool) -> Void = { _, _ in }
     var onCopyResumeCmd: (String) -> Void = { _ in }
     var onCopyConversationMarkdown: (String) -> Void = { _ in }
+    var onTrimSession: (String) -> Void = { _ in }
     let onSetCardPinned: (String, Bool) -> Void
     var onDiscoverCard: (String) -> Void = { _ in }
     var onCleanupWorktree: (String) -> Void = { _ in }
@@ -148,6 +149,7 @@ struct ListBoardView: View {
             onResume: { onResumeCard(card.id) },
             onFork: { keepWorktree in onForkCard(card.id, keepWorktree) },
             onCopyResumeCmd: { onCopyResumeCmd(card.id) },
+            onTrimSession: { onTrimSession(card.id) },
             onDiscover: { onDiscoverCard(card.id) },
             onCleanupWorktree: { onCleanupWorktree(card.id) },
             canCleanupWorktree: canCleanupWorktree(card.id),
@@ -239,6 +241,7 @@ struct ListBoardView: View {
             onForkCard: onForkCard,
             onCopyResumeCmd: onCopyResumeCmd,
             onCopyConversationMarkdown: onCopyConversationMarkdown,
+            onTrimSession: onTrimSession,
             onSetCardPinned: onSetCardPinned,
             onDiscoverCard: onDiscoverCard,
             onCleanupWorktree: onCleanupWorktree,
@@ -348,6 +351,7 @@ private struct ListBoardSectionView: View {
     let onForkCard: (String, Bool) -> Void
     let onCopyResumeCmd: (String) -> Void
     let onCopyConversationMarkdown: (String) -> Void
+    let onTrimSession: (String) -> Void
     let onSetCardPinned: (String, Bool) -> Void
     let onDiscoverCard: (String) -> Void
     let onCleanupWorktree: (String) -> Void
@@ -475,6 +479,7 @@ private struct ListBoardSectionView: View {
                         onResume: { onResumeCard(card.id) },
                         onFork: { keepWorktree in onForkCard(card.id, keepWorktree) },
                         onCopyResumeCmd: { onCopyResumeCmd(card.id) },
+                        onTrimSession: { onTrimSession(card.id) },
                         onDiscover: { onDiscoverCard(card.id) },
                         onCleanupWorktree: { onCleanupWorktree(card.id) },
                         canCleanupWorktree: canCleanupWorktree(card.id),
@@ -739,6 +744,7 @@ private struct ListCardRowView: View {
     var onResume: () -> Void = {}
     var onFork: (_ keepWorktree: Bool) -> Void = { _ in }
     var onCopyResumeCmd: () -> Void = {}
+    var onTrimSession: () -> Void = {}
     var onDiscover: () -> Void = {}
     var onCleanupWorktree: () -> Void = {}
     var canCleanupWorktree: Bool = true
@@ -826,6 +832,7 @@ private struct ListCardRowView: View {
                     onSetPinned: onSetPinned,
                     onCopyResumeCmd: onCopyResumeCmd,
                     onCopyConversationMarkdown: onCopyConversationMarkdown,
+                    onTrimSession: onTrimSession,
                     onCheckpoint: nil,
                     onAddLink: nil,
                     onUnlink: nil,

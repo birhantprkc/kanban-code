@@ -180,6 +180,7 @@ final class SystemTray: NSObject, @unchecked Sendable {
         // Check if already running from a previous app launch
         if let existing = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == Self.activeSessionBundleID }) {
             activeSessionApp = existing
+            MemoryDiagnostics.shared.setRelatedProcessPIDs(label: "active-session", pids: [existing.processIdentifier])
             Self.log("active-session already running: pid=\(existing.processIdentifier)")
             return
         }
@@ -195,6 +196,7 @@ final class SystemTray: NSObject, @unchecked Sendable {
                         Self.log("active-session app failed to start: \(error)")
                     } else if let app {
                         self?.activeSessionApp = app
+                        MemoryDiagnostics.shared.setRelatedProcessPIDs(label: "active-session", pids: [app.processIdentifier])
                         Self.log("active-session started: pid=\(app.processIdentifier)")
                     }
                 }
@@ -214,6 +216,7 @@ final class SystemTray: NSObject, @unchecked Sendable {
             do {
                 try proc.run()
                 activeSessionProcess = proc
+                MemoryDiagnostics.shared.setRelatedProcessPIDs(label: "active-session", pids: [proc.processIdentifier])
                 Self.log("active-session started (bare binary): pid=\(proc.processIdentifier)")
             } catch {
                 Self.log("active-session failed to start: \(error)")
@@ -254,6 +257,7 @@ final class SystemTray: NSObject, @unchecked Sendable {
                 if kill(pid, 0) == 0 { kill(pid, SIGKILL) }
             }
         }
+        MemoryDiagnostics.shared.setRelatedProcessPIDs(label: "active-session", pids: [])
     }
 
     nonisolated static func uniqueActiveSessionPIDs(_ candidates: [pid_t?]) -> Set<pid_t> {

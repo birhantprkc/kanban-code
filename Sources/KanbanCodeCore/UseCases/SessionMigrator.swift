@@ -8,6 +8,8 @@ public enum SessionMigrator {
         public let newSessionId: String
         public let newSessionPath: String
         public let backupPath: String
+        public let sourceTurnCount: Int
+        public let migratedTurnCount: Int
     }
 
     /// Migrate a session from one assistant to another.
@@ -21,12 +23,19 @@ public enum SessionMigrator {
         sourceSessionPath: String,
         sourceStore: SessionStore,
         targetStore: SessionStore,
-        projectPath: String?
+        projectPath: String?,
+        recentTurnLimit: Int? = nil
     ) async throws -> MigrationResult {
         // 1. Read transcript from source
         let turns = try await sourceStore.readTranscript(sessionPath: sourceSessionPath)
         guard !turns.isEmpty else {
             throw MigrationError.emptySession
+        }
+        let turnsToMigrate: [ConversationTurn]
+        if let recentTurnLimit, recentTurnLimit > 0, turns.count > recentTurnLimit {
+            turnsToMigrate = Array(turns.suffix(recentTurnLimit))
+        } else {
+            turnsToMigrate = turns
         }
 
         // 2. Generate new session ID
@@ -34,7 +43,7 @@ public enum SessionMigrator {
 
         // 3. Write to target format
         let newPath = try await targetStore.writeSession(
-            turns: turns,
+            turns: turnsToMigrate,
             sessionId: newSessionId,
             projectPath: projectPath
         )
@@ -52,7 +61,9 @@ public enum SessionMigrator {
         return MigrationResult(
             newSessionId: newSessionId,
             newSessionPath: newPath,
-            backupPath: backupPath
+            backupPath: backupPath,
+            sourceTurnCount: turns.count,
+            migratedTurnCount: turnsToMigrate.count
         )
     }
 }

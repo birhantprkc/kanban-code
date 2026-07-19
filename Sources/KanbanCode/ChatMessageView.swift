@@ -543,6 +543,12 @@ struct LazyImageChip: View {
         Task {
             let images = try? await TranscriptReader.loadImagesAtOffset(from: path, byteOffset: byteOffset)
             if let data = images?[safe: index], let nsImage = NSImage(data: data) {
+                if data.count >= 5 * 1024 * 1024 {
+                    KanbanCodeLog.warn(
+                        "memory-context",
+                        "chat image decoded path=\((path as NSString).lastPathComponent) offset=\(byteOffset) index=\(index) bytes=\(data.count) points=\(Int(nsImage.size.width))x\(Int(nsImage.size.height))"
+                    )
+                }
                 loadedImage = nsImage
                 // Show popover now that image is ready (if mouse is still over the chip)
                 isHovering = true

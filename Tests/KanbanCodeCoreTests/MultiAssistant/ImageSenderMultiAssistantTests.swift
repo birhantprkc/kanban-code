@@ -11,6 +11,7 @@ struct ImageSenderMultiAssistantTests {
         var capturedPaneOutputs: [String] = []
         private var captureIndex = 0
         var captureCallCount = 0
+        var submitPromptCallCount = 0
 
         func createSession(name: String, path: String, command: String?) async throws {}
         func killSession(name: String) async throws {}
@@ -18,7 +19,7 @@ struct ImageSenderMultiAssistantTests {
         func sendPrompt(to sessionName: String, text: String) async throws {}
         func pastePrompt(to sessionName: String, text: String) async throws {}
         func pasteText(to sessionName: String, text: String) async throws {}
-        func submitPrompt(to sessionName: String) async throws {}
+        func submitPrompt(to sessionName: String) async throws { submitPromptCallCount += 1 }
         func sendBracketedPaste(to sessionName: String) async throws {}
         func findSessionForWorktree(sessions: [TmuxSession], worktreePath: String, branch: String?) -> TmuxSession? { nil }
         func isAvailable() async -> Bool { true }
@@ -102,6 +103,38 @@ struct ImageSenderMultiAssistantTests {
             timeout: .seconds(5)
         )
 
+        #expect(mock.captureCallCount == 2)
+    }
+
+    @Test("waitForReady accepts Codex startup confirmation before waiting for prompt")
+    func waitForReadyCodexStartupConfirmation() async throws {
+        let mock = MockTmux()
+        mock.capturedPaneOutputs = [
+            """
+            › 1. Yes, continue
+              2. No, quit
+
+              Press enter to continue
+            """,
+            """
+            │ model:     gpt-5.6-sol xhigh   /model to change   │
+            │ directory: /tmp/project                            │
+
+            › Implement {feature}
+
+              gpt-5.6-sol xhigh · /tmp/project
+            """,
+        ]
+
+        let sender = ImageSender(tmux: mock)
+        try await sender.waitForReady(
+            sessionName: "test-codex",
+            assistant: .codex,
+            pollInterval: .milliseconds(10),
+            timeout: .seconds(5)
+        )
+
+        #expect(mock.submitPromptCallCount == 1)
         #expect(mock.captureCallCount == 2)
     }
 

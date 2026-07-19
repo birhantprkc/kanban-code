@@ -213,10 +213,12 @@ struct SessionHistoryView: View {
                 // so it takes priority over the drawer's Escape handler.
             }
             .onAppear {
-                cmdMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
-                    let cmd = event.modifierFlags.contains(.command)
-                    if cmd != isCmdHeld { isCmdHeld = cmd }
-                    return event
+                if cmdMonitor == nil {
+                    cmdMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
+                        let cmd = event.modifierFlags.contains(.command)
+                        if cmd != isCmdHeld { isCmdHeld = cmd }
+                        return event
+                    }
                 }
             }
             .onDisappear {
