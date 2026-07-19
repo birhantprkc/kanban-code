@@ -128,6 +128,7 @@ public enum TranscriptReader {
             }
             let timestamp = obj["timestamp"] as? String
             let imgCount = (type == "user") ? Self.countImages(in: obj) : 0
+            let modelName = (obj["message"] as? [String: Any])?["model"] as? String
             turns.append(ConversationTurn(
                 index: i,
                 lineNumber: info.byteOffset, // stable: byte offset in original file
@@ -135,7 +136,8 @@ public enum TranscriptReader {
                 textPreview: textPreview,
                 timestamp: timestamp,
                 contentBlocks: blocks,
-                imageCount: imgCount
+                imageCount: imgCount,
+                modelName: modelName
             ))
         }
 
@@ -364,6 +366,7 @@ public enum TranscriptReader {
             }
 
             let timestamp = obj["timestamp"] as? String
+            let modelName = (obj["message"] as? [String: Any])?["model"] as? String
 
             turns.append(ConversationTurn(
                 index: turnIndex,
@@ -371,7 +374,8 @@ public enum TranscriptReader {
                 role: role,
                 textPreview: textPreview,
                 timestamp: timestamp,
-                contentBlocks: blocks
+                contentBlocks: blocks,
+                modelName: modelName
             ))
         }
 
@@ -402,7 +406,8 @@ public enum TranscriptReader {
                     textPreview: current.textPreview == "(empty)" ? next.textPreview : current.textPreview,
                     timestamp: current.timestamp ?? next.timestamp,
                     contentBlocks: current.contentBlocks + next.contentBlocks,
-                    imageCount: current.imageCount + next.imageCount
+                    imageCount: current.imageCount + next.imageCount,
+                    modelName: current.modelName ?? next.modelName
                 )
             }
             result.append(current)

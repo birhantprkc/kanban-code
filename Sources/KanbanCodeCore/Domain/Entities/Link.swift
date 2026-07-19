@@ -642,8 +642,12 @@ public struct ConversationTurn: Sendable {
     public let timestamp: String?
     public let contentBlocks: [ContentBlock]
     public let imageCount: Int
+    /// Model that produced this assistant turn (from the source transcript).
+    /// Claude Code's interactive resume requires `message.model` on assistant
+    /// lines, so migration writers persist this (or a fallback marker).
+    public let modelName: String?
 
-    public init(index: Int, lineNumber: Int, role: String, textPreview: String, timestamp: String? = nil, contentBlocks: [ContentBlock] = [], imageCount: Int = 0) {
+    public init(index: Int, lineNumber: Int, role: String, textPreview: String, timestamp: String? = nil, contentBlocks: [ContentBlock] = [], imageCount: Int = 0, modelName: String? = nil) {
         self.index = index
         self.lineNumber = lineNumber
         self.role = role
@@ -651,5 +655,6 @@ public struct ConversationTurn: Sendable {
         self.timestamp = timestamp
         self.contentBlocks = contentBlocks
         self.imageCount = imageCount
+        self.modelName = modelName
     }
 }

@@ -143,13 +143,25 @@ public final class ClaudeCodeSessionStore: SessionStore, @unchecked Sendable {
 
                 let hasToolUse = !toolCalls.isEmpty
                 let msgId = "msg_migrated_\(UUID().uuidString.prefix(12))"
+                // `model` is REQUIRED: Claude Code's interactive `--resume` fails with
+                // "Failed to resume session" when the last assistant line has no
+                // message.model. Unknown model strings are fine — Claude shows a
+                // notice and falls back to the default model.
                 let message: [String: Any] = [
                     "id": msgId,
                     "type": "message",
                     "role": "assistant",
+                    "model": turn.modelName ?? Self.migratedModelFallback,
                     "content": contentBlocks,
                     "stop_reason": hasToolUse ? "tool_use" : "end_turn",
-                    "stop_sequence": NSNull()
+                    "stop_sequence": NSNull(),
+                    "usage": [
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "cache_creation_input_tokens": 0,
+                        "cache_read_input_tokens": 0,
+                        "service_tier": "standard"
+                    ] as [String: Any]
                 ]
                 jsonObj["message"] = message
 
@@ -219,6 +231,11 @@ public final class ClaudeCodeSessionStore: SessionStore, @unchecked Sendable {
     }
 
     /// Map tool names from other assistants to Claude Code equivalents.
+    /// Written when the source transcript has no model info. Not a real model id
+    /// on purpose: Claude Code shows "Session model migrated-session could not be
+    /// restored — using <default> instead" and resumes normally.
+    static let migratedModelFallback = "migrated-session"
+
     private static func mapToolName(_ name: String) -> String {
         switch name.lowercased() {
         case "shell", "run_shell_command", "bash": return "Bash"
