@@ -223,22 +223,6 @@ final class BatchedTerminalView: LocalProcessTerminalView {
 
     // MARK: - Cmd+hover URL detection
 
-    private static let urlRegex: NSRegularExpression? = {
-        try? NSRegularExpression(
-            pattern: #"https?://[^\s\x00<>\"'\])\}]+"#,
-            options: []
-        )
-    }()
-
-    /// Matches owner/repo#123 or bare #123 (GitHub issue/PR references).
-    /// Lookbehind excludes matches inside URLs, hex colors, or HTML entities.
-    private static let issueRefRegex: NSRegularExpression? = {
-        try? NSRegularExpression(
-            pattern: #"(?<![&/a-zA-Z0-9])(?:[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)?#\d+"#,
-            options: []
-        )
-    }()
-
     /// GitHub base URL for the card's project (e.g. "https://github.com/owner/repo").
     /// Set by TerminalContainerNSView when the terminal is shown.
     var githubBaseURL: String?
@@ -345,53 +329,10 @@ final class BatchedTerminalView: LocalProcessTerminalView {
     private func detectURL(col: Int, screenRow: Int) -> (url: String, colStart: Int, colEnd: Int)? {
         guard let line = terminal.getLine(row: screenRow) else { return nil }
         let text = line.translateToString(trimRight: true)
-        let nsText = text as NSString
-        let fullRange = NSRange(location: 0, length: nsText.length)
-
-        // Check full URLs first
-        if let regex = Self.urlRegex {
-            for match in regex.matches(in: text, range: fullRange) {
-                let range = match.range
-                if col >= range.location && col < range.location + range.length {
-                    let url = nsText.substring(with: range)
-                    return (url, range.location, range.location + range.length - 1)
-                }
-            }
+        guard let detection = TerminalURLDetector.detect(in: text, col: col, githubBaseURL: githubBaseURL) else {
+            return nil
         }
-
-        // Check GitHub issue/PR references: owner/repo#123 or #123
-        if let regex = Self.issueRefRegex {
-            for match in regex.matches(in: text, range: fullRange) {
-                let range = match.range
-                if col >= range.location && col < range.location + range.length {
-                    let ref = nsText.substring(with: range)
-                    if let url = resolveIssueRef(ref) {
-                        return (url, range.location, range.location + range.length - 1)
-                    }
-                }
-            }
-        }
-
-        return nil
-    }
-
-    /// Resolve a GitHub issue reference to a URL.
-    /// `"langwatch/langwatch#2847"` → `"https://github.com/langwatch/langwatch/issues/2847"`
-    /// `"#123"` → uses `githubBaseURL` from the card's project
-    private func resolveIssueRef(_ ref: String) -> String? {
-        guard let hashIndex = ref.firstIndex(of: "#") else { return nil }
-        let numberStr = String(ref[ref.index(after: hashIndex)...])
-        guard let number = Int(numberStr) else { return nil }
-
-        let prefix = String(ref[ref.startIndex..<hashIndex])
-        if prefix.isEmpty {
-            // Bare #123 — use the card's GitHub base URL
-            guard let base = githubBaseURL else { return nil }
-            return "\(base)/pull/\(number)"
-        } else {
-            // owner/repo#123
-            return "https://github.com/\(prefix)/pull/\(number)"
-        }
+        return (detection.url, detection.colStart, detection.colEnd)
     }
 
     private func updateURLHighlight(col: Int, screenRow: Int) {

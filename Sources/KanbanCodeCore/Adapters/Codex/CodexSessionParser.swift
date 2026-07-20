@@ -322,24 +322,45 @@ public enum CodexSessionParser {
         let pushRegex = /git\s+push\s+(?:-[^\s]+\s+)*(?:origin|upstream)\s+(\S+)/
         let checkoutBranchRegex = /git\s+checkout\s+-[bB]\s+(\S+)/
         let switchCreateRegex = /git\s+switch\s+(?:-c|--create)\s+(\S+)/
-        let worktreeAddRegex = /git\s+worktree\s+add\s+\S+\s+-b\s+(\S+)/
+        // -b can come before or after the worktree path: `add -b br path` / `add path -b br`
+        let worktreeAddRegex = /git\s+worktree\s+add\s+(?:[^\s;|&]+\s+)*?-b\s+(\S+)/
         var branches = Set<JsonlParser.DiscoveredBranch>()
 
         for try await line in handle.bytes.lines {
-            guard line.contains("\"function_call\""),
+            // Cheap prefilter: only shell-call records that mention git at all.
+            guard line.contains("git"),
+                  line.contains("\"function_call\"") || line.contains("\"custom_tool_call\""),
                   let obj = parseJSONLine(line),
                   obj["type"] as? String == "response_item",
-                  let payload = obj["payload"] as? [String: Any],
-                  payload["type"] as? String == "function_call",
-                  let name = payload["name"] as? String,
-                  name == "exec_command" || name == "shell" || name == "bash" else { continue }
+                  let payload = obj["payload"] as? [String: Any] else { continue }
 
-            let (input, _) = parseArguments(payload["arguments"])
-            guard let command = input["cmd"] ?? input["command"] else { continue }
-            let repoPath = input["workdir"]
+            let command: String
+            let repoPath: String?
+            switch payload["type"] as? String {
+            case "function_call":
+                // Legacy rollout format: JSON arguments on exec_command/shell/bash
+                guard let name = payload["name"] as? String,
+                      name == "exec_command" || name == "shell" || name == "bash" else { continue }
+                let (input, _) = parseArguments(payload["arguments"])
+                guard let cmd = input["cmd"] ?? input["command"] else { continue }
+                command = cmd
+                repoPath = input["workdir"]
+            case "custom_tool_call":
+                // Current rollout format: an `exec` tool whose input is a JS
+                // snippet calling tools.exec_command({cmd: "…", workdir: "…"})
+                guard payload["name"] as? String == "exec",
+                      let snippet = payload["input"] as? String,
+                      let cmd = jsStringArgument("cmd", in: snippet) ?? jsStringArgument("command", in: snippet)
+                else { continue }
+                command = cmd
+                repoPath = jsStringArgument("workdir", in: snippet)
+            default:
+                continue
+            }
 
             func addBranch(_ branch: String) {
-                if branch != "main" && branch != "master" && !branch.hasPrefix("-") {
+                // HEAD pushes the current branch — the name isn't in the command.
+                if branch != "main" && branch != "master" && branch != "HEAD" && !branch.hasPrefix("-") {
                     branches.insert(JsonlParser.DiscoveredBranch(branch: branch, repoPath: repoPath))
                 }
             }
@@ -561,6 +582,38 @@ public enum CodexSessionParser {
             return string
         }
         return "\(value)"
+    }
+
+    /// Extract a double-quoted string argument like `cmd: "git push …"` from a
+    /// JS snippet (the `exec` custom tool encodes its call this way). Handles
+    /// escaped characters inside the literal.
+    static func jsStringArgument(_ label: String, in snippet: String) -> String? {
+        let pattern = NSRegularExpression.escapedPattern(for: label) + #"\s*:\s*"((?:[^"\\]|\\.)*)""#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: snippet, range: NSRange(snippet.startIndex..., in: snippet)),
+              let range = Range(match.range(at: 1), in: snippet)
+        else { return nil }
+        return unescapeJSString(String(snippet[range]))
+    }
+
+    private static func unescapeJSString(_ value: String) -> String {
+        guard value.contains("\\") else { return value }
+        var result = ""
+        result.reserveCapacity(value.count)
+        var iterator = value.makeIterator()
+        while let ch = iterator.next() {
+            guard ch == "\\", let next = iterator.next() else {
+                result.append(ch)
+                continue
+            }
+            switch next {
+            case "n": result.append("\n")
+            case "t": result.append("\t")
+            case "r": result.append("\r")
+            default: result.append(next) // \" \\ \' \/ and anything else
+            }
+        }
+        return result
     }
 
     private static func fallbackEventText(from payload: [String: Any]) -> String {

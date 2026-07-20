@@ -114,4 +114,33 @@ struct CodexSessionParserTests {
         let branches = try await CodexSessionParser.extractPushedBranches(from: path)
         #expect(branches.contains(JsonlParser.DiscoveredBranch(branch: "feature/codex", repoPath: "/tmp/project")))
     }
+
+    @Test("Scans current Codex exec custom tool calls for pushed branches")
+    func extractsPushedBranchesFromCustomToolCalls() async throws {
+        // Current rollouts encode shell commands as an `exec` custom tool whose
+        // input is a JS snippet calling tools.exec_command({cmd, workdir}).
+        let session = """
+        {"timestamp":"2026-07-17T16:01:41Z","type":"session_meta","payload":{"id":"branch2","cwd":"/Users/x/Projects/langwatch"}}
+        {"timestamp":"2026-07-17T16:02:00Z","type":"response_item","payload":{"type":"custom_tool_call","call_id":"c1","name":"exec","status":"completed","input":"const r = await tools.exec_command({\\n  cmd: \\"git worktree add -b codex/evaluations-experiments /Users/x/Projects/langwatch-worktrees/evals origin/main\\",\\n  workdir: \\"/Users/x/Projects/langwatch\\",\\n  yield_time_ms: 1000\\n});\\ntext(JSON.stringify(r));\\n"}}
+        {"timestamp":"2026-07-17T16:30:00Z","type":"response_item","payload":{"type":"custom_tool_call","call_id":"c2","name":"exec","status":"completed","input":"const r = await tools.exec_command({\\n  cmd: \\"git push --force-with-lease origin codex/evaluations-experiments\\",\\n  workdir: \\"/Users/x/Projects/langwatch-worktrees/evals\\",\\n  max_output_tokens: 12000\\n});\\ntext(JSON.stringify(r));\\n"}}
+        {"timestamp":"2026-07-17T16:31:00Z","type":"response_item","payload":{"type":"custom_tool_call","call_id":"c3","name":"exec","status":"completed","input":"const r = await tools.exec_command({\\n  cmd: \\"git push origin main\\",\\n  workdir: \\"/Users/x/Projects/langwatch\\"\\n});"}}
+        {"timestamp":"2026-07-17T16:32:00Z","type":"response_item","payload":{"type":"custom_tool_call","call_id":"c4","name":"exec","status":"completed","input":"const r = await tools.exec_command({\\n  cmd: \\"git push --force-with-lease -u origin HEAD\\",\\n  workdir: \\"/Users/x/Projects/langwatch-worktrees/evals\\"\\n});"}}
+        """
+        let path = try writeTempSession(session)
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let branches = try await CodexSessionParser.extractPushedBranches(from: path)
+        // The worktree-add discovers the branch with the main repo as workdir,
+        // the push discovers it again with the worktree as workdir.
+        #expect(branches.contains(JsonlParser.DiscoveredBranch(branch: "codex/evaluations-experiments", repoPath: "/Users/x/Projects/langwatch-worktrees/evals")))
+        #expect(!branches.contains { $0.branch == "main" || $0.branch == "HEAD" || $0.branch == "origin/main" })
+    }
+
+    @Test("jsStringArgument parses escaped JS string literals")
+    func jsStringArgumentParsing() {
+        let snippet = #"const r = await tools.exec_command({ cmd: "echo \"hi there\" && git push origin feat/x", workdir: "/tmp/w" });"#
+        #expect(CodexSessionParser.jsStringArgument("cmd", in: snippet) == #"echo "hi there" && git push origin feat/x"#)
+        #expect(CodexSessionParser.jsStringArgument("workdir", in: snippet) == "/tmp/w")
+        #expect(CodexSessionParser.jsStringArgument("missing", in: snippet) == nil)
+    }
 }
