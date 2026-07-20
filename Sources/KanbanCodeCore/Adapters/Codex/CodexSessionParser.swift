@@ -127,13 +127,16 @@ public enum CodexSessionParser {
         var fallbackTurns: [ConversationTurn] = []
         var callNames: [String: String] = [:]
         var sawResponseItem = false
-        var physicalLine = 0
+        // Byte offset of each record — the same stable turn identity the tail
+        // reader and truncateSession use.
+        var byteOffset = 0
 
         let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: filePath))
         defer { try? handle.close() }
 
         for try await line in handle.bytes.lines {
-            physicalLine += 1
+            let lineByteOffset = byteOffset
+            byteOffset += line.utf8.count + 1
             guard let obj = parseJSONLine(line),
                   let type = obj["type"] as? String else { continue }
             let timestamp = obj["timestamp"] as? String
@@ -151,7 +154,7 @@ public enum CodexSessionParser {
                     guard !blocks.isEmpty else { continue }
                     appendTurn(
                         role: role,
-                        lineNumber: physicalLine,
+                        lineNumber: lineByteOffset,
                         timestamp: timestamp,
                         blocks: blocks,
                         to: &responseTurns
@@ -164,7 +167,7 @@ public enum CodexSessionParser {
                     guard !blocks.isEmpty else { continue }
                     appendTurn(
                         role: "assistant",
-                        lineNumber: physicalLine,
+                        lineNumber: lineByteOffset,
                         timestamp: timestamp,
                         blocks: blocks,
                         to: &responseTurns
@@ -180,7 +183,7 @@ public enum CodexSessionParser {
                         : "\(name)(\(input.map { "\($0.key): \($0.value)" }.sorted().joined(separator: ", ")))"
                     appendTurn(
                         role: "assistant",
-                        lineNumber: physicalLine,
+                        lineNumber: lineByteOffset,
                         timestamp: timestamp,
                         blocks: [
                             ContentBlock(
@@ -197,7 +200,7 @@ public enum CodexSessionParser {
                     let output = payload["output"] as? String ?? ""
                     appendTurn(
                         role: "assistant",
-                        lineNumber: physicalLine,
+                        lineNumber: lineByteOffset,
                         timestamp: timestamp,
                         blocks: [
                             ContentBlock(
@@ -224,7 +227,7 @@ public enum CodexSessionParser {
                 guard !text.isEmpty else { continue }
                 appendTurn(
                     role: role,
-                    lineNumber: physicalLine,
+                    lineNumber: lineByteOffset,
                     timestamp: timestamp,
                     blocks: [ContentBlock(kind: .text, text: text)],
                     to: &fallbackTurns

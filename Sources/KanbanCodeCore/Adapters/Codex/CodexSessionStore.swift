@@ -108,16 +108,23 @@ public final class CodexSessionStore: SessionStore, @unchecked Sendable {
         try? fileManager.removeItem(atPath: backupPath)
         try fileManager.copyItem(atPath: sessionPath, toPath: backupPath)
 
-        let content = try String(contentsOfFile: sessionPath, encoding: .utf8)
-        var lines = content.components(separatedBy: "\n")
-        if lines.last == "" { lines.removeLast() }
-        let keepCount = min(max(afterTurn.lineNumber, 0), lines.count)
-        let truncated = Array(lines.prefix(keepCount)).joined(separator: "\n")
-        try (truncated + (truncated.isEmpty ? "" : "\n")).write(
-            toFile: sessionPath,
-            atomically: true,
-            encoding: .utf8
-        )
+        // Chat turns carry the record's byte offset in `lineNumber` (the tail
+        // reader's stable identity, same convention as Claude). Keep everything
+        // through the end of the record at that offset.
+        let url = URL(fileURLWithPath: sessionPath)
+        let data = try Data(contentsOf: url)
+        let targetOffset = afterTurn.lineNumber
+        guard targetOffset >= 0, targetOffset < data.count else {
+            throw SessionStoreError.fileNotFound("Invalid byte offset \(targetOffset)")
+        }
+
+        var endOffset = targetOffset
+        while endOffset < data.count && data[endOffset] != UInt8(ascii: "\n") {
+            endOffset += 1
+        }
+        if endOffset < data.count { endOffset += 1 }
+
+        try data[0..<endOffset].write(to: url)
     }
 
     public func searchSessions(query: String, paths: [String]) async throws -> [SearchResult] {

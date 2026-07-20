@@ -45,7 +45,7 @@ struct CodexSessionStoreTests {
         #expect(!content.contains("\"store-test\""))
     }
 
-    @Test("Truncate keeps lines through selected turn")
+    @Test("Truncate keeps records through selected turn")
     func truncateSession() async throws {
         let path = try writeTempSession(sampleSession)
         defer {
@@ -60,6 +60,43 @@ struct CodexSessionStoreTests {
         let truncated = try await store.readTranscript(sessionPath: path)
         #expect(truncated.count == 1)
         #expect(FileManager.default.fileExists(atPath: path + ".bkp"))
+        let content = try String(contentsOfFile: path, encoding: .utf8)
+        #expect(!content.contains("I'll fix it."), "records after the selected turn must be removed")
+    }
+
+    @Test("Truncate works with turns from the chat tail reader")
+    func truncateWithTailReaderTurn() async throws {
+        // Chat mode reads Codex history via readTail, whose turn identity is the
+        // record's byte offset. Restore-to-turn was a silent no-op when the
+        // truncator misread that as a line count.
+        let session = """
+        {"timestamp":"2026-07-20T10:00:00Z","type":"session_meta","payload":{"id":"tail-truncate","cwd":"/tmp/project"}}
+        {"timestamp":"2026-07-20T10:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"first request"}]}}
+        {"timestamp":"2026-07-20T10:00:02Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"first answer"}]}}
+        {"timestamp":"2026-07-20T10:00:03Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"second request"}]}}
+        {"timestamp":"2026-07-20T10:00:04Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"second answer"}]}}
+        """
+        let path = try writeTempSession(session)
+        defer {
+            try? FileManager.default.removeItem(atPath: path)
+            try? FileManager.default.removeItem(atPath: path + ".bkp")
+        }
+
+        let store = CodexSessionStore()
+        let tail = try await CodexSessionParser.readTail(from: path, maxTurns: 80)
+        guard let firstAnswer = tail.turns.first(where: { $0.textPreview == "first answer" }) else {
+            Issue.record("first answer turn not found in tail")
+            return
+        }
+
+        try await store.truncateSession(sessionPath: path, afterTurn: firstAnswer)
+
+        let content = try String(contentsOfFile: path, encoding: .utf8)
+        #expect(content.contains("first answer"))
+        #expect(!content.contains("second request"))
+        #expect(!content.contains("second answer"))
+        let backup = try String(contentsOfFile: path + ".bkp", encoding: .utf8)
+        #expect(backup.contains("second answer"), "backup must preserve the original")
     }
 
     @Test("Search finds Codex sessions")
