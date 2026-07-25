@@ -56,6 +56,75 @@ struct ReducerTests {
         #expect(effects.count == 1) // upsertLink
     }
 
+    // MARK: - Tmux Liveness
+
+    @Test("tmuxLivenessScanned clears links whose sessions died (reboot)")
+    func tmuxLivenessClearsDeadLinks() {
+        let dead = makeLink(id: "card_dead1", column: .inProgress, tmuxLink: TmuxLink(sessionName: "proj-card_dead1"))
+        let alive = makeLink(id: "card_alive1", column: .inProgress, tmuxLink: TmuxLink(sessionName: "proj-card_alive1"))
+        var state = stateWith([dead, alive])
+
+        let effects = Reducer.reduce(state: &state, action: .tmuxLivenessScanned(live: ["proj-card_alive1"]))
+
+        #expect(state.links["card_dead1"]?.tmuxLink == nil)
+        #expect(state.links["card_alive1"]?.tmuxLink != nil)
+        #expect(state.tmuxSessions == ["proj-card_alive1"])
+        #expect(effects.contains { if case .persistLinks = $0 { return true }; return false })
+        #expect(effects.contains { if case .cleanupTerminalCache(let names) = $0 { return names == ["proj-card_dead1"] }; return false })
+    }
+
+    @Test("tmuxLivenessScanned keeps live extras and marks primary dead")
+    func tmuxLivenessPrimaryDeadExtrasAlive() {
+        let link = makeLink(
+            id: "card_mix1",
+            column: .inProgress,
+            tmuxLink: TmuxLink(sessionName: "proj-card_mix1", extraSessions: ["proj-card_mix1-sh1"])
+        )
+        var state = stateWith([link])
+
+        let effects = Reducer.reduce(state: &state, action: .tmuxLivenessScanned(live: ["proj-card_mix1-sh1"]))
+
+        let tmux = state.links["card_mix1"]?.tmuxLink
+        #expect(tmux != nil)
+        #expect(tmux?.isPrimaryDead == true)
+        #expect(tmux?.extraSessions == ["proj-card_mix1-sh1"])
+        #expect(!effects.isEmpty)
+    }
+
+    @Test("tmuxLivenessScanned skips cards mid-launch")
+    func tmuxLivenessSkipsLaunching() {
+        let link = makeLink(
+            id: "card_launch1",
+            column: .inProgress,
+            tmuxLink: TmuxLink(sessionName: "proj-card_launch1"),
+            isLaunching: true
+        )
+        var state = stateWith([link])
+
+        let effects = Reducer.reduce(state: &state, action: .tmuxLivenessScanned(live: []))
+
+        #expect(state.links["card_launch1"]?.tmuxLink != nil)
+        #expect(effects.isEmpty)
+    }
+
+    @Test("tmuxLivenessScanned no-ops when all sessions are alive")
+    func tmuxLivenessNoopWhenAlive() {
+        let before = Date.now.addingTimeInterval(-3600)
+        let link = makeLink(
+            id: "card_ok1",
+            column: .inProgress,
+            tmuxLink: TmuxLink(sessionName: "proj-card_ok1"),
+            updatedAt: before
+        )
+        var state = stateWith([link])
+
+        let effects = Reducer.reduce(state: &state, action: .tmuxLivenessScanned(live: ["proj-card_ok1"]))
+
+        #expect(effects.isEmpty)
+        #expect(state.links["card_ok1"]?.updatedAt == before, "no-op scan must not bump updatedAt")
+        #expect(state.tmuxSessions == ["proj-card_ok1"])
+    }
+
     // MARK: - Create Terminal
 
     @Test("createTerminal sets tmuxLink but does NOT change column")

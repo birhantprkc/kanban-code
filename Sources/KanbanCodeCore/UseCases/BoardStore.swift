@@ -409,6 +409,9 @@ public enum Action: Sendable {
 
     // Background reconciliation
     case reconciled(ReconciliationResult)
+    /// Fast tmux liveness pass: clears links whose tmux sessions no longer
+    /// exist (e.g. after a reboot) without waiting for a full reconcile.
+    case tmuxLivenessScanned(live: Set<String>)
     case gitHubIssuesUpdated(links: [Link])
     case activityChanged([String: ActivityState]) // sessionId → state
 
@@ -1759,6 +1762,35 @@ public enum Reducer {
 
         // MARK: Background Reconciliation
 
+        case .tmuxLivenessScanned(let live):
+            if state.tmuxSessions != live { state.tmuxSessions = live }
+
+            var linksChanged = false
+            var removedSessionNames: [String] = []
+            for (id, var link) in state.links {
+                guard link.tmuxLink != nil, link.isLaunching != true,
+                      !link.manualOverrides.tmuxSession else { continue }
+                let before = link.tmuxLink?.allSessionNames ?? []
+                guard CardReconciler.applyTmuxLiveness(to: &link, liveTmuxNames: live) else { continue }
+                let after = link.tmuxLink?.allSessionNames ?? []
+                removedSessionNames.append(contentsOf: before.filter { !after.contains($0) })
+                link.updatedAt = .now
+                state.links[id] = link
+                linksChanged = true
+            }
+            guard linksChanged else { return [] }
+
+            KanbanCodeLog.info(
+                "reconcile",
+                "tmux liveness: cleared \(removedSessionNames.count) dead session(s): \(removedSessionNames.prefix(5).joined(separator: ", "))\(removedSessionNames.count > 5 ? ", …" : "")"
+            )
+            state.rebuildCards()
+            var effects: [Effect] = [.persistLinks(Array(state.links.values))]
+            if !removedSessionNames.isEmpty {
+                effects.append(.cleanupTerminalCache(sessionNames: removedSessionNames))
+            }
+            return effects
+
         case .reconciled(let result):
             var cardInputsChanged = false
 
@@ -2092,6 +2124,11 @@ public final class BoardStore: @unchecked Sendable {
     private var lastAutoBranchDiscovery: ContinuousClock.Instant = .now - .seconds(120)
     private var lastAutoBranchDiscoveryByCard: [String: ContinuousClock.Instant] = [:]
     public var appIsActive: Bool = true
+    /// True between NSWorkspace willSleep and didWake (set by the app layer).
+    /// Reconciles are skipped while the machine sleeps: overnight maintenance
+    /// (dark) wakes otherwise fire the refresh timer every few minutes, each
+    /// pass spawning discovery work and dozens of gh subprocesses all night.
+    public var isSystemSleeping: Bool = false
     /// Cached worktree results by repo root. The fingerprint pairs the
     /// `.git/worktrees/` dir mtime (changes on add/remove) with the max
     /// `.git/worktrees/<name>/HEAD` mtime (changes when Claude does
@@ -2136,7 +2173,7 @@ public final class BoardStore: @unchecked Sendable {
     /// Actions that only toggle UI state and don't affect card data — skip rebuildCards().
     private static func needsRebuild(_ action: Action) -> Bool {
         switch action {
-        case .reconciled, .setRateLimitedRepos:
+        case .reconciled, .setRateLimitedRepos, .tmuxLivenessScanned:
             // These reducers diff their card inputs and rebuild only when the
             // derived card snapshots can actually change. A periodic PR/status
             // pass that produces the same links must not relayout the board.
@@ -2304,6 +2341,8 @@ public final class BoardStore: @unchecked Sendable {
     /// Replaces BoardState.refresh(). The async work happens here; the state mutation
     /// happens atomically via dispatch(.reconciled(...)).
     public func reconcile() async {
+        // Skip entirely while the machine sleeps — dark wakes still run timers.
+        guard !isSystemSleeping else { return }
         // Prevent concurrent reconciliation — overlapping calls create orphan cards
         // with different IDs from the same data.
         guard !isReconciling else { return }
@@ -2339,6 +2378,17 @@ public final class BoardStore: @unchecked Sendable {
                     }
                 }
                 KanbanCodeLog.info("reconcile", "cached links: \(t.duration(to: .now)) (\(cached.count) links)")
+            }
+
+            // Fast tmux liveness pass. The full pass below can spend a long
+            // time in session discovery and gh PR lookups before it reaches
+            // the tmux scan (a minute or more at cold start), and the
+            // isReconciling guard keeps other reconciles out meanwhile.
+            // After a reboot every cached tmux link is stale, so clear dead
+            // ones up front — otherwise cards keep offering a terminal whose
+            // attach fails in the pane until the first full pass lands.
+            if let tmuxAdapter, let live = try? await tmuxAdapter.listSessions() {
+                dispatch(.tmuxLivenessScanned(live: Set(live.map(\.name))))
             }
 
             let t1 = ContinuousClock.now

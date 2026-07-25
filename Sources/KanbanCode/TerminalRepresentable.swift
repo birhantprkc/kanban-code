@@ -28,6 +28,15 @@ final class BatchedTerminalView: LocalProcessTerminalView {
     // Keep the last 32KB — enough for a full screen repaint with escape sequences.
     private static let keepBytes = 32 * 1024
 
+    /// Hard caps on the pending buffer, enforced at append time. Normal mode
+    /// tail-drops to `keepBytes` at flush, but nothing bounds the buffer
+    /// between flushes; passthrough (copy-mode) has no drop at all, so a
+    /// process flooding output while the user sits in copy-mode would grow
+    /// the buffer without limit. Beyond the cap the oldest bytes go — tmux
+    /// repaints the current screen state, so nothing is lost visually.
+    private static let normalMaxPendingBytes = 4 * 1024 * 1024
+    private static let passthroughMaxPendingBytes = 64 * 1024 * 1024
+
     /// Threshold: data chunks smaller than this are interactive (typing, cursor moves)
     /// and should be rendered immediately without batching delay.
     private static let interactiveThreshold = 256
@@ -58,6 +67,23 @@ final class BatchedTerminalView: LocalProcessTerminalView {
         statsReceiveBytes += slice.count
         if pendingData.count - pendingOffset > statsMaxBacklog {
             statsMaxBacklog = pendingData.count - pendingOffset
+        }
+
+        // Enforce the hard cap up front so the buffer can't balloon no matter
+        // how delayed the flush is. Cut on a newline boundary when one is
+        // near, like the flush-time drop, to avoid splitting escape sequences.
+        let hardCap = passthroughMode ? Self.passthroughMaxPendingBytes : Self.normalMaxPendingBytes
+        if pendingData.count - pendingOffset > hardCap {
+            var cutPoint = pendingData.count - hardCap
+            let scanLimit = min(cutPoint + 1024, pendingData.count)
+            while cutPoint < scanLimit && pendingData[cutPoint] != 0x0A { cutPoint += 1 }
+            if cutPoint < scanLimit { cutPoint += 1 }
+            if cutPoint > pendingOffset {
+                statsDropCount += 1
+                statsDropBytes += cutPoint - pendingOffset
+                pendingData.removeSubrange(0..<cutPoint)
+                pendingOffset = 0
+            }
         }
 
         let totalPending = pendingData.count - pendingOffset
@@ -641,7 +667,7 @@ final class TerminalCache {
         let userShell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         terminal.startProcess(
             executable: userShell,
-            args: ["-l", "-c", "for i in $(seq 1 50); do '\(tmux)' has-session -t '\(escaped)' 2>/dev/null && break; sleep 0.1; done; exec '\(tmux)' attach-session -t '\(escaped)'"],
+            args: ["-l", "-c", "for i in $(seq 1 50); do '\(tmux)' has-session -t '\(escaped)' 2>/dev/null && exec '\(tmux)' attach-session -t '\(escaped)'; sleep 0.1; done; echo 'Session ended.'"],
             environment: nil,
             execName: nil,
             currentDirectory: nil

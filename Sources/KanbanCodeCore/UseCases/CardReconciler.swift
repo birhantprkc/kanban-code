@@ -429,34 +429,8 @@ public enum CardReconciler {
             // Clear dead tmux links (tmux session no longer exists)
             // Only clear if we actually scanned tmux (avoid clearing when snapshot has no tmux data)
             // Skip cards mid-launch — the tmux session may not be visible yet
-            if var tmux = link.tmuxLink, link.isLaunching != true, !link.manualOverrides.tmuxSession, didScanTmux {
-                let primaryAlive = liveTmuxNames.contains(tmux.sessionName)
-
-                // Filter dead extra sessions
-                if let extras = tmux.extraSessions {
-                    let liveExtras = extras.filter { liveTmuxNames.contains($0) }
-                    tmux.extraSessions = liveExtras.isEmpty ? nil : liveExtras
-                }
-
-                if !primaryAlive && tmux.extraSessions == nil {
-                    // Both primary and all extras dead
-                    link.tmuxLink = nil
-                    changed = true
-                } else if !primaryAlive {
-                    // Primary dead but extras alive — mark primary dead
-                    tmux.isPrimaryDead = true
-                    link.tmuxLink = tmux
-                    changed = true
-                } else {
-                    // Primary alive — ensure isPrimaryDead is cleared
-                    if tmux.isPrimaryDead != nil {
-                        tmux.isPrimaryDead = nil
-                    }
-                    if tmux != link.tmuxLink {
-                        link.tmuxLink = tmux
-                        changed = true
-                    }
-                }
+            if link.tmuxLink != nil, link.isLaunching != true, !link.manualOverrides.tmuxSession, didScanTmux {
+                changed = applyTmuxLiveness(to: &link, liveTmuxNames: liveTmuxNames) || changed
             }
 
             // Clear dead worktree links (path no longer exists on disk)
@@ -475,6 +449,34 @@ public enum CardReconciler {
         }
 
         return Array(linksById.values)
+    }
+
+    /// Apply a tmux liveness scan to one link: drop dead extra sessions, mark
+    /// the primary dead when extras survive it, or clear the whole tmuxLink
+    /// when nothing is live anymore (e.g. after a reboot killed the tmux
+    /// server). Returns true when the link was modified.
+    /// Callers gate on isLaunching, manual overrides, and whether tmux was
+    /// actually scanned — this only encodes the liveness rules.
+    public static func applyTmuxLiveness(to link: inout Link, liveTmuxNames: Set<String>) -> Bool {
+        guard var tmux = link.tmuxLink else { return false }
+        let primaryAlive = liveTmuxNames.contains(tmux.sessionName)
+
+        // Filter dead extra sessions
+        if let extras = tmux.extraSessions {
+            let liveExtras = extras.filter { liveTmuxNames.contains($0) }
+            tmux.extraSessions = liveExtras.isEmpty ? nil : liveExtras
+        }
+
+        if !primaryAlive && tmux.extraSessions == nil {
+            // Both primary and all extras dead
+            link.tmuxLink = nil
+            return true
+        }
+        // Keep the link for live sessions; primary-dead flag tracks liveness.
+        tmux.isPrimaryDead = primaryAlive ? nil : true
+        guard tmux != link.tmuxLink else { return false }
+        link.tmuxLink = tmux
+        return true
     }
 
     // MARK: - Private
