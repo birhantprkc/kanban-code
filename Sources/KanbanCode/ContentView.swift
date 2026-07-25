@@ -1387,6 +1387,21 @@ struct ContentView: View {
                 store.appIsActive = false
                 store.dispatch(.setAppFrontmost(false))
             }
+            .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.willSleepNotification).receive(on: RunLoop.main)) { _ in
+                // Stop periodic work for the night: dark wakes fire the refresh
+                // timer every few minutes and each pass spawns gh subprocesses.
+                store.isSystemSleeping = true
+            }
+            .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification).receive(on: RunLoop.main)) { _ in
+                store.isSystemSleeping = false
+                Task {
+                    // Let the network come back before the first pass — the
+                    // reconcile clears dead tmux links and refreshes activity.
+                    try? await Task.sleep(for: .seconds(2))
+                    await store.reconcile()
+                    systemTray.update()
+                }
+            }
     }
 
     var body: some View {

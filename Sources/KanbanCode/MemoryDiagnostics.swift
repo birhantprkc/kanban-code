@@ -1,3 +1,4 @@
+import AppKit
 import Darwin
 import Foundation
 import KanbanCodeCore
@@ -39,6 +40,7 @@ final class MemoryDiagnostics: @unchecked Sendable {
     private var lastArtifactAt = OSAllocatedUnfairLock(initialState: Date.distantPast)
     private var relatedProcessPIDs = OSAllocatedUnfairLock(initialState: [String: Set<pid_t>]())
     private var mainActorMetricProviders = OSAllocatedUnfairLock(initialState: [String: MainActorMetricProvider]())
+    private let pressureSource = OSAllocatedUnfairLock<DispatchSourceMemoryPressure?>(initialState: nil)
 
     private init() {}
 
@@ -58,12 +60,59 @@ final class MemoryDiagnostics: @unchecked Sendable {
             log(snapshot, reason: "start")
         }
 
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        // userInitiated, not utility: during heavy swap thrash utility threads
+        // can be starved for minutes — exactly the window worth observing.
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             while self.isRunning.withLock({ $0 }) {
                 Thread.sleep(forTimeInterval: self.checkInterval)
                 guard let snapshot = Self.currentSnapshot() else { continue }
                 self.logIfNeeded(snapshot)
+            }
+        }
+
+        startPressureSource()
+        startSleepWakeObservers()
+    }
+
+    /// Kernel-delivered memory pressure events. Unlike the polling loop these
+    /// fire while a balloon inflates even when polling threads are starved,
+    /// so the growth gets logged and vmmap'd instead of leaving a blind spot.
+    private func startPressureSource() {
+        let source = DispatchSource.makeMemoryPressureSource(
+            eventMask: [.warning, .critical],
+            queue: DispatchQueue.global(qos: .userInitiated)
+        )
+        // Capturing `source` in its own handler keeps it alive for the app's
+        // lifetime, which is intended — the source is never cancelled.
+        source.setEventHandler { [weak self] in
+            guard let self else { return }
+            let event = DispatchSource.MemoryPressureEvent(rawValue: source.data)
+            let level = event.contains(.critical) ? "critical" : "warning"
+            guard let snapshot = Self.currentSnapshot() else { return }
+            self.log(snapshot, reason: "pressure-\(level)")
+            self.captureArtifactsIfNeeded(snapshot: snapshot, reason: "pressure-\(level)")
+            self.lastLoggedFootprint.withLock { $0 = snapshot.footprint }
+        }
+        source.activate()
+        pressureSource.withLock { $0 = source }
+    }
+
+    /// Bracket system sleep and wake with snapshots. Overnight growth is
+    /// otherwise invisible: the polling loop freezes with the machine and can
+    /// be starved right after wake while everything swaps back in.
+    private func startSleepWakeObservers() {
+        let center = NSWorkspace.shared.notificationCenter
+        let events: [(Notification.Name, String)] = [
+            (NSWorkspace.willSleepNotification, "system-sleep"),
+            (NSWorkspace.didWakeNotification, "system-wake"),
+        ]
+        for (name, reason) in events {
+            // Tokens are discarded on purpose: the center retains them, and
+            // this app-lifetime singleton never unregisters.
+            _ = center.addObserver(forName: name, object: nil, queue: nil) { [weak self] _ in
+                guard let self, let snapshot = Self.currentSnapshot() else { return }
+                self.log(snapshot, reason: reason)
             }
         }
     }
