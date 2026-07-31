@@ -91,6 +91,7 @@ final class MemoryDiagnostics: @unchecked Sendable {
             let level = event.contains(.critical) ? "critical" : "warning"
             guard let snapshot = Self.currentSnapshot() else { return }
             self.log(snapshot, reason: "pressure-\(level)")
+            self.logSessionTrees(reason: "pressure-\(level)")
             self.captureArtifactsIfNeeded(snapshot: snapshot, reason: "pressure-\(level)")
             self.lastLoggedFootprint.withLock { $0 = snapshot.footprint }
         }
@@ -135,6 +136,140 @@ final class MemoryDiagnostics: @unchecked Sendable {
         mainActorMetricProviders.withLock { $0[name] = provider }
     }
 
+    // MARK: - Session process-tree attribution
+
+    struct ProcessRecord {
+        let pid: Int32
+        let ppid: Int32
+        let rssKB: Int
+        let command: String
+    }
+
+    struct SessionTree {
+        let session: String
+        let rssKB: Int
+        let processCount: Int
+        let topCommand: String
+        let topRssKB: Int
+    }
+
+    private static let tmuxPath: String? = ShellCommand.findExecutable("tmux")
+
+    private static func runCapture(_ executable: String, _ arguments: [String]) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            return String(data: data, encoding: .utf8)
+        } catch {
+            return nil
+        }
+    }
+
+    private static func processTable() -> [ProcessRecord] {
+        guard let out = runCapture("/bin/ps", ["-axo", "pid=,ppid=,rss=,command="]) else { return [] }
+        return out.split(separator: "\n").compactMap { line in
+            let parts = line.split(separator: " ", omittingEmptySubsequences: true)
+            guard parts.count >= 4,
+                  let pid = Int32(parts[0]), let ppid = Int32(parts[1]), let rss = Int(parts[2])
+            else { return nil }
+            return ProcessRecord(pid: pid, ppid: ppid, rssKB: rss, command: parts[3...].joined(separator: " "))
+        }
+    }
+
+    /// (sessionName, panePid) for every tmux pane on the default server.
+    private static func tmuxPaneRoots() -> [(session: String, pid: Int32)] {
+        guard let tmux = tmuxPath,
+              let out = runCapture(tmux, ["list-panes", "-a", "-F", "#{session_name}\t#{pane_pid}"])
+        else { return [] }
+        return out.split(separator: "\n").compactMap { line in
+            let parts = line.split(separator: "\t")
+            guard parts.count == 2, let pid = Int32(parts[1]) else { return nil }
+            return (String(parts[0]), pid)
+        }
+    }
+
+    /// Attribute every tmux session's process subtree RSS, biggest first.
+    ///
+    /// macOS's out-of-application-memory dialog groups processes by their
+    /// "responsible" app, and everything spawned under the cards (tmux server,
+    /// claude, compilers, test runners) rolls up to Kanban Code. So when the
+    /// dialog blames "Kanban Code" for tens of GB, the real eater is usually a
+    /// single runaway process inside one card's tmux session. This names it.
+    static func sessionTrees() -> [SessionTree] {
+        sessionTrees(table: processTable(), paneRoots: tmuxPaneRoots())
+    }
+
+    static func sessionTrees(
+        table: [ProcessRecord],
+        paneRoots: [(session: String, pid: Int32)]
+    ) -> [SessionTree] {
+        guard !table.isEmpty, !paneRoots.isEmpty else { return [] }
+        var childrenByPPID: [Int32: [ProcessRecord]] = [:]
+        for record in table { childrenByPPID[record.ppid, default: []].append(record) }
+        let byPid = Dictionary(table.map { ($0.pid, $0) }, uniquingKeysWith: { a, _ in a })
+
+        var totals: [String: (rss: Int, count: Int, top: ProcessRecord?)] = [:]
+        for (session, rootPid) in paneRoots {
+            var current = totals[session] ?? (0, 0, nil)
+            var stack = [rootPid]
+            var visited = Set<Int32>()
+            while let pid = stack.popLast() {
+                guard visited.insert(pid).inserted else { continue }
+                if let record = byPid[pid] {
+                    current.rss += record.rssKB
+                    current.count += 1
+                    if record.rssKB > (current.top?.rssKB ?? 0) { current.top = record }
+                }
+                for child in childrenByPPID[pid] ?? [] { stack.append(child.pid) }
+            }
+            totals[session] = current
+        }
+        return totals.map { session, value in
+            SessionTree(
+                session: session,
+                rssKB: value.rss,
+                processCount: value.count,
+                topCommand: shortCommand(value.top?.command ?? ""),
+                topRssKB: value.top?.rssKB ?? 0
+            )
+        }
+        .sorted { $0.rssKB > $1.rssKB }
+    }
+
+    static func shortCommand(_ command: String) -> String {
+        guard let first = command.split(separator: " ").first else { return command }
+        let name = (String(first) as NSString).lastPathComponent
+        let rest = command.dropFirst(first.count)
+        return String((name + rest).prefix(120))
+    }
+
+    /// Log the biggest session trees. Runs at every pressure event; on
+    /// periodic ticks only when the biggest tree crosses the threshold, so a
+    /// runaway inside a card is named in the log before the system drowns.
+    private func logSessionTrees(reason: String, onlyIfTopExceedsKB: Int = 0) {
+        let trees = Self.sessionTrees()
+        guard let biggest = trees.first, biggest.rssKB >= onlyIfTopExceedsKB else { return }
+        let summary = trees.prefix(5).map {
+            "\($0.session)=\(Self.format(UInt64($0.rssKB) * 1024)) [\($0.processCount) procs, top: \($0.topCommand) \(Self.format(UInt64($0.topRssKB) * 1024))]"
+        }.joined(separator: "; ")
+        if onlyIfTopExceedsKB > 0 {
+            KanbanCodeLog.warn("memory", "session-trees reason=\(reason) \(summary)")
+        } else {
+            KanbanCodeLog.info("memory", "session-trees reason=\(reason) \(summary)")
+        }
+    }
+
+    /// A single tmux session tree beyond this is worth flagging on its own
+    /// (the machine may have as little as 18GB total).
+    private static let sessionTreeWarnKB = 2 * 1024 * 1024
+
     private func logIfNeeded(_ snapshot: Snapshot) {
         let previous = lastLoggedFootprint.withLock { $0 }
         let growth = snapshot.footprint > previous ? snapshot.footprint - previous : 0
@@ -163,6 +298,7 @@ final class MemoryDiagnostics: @unchecked Sendable {
             lastLoggedTotalResident.withLock { $0 = totalResident }
         } else if periodic {
             log(snapshot, reason: "periodic")
+            logSessionTrees(reason: "periodic", onlyIfTopExceedsKB: Self.sessionTreeWarnKB)
             lastLoggedFootprint.withLock { $0 = snapshot.footprint }
             lastLoggedTotalResident.withLock { $0 = totalResident }
         }
@@ -252,6 +388,22 @@ final class MemoryDiagnostics: @unchecked Sendable {
             arguments: ["-o", "pid,ppid,rss,vsz,command", "-p", pids.map(String.init).joined(separator: ",")],
             outputPath: (dir as NSString).appendingPathComponent("memory-\(stamp)-\(reason)-ps.txt")
         )
+        // System-wide table sorted by memory. The app has repeatedly been
+        // innocent while a session child ate the machine — capture everyone.
+        runDiagnosticCommand(
+            executable: "/bin/ps",
+            arguments: ["axm", "-o", "pid,ppid,rss,vsz,command"],
+            outputPath: (dir as NSString).appendingPathComponent("memory-\(stamp)-\(reason)-top.txt")
+        )
+        DispatchQueue.global(qos: .utility).async {
+            let trees = Self.sessionTrees()
+            guard !trees.isEmpty else { return }
+            let text = trees.map {
+                "\($0.session)\t\(Self.format(UInt64($0.rssKB) * 1024))\t\($0.processCount) procs\ttop: \($0.topCommand) \(Self.format(UInt64($0.topRssKB) * 1024))"
+            }.joined(separator: "\n") + "\n"
+            let path = (dir as NSString).appendingPathComponent("memory-\(stamp)-\(reason)-sessions.txt")
+            try? text.write(toFile: path, atomically: true, encoding: .utf8)
+        }
         for pid in pids {
             runDiagnosticCommand(
                 executable: "/usr/bin/vmmap",
