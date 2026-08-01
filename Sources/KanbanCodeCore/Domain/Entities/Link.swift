@@ -183,6 +183,10 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
     /// Optional assistant model selected specifically for this card.
     public var modelOverride: String?
 
+    /// Optional first self-compact nudge threshold selected for this card.
+    /// When set, it replaces the global rules and forces `/compact` 200k later.
+    public var selfCompactContextThresholdTokens: Int?
+
     // Typed links — each independently optional
     public var sessionLink: SessionLink?
     public var tmuxLink: TmuxLink?
@@ -327,6 +331,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         promptImagePaths: [String]? = nil,
         parentCardId: String? = nil,
         modelOverride: String? = nil,
+        selfCompactContextThresholdTokens: Int? = nil,
         sessionLink: SessionLink? = nil,
         tmuxLink: TmuxLink? = nil,
         worktreeLink: WorktreeLink? = nil,
@@ -358,6 +363,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         self.promptImagePaths = promptImagePaths
         self.parentCardId = parentCardId
         self.modelOverride = modelOverride
+        self.selfCompactContextThresholdTokens = selfCompactContextThresholdTokens
         self.sessionLink = sessionLink
         self.tmuxLink = tmuxLink
         self.worktreeLink = worktreeLink
@@ -381,6 +387,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         // Card-level
         case id, name, projectPath, column, createdAt, updatedAt, lastActivity, lastOpenedAt
         case manualOverrides, manuallyArchived, source, promptBody, promptImagePaths, parentCardId, modelOverride
+        case selfCompactContextThresholdTokens
         case isRemote, isLaunching, sortOrder, pinnedAt, pinnedSortOrder
         case discoveredBranches, discoveredRepos, assistant, apiServiceId
         // Typed links (new nested format)
@@ -409,6 +416,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         promptImagePaths = try c.decodeIfPresent([String].self, forKey: .promptImagePaths)
         parentCardId = try c.decodeIfPresent(String.self, forKey: .parentCardId)
         modelOverride = try c.decodeIfPresent(String.self, forKey: .modelOverride)
+        selfCompactContextThresholdTokens = try c.decodeIfPresent(Int.self, forKey: .selfCompactContextThresholdTokens)
         isRemote = try c.decodeIfPresent(Bool.self, forKey: .isRemote) ?? false
         isLaunching = try c.decodeIfPresent(Bool.self, forKey: .isLaunching)
         sortOrder = try c.decodeIfPresent(Int.self, forKey: .sortOrder)
@@ -500,6 +508,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         try c.encodeIfPresent(promptImagePaths, forKey: .promptImagePaths)
         try c.encodeIfPresent(parentCardId, forKey: .parentCardId)
         try c.encodeIfPresent(modelOverride, forKey: .modelOverride)
+        try c.encodeIfPresent(selfCompactContextThresholdTokens, forKey: .selfCompactContextThresholdTokens)
         try c.encode(isRemote, forKey: .isRemote)
         try c.encodeIfPresent(isLaunching, forKey: .isLaunching)
         try c.encodeIfPresent(sortOrder, forKey: .sortOrder)

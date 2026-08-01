@@ -78,6 +78,7 @@ import {
   validateCanSpawn,
 } from "./subagents.js";
 import type { CodingAssistant } from "./types.js";
+import { parseContextThreshold } from "./self-compact.js";
 
 const program = new Command();
 
@@ -1013,7 +1014,7 @@ function requestedAssistant(raw: string): CodingAssistant | undefined {
 async function runSubagentCreate(
   operation: "spawn" | "fork",
   promptArgs: string[],
-  opts: { assistant: string; model?: string; json?: boolean }
+  opts: { assistant: string; model?: string; contextThreshold?: string; json?: boolean }
 ): Promise<void> {
   const links = readLinks();
   const parent = currentCardOrThrow(links);
@@ -1025,10 +1026,19 @@ async function runSubagentCreate(
   if (!prompt.trim()) {
     throw new Error("A subagent goal is required. Pass it as arguments or use `-` with stdin.");
   }
+  const contextThresholdTokens = opts.contextThreshold === undefined
+    ? undefined
+    : parseContextThreshold(opts.contextThreshold);
+  const assistantOverride = requestedAssistant(opts.assistant);
+  const targetAssistant = assistantOverride ?? parent.assistant ?? "claude";
+  if (contextThresholdTokens !== undefined && targetAssistant !== "claude") {
+    throw new Error("Per-card context thresholds are currently available for Claude subagents only.");
+  }
   const request = makeSubagentRequest(operation, parent.id, {
-    prompt: buildSubagentPrompt(parent, prompt),
-    assistant: requestedAssistant(opts.assistant),
+    prompt: buildSubagentPrompt(parent, prompt, contextThresholdTokens),
+    assistant: assistantOverride,
     model: opts.model,
+    contextThresholdTokens,
   });
   const response = await submitSubagentRequest(request);
   if (!response.ok) throw new Error(response.error ?? "Kanban Code rejected the subagent command.");
@@ -1055,6 +1065,9 @@ primary tmux session. Use a quoted argument for short goals, or stdin for long g
   Report the root cause and a tested fix.
   EOF
 
+Use --context-threshold 250k for a Claude child to override global compaction.
+It receives a nudge at 250k and Kanban Code sends /compact at 450k.
+
 Parent management aliases are guarded so they only target owned descendants:
   kanban subagent capture|transcript|dm|send <card-id> ...
 
@@ -1073,6 +1086,7 @@ for (const operation of ["spawn", "fork"] as const) {
     .argument("[prompt...]", "Goal text, or pass - and pipe/heredoc stdin")
     .option("--assistant <assistant>", "inherit, claude, codex, or gemini", "inherit")
     .option("--model <model>", "Assistant model alias or full model name")
+    .option("--context-threshold <tokens>", "Claude card self-compact nudge threshold, e.g. 250k or 250000")
     .option("-j, --json", "Output as JSON")
     .action(async (prompt: string[], opts) => {
       try {

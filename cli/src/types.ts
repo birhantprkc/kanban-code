@@ -78,6 +78,7 @@ export interface QueuedPrompt {
   body: string;
   sendAutomatically: boolean;
   imagePaths?: string[];
+  selfCompactThresholdTokens?: number;
 }
 
 export interface BrowserTabInfo {
@@ -113,6 +114,7 @@ export interface Link {
   promptImagePaths?: string[];
   parentCardId?: string;
   modelOverride?: string;
+  selfCompactContextThresholdTokens?: number;
   sessionLink?: SessionLink;
   tmuxLink?: TmuxLink;
   worktreeLink?: WorktreeLink;
@@ -177,6 +179,7 @@ export interface CardSummary {
   project?: string;
   assistant?: CodingAssistant;
   modelOverride?: string;
+  selfCompactContextThresholdTokens?: number;
   subagentDepth?: number;
   sessionId?: string;
   tmuxSession?: string;

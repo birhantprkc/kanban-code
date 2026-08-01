@@ -46,6 +46,7 @@ struct DroppableColumnView: View {
     let descendantCounts: [String: Int]
     var onTrimSession: (String) -> Void = { _ in }
     let onSetCardPinned: (String, Bool) -> Void
+    let onSetSelfCompactContextThreshold: (String, Int?) -> Void
     var onDiscoverCard: (String) -> Void = { _ in }
     var onCleanupWorktree: (String) -> Void = { _ in }
     var canCleanupWorktree: (String) -> Bool = { _ in true }
@@ -290,6 +291,9 @@ struct DroppableColumnView: View {
             subagentsExpanded: !collapsedSubagentParents.contains(card.id),
             onToggleSubagents: { toggleSubagents(card.id) },
             onSetPinned: { isPinned in onSetCardPinned(card.id, isPinned) },
+            onSetSelfCompactContextThreshold: { threshold in
+                onSetSelfCompactContextThreshold(card.id, threshold)
+            },
             onSelect: {
                 let newId = selectedCardId == card.id ? nil : card.id
                 selectedCardId = newId

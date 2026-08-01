@@ -23,6 +23,7 @@ struct ListBoardView: View {
     let onShowSubagents: (String) -> Void
     var onTrimSession: (String) -> Void = { _ in }
     let onSetCardPinned: (String, Bool) -> Void
+    let onSetSelfCompactContextThreshold: (String, Int?) -> Void
     var onDiscoverCard: (String) -> Void = { _ in }
     var onCleanupWorktree: (String) -> Void = { _ in }
     var canCleanupWorktree: (String) -> Bool = { _ in true }
@@ -185,6 +186,9 @@ struct ListBoardView: View {
             subagentsExpanded: !collapsedPinnedSubagentParents.contains(card.id),
             onToggleSubagents: { togglePinnedSubagents(card.id) },
             onSetPinned: { isPinned in onSetCardPinned(card.id, isPinned) },
+            onSetSelfCompactContextThreshold: { threshold in
+                onSetSelfCompactContextThreshold(card.id, threshold)
+            },
             onSelect: { handleCardSelection(card.id) },
             onStart: { onStartCard(card.id) },
             onResume: { onResumeCard(card.id) },
@@ -287,6 +291,7 @@ struct ListBoardView: View {
             onCopyConversationMarkdown: onCopyConversationMarkdown,
             onTrimSession: onTrimSession,
             onSetCardPinned: onSetCardPinned,
+            onSetSelfCompactContextThreshold: onSetSelfCompactContextThreshold,
             onDiscoverCard: onDiscoverCard,
             onCleanupWorktree: onCleanupWorktree,
             canCleanupWorktree: canCleanupWorktree,
@@ -416,6 +421,7 @@ private struct ListBoardSectionView: View {
     let onCopyConversationMarkdown: (String) -> Void
     let onTrimSession: (String) -> Void
     let onSetCardPinned: (String, Bool) -> Void
+    let onSetSelfCompactContextThreshold: (String, Int?) -> Void
     let onDiscoverCard: (String) -> Void
     let onCleanupWorktree: (String) -> Void
     let canCleanupWorktree: (String) -> Bool
@@ -630,6 +636,9 @@ private struct ListBoardSectionView: View {
             subagentsExpanded: !collapsedSubagentParents.contains(card.id),
             onToggleSubagents: { toggleSubagents(card.id) },
             onSetPinned: { isPinned in onSetCardPinned(card.id, isPinned) },
+            onSetSelfCompactContextThreshold: { threshold in
+                onSetSelfCompactContextThreshold(card.id, threshold)
+            },
             onSelect: { onSelectCard(card.id) },
             onStart: { onStartCard(card.id) },
             onResume: { onResumeCard(card.id) },
@@ -852,6 +861,7 @@ private struct ListCardRowView: View {
     var subagentsExpanded = true
     var onToggleSubagents: () -> Void = {}
     let onSetPinned: (_ isPinned: Bool) -> Void
+    let onSetSelfCompactContextThreshold: (_ thresholdTokens: Int?) -> Void
     var onSelect: () -> Void = {}
     var onStart: () -> Void = {}
     var onResume: () -> Void = {}
@@ -951,6 +961,7 @@ private struct ListCardRowView: View {
                     onFork: onFork,
                     onRenameRequest: onRenameRequest,
                     onSetPinned: onSetPinned,
+                    onSetSelfCompactContextThreshold: onSetSelfCompactContextThreshold,
                     onCopyResumeCmd: onCopyResumeCmd,
                     onCopyConversationMarkdown: onCopyConversationMarkdown,
                     subagentCount: subagentCount,

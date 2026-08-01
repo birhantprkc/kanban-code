@@ -7,6 +7,7 @@ struct ColumnView: View {
     @Binding var selectedCardId: String?
     let onCopyConversationMarkdown: (String) -> Void
     let onSetCardPinned: (String, Bool) -> Void
+    let onSetSelfCompactContextThreshold: (String, Int?) -> Void
     let onShowSubagents: (String) -> Void
 
     var body: some View {
@@ -22,6 +23,9 @@ struct ColumnView: View {
                         activeDirectSubagentCount: 0,
                         onShowSubagents: { onShowSubagents(card.id) },
                         onSetPinned: { isPinned in onSetCardPinned(card.id, isPinned) },
+                        onSetSelfCompactContextThreshold: { threshold in
+                            onSetSelfCompactContextThreshold(card.id, threshold)
+                        },
                         onSelect: {
                             if selectedCardId == card.id {
                                 selectedCardId = nil

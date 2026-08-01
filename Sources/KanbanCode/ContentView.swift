@@ -127,6 +127,7 @@ struct ContentView: View {
     @State var dmDraftImages: [String: [Data]] = [:]
     @State var activeDialog: DialogState = .none
     @State private var selfCompactTriggeredThresholds: [String: Set<Int>] = [:]
+    @State private var selfCompactPolicySignatures: [String: String] = [:]
     @State private var navigationBackStack: [DrawerNavigationTarget] = []
     @State private var navigationForwardStack: [DrawerNavigationTarget] = []
     @State private var suppressNextNavigationRecord = false
@@ -410,6 +411,9 @@ struct ContentView: View {
             onSetCardPinned: { cardId, isPinned in
                 store.dispatch(.setCardPinned(cardId: cardId, isPinned: isPinned))
             },
+            onSetSelfCompactContextThreshold: { cardId, threshold in
+                store.dispatch(.setSelfCompactContextThreshold(cardId: cardId, thresholdTokens: threshold))
+            },
             availableProjects: projectList,
             onMoveToProject: { cardId, projectPath in
                 let name = projectList.first(where: { $0.path == projectPath })?.name ?? (projectPath as NSString).lastPathComponent
@@ -480,6 +484,9 @@ struct ContentView: View {
             onTrimSession: { cardId in presentDialog(.confirmTrimSession(cardId: cardId)) },
             onSetCardPinned: { cardId, isPinned in
                 store.dispatch(.setCardPinned(cardId: cardId, isPinned: isPinned))
+            },
+            onSetSelfCompactContextThreshold: { cardId, threshold in
+                store.dispatch(.setSelfCompactContextThreshold(cardId: cardId, thresholdTokens: threshold))
             },
             onDiscoverCard: { cardId in
                 Task {
@@ -588,6 +595,9 @@ struct ContentView: View {
             },
             onSetPinned: { isPinned in
                 store.dispatch(.setCardPinned(cardId: card.id, isPinned: isPinned))
+            },
+            onSetSelfCompactContextThreshold: { threshold in
+                store.dispatch(.setSelfCompactContextThreshold(cardId: card.id, thresholdTokens: threshold))
             },
             subagentCount: subagentCount(for: card.id),
             onShowSubagents: { showSubagents(for: card.id) },
@@ -2229,6 +2239,9 @@ struct ContentView: View {
                     onSetPinned: { isPinned in
                         store.dispatch(.setCardPinned(cardId: card.id, isPinned: isPinned))
                     },
+                    onSetSelfCompactContextThreshold: { threshold in
+                        store.dispatch(.setSelfCompactContextThreshold(cardId: card.id, thresholdTokens: threshold))
+                    },
                     onCopyResumeCmd: {
                         var cmd = ""
                         if let pp = card.link.projectPath { cmd += "cd \(pp) && " }
@@ -3005,30 +3018,47 @@ struct ContentView: View {
         let settings = (try? await settingsStore.read()) ?? Settings()
         let config = settings.selfCompact
         let interval = max(10, config.pollIntervalSeconds)
-        guard config.enabled else {
-            selfCompactTriggeredThresholds.removeAll()
-            return interval
-        }
 
-        let rules = config.rules
-            .filter { $0.thresholdTokens > 0 }
-            .sorted { $0.thresholdTokens < $1.thresholdTokens }
-        guard let firstThreshold = rules.first?.thresholdTokens else { return interval }
-
-        let candidates = store.state.cards.compactMap { card -> (cardId: String, sessionId: String, sessionName: String)? in
+        let candidates = store.state.cards.compactMap { card -> (cardId: String, sessionId: String, sessionName: String, rules: [SelfCompactRule])? in
             let link = card.link
-            guard link.effectiveAssistant == .claude,
+            guard !link.manuallyArchived,
+                  link.effectiveAssistant.supportsContextThresholdSelfCompact,
                   let sessionId = link.sessionLink?.sessionId,
-                  let sessionName = link.tmuxLink?.sessionName
+                  let sessionName = link.tmuxLink?.sessionName,
+                  store.state.tmuxSessions.contains(sessionName)
             else { return nil }
-            return (card.id, sessionId, sessionName)
+            let rules = SelfCompactPolicy.rules(
+                cardThresholdTokens: link.selfCompactContextThresholdTokens,
+                globalSettings: config
+            )
+            return (card.id, sessionId, sessionName, rules)
         }
 
         var liveSessionIds = Set<String>()
         for candidate in candidates {
             liveSessionIds.insert(candidate.sessionId)
+            let rules = candidate.rules
+            let signature = SelfCompactPolicy.signature(for: rules)
+            let previousSignature = selfCompactPolicySignatures[candidate.sessionId]
+
             guard let usage = ContextUsageReader.read(sessionId: candidate.sessionId) else { continue }
             let usedTokens = usage.currentContextTokens
+
+            if let previousSignature, previousSignature != signature {
+                removeQueuedSelfCompactWarnings(cardId: candidate.cardId, rules: rules)
+                selfCompactTriggeredThresholds[candidate.sessionId] = Set(
+                    rules.filter { $0.thresholdTokens <= usedTokens }.map(\.thresholdTokens)
+                )
+                selfCompactPolicySignatures[candidate.sessionId] = signature
+                continue
+            }
+            selfCompactPolicySignatures[candidate.sessionId] = signature
+
+            guard let firstThreshold = rules.first?.thresholdTokens else {
+                selfCompactTriggeredThresholds.removeValue(forKey: candidate.sessionId)
+                removeQueuedSelfCompactWarnings(cardId: candidate.cardId, rules: rules)
+                continue
+            }
             if usedTokens < firstThreshold {
                 selfCompactTriggeredThresholds.removeValue(forKey: candidate.sessionId)
                 removeQueuedSelfCompactWarnings(cardId: candidate.cardId, rules: rules)
@@ -3046,6 +3076,7 @@ struct ContentView: View {
         }
 
         selfCompactTriggeredThresholds = selfCompactTriggeredThresholds.filter { liveSessionIds.contains($0.key) }
+        selfCompactPolicySignatures = selfCompactPolicySignatures.filter { liveSessionIds.contains($0.key) }
         return interval
     }
 

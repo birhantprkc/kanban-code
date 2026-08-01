@@ -92,6 +92,32 @@ Feature: First-class subagents
     Then the child should use the selected assistant's configured service or default model
     And no extra model flag should be injected
 
+  Scenario Outline: Spawn or fork sets a child-specific context threshold
+    Given the current card uses Claude
+    When it runs `kanban subagent <operation> "investigate" --context-threshold 250k`
+    Then the child card should persist a self-compact context threshold of 250000 tokens
+    And the child should queue one self-compact nudge when its context reaches 250000 tokens
+    And the nudge should tell the child to pass a post-compact continuation message to `kanban self-compact`
+    And the child should receive a direct `/compact` when its context reaches 450000 tokens
+    And the child-specific policy should replace the global self-compact rules for that card
+    And the child-specific policy should remain active when the global self-compact guard is disabled
+
+    Examples:
+      | operation |
+      | spawn     |
+      | fork      |
+
+  Scenario: Context threshold input is explicit and validated
+    When an agent passes `--context-threshold 300k`
+    Then the CLI should preserve the value as 300000 tokens without rounding
+    And `kanban subagent --help` should document the accepted `Nk` and integer token forms
+    But zero, negative, malformed, and overflowing thresholds should fail before creating a card
+
+  Scenario: Spawn without a context threshold uses global self-compact rules
+    When an agent spawns a child without `--context-threshold`
+    Then the child should not persist a card-specific threshold
+    And the daemon should apply the global self-compact settings unchanged
+
   Scenario: Child receives delegation instructions
     When a subagent is spawned with prompt "investigate the parser"
     Then its initial user prompt should identify the parent card and the child card
@@ -231,6 +257,21 @@ Feature: First-class subagents
     And I should be able to open any row
     And I should be able to archive an active child
     And I should be able to resume an archived child
+
+  Scenario: Card menu exposes compact settings
+    Given a card supports context-threshold self-compaction
+    When I open its card menu and choose "Compact Settings"
+    Then I should see whether the card uses global settings or a card-specific context threshold
+    And I should be able to choose a compact threshold in 50k token increments
+    And choosing "Use Global Settings" should clear the card-specific override
+    And the selected threshold should persist across app restarts and session resumes
+    And changing the setting should re-evaluate future crossings without immediately replaying stale nudges
+
+  Scenario: Compact settings explain unsupported assistants
+    Given a card's assistant does not expose context usage to the daemon
+    When I open its compact settings
+    Then the menu should explain that threshold self-compaction is unavailable for that assistant
+    And an existing persisted threshold should remain available if the card later migrates to a supported assistant
 
   Scenario: A child card can show its own hierarchy when depth is enabled
     Given the maximum depth setting is greater than 1

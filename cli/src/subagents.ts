@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { cardForTmuxSession, currentTmuxSessionName } from "./broadcast.js";
 import { readLinks, readSettings } from "./data.js";
 import { commandInboxDir, commandResponsesDir } from "./paths.js";
+import { FORCED_COMPACT_OFFSET_TOKENS, tokenLabel } from "./self-compact.js";
 import type { CodingAssistant, Link } from "./types.js";
 
 export type SubagentOperation = "spawn" | "fork" | "archive" | "resume";
@@ -25,6 +26,7 @@ export interface SubagentCommandRequest {
   prompt?: string;
   assistant?: CodingAssistant;
   model?: string;
+  contextThresholdTokens?: number;
 }
 
 export interface SubagentCommandResponse {
@@ -116,17 +118,25 @@ export function validateCanSpawn(parent: Link, links: Link[] = readLinks()): num
   return maximumDepth;
 }
 
-export function buildSubagentPrompt(parent: Link, childPrompt: string): string {
+export function buildSubagentPrompt(
+  parent: Link,
+  childPrompt: string,
+  contextThresholdTokens?: number
+): string {
+  const compactInstruction = contextThresholdTokens
+    ? `This card has a ${tokenLabel(contextThresholdTokens)} context threshold. It will receive a self-compact nudge at ${tokenLabel(contextThresholdTokens)} tokens and a forced /compact at ${tokenLabel(contextThresholdTokens + FORCED_COMPACT_OFFSET_TOKENS)} tokens. Always pass a post-compact continuation message to \`kanban self-compact\`.`
+    : undefined;
   return [
     `You are a Kanban Code subagent owned by card ${parent.id} (${parent.name ?? "untitled parent"}).`,
     "Work independently on the goal below.",
     "Use `kanban parent dm <message>` to report progress or ask the parent a question.",
     "When the goal is fully reached, use `kanban parent dm-and-self-archive <message>` to report the result and archive yourself.",
     "The parent can resume you later if follow-up work is needed.",
+    compactInstruction,
     "",
     "Goal:",
     childPrompt,
-  ].join("\n");
+  ].filter((line): line is string => line !== undefined).join("\n");
 }
 
 export function assertOwnedSubagent(caller: Link, target: Link, links: Link[]): void {

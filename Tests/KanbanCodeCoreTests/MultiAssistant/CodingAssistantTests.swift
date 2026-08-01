@@ -341,6 +341,13 @@ struct CodingAssistantTests {
         #expect(CodingAssistant.gemini.baseURLEnvKey == nil)
     }
 
+    @Test("Only Claude supports per-card context threshold compaction")
+    func contextThresholdSelfCompactSupport() {
+        #expect(CodingAssistant.claude.supportsContextThresholdSelfCompact)
+        #expect(!CodingAssistant.codex.supportsContextThresholdSelfCompact)
+        #expect(!CodingAssistant.gemini.supportsContextThresholdSelfCompact)
+    }
+
     // MARK: - Codable
 
     @Test("CodingAssistant Codable round-trip")

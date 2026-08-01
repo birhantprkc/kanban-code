@@ -452,6 +452,54 @@ struct ReducerTests {
         #expect(unpinEffects.contains(where: { if case .upsertLink = $0 { return true }; return false }))
     }
 
+    @Test("Per-card compact threshold replaces only queued compact warnings")
+    func setSelfCompactContextThresholdClearsCompactWarnings() {
+        var link = Link(id: "card_compact", name: "Compact")
+        link.selfCompactContextThresholdTokens = 250_000
+        link.queuedPrompts = [
+            QueuedPrompt(body: "old warning", sendAutomatically: true, selfCompactThresholdTokens: 250_000),
+            QueuedPrompt(body: "user work", sendAutomatically: true),
+        ]
+        var state = stateWith([link])
+
+        let effects = Reducer.reduce(
+            state: &state,
+            action: .setSelfCompactContextThreshold(cardId: link.id, thresholdTokens: 300_000)
+        )
+
+        #expect(state.links[link.id]?.selfCompactContextThresholdTokens == 300_000)
+        #expect(state.links[link.id]?.queuedPrompts?.map(\.body) == ["user work"])
+        #expect(effects.count == 1)
+    }
+
+    @Test("Clearing per-card compact threshold restores global policy selection")
+    func clearSelfCompactContextThreshold() {
+        var link = Link(id: "card_compact", selfCompactContextThresholdTokens: 250_000)
+        var state = stateWith([link])
+
+        let effects = Reducer.reduce(
+            state: &state,
+            action: .setSelfCompactContextThreshold(cardId: link.id, thresholdTokens: nil)
+        )
+
+        #expect(state.links[link.id]?.selfCompactContextThresholdTokens == nil)
+        #expect(effects.count == 1)
+    }
+
+    @Test("Invalid per-card compact threshold is rejected")
+    func invalidSelfCompactContextThreshold() {
+        let link = Link(id: "card_compact")
+        var state = stateWith([link])
+
+        let effects = Reducer.reduce(
+            state: &state,
+            action: .setSelfCompactContextThreshold(cardId: link.id, thresholdTokens: 0)
+        )
+
+        #expect(state.links[link.id]?.selfCompactContextThresholdTokens == nil)
+        #expect(effects.isEmpty)
+    }
+
     @Test("Subagents stay out of lanes and cannot be pinned")
     func subagentsStayNested() {
         let parent = makeLink(id: "card_nested_parent", column: .inProgress)
@@ -921,6 +969,7 @@ struct ReducerTests {
             updatedAt: Date(timeIntervalSince1970: 100),
             parentCardId: parent.id,
             modelOverride: "opus",
+            selfCompactContextThresholdTokens: 250_000,
             sessionLink: SessionLink(sessionId: "child-session", sessionPath: "/child.jsonl")
         )
         let discoveredChild = Link(
@@ -944,6 +993,7 @@ struct ReducerTests {
 
         #expect(state.links[existingChild.id]?.parentCardId == parent.id)
         #expect(state.links[existingChild.id]?.modelOverride == "opus")
+        #expect(state.links[existingChild.id]?.selfCompactContextThresholdTokens == 250_000)
         #expect(state.cards(in: state.links[existingChild.id]!.column).contains(where: { $0.id == existingChild.id }) == false)
     }
 
@@ -954,10 +1004,15 @@ struct ReducerTests {
             id: "card_migration_child",
             parentCardId: parent.id,
             modelOverride: "sonnet",
+            selfCompactContextThresholdTokens: 250_000,
             sessionLink: SessionLink(sessionId: "old", sessionPath: "/old.jsonl"),
             assistant: .claude
         )
         child.apiServiceId = "anthropic-service"
+        child.queuedPrompts = [
+            QueuedPrompt(body: "compact warning", sendAutomatically: true, selfCompactThresholdTokens: 250_000),
+            QueuedPrompt(body: "user work", sendAutomatically: true),
+        ]
         var state = stateWith([parent, child])
 
         let _ = Reducer.reduce(
@@ -974,6 +1029,8 @@ struct ReducerTests {
         #expect(state.links[child.id]?.assistant == .codex)
         #expect(state.links[child.id]?.modelOverride == nil)
         #expect(state.links[child.id]?.apiServiceId == nil)
+        #expect(state.links[child.id]?.selfCompactContextThresholdTokens == 250_000)
+        #expect(state.links[child.id]?.queuedPrompts?.map(\.body) == ["user work"])
     }
 
     @Test("Reconciled dedup absorbs bare orphans into manual card")

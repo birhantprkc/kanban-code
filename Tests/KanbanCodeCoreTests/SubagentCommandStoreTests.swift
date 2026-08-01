@@ -17,13 +17,15 @@ struct SubagentCommandStoreTests {
             parentCardId: "parent-1",
             prompt: "Investigate",
             assistant: .codex,
-            model: "gpt-5.4"
+            model: "gpt-5.4",
+            contextThresholdTokens: 250_000
         )
         try JSONEncoder().encode(request).write(to: inbox.appendingPathComponent("request-1.json"))
 
         let store = SubagentCommandStore(baseURL: root)
         #expect(try await store.pendingRequestIds() == ["request-1"])
         #expect(try await store.claim(id: "request-1") == request)
+        #expect(request.contextThresholdTokens == 250_000)
         #expect(try await store.claim(id: "request-1") == nil)
 
         let response = SubagentCommandResponse(id: request.id, ok: true, cardId: "child-1")
@@ -31,6 +33,31 @@ struct SubagentCommandStoreTests {
         let data = try Data(contentsOf: root.appendingPathComponent("responses/request-1.json"))
         #expect(try JSONDecoder().decode(SubagentCommandResponse.self, from: data) == response)
         #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("processing/request-1.json").path))
+    }
+
+    @Test("Concurrent command processors treat a lost claim race as already claimed")
+    func concurrentClaimIsIdempotent() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kanban-subagent-command-race-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let inbox = root.appendingPathComponent("inbox")
+        try FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+        let request = SubagentCommandRequest(
+            id: "request-race",
+            operation: .spawn,
+            createdAt: "2026-08-01T10:00:00.000Z",
+            parentCardId: "parent-1",
+            prompt: "Investigate"
+        )
+        try JSONEncoder().encode(request).write(to: inbox.appendingPathComponent("request-race.json"))
+
+        let firstStore = SubagentCommandStore(baseURL: root)
+        let secondStore = SubagentCommandStore(baseURL: root)
+        async let first = firstStore.claim(id: request.id)
+        async let second = secondStore.claim(id: request.id)
+        let results = try await [first, second]
+
+        #expect(results.compactMap { $0 } == [request])
     }
 
     @Test("Interrupted processing requests become explicit failures")

@@ -16,6 +16,7 @@ public struct SubagentCommandRequest: Codable, Sendable, Equatable {
     public let prompt: String?
     public let assistant: CodingAssistant?
     public let model: String?
+    public let contextThresholdTokens: Int?
 
     public init(
         id: String,
@@ -25,7 +26,8 @@ public struct SubagentCommandRequest: Codable, Sendable, Equatable {
         cardId: String? = nil,
         prompt: String? = nil,
         assistant: CodingAssistant? = nil,
-        model: String? = nil
+        model: String? = nil,
+        contextThresholdTokens: Int? = nil
     ) {
         self.id = id
         self.operation = operation
@@ -35,6 +37,7 @@ public struct SubagentCommandRequest: Codable, Sendable, Equatable {
         self.prompt = prompt
         self.assistant = assistant
         self.model = model
+        self.contextThresholdTokens = contextThresholdTokens
     }
 }
 
@@ -90,7 +93,19 @@ public actor SubagentCommandStore {
         let claimed = processingURL.appendingPathComponent("\(id).json")
         guard fileManager.fileExists(atPath: source.path) else { return nil }
         guard !fileManager.fileExists(atPath: claimed.path) else { return nil }
-        try fileManager.moveItem(at: source, to: claimed)
+        do {
+            try fileManager.moveItem(at: source, to: claimed)
+        } catch {
+            // Multiple app windows can observe the same inbox entry before one
+            // of their mailbox actors moves it. Losing that atomic claim race
+            // means another processor owns the request, not that the command
+            // failed. It must not overwrite the eventual successful response.
+            if !fileManager.fileExists(atPath: source.path)
+                || fileManager.fileExists(atPath: claimed.path) {
+                return nil
+            }
+            throw error
+        }
         do {
             let request = try decoder.decode(SubagentCommandRequest.self, from: Data(contentsOf: claimed))
             guard request.id == id else {

@@ -27,6 +27,7 @@ struct BoardView: View {
     var onArchiveCard: (String) -> Void = { _ in }
     var onDeleteCard: (String) -> Void = { _ in }
     let onSetCardPinned: (String, Bool) -> Void
+    let onSetSelfCompactContextThreshold: (String, Int?) -> Void
     var availableProjects: [(name: String, path: String)] = []
     var onMoveToProject: (String, String) -> Void = { _, _ in }
     var onMoveToFolder: (String) -> Void = { _ in }
@@ -215,6 +216,7 @@ struct BoardView: View {
                             descendantCounts: descendantCounts,
                             onTrimSession: onTrimSession,
                             onSetCardPinned: onSetCardPinned,
+                            onSetSelfCompactContextThreshold: onSetSelfCompactContextThreshold,
                             onDiscoverCard: onDiscoverCard,
                             onCleanupWorktree: onCleanupWorktree,
                             canCleanupWorktree: canCleanupWorktree,
@@ -341,6 +343,9 @@ struct BoardView: View {
             subagentsExpanded: !collapsedPinnedSubagentParents.contains(card.id),
             onToggleSubagents: { togglePinnedSubagents(card.id) },
             onSetPinned: { isPinned in onSetCardPinned(card.id, isPinned) },
+            onSetSelfCompactContextThreshold: { threshold in
+                onSetSelfCompactContextThreshold(card.id, threshold)
+            },
             onSelect: {
                 let newId = store.state.selectedCardId == card.id ? nil : card.id
                 store.dispatch(.selectCard(cardId: newId))

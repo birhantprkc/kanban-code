@@ -67,6 +67,9 @@ export function formatCardSummary(card: CardSummary): string {
   if (card.subagentDepth !== undefined) meta.push(`depth:${card.subagentDepth}`);
   if (card.assistant) meta.push(card.assistant);
   if (card.modelOverride) meta.push(`model:${card.modelOverride}`);
+  if (card.selfCompactContextThresholdTokens) {
+    meta.push(`compact:${formatCompactThreshold(card.selfCompactContextThresholdTokens)}`);
+  }
   if (card.project) meta.push(card.project);
   if (card.tmuxSession) {
     meta.push(`tmux:${card.tmuxSession}${card.tmuxAlive ? "" : " (dead)"}`);
@@ -110,6 +113,10 @@ export function formatCardSummary(card: CardSummary): string {
   if (hasBlock) parts.push("");
 
   return parts.join("\n");
+}
+
+function formatCompactThreshold(tokens: number): string {
+  return tokens % 1_000 === 0 ? `${tokens / 1_000}k` : String(tokens);
 }
 
 export function formatCardDetail(card: CardDetail): string {

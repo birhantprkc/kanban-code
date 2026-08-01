@@ -199,12 +199,14 @@ struct LinkAssistantCodableTests {
             id: "card_child",
             parentCardId: "card_parent",
             modelOverride: "opus",
+            selfCompactContextThresholdTokens: 250_000,
             assistant: .claude
         )
         let data = try JSONEncoder().encode(link)
         let decoded = try JSONDecoder().decode(Link.self, from: data)
         #expect(decoded.parentCardId == "card_parent")
         #expect(decoded.modelOverride == "opus")
+        #expect(decoded.selfCompactContextThresholdTokens == 250_000)
     }
 
     @Test("Legacy cards decode without a parent or model override")
@@ -222,6 +224,7 @@ struct LinkAssistantCodableTests {
         let decoded = try JSONDecoder().decode(Link.self, from: Data(json.utf8))
         #expect(decoded.parentCardId == nil)
         #expect(decoded.modelOverride == nil)
+        #expect(decoded.selfCompactContextThresholdTokens == nil)
     }
 
     @Test("Link without pinnedAt decodes as unpinned")

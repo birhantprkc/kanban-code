@@ -563,6 +563,7 @@ extension ContentView {
                     source: .discovered,
                     parentCardId: card.link.parentCardId,
                     modelOverride: card.link.modelOverride,
+                    selfCompactContextThresholdTokens: card.link.selfCompactContextThresholdTokens,
                     sessionLink: SessionLink(sessionId: newSessionId, sessionPath: newPath),
                     worktreeLink: keepWorktree ? card.link.worktreeLink : nil,
                     assistant: card.link.effectiveAssistant

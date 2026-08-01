@@ -12,6 +12,7 @@ struct CardView: View {
     var subagentsExpanded = true
     var onToggleSubagents: () -> Void = {}
     let onSetPinned: (_ isPinned: Bool) -> Void
+    let onSetSelfCompactContextThreshold: (_ thresholdTokens: Int?) -> Void
     var onSelect: () -> Void = {}
     var onStart: () -> Void = {}
     var onResume: () -> Void = {}
@@ -120,6 +121,7 @@ struct CardView: View {
                     onFork: onFork,
                     onRenameRequest: onRenameRequest,
                     onSetPinned: onSetPinned,
+                    onSetSelfCompactContextThreshold: onSetSelfCompactContextThreshold,
                     onCopyResumeCmd: onCopyResumeCmd,
                     onCopyConversationMarkdown: onCopyConversationMarkdown,
                     subagentCount: subagentCount,

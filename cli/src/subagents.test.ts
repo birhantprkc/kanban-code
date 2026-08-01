@@ -1,6 +1,6 @@
 import { describe, test } from "node:test";
 import { strict as assert } from "node:assert";
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -59,6 +59,18 @@ describe("subagent hierarchy", () => {
     assert.match(prompt, /Investigate the bug/);
   });
 
+  test("bootstrap prompt explains the per-card compaction threshold", () => {
+    const prompt = buildSubagentPrompt(
+      { ...card("root"), name: "Parent" },
+      "Investigate the bug",
+      250_000
+    );
+    assert.match(prompt, /250k context threshold/);
+    assert.match(prompt, /kanban self-compact/);
+    assert.match(prompt, /post-compact continuation message/);
+    assert.match(prompt, /450k tokens/);
+  });
+
   test("depth error is explicit", () => {
     assert.equal(
       depthLimitError(1),
@@ -93,16 +105,24 @@ describe("subagent command transport", () => {
     const old = process.env.KANBAN_CODE_HOME;
     process.env.KANBAN_CODE_HOME = home;
     try {
-      const request = makeSubagentRequest("spawn", "root", { prompt: "hello" });
+      const request = makeSubagentRequest("spawn", "root", {
+        prompt: "hello",
+        contextThresholdTokens: 250_000,
+      });
       const response = await submitSubagentRequest(request, {
         timeoutMs: 2_000,
         notify: (id) => {
+          const persisted = JSON.parse(
+            readFileSync(join(home, "commands", "inbox", `${id}.json`), "utf8")
+          );
+          assert.equal(persisted.contextThresholdTokens, 250_000);
           const responses = join(home, "commands", "responses");
           mkdirSync(responses, { recursive: true });
           writeFileSync(join(responses, `${id}.json`), JSON.stringify({ id, ok: true, cardId: "child" }));
         },
       });
       assert.equal(response.cardId, "child");
+      assert.equal(request.contextThresholdTokens, 250_000);
     } finally {
       if (old === undefined) delete process.env.KANBAN_CODE_HOME;
       else process.env.KANBAN_CODE_HOME = old;
@@ -140,6 +160,7 @@ describe("subagent list presentation", () => {
       column: "in_progress",
       assistant: "claude",
       modelOverride: "sonnet",
+      selfCompactContextThresholdTokens: 250_000,
       subagentDepth: 1,
       tmuxAlive: true,
       prs: [],
@@ -157,6 +178,7 @@ describe("subagent list presentation", () => {
     assert.match(rendered, /depth:1/);
     assert.match(rendered, /claude/);
     assert.match(rendered, /model:sonnet/);
+    assert.match(rendered, /compact:250k/);
     assert.match(rendered, /430k tok \$1\.25/);
     assert.match(rendered, /430k\/1\.0M ctx \(43%\)/);
   });

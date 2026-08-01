@@ -568,6 +568,7 @@ export function toCardSummary(
     project: projectName(link),
     assistant: link.assistant,
     modelOverride: link.modelOverride,
+    selfCompactContextThresholdTokens: link.selfCompactContextThresholdTokens,
     sessionId: link.sessionLink?.sessionId,
     tmuxSession: tmuxName,
     tmuxAlive: tmuxName ? liveTmux.has(tmuxName) : false,

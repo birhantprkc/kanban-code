@@ -122,6 +122,82 @@ describe("daemon (sandboxed, injected paste)", () => {
     assert.deepEqual(pastes, [["daemon-agent", "/compact"]]);
   });
 
+  test("card threshold overrides a disabled global guard and queues ahead of user work", () => {
+    const child = card([{ id: "user-work", body: "continue queued work", sendAutomatically: true }]);
+    child.selfCompactContextThresholdTokens = 250_000;
+    writeLinks([child]);
+    writeContextPct(25);
+    const daemon = new Daemon({
+      selfCompact: { enabled: false },
+      paste: (session, text) => pastes.push([session, text]),
+    });
+
+    const acted = daemon.evaluateAutoCompact();
+
+    assert.deepEqual(acted, [{ sessionId: SID, action: "queuePrompt", thresholdTokens: 250_000 }]);
+    const queue = readLinks()[0].queuedPrompts ?? [];
+    assert.equal(queue[0].selfCompactThresholdTokens, 250_000);
+    assert.match(queue[0].body, /passing an argument for the post-compact message on how to continue/);
+    assert.equal(queue[1].id, "user-work");
+  });
+
+  test("card threshold forces compact exactly 200k above its nudge", () => {
+    const child = card();
+    child.selfCompactContextThresholdTokens = 250_000;
+    writeLinks([child]);
+    writeContextPct(45);
+    const daemon = new Daemon({
+      selfCompact: { enabled: false },
+      paste: (session, text) => pastes.push([session, text]),
+    });
+
+    const acted = daemon.evaluateAutoCompact();
+
+    assert.deepEqual(acted, [{ sessionId: SID, action: "compactNow", thresholdTokens: 450_000 }]);
+    assert.deepEqual(pastes, [["daemon-agent", "/compact"]]);
+  });
+
+  test("card threshold is ignored for assistants without Claude context telemetry", () => {
+    const child = card([
+      {
+        id: "compact-warning",
+        body: "old compact warning",
+        sendAutomatically: true,
+        selfCompactThresholdTokens: 250_000,
+      },
+      { id: "user-work", body: "continue queued work", sendAutomatically: true },
+    ]);
+    child.assistant = "gemini";
+    child.selfCompactContextThresholdTokens = 250_000;
+    writeLinks([child]);
+    writeContextPct(45);
+    const daemon = new Daemon({
+      selfCompact: { enabled: false },
+      paste: (session, text) => pastes.push([session, text]),
+    });
+
+    assert.deepEqual(daemon.evaluateAutoCompact(), []);
+    assert.deepEqual(pastes, []);
+    assert.deepEqual(readLinks()[0].queuedPrompts?.map((prompt) => prompt.id), ["user-work"]);
+  });
+
+  test("changing a card threshold clears its old warning without replaying crossed rules", () => {
+    const child = card();
+    child.selfCompactContextThresholdTokens = 250_000;
+    writeLinks([child]);
+    writeContextPct(25);
+    const daemon = newDaemon();
+    daemon.evaluateAutoCompact();
+    assert.equal(readLinks()[0].queuedPrompts?.[0].selfCompactThresholdTokens, 250_000);
+
+    const updated = readLinks()[0];
+    updated.selfCompactContextThresholdTokens = 200_000;
+    writeLinks([updated]);
+
+    assert.deepEqual(daemon.evaluateAutoCompact(), []);
+    assert.equal(readLinks()[0].queuedPrompts?.length, 0);
+  });
+
   test("reads appended hook events incrementally", () => {
     const d = newDaemon();
     appendFileSync(hookEventsPath(), JSON.stringify({ sessionId: SID, event: "SessionStart", timestamp: isoNow() }) + "\n");

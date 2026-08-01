@@ -141,6 +141,12 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
         return owner != self
     }
 
+    /// Whether Kanban Code can read this assistant's live context usage and
+    /// enforce per-card compaction thresholds.
+    public var supportsContextThresholdSelfCompact: Bool {
+        self == .claude
+    }
+
     /// Symbol used to mark user turns in conversation history UI.
     public var historyPromptSymbol: String {
         switch self {

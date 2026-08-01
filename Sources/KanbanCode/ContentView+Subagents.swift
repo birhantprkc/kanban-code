@@ -62,6 +62,15 @@ extension ContentView {
         guard let parent = await waitForCard(request.parentCardId) else {
             throw SubagentCommandExecutionError.cardNotFound(request.parentCardId)
         }
+        if let threshold = request.contextThresholdTokens,
+           (threshold <= 0 || threshold > Int.max - SelfCompactPolicy.forcedCompactOffsetTokens) {
+            throw SubagentCommandExecutionError.invalidContextThreshold(threshold)
+        }
+        let targetAssistant = request.assistant ?? parent.effectiveAssistant
+        if request.contextThresholdTokens != nil,
+           !targetAssistant.supportsContextThresholdSelfCompact {
+            throw SubagentCommandExecutionError.unsupportedContextThresholdAssistant(targetAssistant)
+        }
 
         switch request.operation {
         case .spawn:
@@ -136,7 +145,13 @@ extension ContentView {
             throw SubagentCommandExecutionError.missingPrompt
         }
         let assistant = request.assistant ?? parent.effectiveAssistant
-        var child = makeSubagentLink(parent: parent, assistant: assistant, model: request.model, prompt: prompt)
+        var child = makeSubagentLink(
+            parent: parent,
+            assistant: assistant,
+            model: request.model,
+            contextThresholdTokens: request.contextThresholdTokens,
+            prompt: prompt
+        )
         let deliveryPrompt = identifiedSubagentPrompt(prompt, childId: child.id)
         child.promptBody = deliveryPrompt
         store.dispatch(.createManualTask(child))
@@ -212,6 +227,7 @@ extension ContentView {
             parent: parent,
             assistant: targetAssistant,
             model: request.model ?? (targetAssistant == sourceAssistant ? parent.modelOverride : nil),
+            contextThresholdTokens: request.contextThresholdTokens,
             prompt: prompt
         )
         let deliveryPrompt = identifiedSubagentPrompt(prompt, childId: child.id)
@@ -252,6 +268,7 @@ extension ContentView {
         parent: Link,
         assistant: CodingAssistant,
         model: String?,
+        contextThresholdTokens: Int?,
         prompt: String
     ) -> Link {
         var child = Link(
@@ -262,6 +279,7 @@ extension ContentView {
             promptBody: prompt,
             parentCardId: parent.id,
             modelOverride: model,
+            selfCompactContextThresholdTokens: contextThresholdTokens,
             worktreeLink: parent.worktreeLink,
             assistant: assistant,
             isRemote: parent.isRemote
@@ -331,6 +349,8 @@ private enum SubagentCommandExecutionError: LocalizedError {
     case missingSession(String)
     case assistantUnavailable(CodingAssistant)
     case promptDelivery(cardId: String, reason: String)
+    case invalidContextThreshold(Int)
+    case unsupportedContextThresholdAssistant(CodingAssistant)
     case expiredRequest
 
     var errorDescription: String? {
@@ -349,6 +369,10 @@ private enum SubagentCommandExecutionError: LocalizedError {
             "\(assistant.displayName) is not enabled"
         case .promptDelivery(let cardId, let reason):
             "Subagent \(cardId) was created, but its initial prompt was not delivered: \(reason). Open the child card to recover manually."
+        case .invalidContextThreshold(let threshold):
+            "Invalid context threshold \(threshold). Use a positive token count such as 250k or 250000."
+        case .unsupportedContextThresholdAssistant(let assistant):
+            "Per-card context thresholds are currently available for Claude subagents only, not \(assistant.displayName)."
         case .expiredRequest:
             "This subagent command expired before Kanban Code could process it. Inspect existing child cards before retrying."
         }

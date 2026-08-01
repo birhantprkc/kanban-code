@@ -360,6 +360,7 @@ public enum Action: Sendable {
     case moveCard(cardId: String, to: KanbanCodeColumn)
     case renameCard(cardId: String, name: String)
     case setCardPinned(cardId: String, isPinned: Bool)
+    case setSelfCompactContextThreshold(cardId: String, thresholdTokens: Int?)
     case archiveCard(cardId: String)
     case deleteCard(cardId: String)
     case selectCard(cardId: String?)
@@ -764,6 +765,20 @@ public enum Reducer {
                 link.pinnedAt = nil
                 link.pinnedSortOrder = nil
             }
+            link.updatedAt = .now
+            state.links[cardId] = link
+            return [.upsertLink(link)]
+
+        case .setSelfCompactContextThreshold(let cardId, let thresholdTokens):
+            guard var link = state.links[cardId] else { return [] }
+            if let thresholdTokens {
+                guard thresholdTokens > 0,
+                      thresholdTokens <= Int.max - SelfCompactPolicy.forcedCompactOffsetTokens
+                else { return [] }
+            }
+            guard link.selfCompactContextThresholdTokens != thresholdTokens else { return [] }
+            link.selfCompactContextThresholdTokens = thresholdTokens
+            link.queuedPrompts?.removeAll { $0.selfCompactThresholdTokens != nil }
             link.updatedAt = .now
             state.links[cardId] = link
             return [.upsertLink(link)]
@@ -1565,6 +1580,9 @@ public enum Reducer {
             if link.effectiveAssistant != newAssistant {
                 link.apiServiceId = nil
                 link.modelOverride = nil
+                if !newAssistant.supportsContextThresholdSelfCompact {
+                    link.queuedPrompts?.removeAll { $0.selfCompactThresholdTokens != nil }
+                }
             }
             link.assistant = newAssistant
             link.sessionLink = SessionLink(sessionId: newSessionId, sessionPath: newSessionPath)
@@ -1849,6 +1867,7 @@ public enum Reducer {
                 if let existing = mergedLinks[link.id] {
                     link.parentCardId = existing.parentCardId
                     link.modelOverride = existing.modelOverride
+                    link.selfCompactContextThresholdTokens = existing.selfCompactContextThresholdTokens
                     if existing.isLaunching == true {
                         // Check if activity hook has confirmed the session is running
                         let activity = result.activityMap[existing.sessionLink?.sessionId ?? ""]
