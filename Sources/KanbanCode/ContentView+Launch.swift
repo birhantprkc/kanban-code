@@ -52,10 +52,14 @@ extension ContentView {
         }
     }
 
-    func executeLaunch(cardId: String, prompt: String, projectPath: String, worktreeName: String?, runRemotely: Bool = true, skipPermissions: Bool = true, commandOverride: String? = nil, images: [ImageAttachment] = [], assistant: CodingAssistant = .claude, serviceIdOverride: String? = nil) {
+    func executeLaunch(cardId: String, prompt: String, projectPath: String, worktreeName: String?, runRemotely: Bool = true, skipPermissions: Bool = true, commandOverride: String? = nil, images: [ImageAttachment] = [], assistant: CodingAssistant = .claude, serviceIdOverride: String? = nil, modelOverride: String? = nil, focusCard: Bool = true) {
+        let previouslySelectedCardId = store.state.selectedCardId
         // IMMEDIATE state update via reducer — no more dual memory+disk writes
         store.dispatch(.launchCard(cardId: cardId, prompt: prompt, projectPath: projectPath, worktreeName: worktreeName, runRemotely: runRemotely, commandOverride: commandOverride))
-        shouldFocusTerminal = true
+        if !focusCard {
+            store.dispatch(.selectCard(cardId: previouslySelectedCardId))
+        }
+        shouldFocusTerminal = focusCard
         // Reducer computed the unique tmux name and stored it in the link
         let predictedTmuxName = store.state.links[cardId]?.tmuxLink?.sessionName ?? cardId
         KanbanCodeLog.info("launch", "Starting launch for card=\(cardId.prefix(12)) tmux=\(predictedTmuxName) project=\(projectPath)")
@@ -164,7 +168,8 @@ extension ContentView {
                     skipPermissions: skipPermissions,
                     preamble: preamble,
                     assistant: assistant,
-                    service: resolvedService
+                    service: resolvedService,
+                    modelOverride: modelOverride
                 )
                 KanbanCodeLog.info("launch", "Tmux session created: \(tmuxName)")
 
@@ -550,6 +555,8 @@ extension ContentView {
                     column: .waiting,
                     lastActivity: card.link.lastActivity,
                     source: .discovered,
+                    parentCardId: card.link.parentCardId,
+                    modelOverride: card.link.modelOverride,
                     sessionLink: SessionLink(sessionId: newSessionId, sessionPath: newPath),
                     worktreeLink: keepWorktree ? card.link.worktreeLink : nil,
                     assistant: card.link.effectiveAssistant
@@ -592,7 +599,7 @@ extension ContentView {
         }
     }
 
-    func executeResume(cardId: String, runRemotely: Bool, skipPermissions: Bool = true, commandOverride: String?, assistant: CodingAssistant = .claude, serviceIdOverride: String? = nil) {
+    func executeResume(cardId: String, runRemotely: Bool, skipPermissions: Bool = true, commandOverride: String?, assistant: CodingAssistant = .claude, serviceIdOverride: String? = nil, modelOverride: String? = nil, focusCard: Bool = true) {
         guard let card = store.state.cards.first(where: { $0.id == cardId }) else { return }
         let sessionId = card.link.sessionLink?.sessionId ?? card.link.id
         // For worktree cards, cd into the worktree — that's where Claude stored the session data.
@@ -624,8 +631,12 @@ extension ContentView {
             }
         }
 
+        let previouslySelectedCardId = store.state.selectedCardId
         store.dispatch(.resumeCard(cardId: cardId))
-        shouldFocusTerminal = true
+        if !focusCard {
+            store.dispatch(.selectCard(cardId: previouslySelectedCardId))
+        }
+        shouldFocusTerminal = focusCard
         KanbanCodeLog.info("resume", "Starting resume for card=\(cardId.prefix(12)) session=\(sessionId.prefix(8))")
 
         Task {
@@ -689,7 +700,8 @@ extension ContentView {
                     skipPermissions: skipPermissions,
                     preamble: preamble,
                     assistant: assistant,
-                    service: resolvedService
+                    service: resolvedService,
+                    modelOverride: modelOverride
                 )
                 KanbanCodeLog.info("resume", "Resume launched for card=\(cardId.prefix(12)) actualTmux=\(actualTmuxName)")
 

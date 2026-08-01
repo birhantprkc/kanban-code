@@ -59,6 +59,11 @@ private struct RenameTarget: Identifiable, Equatable {
     var id: String { name }
 }
 
+private struct SubagentManagerTarget: Identifiable, Equatable {
+    let parentId: String
+    var id: String { parentId }
+}
+
 private enum DrawerNavigationTarget: Equatable {
     case card(String)
     case channel(String)
@@ -107,6 +112,7 @@ struct ContentView: View {
     @State var renamingCardId: String?
     @State var pendingTerminalSession: String?
     @State var showAddLinkCardId: String?
+    @State private var subagentManagerTarget: SubagentManagerTarget?
     @State var launchConfig: LaunchConfig?
     @State var syncStatuses: [String: SyncStatus] = [:]
     @State var isSyncRefreshing = false
@@ -143,6 +149,7 @@ struct ContentView: View {
     let assistantRegistry: CodingAssistantRegistry
     let launcher: LaunchSession
     let tmuxAdapter: TmuxAdapter
+    let subagentCommandStore = SubagentCommandStore()
     let systemTray = SystemTray()
     let mutagenAdapter = MutagenAdapter()
     let hookEventsPath: String
@@ -370,6 +377,7 @@ struct ContentView: View {
                 NSPasteboard.general.setString(cmd, forType: .string)
             },
             onCopyConversationMarkdown: { cardId in copyConversationMarkdown(cardId: cardId) },
+            onShowSubagents: { cardId in showSubagents(for: cardId) },
             onTrimSession: { cardId in presentDialog(.confirmTrimSession(cardId: cardId)) },
             onDiscoverCard: { cardId in
                 Task {
@@ -457,6 +465,7 @@ struct ContentView: View {
                 NSPasteboard.general.setString(cmd, forType: .string)
             },
             onCopyConversationMarkdown: { cardId in copyConversationMarkdown(cardId: cardId) },
+            onShowSubagents: { cardId in showSubagents(for: cardId) },
             onTrimSession: { cardId in presentDialog(.confirmTrimSession(cardId: cardId)) },
             onSetCardPinned: { cardId, isPinned in
                 store.dispatch(.setCardPinned(cardId: cardId, isPinned: isPinned))
@@ -569,6 +578,8 @@ struct ContentView: View {
             onSetPinned: { isPinned in
                 store.dispatch(.setCardPinned(cardId: card.id, isPinned: isPinned))
             },
+            subagentCount: subagentCount(for: card.id),
+            onShowSubagents: { showSubagents(for: card.id) },
             onFork: { keepWorktree in forkCard(cardId: card.id, keepWorktree: keepWorktree) },
             onDismiss: { store.dispatch(.selectCard(cardId: nil)) },
             onUnlink: { linkType in
@@ -984,6 +995,32 @@ struct ContentView: View {
                     }
                 )
             }
+            .sheet(item: $subagentManagerTarget) { target in
+                SubagentManagerView(
+                    store: store,
+                    parentId: target.parentId,
+                    onOpen: { cardId in
+                        subagentManagerTarget = nil
+                        store.dispatch(.selectCard(cardId: cardId))
+                    },
+                    onResume: { cardId in
+                        guard var link = store.state.links[cardId] else { return }
+                        link.manuallyArchived = false
+                        link.column = .inProgress
+                        store.dispatch(.createManualTask(link))
+                        executeResume(
+                            cardId: cardId,
+                            runRemotely: link.isRemote,
+                            commandOverride: nil,
+                            assistant: link.effectiveAssistant,
+                            serviceIdOverride: link.apiServiceId,
+                            modelOverride: link.modelOverride,
+                            focusCard: false
+                        )
+                    },
+                    onArchive: { cardId in store.dispatch(.archiveCard(cardId: cardId)) }
+                )
+            }
             .popover(isPresented: Binding(
                 get: { showAddLinkCardId != nil },
                 set: { if !$0 { showAddLinkCardId = nil } }
@@ -1135,7 +1172,13 @@ struct ContentView: View {
     private var dialogMessage: some View {
         switch activeDialog {
         case .none: EmptyView()
-        case .confirmDelete: Text("This will permanently delete this card and its data.")
+        case .confirmDelete(let cardId):
+            let descendantCount = subagentCount(for: cardId)
+            if descendantCount > 0 {
+                Text("This will permanently delete this card, its data, and \(descendantCount) subagent\(descendantCount == 1 ? "" : "s").")
+            } else {
+                Text("This will permanently delete this card and its data.")
+            }
         case .confirmArchive: Text("This card has running terminals. Archiving will kill them.")
         case .confirmFork(let cardId):
             if store.state.cards.first(where: { $0.id == cardId })?.link.worktreeLink != nil {
@@ -1290,6 +1333,9 @@ struct ContentView: View {
             .task(id: "self-compact-monitor") {
                 await selfCompactMonitorLoop()
             }
+            .task(id: "subagent-command-bootstrap") {
+                await processPendingSubagentCommands()
+            }
             .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeChannelsChanged).receive(on: RunLoop.main)) { _ in
                 store.dispatch(.refreshChannels)
                 channelsWatcher.syncChannelLogs(store.state.channels.map(\.name))
@@ -1353,6 +1399,11 @@ struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeOpenProject).receive(on: RunLoop.main)) { notification in
                 if let path = notification.userInfo?["path"] as? String {
                     openOrCreateProject(path: path)
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeCLICommand).receive(on: RunLoop.main)) { notification in
+                if let requestId = notification.userInfo?["requestId"] as? String {
+                    Task { await processSubagentCommand(id: requestId) }
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeAddLink).receive(on: RunLoop.main)) { notification in
@@ -2107,6 +2158,14 @@ struct ContentView: View {
         return counts
     }
 
+    private func subagentCount(for cardId: String) -> Int {
+        SubagentHierarchy.descendantIds(of: cardId, in: store.state.links).count
+    }
+
+    private func showSubagents(for cardId: String) {
+        subagentManagerTarget = SubagentManagerTarget(parentId: cardId)
+    }
+
     var currentProjectHasRemote: Bool {
         store.state.globalRemoteSettings != nil
     }
@@ -2168,6 +2227,8 @@ struct ContentView: View {
                         NSPasteboard.general.setString(cmd, forType: .string)
                     },
                     onCopyConversationMarkdown: { copyConversationMarkdown(cardId: card.id) },
+                    subagentCount: subagentCount(for: card.id),
+                    onShowSubagents: { showSubagents(for: card.id) },
                     onTrimSession: { presentDialog(.confirmTrimSession(cardId: card.id)) },
                     onCheckpoint: {
                         detailTab = .history

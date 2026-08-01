@@ -242,6 +242,19 @@ struct SettingsStoreTests {
 
     // MARK: - Self-compact settings
 
+    @Test("subagent settings default to one level and round-trip")
+    func subagentSettingsRoundTrip() async throws {
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+        let store = SettingsStore(basePath: dir)
+        var settings = try await store.read()
+        #expect(settings.subagents.maximumDepth == 1)
+
+        settings.subagents.maximumDepth = 2
+        try await store.write(settings)
+        #expect(try await store.read().subagents.maximumDepth == 2)
+    }
+
     @Test("selfCompact defaults disabled with threshold defaults")
     func selfCompactDefaultSettings() async throws {
         let dir = try makeTempDir()

@@ -556,6 +556,7 @@ export function toCardSummary(
     column: link.column,
     project: projectName(link),
     assistant: link.assistant,
+    modelOverride: link.modelOverride,
     sessionId: link.sessionLink?.sessionId,
     tmuxSession: tmuxName,
     tmuxAlive: tmuxName ? liveTmux.has(tmuxName) : false,

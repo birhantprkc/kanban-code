@@ -121,6 +121,9 @@ struct SettingsView: View {
             SelfCompactSettingsView()
                 .tabItem { Label("Self-Compact", systemImage: "arrow.triangle.2.circlepath") }
 
+            SubagentSettingsView()
+                .tabItem { Label("Subagents", systemImage: "point.3.connected.trianglepath.dotted") }
+
             NotificationSettingsView()
                 .tabItem { Label("Notifications", systemImage: "bell") }
 
@@ -150,6 +153,59 @@ struct SettingsView: View {
         }
         ghAvailable = await GhCliAdapter().isAvailable()
         tmuxAvailable = await TmuxAdapter().isAvailable()
+    }
+}
+
+// MARK: - Subagents
+
+struct SubagentSettingsView: View {
+    @State private var maximumDepth = 1
+    @State private var loaded = false
+    private let settingsStore = SettingsStore()
+
+    var body: some View {
+        Form {
+            Section("Hierarchy") {
+                Stepper(value: $maximumDepth, in: 0...5) {
+                    HStack {
+                        Text("Maximum depth")
+                        Spacer()
+                        Text(maximumDepth == 0 ? "Disabled" : "\(maximumDepth)")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .onChange(of: maximumDepth) { save() }
+
+                Text(maximumDepth == 0
+                    ? "Agents cannot create subagents."
+                    : "A depth of 1 lets top-level cards create children while preventing those children from creating more agents.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("CLI") {
+                Text("Create a child from an agent's primary tmux session with `kanban subagent spawn`. Use `kanban subagent --help` for fork, reporting, archive, resume, transcript, and capture commands.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+        .task {
+            maximumDepth = (try? await settingsStore.read().subagents.maximumDepth) ?? 1
+            loaded = true
+        }
+    }
+
+    private func save() {
+        guard loaded else { return }
+        Task {
+            guard var settings = try? await settingsStore.read() else { return }
+            settings.subagents.maximumDepth = maximumDepth
+            try? await settingsStore.write(settings)
+            NotificationCenter.default.post(name: .kanbanCodeSettingsChanged, object: nil)
+        }
     }
 }
 

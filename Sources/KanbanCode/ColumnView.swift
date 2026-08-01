@@ -7,6 +7,7 @@ struct ColumnView: View {
     @Binding var selectedCardId: String?
     let onCopyConversationMarkdown: (String) -> Void
     let onSetCardPinned: (String, Bool) -> Void
+    let onShowSubagents: (String) -> Void
 
     var body: some View {
         // Card list with header pill overlaid on top
@@ -17,6 +18,9 @@ struct ColumnView: View {
                         card: card,
                         isSelected: card.id == selectedCardId,
                         onCopyConversationMarkdown: { onCopyConversationMarkdown(card.id) },
+                        subagentCount: 0,
+                        activeDirectSubagentCount: 0,
+                        onShowSubagents: { onShowSubagents(card.id) },
                         onSetPinned: { isPinned in onSetCardPinned(card.id, isPinned) },
                         onSelect: {
                             if selectedCardId == card.id {

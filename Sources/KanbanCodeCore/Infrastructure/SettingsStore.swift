@@ -20,6 +20,8 @@ public struct Settings: Codable, Sendable {
     public var defaultAPIServiceIds: [String: String]
     /// Automatic context-limit guard for Claude sessions.
     public var selfCompact: SelfCompactSettings
+    /// First-class subagent hierarchy limits.
+    public var subagents: SubagentSettings
 
     public init(
         projects: [Project] = [],
@@ -36,7 +38,8 @@ public struct Settings: Codable, Sendable {
         enabledAssistants: [CodingAssistant] = CodingAssistant.allCases,
         apiServices: [APIService] = [],
         defaultAPIServiceIds: [String: String] = [:],
-        selfCompact: SelfCompactSettings = SelfCompactSettings()
+        selfCompact: SelfCompactSettings = SelfCompactSettings(),
+        subagents: SubagentSettings = SubagentSettings()
     ) {
         self.projects = projects
         self.globalView = globalView
@@ -53,6 +56,7 @@ public struct Settings: Codable, Sendable {
         self.apiServices = apiServices
         self.defaultAPIServiceIds = defaultAPIServiceIds
         self.selfCompact = selfCompact
+        self.subagents = subagents
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -60,7 +64,7 @@ public struct Settings: Codable, Sendable {
         case promptTemplate, githubIssuePromptTemplate, columnOrder, hasCompletedOnboarding, defaultAssistant
         case enabledAssistants
         case apiServices, defaultAPIServiceIds
-        case selfCompact
+        case selfCompact, subagents
         case skill // backward-compat: old name for promptTemplate
     }
 
@@ -100,6 +104,7 @@ public struct Settings: Codable, Sendable {
         apiServices = (try? container.decodeIfPresent([APIService].self, forKey: .apiServices)) ?? []
         defaultAPIServiceIds = (try? container.decodeIfPresent([String: String].self, forKey: .defaultAPIServiceIds)) ?? [:]
         selfCompact = (try? container.decodeIfPresent(SelfCompactSettings.self, forKey: .selfCompact)) ?? SelfCompactSettings()
+        subagents = (try? container.decodeIfPresent(SubagentSettings.self, forKey: .subagents)) ?? SubagentSettings()
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -119,6 +124,7 @@ public struct Settings: Codable, Sendable {
         try container.encode(apiServices, forKey: .apiServices)
         try container.encode(defaultAPIServiceIds, forKey: .defaultAPIServiceIds)
         try container.encode(selfCompact, forKey: .selfCompact)
+        try container.encode(subagents, forKey: .subagents)
         // Note: "skill" is NOT encoded — only read for backward-compat
     }
 }
@@ -306,6 +312,23 @@ public struct SelfCompactSettings: Codable, Sendable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case enabled, pollIntervalSeconds, rules
+    }
+}
+
+public struct SubagentSettings: Codable, Sendable, Equatable {
+    public var maximumDepth: Int
+
+    public init(maximumDepth: Int = 1) {
+        self.maximumDepth = max(0, maximumDepth)
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        maximumDepth = max(0, try c.decodeIfPresent(Int.self, forKey: .maximumDepth) ?? 1)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case maximumDepth
     }
 }
 

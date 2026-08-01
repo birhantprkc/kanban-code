@@ -26,6 +26,7 @@ import {
 import {
   formatCardList,
   formatCardDetail,
+  formatCardSummary,
   formatTmuxSessions,
 } from "./format.js";
 import { agentIdentity } from "./agents/identity.js";
@@ -64,6 +65,17 @@ import {
 } from "./broadcast.js";
 import { deriveHandle, formatHandle, stripAt } from "./handles.js";
 import { parseDuration, runShare } from "./share-cli.js";
+import {
+  assertOwnedSubagent,
+  buildSubagentPrompt,
+  currentCardOrThrow,
+  descendantIds,
+  makeSubagentRequest,
+  subagentDepth,
+  submitSubagentRequest,
+  validateCanSpawn,
+} from "./subagents.js";
+import type { CodingAssistant } from "./types.js";
 
 const program = new Command();
 
@@ -123,7 +135,7 @@ program
 program
   .command("list")
   .alias("ls")
-  .description("List cards grouped by column")
+  .description("List cards grouped by column, including context token usage when available")
   .option("-c, --column <column>", "Filter by column (in_progress, requires_attention, in_review, done, backlog)")
   .option("-p, --project <path>", "Filter by project path")
   .option("-a, --all", "Include all_sessions (hidden by default)")
@@ -145,6 +157,10 @@ program
       const resolved = resolve(opts.project);
       links = filterByProject(links, resolved);
     }
+
+    // Child sessions live under their parent instead of in workflow lanes.
+    // Use `kanban subagent list` from the parent to inspect them.
+    links = links.filter((link) => !link.parentCardId);
 
     // Sort: in_progress first, then by lastActivity desc
     const colOrder: Record<string, number> = {
@@ -543,6 +559,18 @@ function readFollowUpFromArgsOrStdin(args: string[]): string {
   }
 }
 
+function readMessageFromArgsOrStdin(args: string[]): string {
+  if (args.length > 0 && !(args.length === 1 && args[0] === "-")) {
+    return args.join(" ");
+  }
+  if (process.stdin.isTTY) return "";
+  try {
+    return readFileSync(0, "utf-8").trimEnd();
+  } catch {
+    return "";
+  }
+}
+
 function selfCompactTarget(): { card: Link; tmuxSession: string } {
   const tmuxSession = currentTmuxSessionName();
   if (!tmuxSession) {
@@ -926,6 +954,315 @@ function liveTmuxSet(): Set<string> {
     return new Set();
   }
 }
+
+function cardParticipant(card: Link): { cardId: string; handle: string } {
+  for (const channel of listChannels()) {
+    const member = channel.members.find((candidate) => candidate.cardId === card.id);
+    if (member) return { cardId: card.id, handle: member.handle };
+  }
+  return { cardId: card.id, handle: deriveHandle(card.name ?? card.id, new Set()) };
+}
+
+function requireSubagentTarget(caller: Link, query: string, links: Link[]): Link {
+  const target = findCard(links, query);
+  if (!target) throw new Error(`Subagent card not found: ${query}`);
+  assertOwnedSubagent(caller, target, links);
+  return target;
+}
+
+function requestedAssistant(raw: string): CodingAssistant | undefined {
+  if (raw === "inherit") return undefined;
+  if (raw === "claude" || raw === "codex" || raw === "gemini") return raw;
+  throw new Error(`Unknown assistant "${raw}". Use inherit, claude, codex, or gemini.`);
+}
+
+async function runSubagentCreate(
+  operation: "spawn" | "fork",
+  promptArgs: string[],
+  opts: { assistant: string; model?: string; json?: boolean }
+): Promise<void> {
+  const links = readLinks();
+  const parent = currentCardOrThrow(links);
+  validateCanSpawn(parent, links);
+  const prompt = readMessageFromArgsOrStdin(promptArgs);
+  if (!prompt.trim()) {
+    throw new Error("A subagent goal is required. Pass it as arguments or use `-` with stdin.");
+  }
+  const request = makeSubagentRequest(operation, parent.id, {
+    prompt: buildSubagentPrompt(parent, prompt),
+    assistant: requestedAssistant(opts.assistant),
+    model: opts.model,
+  });
+  const response = await submitSubagentRequest(request);
+  if (!response.ok) throw new Error(response.error ?? "Kanban Code rejected the subagent command.");
+  if (opts.json) {
+    output(response, { json: true });
+  } else {
+    console.log(`${operation === "spawn" ? "Spawned" : "Forked"} subagent ${response.cardId}`);
+  }
+}
+
+const subagentCmd = program
+  .command("subagent")
+  .description("Create and manage child card sessions owned by the current Kanban Code card")
+  .addHelpText(
+    "after",
+    `
+
+Subagents are normal Kanban Code cards with their own tmux session, transcript,
+auto-compact protection, and assistant. Commands must run from the parent card's
+primary tmux session. Use a quoted argument for short goals, or stdin for long goals:
+
+  kanban subagent spawn - <<'EOL'
+  Investigate the failing integration test.
+  Report the root cause and a tested fix.
+  EOL
+
+Parent management aliases are guarded so they only target owned descendants:
+  kanban subagent capture|transcript|dm|send <card-id> ...
+
+The low-level send alias is intended for assistant commands such as /compact.
+`
+  );
+
+for (const operation of ["spawn", "fork"] as const) {
+  subagentCmd
+    .command(operation)
+    .description(
+      operation === "spawn"
+        ? "Start a new child session"
+        : "Fork the current session into a child, migrating when the assistant changes"
+    )
+    .argument("[prompt...]", "Goal text, or pass - and pipe/heredoc stdin")
+    .option("--assistant <assistant>", "inherit, claude, codex, or gemini", "inherit")
+    .option("--model <model>", "Assistant model alias or full model name")
+    .option("-j, --json", "Output as JSON")
+    .action(async (prompt: string[], opts) => {
+      try {
+        await runSubagentCreate(operation, prompt, opts);
+      } catch (error) {
+        console.error(String(error instanceof Error ? error.message : error));
+        process.exitCode = 1;
+      }
+    });
+}
+
+subagentCmd
+  .command("list")
+  .alias("ls")
+  .description("List active and archived descendants with context usage and live pane peeks")
+  .option("--no-capture-peek", "Do not include the live tmux pane preview")
+  .option("-j, --json", "Output as JSON")
+  .action((opts) => {
+    try {
+      const links = readLinks();
+      const parent = currentCardOrThrow(links);
+      const ids = descendantIds(parent.id, links);
+      const rows = links
+        .filter((link) => ids.has(link.id))
+        .sort((a, b) => (b.lastActivity ?? b.updatedAt).localeCompare(a.lastActivity ?? a.updatedAt));
+      const live = liveTmuxSet();
+      const summaries = rows.map((card) => {
+        const summary = toCardSummary(card, live);
+        summary.subagentDepth = subagentDepth(card.id, links);
+        const session = card.tmuxLink?.sessionName;
+        if (opts.capturePeek !== false && session && live.has(session)) {
+          const peek = peekTmuxPane(session, 15);
+          if (peek.trim()) summary.peek = peek;
+        }
+        return summary;
+      });
+      if (opts.json) {
+        output(summaries, { json: true });
+        return;
+      }
+      const byId = new Map(summaries.map((summary) => [summary.id, summary]));
+      const printGroup = (title: string, cards: Link[]) => {
+        console.log(`${title} (${cards.length})`);
+        if (cards.length === 0) console.log("  none");
+        for (const card of cards) {
+          const summary = byId.get(card.id);
+          if (summary) console.log(formatCardSummary(summary));
+        }
+      };
+      const archived = rows.filter((card) => card.manuallyArchived || card.column === "all_sessions");
+      printGroup("Active", rows.filter((card) => !archived.includes(card)));
+      console.log("");
+      printGroup("Archived", archived);
+    } catch (error) {
+      console.error(String(error instanceof Error ? error.message : error));
+      process.exitCode = 1;
+    }
+  });
+
+for (const operation of ["archive", "resume"] as const) {
+  subagentCmd
+    .command(operation)
+    .description(`${operation === "archive" ? "Archive" : "Resume"} an owned subagent card`)
+    .argument("<card>", "Owned subagent card ID, prefix, or name")
+    .option("-j, --json", "Output as JSON")
+    .action(async (query: string, opts) => {
+      try {
+        const links = readLinks();
+        const parent = currentCardOrThrow(links);
+        const target = requireSubagentTarget(parent, query, links);
+        const response = await submitSubagentRequest(
+          makeSubagentRequest(operation, parent.id, { cardId: target.id })
+        );
+        if (!response.ok) throw new Error(response.error ?? "Kanban Code rejected the command.");
+        if (opts.json) output(response, { json: true });
+        else console.log(`${operation === "archive" ? "Archived" : "Resumed"} ${target.id}`);
+      } catch (error) {
+        console.error(String(error instanceof Error ? error.message : error));
+        process.exitCode = 1;
+      }
+    });
+}
+
+subagentCmd
+  .command("capture")
+  .description("Capture an owned subagent's visible tmux pane")
+  .argument("<card>", "Owned subagent card")
+  .option("-s, --scrollback <lines>", "Include N lines, or all")
+  .action((query: string, opts) => {
+    try {
+      const links = readLinks();
+      const caller = currentCardOrThrow(links);
+      const target = requireSubagentTarget(caller, query, links);
+      const session = target.tmuxLink?.sessionName;
+      if (!session) throw new Error(`Subagent ${target.id} has no tmux session.`);
+      const scrollback = opts.scrollback === "all" ? "all" : Number.parseInt(opts.scrollback ?? "0", 10);
+      output(captureTmuxPane(session, scrollback), { json: false });
+    } catch (error) {
+      console.error(String(error instanceof Error ? error.message : error));
+      process.exitCode = 1;
+    }
+  });
+
+subagentCmd
+  .command("transcript")
+  .description("Read recent conversation turns from an owned subagent")
+  .argument("<card>", "Owned subagent card")
+  .option("-n, --tail <turns>", "Number of turns", "50")
+  .option("-j, --json", "Output as JSON")
+  .action((query: string, opts) => {
+    try {
+      const links = readLinks();
+      const caller = currentCardOrThrow(links);
+      const target = requireSubagentTarget(caller, query, links);
+      const path = target.sessionLink?.sessionPath;
+      if (!path) throw new Error(`Subagent ${target.id} has no transcript path.`);
+      const turns = readLastTranscriptTurns(path, Math.max(1, Number.parseInt(opts.tail, 10) || 50));
+      if (opts.json) output(turns, { json: true });
+      else for (const turn of turns) console.log(`${turn.role}: ${turn.text}\n`);
+    } catch (error) {
+      console.error(String(error instanceof Error ? error.message : error));
+      process.exitCode = 1;
+    }
+  });
+
+subagentCmd
+  .command("send")
+  .description("Low-level: paste directly into an owned subagent's tmux session")
+  .argument("<card>", "Owned subagent card")
+  .argument("<message...>", "Message or assistant command")
+  .action((query: string, message: string[]) => {
+    try {
+      const links = readLinks();
+      const caller = currentCardOrThrow(links);
+      const target = requireSubagentTarget(caller, query, links);
+      const session = target.tmuxLink?.sessionName;
+      if (!session) throw new Error(`Subagent ${target.id} has no tmux session.`);
+      const result = pasteTmuxPrompt(session, readMessageFromArgsOrStdin(message));
+      if (!result.ok) throw new Error(result.error ?? "tmux paste failed");
+      console.log(`Sent to ${target.id}`);
+    } catch (error) {
+      console.error(String(error instanceof Error ? error.message : error));
+      process.exitCode = 1;
+    }
+  });
+
+subagentCmd
+  .command("dm")
+  .description("Send a private message to an owned subagent")
+  .argument("<card>", "Owned subagent card")
+  .argument("<message...>", "Message body")
+  .action((query: string, message: string[]) => {
+    try {
+      const links = readLinks();
+      const caller = currentCardOrThrow(links);
+      const target = requireSubagentTarget(caller, query, links);
+      const result = sendDirectMessage(
+        cardParticipant(caller),
+        cardParticipant(target),
+        readMessageFromArgsOrStdin(message),
+        links,
+        undefined,
+        { liveSessionProbe: (session) => liveTmuxSet().has(session) }
+      );
+      if (!result.delivered) throw new Error(result.error ?? "message was not delivered");
+      console.log(`DM delivered to ${target.id}`);
+    } catch (error) {
+      console.error(String(error instanceof Error ? error.message : error));
+      process.exitCode = 1;
+    }
+  });
+
+function sendToParent(messageArgs: string[]): { child: Link; parent: Link; body: string } {
+  const links = readLinks();
+  const child = currentCardOrThrow(links);
+  if (!child.parentCardId) throw new Error(`Card ${child.id} is not a subagent.`);
+  const parent = links.find((link) => link.id === child.parentCardId);
+  if (!parent) throw new Error(`Parent card ${child.parentCardId} no longer exists.`);
+  const body = readMessageFromArgsOrStdin(messageArgs);
+  if (!body.trim()) throw new Error("A parent message is required.");
+  const result = sendDirectMessage(
+    cardParticipant(child),
+    cardParticipant(parent),
+    body,
+    links,
+    undefined,
+    { liveSessionProbe: (session) => liveTmuxSet().has(session) }
+  );
+  if (!result.delivered) throw new Error(result.error ?? "message was not delivered");
+  return { child, parent, body };
+}
+
+const parentCmd = program
+  .command("parent")
+  .description("Report from a subagent to its owning parent card");
+
+parentCmd
+  .command("dm")
+  .description("Send a private progress or result message to the parent")
+  .argument("<message...>", "Message body, or - with stdin")
+  .action((message: string[]) => {
+    try {
+      const { parent } = sendToParent(message);
+      console.log(`DM delivered to parent ${parent.id}`);
+    } catch (error) {
+      console.error(String(error instanceof Error ? error.message : error));
+      process.exitCode = 1;
+    }
+  });
+
+parentCmd
+  .command("dm-and-self-archive")
+  .description("Report a completed goal to the parent, then archive this subagent")
+  .argument("<message...>", "Completion message, or - with stdin")
+  .action(async (message: string[]) => {
+    try {
+      const { child, parent } = sendToParent(message);
+      console.log(`DM delivered to parent ${parent.id}; archiving ${child.id}`);
+      const response = await submitSubagentRequest(
+        makeSubagentRequest("archive", parent.id, { cardId: child.id })
+      );
+      if (!response.ok) throw new Error(response.error ?? "Kanban Code could not archive this subagent.");
+    } catch (error) {
+      console.error(String(error instanceof Error ? error.message : error));
+      process.exitCode = 1;
+    }
+  });
 
 const channelCmd = program.command("channel").description(
   "Shared channel chat for room-visible agent updates; use `kanban channel --help`"
@@ -1452,6 +1789,17 @@ program
     program.help({ error: true });
   });
 
-sortTopLevelCommands(["open", "list", "show", "sessions", "capture", "channel", "dm", "send"]);
+sortTopLevelCommands([
+  "open",
+  "list",
+  "show",
+  "sessions",
+  "capture",
+  "channel",
+  "dm",
+  "subagent",
+  "parent",
+  "send",
+]);
 
-program.parse();
+await program.parseAsync();

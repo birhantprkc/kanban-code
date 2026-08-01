@@ -172,11 +172,16 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
     ///
     /// Without service: `claude --dangerously-skip-permissions --worktree foo`
     /// With service:    `ollama launch claude --model qwen3 -- --dangerously-skip-permissions --worktree foo`
-    public func launchCommand(skipPermissions: Bool, worktreeName: String?, service: APIService? = nil) -> String {
+    public func launchCommand(
+        skipPermissions: Bool,
+        worktreeName: String?,
+        service: APIService? = nil,
+        modelOverride: String? = nil
+    ) -> String {
         var prefix: [String] = []
         if let launcher = service?.launcherPrefix { prefix.append(contentsOf: launcher.split(separator: " ").map(String.init)) }
         prefix.append(cliCommand)
-        if let model = service?.modelFlag { prefix += ["--model", model] }
+        if let model = modelOverride ?? service?.modelFlag { prefix += ["--model", model] }
 
         var flags: [String] = []
         if skipPermissions { flags.append(autoApproveFlag) }
@@ -185,7 +190,9 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
             flags += worktreeName.isEmpty ? ["--worktree"] : ["--worktree", worktreeName]
         }
 
-        let sep: [String] = service?.needsSeparator == true ? ["--"] : []
+        let needsServiceSeparator = service?.launcherPrefix != nil
+            || (service?.modelFlag != nil && modelOverride == nil)
+        let sep: [String] = needsServiceSeparator ? ["--"] : []
         return (prefix + sep + flags).joined(separator: " ")
     }
 
@@ -193,12 +200,19 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
     ///
     /// Without service: `claude --dangerously-skip-permissions --resume <id>`
     /// With service:    `ollama launch claude --model qwen3 -- --dangerously-skip-permissions --resume <id>`
-    public func resumeCommand(sessionId: String, skipPermissions: Bool, service: APIService? = nil) -> String {
+    public func resumeCommand(
+        sessionId: String,
+        skipPermissions: Bool,
+        service: APIService? = nil,
+        modelOverride: String? = nil
+    ) -> String {
         var prefix: [String] = []
         if let launcher = service?.launcherPrefix { prefix.append(contentsOf: launcher.split(separator: " ").map(String.init)) }
         prefix.append(cliCommand)
-        if let model = service?.modelFlag { prefix += ["--model", model] }
-        let sep: [String] = service?.needsSeparator == true ? ["--"] : []
+        if let model = modelOverride ?? service?.modelFlag { prefix += ["--model", model] }
+        let needsServiceSeparator = service?.launcherPrefix != nil
+            || (service?.modelFlag != nil && modelOverride == nil)
+        let sep: [String] = needsServiceSeparator ? ["--"] : []
 
         switch self {
         case .codex:

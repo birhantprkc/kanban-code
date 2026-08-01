@@ -303,6 +303,20 @@ struct CodingAssistantTests {
 
     // MARK: - baseURLEnvKey
 
+    @Test("Native model override does not add a launcher separator")
+    func nativeModelOverride() {
+        #expect(CodingAssistant.claude.launchCommand(
+            skipPermissions: true,
+            worktreeName: nil,
+            modelOverride: "opus"
+        ) == "claude --model opus --dangerously-skip-permissions")
+        #expect(CodingAssistant.codex.resumeCommand(
+            sessionId: "session-1",
+            skipPermissions: true,
+            modelOverride: "gpt-5.4"
+        ) == "codex --model gpt-5.4 resume --dangerously-bypass-approvals-and-sandbox --no-alt-screen session-1")
+    }
+
     @Test("Claude base URL env key is ANTHROPIC_BASE_URL")
     func claudeBaseURLEnvKey() {
         #expect(CodingAssistant.claude.baseURLEnvKey == "ANTHROPIC_BASE_URL")

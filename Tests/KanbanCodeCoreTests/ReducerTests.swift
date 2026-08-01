@@ -383,6 +383,36 @@ struct ReducerTests {
         #expect(effects.contains(where: { if case .cleanupTerminalCache = $0 { return true }; return false }))
     }
 
+    @Test("Deleting a parent cascades through its subagent hierarchy")
+    func deleteParentCascadesToSubagents() {
+        let parent = Link(id: "card_parent", name: "Parent")
+        let child = Link(
+            id: "card_child",
+            name: "Child",
+            parentCardId: parent.id,
+            sessionLink: SessionLink(sessionId: "child-session", sessionPath: "/child.jsonl"),
+            tmuxLink: TmuxLink(sessionName: "child-tmux")
+        )
+        let grandchild = Link(id: "card_grandchild", parentCardId: child.id)
+        var state = stateWith([parent, child, grandchild])
+        state.selectedCardId = child.id
+
+        let effects = Reducer.reduce(state: &state, action: .deleteCard(cardId: parent.id))
+
+        #expect(state.links.isEmpty)
+        #expect(state.selectedCardId == nil)
+        #expect(state.deletedCardIds == [parent.id, child.id, grandchild.id])
+        #expect(effects.filter { if case .removeLink = $0 { return true }; return false }.count == 3)
+        #expect(effects.contains(where: {
+            if case .killTmuxSessions(let names) = $0 { return names == ["child-tmux"] }
+            return false
+        }))
+        #expect(effects.contains(where: {
+            if case .deleteSessionFile(let path) = $0 { return path == "/child.jsonl" }
+            return false
+        }))
+    }
+
     // MARK: - Rename Card
 
     @Test("renameCard sets name and manual override")
@@ -420,6 +450,31 @@ struct ReducerTests {
         #expect(state.pinnedCards.isEmpty)
         #expect(state.unpinnedCards(in: .waiting).map(\.id) == ["card_pin1"])
         #expect(unpinEffects.contains(where: { if case .upsertLink = $0 { return true }; return false }))
+    }
+
+    @Test("Subagents stay out of lanes and cannot be pinned")
+    func subagentsStayNested() {
+        let parent = makeLink(id: "card_nested_parent", column: .inProgress)
+        let child = Link(
+            id: "card_nested_child",
+            name: "Child",
+            projectPath: parent.projectPath,
+            column: .inProgress,
+            source: .manual,
+            parentCardId: parent.id
+        )
+        var state = stateWith([parent, child])
+
+        let effects = Reducer.reduce(
+            state: &state,
+            action: .setCardPinned(cardId: child.id, isPinned: true)
+        )
+        state.rebuildCards()
+
+        #expect(effects.isEmpty)
+        #expect(state.cards(in: .inProgress).map(\.id) == [parent.id])
+        #expect(state.filteredCards.contains(where: { $0.id == child.id }))
+        #expect(state.pinnedCards.isEmpty)
     }
 
     @Test("archiving a pinned card clears its pin")
@@ -855,6 +910,41 @@ struct ReducerTests {
         #expect(state.links["card_main"] != nil, "Should keep the card with sessionLink")
         #expect(state.links["card_main"]?.sessionLink?.sessionId == "s1")
         #expect(state.links["card_main"]?.worktreeLink?.branch == "feat-x")
+    }
+
+    @Test("Reconciliation preserves subagent ownership and model override")
+    func reconciliationPreservesSubagentMetadata() {
+        let parent = Link(id: "card_reconcile_parent", name: "Parent")
+        let existingChild = Link(
+            id: "card_reconcile_child",
+            name: "Child",
+            updatedAt: Date(timeIntervalSince1970: 100),
+            parentCardId: parent.id,
+            modelOverride: "opus",
+            sessionLink: SessionLink(sessionId: "child-session", sessionPath: "/child.jsonl")
+        )
+        let discoveredChild = Link(
+            id: existingChild.id,
+            name: existingChild.name,
+            updatedAt: Date(timeIntervalSince1970: 200),
+            source: .discovered,
+            sessionLink: existingChild.sessionLink,
+            tmuxLink: TmuxLink(sessionName: "child-tmux")
+        )
+        var state = stateWith([parent, existingChild])
+        let result = ReconciliationResult(
+            links: [parent, discoveredChild],
+            sessions: [],
+            activityMap: [:],
+            tmuxSessions: ["child-tmux"]
+        )
+
+        let _ = Reducer.reduce(state: &state, action: .reconciled(result))
+        state.rebuildCards()
+
+        #expect(state.links[existingChild.id]?.parentCardId == parent.id)
+        #expect(state.links[existingChild.id]?.modelOverride == "opus")
+        #expect(state.cards(in: state.links[existingChild.id]!.column).contains(where: { $0.id == existingChild.id }) == false)
     }
 
     @Test("Reconciled dedup absorbs bare orphans into manual card")

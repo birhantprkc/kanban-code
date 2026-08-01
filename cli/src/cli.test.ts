@@ -58,7 +58,7 @@ exit 0
 }
 
 describe("kanban help", () => {
-  test("prioritizes channel and dm over low-level send", () => {
+  test("prioritizes collaboration and subagent commands over low-level send", () => {
     const r = runCli(["--help"]);
     assert.equal(r.code, 0, r.stderr);
     const helpText = r.stdout.replace(/\s+/g, " ");
@@ -67,11 +67,18 @@ describe("kanban help", () => {
 
     const channelIndex = r.stdout.indexOf("  channel");
     const dmIndex = r.stdout.indexOf("  dm");
+    const subagentIndex = r.stdout.indexOf("  subagent");
+    const parentIndex = r.stdout.indexOf("  parent");
     const sendIndex = r.stdout.indexOf("  send");
     assert.ok(channelIndex >= 0, "channel command should be listed");
     assert.ok(dmIndex >= 0, "dm command should be listed");
+    assert.ok(subagentIndex >= 0, "subagent command should be listed");
+    assert.ok(parentIndex >= 0, "parent command should be listed");
     assert.ok(sendIndex >= 0, "send command should be listed");
     assert.ok(channelIndex < dmIndex, "channel should appear before dm");
+    assert.ok(dmIndex < subagentIndex, "dm should appear before subagent");
+    assert.ok(subagentIndex < parentIndex, "subagent should appear before parent");
+    assert.ok(parentIndex < sendIndex, "parent should appear before low-level send");
     assert.ok(dmIndex < sendIndex, "dm should appear before low-level send");
   });
 });

@@ -19,6 +19,8 @@ struct CardActionsMenuActions {
     let onSetPinned: (_ isPinned: Bool) -> Void
     let onCopyResumeCmd: () -> Void
     let onCopyConversationMarkdown: () -> Void
+    let subagentCount: Int
+    let onShowSubagents: () -> Void
     let onTrimSession: () -> Void
     let onCheckpoint: (() -> Void)?
     let onAddLink: (() -> Void)?
@@ -40,6 +42,8 @@ struct CardActionsMenuActions {
         onSetPinned: @escaping (_ isPinned: Bool) -> Void,
         onCopyResumeCmd: @escaping () -> Void,
         onCopyConversationMarkdown: @escaping () -> Void,
+        subagentCount: Int,
+        onShowSubagents: @escaping () -> Void,
         onTrimSession: @escaping () -> Void,
         onCheckpoint: (() -> Void)?,
         onAddLink: (() -> Void)?,
@@ -60,6 +64,8 @@ struct CardActionsMenuActions {
         self.onSetPinned = onSetPinned
         self.onCopyResumeCmd = onCopyResumeCmd
         self.onCopyConversationMarkdown = onCopyConversationMarkdown
+        self.subagentCount = subagentCount
+        self.onShowSubagents = onShowSubagents
         self.onTrimSession = onTrimSession
         self.onCheckpoint = onCheckpoint
         self.onAddLink = onAddLink
@@ -213,11 +219,19 @@ struct CardActionsMenu: View {
             Label("Rename", systemImage: "pencil")
         }
 
-        Button(action: { actions.onSetPinned(!card.link.isPinned) }) {
-            Label(
-                card.link.isPinned ? "Unpin Card" : "Pin Card",
-                systemImage: card.link.isPinned ? "pin.slash" : "pin"
-            )
+        if card.link.parentCardId == nil {
+            Button(action: { actions.onSetPinned(!card.link.isPinned) }) {
+                Label(
+                    card.link.isPinned ? "Unpin Card" : "Pin Card",
+                    systemImage: card.link.isPinned ? "pin.slash" : "pin"
+                )
+            }
+        }
+
+        if actions.subagentCount > 0 {
+            Button(action: actions.onShowSubagents) {
+                Label("See All Subagents (\(actions.subagentCount))", systemImage: "point.3.connected.trianglepath.dotted")
+            }
         }
 
         if let onCheckpoint = actions.onCheckpoint {

@@ -6,6 +6,11 @@ struct CardView: View {
     let card: KanbanCodeCard
     let isSelected: Bool
     let onCopyConversationMarkdown: () -> Void
+    let subagentCount: Int
+    let activeDirectSubagentCount: Int
+    let onShowSubagents: () -> Void
+    var subagentsExpanded = true
+    var onToggleSubagents: () -> Void = {}
     let onSetPinned: (_ isPinned: Bool) -> Void
     var onSelect: () -> Void = {}
     var onStart: () -> Void = {}
@@ -29,6 +34,14 @@ struct CardView: View {
         VStack(alignment: .leading, spacing: 6) {
             // Title
             HStack(spacing: 5) {
+                if activeDirectSubagentCount > 0 {
+                    Button(action: onToggleSubagents) {
+                        Image(systemName: subagentsExpanded ? "chevron.down" : "chevron.right")
+                            .font(.app(.caption2, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
                 Text(card.displayTitle)
                     .font(.app(.body, weight: .medium))
                     .lineLimit(2)
@@ -109,6 +122,8 @@ struct CardView: View {
                     onSetPinned: onSetPinned,
                     onCopyResumeCmd: onCopyResumeCmd,
                     onCopyConversationMarkdown: onCopyConversationMarkdown,
+                    subagentCount: subagentCount,
+                    onShowSubagents: onShowSubagents,
                     onTrimSession: onTrimSession,
                     onCheckpoint: nil,
                     onAddLink: nil,

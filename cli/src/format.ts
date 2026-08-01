@@ -48,14 +48,14 @@ export function formatCardList(cards: CardSummary[]): string {
     lines.push("");
 
     for (const card of colCards) {
-      lines.push(formatCardLine(card));
+      lines.push(formatCardSummary(card));
     }
   }
 
   return lines.join("\n");
 }
 
-function formatCardLine(card: CardSummary): string {
+export function formatCardSummary(card: CardSummary): string {
   const parts: string[] = [];
 
   // Status indicator
@@ -64,6 +64,9 @@ function formatCardLine(card: CardSummary): string {
 
   // Metadata line
   const meta: string[] = [];
+  if (card.subagentDepth !== undefined) meta.push(`depth:${card.subagentDepth}`);
+  if (card.assistant) meta.push(card.assistant);
+  if (card.modelOverride) meta.push(`model:${card.modelOverride}`);
   if (card.project) meta.push(card.project);
   if (card.tmuxSession) {
     meta.push(`tmux:${card.tmuxSession}${card.tmuxAlive ? "" : " (dead)"}`);

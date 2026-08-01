@@ -243,7 +243,7 @@ public final class AppState: @unchecked Sendable {
         let newFiltered = cards.filter { cardMatchesProjectFilter($0) }
         if newFiltered != filteredCards { filteredCards = newFiltered }
 
-        let newPinned = newFiltered.filter(\.link.isPinned).sorted {
+        let newPinned = newFiltered.filter { $0.link.isPinned && $0.link.parentCardId == nil }.sorted {
             switch ($0.link.pinnedSortOrder, $1.link.pinnedSortOrder) {
             case (let a?, let b?) where a != b: return a < b
             case (_?, nil): return true
@@ -260,7 +260,7 @@ public final class AppState: @unchecked Sendable {
         // Per-column sorted arrays
         var newByColumn: [KanbanCodeColumn: [KanbanCodeCard]] = [:]
         for column in KanbanCodeColumn.allCases {
-            newByColumn[column] = newFiltered.filter { $0.column == column }
+            newByColumn[column] = newFiltered.filter { $0.column == column && $0.link.parentCardId == nil }
                 .sorted {
                     switch ($0.link.sortOrder, $1.link.sortOrder) {
                     case (let a?, let b?): return a < b
@@ -753,6 +753,7 @@ public enum Reducer {
 
         case .setCardPinned(let cardId, let isPinned):
             guard var link = state.links[cardId] else { return [] }
+            guard link.parentCardId == nil else { return [] }
             if isPinned {
                 if link.pinnedAt != nil { return [] }
                 link.pinnedAt = .now
@@ -825,29 +826,35 @@ public enum Reducer {
             return effects
 
         case .deleteCard(let cardId):
-            guard let link = state.links.removeValue(forKey: cardId) else { return [] }
-            if state.selectedCardId == cardId { state.selectedCardId = nil }
-            // Remember deleted IDs so in-flight reconciliation doesn't re-add them
-            state.deletedCardIds.insert(cardId)
-            if let sessionId = link.sessionLink?.sessionId {
-                state.deletedSessionIds.insert(sessionId)
+            guard state.links[cardId] != nil else { return [] }
+            let descendants = SubagentHierarchy.descendantIds(of: cardId, in: state.links)
+            let idsToDelete = [cardId] + descendants.sorted()
+            if let selected = state.selectedCardId, idsToDelete.contains(selected) {
+                state.selectedCardId = nil
             }
-            var effects: [Effect] = [.removeLink(cardId)]
-            if let tmux = link.tmuxLink {
-                effects.append(.killTmuxSessions(tmux.allSessionNames))
-                effects.append(.cleanupTerminalCache(sessionNames: tmux.allSessionNames))
-            }
-            if link.browserTabs != nil {
-                effects.append(.cleanupBrowserCache(cardId: cardId))
-            }
-            if let sessionPath = link.sessionLink?.sessionPath {
-                effects.append(.deleteSessionFile(sessionPath))
-            }
-            // Clean up prompt and queued prompt images
-            var imagesToDelete = link.promptImagePaths ?? []
-            imagesToDelete += (link.queuedPrompts ?? []).flatMap { $0.imagePaths ?? [] }
-            if !imagesToDelete.isEmpty {
-                effects.append(.deleteFiles(imagesToDelete))
+            var effects: [Effect] = []
+            for id in idsToDelete {
+                guard let link = state.links.removeValue(forKey: id) else { continue }
+                state.deletedCardIds.insert(id)
+                if let sessionId = link.sessionLink?.sessionId {
+                    state.deletedSessionIds.insert(sessionId)
+                }
+                effects.append(.removeLink(id))
+                if let tmux = link.tmuxLink {
+                    effects.append(.killTmuxSessions(tmux.allSessionNames))
+                    effects.append(.cleanupTerminalCache(sessionNames: tmux.allSessionNames))
+                }
+                if link.browserTabs != nil {
+                    effects.append(.cleanupBrowserCache(cardId: id))
+                }
+                if let sessionPath = link.sessionLink?.sessionPath {
+                    effects.append(.deleteSessionFile(sessionPath))
+                }
+                var imagesToDelete = link.promptImagePaths ?? []
+                imagesToDelete += (link.queuedPrompts ?? []).flatMap { $0.imagePaths ?? [] }
+                if !imagesToDelete.isEmpty {
+                    effects.append(.deleteFiles(imagesToDelete))
+                }
             }
             return effects
 
@@ -1825,7 +1832,8 @@ public enum Reducer {
             // newer updatedAt than the stale snapshot the reconciler used.
             var mergedLinks = state.links
             var preservedIds: Set<String> = []
-            for link in result.links {
+            for reconciledLink in result.links {
+                var link = reconciledLink
                 // Skip cards deliberately deleted during this reconciliation cycle
                 if state.deletedCardIds.contains(link.id) {
                     continue
@@ -1835,6 +1843,8 @@ public enum Reducer {
                     continue
                 }
                 if let existing = mergedLinks[link.id] {
+                    link.parentCardId = existing.parentCardId
+                    link.modelOverride = existing.modelOverride
                     if existing.isLaunching == true {
                         // Check if activity hook has confirmed the session is running
                         let activity = result.activityMap[existing.sessionLink?.sessionId ?? ""]
