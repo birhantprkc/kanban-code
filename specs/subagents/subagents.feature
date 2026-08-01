@@ -115,7 +115,7 @@ Feature: First-class subagents
     When it runs `kanban subagent fork "try it in Codex" --assistant codex`
     Then Kanban Code should fork the source session before modifying anything
     And the fork should be migrated through the existing assistant migration pipeline
-    And only the latest 500 conversation turns should be imported by default
+    And up to the latest 500 conversation turns should be imported within a safe context-size budget
     And the original parent session should remain unchanged
     And the resulting child should launch as Codex with the delegation prompt queued once
 
@@ -258,4 +258,3 @@ Feature: First-class subagents
     When background reconciliation runs
     Then the child should remain outside workflow lanes under its parent
     And its underlying status should still be recorded for display and automation
-

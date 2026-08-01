@@ -316,15 +316,24 @@ public struct SelfCompactSettings: Codable, Sendable, Equatable {
 }
 
 public struct SubagentSettings: Codable, Sendable, Equatable {
-    public var maximumDepth: Int
+    public static let maximumSupportedDepth = 5
+
+    public var maximumDepth: Int {
+        didSet {
+            maximumDepth = min(Self.maximumSupportedDepth, max(0, maximumDepth))
+        }
+    }
 
     public init(maximumDepth: Int = 1) {
-        self.maximumDepth = max(0, maximumDepth)
+        self.maximumDepth = min(Self.maximumSupportedDepth, max(0, maximumDepth))
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        maximumDepth = max(0, try c.decodeIfPresent(Int.self, forKey: .maximumDepth) ?? 1)
+        maximumDepth = min(
+            Self.maximumSupportedDepth,
+            max(0, try c.decodeIfPresent(Int.self, forKey: .maximumDepth) ?? 1)
+        )
     }
 
     private enum CodingKeys: String, CodingKey {

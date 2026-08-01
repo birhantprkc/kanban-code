@@ -51,16 +51,35 @@ public enum SubagentHierarchy {
     }
 
     public static func descendantIds(of cardId: String, in links: [String: Link]) -> Set<String> {
+        let childrenByParent = Dictionary(grouping: links.values.compactMap { link -> Link? in
+            link.parentCardId == nil ? nil : link
+        }) { $0.parentCardId! }
         var result = Set<String>()
+        var visited = Set([cardId])
         var pending = [cardId]
         while let parentId = pending.popLast() {
-            for child in links.values where child.parentCardId == parentId {
-                if result.insert(child.id).inserted {
+            for child in childrenByParent[parentId] ?? [] {
+                if visited.insert(child.id).inserted {
+                    result.insert(child.id)
                     pending.append(child.id)
                 }
             }
         }
         return result
+    }
+
+    /// Number of descendants for every parent, built in O(cards * hierarchy depth).
+    public static func descendantCounts(in links: [String: Link]) -> [String: Int] {
+        var counts: [String: Int] = [:]
+        for link in links.values {
+            var parentId = link.parentCardId
+            var visited = Set([link.id])
+            while let id = parentId, visited.insert(id).inserted {
+                counts[id, default: 0] += 1
+                parentId = links[id]?.parentCardId
+            }
+        }
+        return counts
     }
 
     public static func canSpawn(from cardId: String, in links: [String: Link], maximumDepth: Int) -> Bool {
@@ -75,15 +94,15 @@ public enum SubagentHierarchy {
     ) -> [SubagentHierarchyRow] {
         var rows: [SubagentHierarchyRow] = []
         var visited = Set([parentId])
+        let childrenByParent = Dictionary(grouping: links.values.filter {
+            $0.parentCardId != nil && (includeArchived || !$0.manuallyArchived)
+        }) { $0.parentCardId! }
+            .mapValues { $0.sorted(by: displayOrder) }
 
         func appendChildren(of currentParentId: String, depth: Int) {
-            for child in children(of: currentParentId, in: links, includeArchived: includeArchived) {
+            for child in childrenByParent[currentParentId] ?? [] {
                 guard visited.insert(child.id).inserted else { continue }
-                let childCount = children(
-                    of: child.id,
-                    in: links,
-                    includeArchived: includeArchived
-                ).count
+                let childCount = childrenByParent[child.id]?.count ?? 0
                 rows.append(SubagentHierarchyRow(
                     cardId: child.id,
                     depth: depth,

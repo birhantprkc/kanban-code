@@ -43,6 +43,7 @@ struct DroppableColumnView: View {
     var onCopyConversationMarkdown: (String) -> Void = { _ in }
     let onShowSubagents: (String) -> Void
     let subagentsByParent: [String: [KanbanCodeCard]]
+    let descendantCounts: [String: Int]
     var onTrimSession: (String) -> Void = { _ in }
     let onSetCardPinned: (String, Bool) -> Void
     var onDiscoverCard: (String) -> Void = { _ in }
@@ -279,12 +280,11 @@ struct DroppableColumnView: View {
     }
 
     private func cardView(for card: KanbanCodeCard) -> CardView {
-        let childCount = SubagentHierarchy.descendantIds(of: card.id, in: subagentLinks).count
         return CardView(
             card: card,
             isSelected: card.id == selectedCardId,
             onCopyConversationMarkdown: { onCopyConversationMarkdown(card.id) },
-            subagentCount: childCount,
+            subagentCount: descendantCounts[card.id] ?? 0,
             activeDirectSubagentCount: subagentsByParent[card.id]?.count ?? 0,
             onShowSubagents: { onShowSubagents(card.id) },
             subagentsExpanded: !collapsedSubagentParents.contains(card.id),

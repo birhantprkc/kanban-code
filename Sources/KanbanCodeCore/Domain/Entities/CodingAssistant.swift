@@ -181,7 +181,9 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
         var prefix: [String] = []
         if let launcher = service?.launcherPrefix { prefix.append(contentsOf: launcher.split(separator: " ").map(String.init)) }
         prefix.append(cliCommand)
-        if let model = modelOverride ?? service?.modelFlag { prefix += ["--model", model] }
+        if let model = modelOverride ?? service?.modelFlag {
+            prefix += ["--model", shellEscapeCommandArgument(model)]
+        }
 
         var flags: [String] = []
         if skipPermissions { flags.append(autoApproveFlag) }
@@ -209,7 +211,9 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
         var prefix: [String] = []
         if let launcher = service?.launcherPrefix { prefix.append(contentsOf: launcher.split(separator: " ").map(String.init)) }
         prefix.append(cliCommand)
-        if let model = modelOverride ?? service?.modelFlag { prefix += ["--model", model] }
+        if let model = modelOverride ?? service?.modelFlag {
+            prefix += ["--model", shellEscapeCommandArgument(model)]
+        }
         let needsServiceSeparator = service?.launcherPrefix != nil
             || (service?.modelFlag != nil && modelOverride == nil)
         let sep: [String] = needsServiceSeparator ? ["--"] : []
@@ -229,5 +233,14 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
             flags.append(sessionId)
             return (prefix + sep + flags).joined(separator: " ")
         }
+    }
+
+    private func shellEscapeCommandArgument(_ value: String) -> String {
+        let safeCharacters = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._:/@+-"))
+        guard !value.isEmpty,
+              value.unicodeScalars.allSatisfy({ safeCharacters.contains($0) }) else {
+            return "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        }
+        return value
     }
 }

@@ -67,6 +67,7 @@ struct SubagentManagerView: View {
                     .font(.headline)
                     .lineLimit(1)
                 HStack(spacing: 8) {
+                    Text("Depth \(SubagentHierarchy.depth(of: card.id, in: store.state.links))")
                     Text(card.id)
                     Text(card.link.effectiveAssistant.displayName)
                     if let model = card.link.modelOverride { Text(model) }

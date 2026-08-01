@@ -317,6 +317,15 @@ struct CodingAssistantTests {
         ) == "codex --model gpt-5.4 resume --dangerously-bypass-approvals-and-sandbox --no-alt-screen session-1")
     }
 
+    @Test("Model override is escaped as one shell argument")
+    func modelOverrideShellEscaping() {
+        #expect(CodingAssistant.claude.launchCommand(
+            skipPermissions: true,
+            worktreeName: nil,
+            modelOverride: "custom model; echo 'unsafe'"
+        ) == "claude --model 'custom model; echo '\\''unsafe'\\''' --dangerously-skip-permissions")
+    }
+
     @Test("Claude base URL env key is ANTHROPIC_BASE_URL")
     func claudeBaseURLEnvKey() {
         #expect(CodingAssistant.claude.baseURLEnvKey == "ANTHROPIC_BASE_URL")

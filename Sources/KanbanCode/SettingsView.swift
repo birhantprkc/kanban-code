@@ -166,9 +166,9 @@ struct SubagentSettingsView: View {
     var body: some View {
         Form {
             Section("Hierarchy") {
-                Stepper(value: $maximumDepth, in: 0...5) {
+                Stepper(value: $maximumDepth, in: 0...SubagentSettings.maximumSupportedDepth) {
                     HStack {
-                        Text("Maximum depth")
+                        Text("Maximum subagent depth")
                         Spacer()
                         Text(maximumDepth == 0 ? "Disabled" : "\(maximumDepth)")
                             .foregroundStyle(.secondary)
@@ -176,9 +176,7 @@ struct SubagentSettingsView: View {
                 }
                 .onChange(of: maximumDepth) { save() }
 
-                Text(maximumDepth == 0
-                    ? "Agents cannot create subagents."
-                    : "A depth of 1 lets top-level cards create children while preventing those children from creating more agents.")
+                Text(maximumDepthDescription)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -195,6 +193,17 @@ struct SubagentSettingsView: View {
         .task {
             maximumDepth = (try? await settingsStore.read().subagents.maximumDepth) ?? 1
             loaded = true
+        }
+    }
+
+    private var maximumDepthDescription: String {
+        switch maximumDepth {
+        case 0:
+            "Agents cannot create subagents."
+        case 1:
+            "Top-level cards can create children, but those children cannot create more agents."
+        default:
+            "Top-level cards can create subagent hierarchies up to \(maximumDepth) levels deep."
         }
     }
 

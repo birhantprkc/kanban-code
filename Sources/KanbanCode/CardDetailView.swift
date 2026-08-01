@@ -1987,7 +1987,11 @@ struct CardDetailView: View {
             cmd += "cd \(projectPath) && "
         }
         if let sessionId = card.link.sessionLink?.sessionId {
-            cmd += card.link.effectiveAssistant.resumeCommand(sessionId: sessionId, skipPermissions: false)
+            cmd += card.link.effectiveAssistant.resumeCommand(
+                sessionId: sessionId,
+                skipPermissions: false,
+                modelOverride: card.link.modelOverride
+            )
         } else {
             cmd += "# no session yet"
         }

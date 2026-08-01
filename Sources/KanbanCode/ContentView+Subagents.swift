@@ -2,6 +2,21 @@ import Foundation
 import KanbanCodeCore
 
 extension ContentView {
+    func monitorSubagentCommands() async {
+        do {
+            let recovered = try await subagentCommandStore.recoverInterruptedRequests()
+            if recovered > 0 {
+                KanbanCodeLog.warn("subagent", "Recovered \(recovered) interrupted CLI command(s)")
+            }
+        } catch {
+            KanbanCodeLog.error("subagent", "Could not recover interrupted commands: \(error.localizedDescription)")
+        }
+        while !Task.isCancelled {
+            await processPendingSubagentCommands()
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+    }
+
     func processPendingSubagentCommands() async {
         do {
             for id in try await subagentCommandStore.pendingRequestIds() {
@@ -19,6 +34,11 @@ extension ContentView {
             request = claimed
         } catch {
             KanbanCodeLog.error("subagent", "Could not claim command \(id): \(error.localizedDescription)")
+            try? await subagentCommandStore.respond(SubagentCommandResponse(
+                id: id,
+                ok: false,
+                error: "Kanban Code could not read this subagent command: \(error.localizedDescription)"
+            ))
             return
         }
 
@@ -36,14 +56,17 @@ extension ContentView {
     }
 
     private func executeSubagentCommand(_ request: SubagentCommandRequest) async throws -> String? {
-        guard let parent = store.state.links[request.parentCardId] else {
+        guard !Self.subagentRequestIsExpired(request.createdAt) else {
+            throw SubagentCommandExecutionError.expiredRequest
+        }
+        guard let parent = await waitForCard(request.parentCardId) else {
             throw SubagentCommandExecutionError.cardNotFound(request.parentCardId)
         }
 
         switch request.operation {
         case .spawn:
             try await validateSubagentSpawn(parentId: parent.id)
-            return try spawnSubagent(parent: parent, request: request)
+            return try await spawnSubagent(parent: parent, request: request)
         case .fork:
             try await validateSubagentSpawn(parentId: parent.id)
             return try await forkSubagent(parent: parent, request: request)
@@ -70,6 +93,22 @@ extension ContentView {
         }
     }
 
+    private func waitForCard(_ cardId: String) async -> Link? {
+        for _ in 0..<100 {
+            if let link = store.state.links[cardId] { return link }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        return store.state.links[cardId]
+    }
+
+    private static func subagentRequestIsExpired(_ createdAt: String) -> Bool {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let date = fractional.date(from: createdAt) ?? ISO8601DateFormatter().date(from: createdAt)
+        guard let date else { return true }
+        return Date().timeIntervalSince(date) > 120
+    }
+
     private func validateSubagentSpawn(parentId: String) async throws {
         let maximumDepth = (try? await settingsStore.read().subagents.maximumDepth) ?? 1
         guard SubagentHierarchy.canSpawn(
@@ -91,8 +130,9 @@ extension ContentView {
         return target
     }
 
-    private func spawnSubagent(parent: Link, request: SubagentCommandRequest) throws -> String {
-        guard let prompt = request.prompt?.trimmingCharacters(in: .whitespacesAndNewlines), !prompt.isEmpty else {
+    private func spawnSubagent(parent: Link, request: SubagentCommandRequest) async throws -> String {
+        guard let prompt = request.prompt,
+              !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw SubagentCommandExecutionError.missingPrompt
         }
         let assistant = request.assistant ?? parent.effectiveAssistant
@@ -100,22 +140,33 @@ extension ContentView {
         let deliveryPrompt = identifiedSubagentPrompt(prompt, childId: child.id)
         child.promptBody = deliveryPrompt
         store.dispatch(.createManualTask(child))
-        executeLaunch(
-            cardId: child.id,
-            prompt: deliveryPrompt,
-            projectPath: effectiveProjectPath(for: parent),
-            worktreeName: nil,
-            runRemotely: parent.isRemote,
-            assistant: assistant,
-            serviceIdOverride: child.apiServiceId,
-            modelOverride: request.model,
-            focusCard: false
-        )
+        let deliveryError = await withCheckedContinuation { continuation in
+            executeLaunch(
+                cardId: child.id,
+                prompt: deliveryPrompt,
+                projectPath: effectiveProjectPath(for: parent),
+                worktreeName: nil,
+                runRemotely: parent.isRemote,
+                assistant: assistant,
+                serviceIdOverride: child.apiServiceId,
+                modelOverride: request.model,
+                focusCard: false,
+                completion: { continuation.resume(returning: $0) }
+            )
+        }
+        if let deliveryError {
+            queueUndeliveredSubagentPrompt(cardId: child.id, prompt: deliveryPrompt)
+            throw SubagentCommandExecutionError.promptDelivery(
+                cardId: child.id,
+                reason: deliveryError
+            )
+        }
         return child.id
     }
 
     private func forkSubagent(parent: Link, request: SubagentCommandRequest) async throws -> String {
-        guard let prompt = request.prompt?.trimmingCharacters(in: .whitespacesAndNewlines), !prompt.isEmpty else {
+        guard let prompt = request.prompt,
+              !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw SubagentCommandExecutionError.missingPrompt
         }
         guard let sourcePath = parent.sessionLink?.sessionPath else {
@@ -139,12 +190,17 @@ extension ContentView {
         if targetAssistant == sourceAssistant {
             sessionLink = SessionLink(sessionId: forkedId, sessionPath: forkedPath)
         } else {
+            defer {
+                try? FileManager.default.removeItem(atPath: forkedPath)
+                try? FileManager.default.removeItem(atPath: forkedPath + ".bak")
+            }
             let migration = try await SessionMigrator.migrate(
                 sourceSessionPath: forkedPath,
                 sourceStore: sourceStore,
                 targetStore: targetStore,
                 projectPath: effectiveProjectPath(for: parent),
-                recentTurnLimit: 500
+                recentTurnLimit: 500,
+                recentCharacterLimit: SessionMigrator.defaultCrossAssistantCharacterLimit
             )
             sessionLink = SessionLink(
                 sessionId: migration.newSessionId,
@@ -155,7 +211,7 @@ extension ContentView {
         var child = makeSubagentLink(
             parent: parent,
             assistant: targetAssistant,
-            model: request.model,
+            model: request.model ?? (targetAssistant == sourceAssistant ? parent.modelOverride : nil),
             prompt: prompt
         )
         let deliveryPrompt = identifiedSubagentPrompt(prompt, childId: child.id)
@@ -168,11 +224,28 @@ extension ContentView {
             commandOverride: nil,
             assistant: targetAssistant,
             serviceIdOverride: child.apiServiceId,
-            modelOverride: request.model,
+            modelOverride: child.modelOverride,
             focusCard: false
         )
-        deliverForkGoalWhenReady(cardId: child.id, assistant: targetAssistant, prompt: deliveryPrompt)
+        do {
+            try await deliverForkGoalWhenReady(
+                cardId: child.id,
+                assistant: targetAssistant,
+                prompt: deliveryPrompt
+            )
+        } catch {
+            queueUndeliveredSubagentPrompt(cardId: child.id, prompt: deliveryPrompt)
+            throw error
+        }
         return child.id
+    }
+
+    private func queueUndeliveredSubagentPrompt(cardId: String, prompt: String) {
+        store.dispatch(.addQueuedPrompt(
+            cardId: cardId,
+            prompt: QueuedPrompt(body: prompt, sendAutomatically: false),
+            placement: .front
+        ))
     }
 
     private func makeSubagentLink(
@@ -217,33 +290,36 @@ extension ContentView {
         cardId: String,
         assistant: CodingAssistant,
         prompt: String
-    ) {
-        Task {
-            for _ in 0..<120 {
-                if let sessionName = store.state.links[cardId]?.tmuxLink?.sessionName,
-                   let liveSessions = try? await tmuxAdapter.listSessions(),
-                   liveSessions.contains(where: { $0.name == sessionName }) {
-                    do {
-                        let sender = ImageSender(tmux: tmuxAdapter)
-                        try await sender.waitForReady(sessionName: sessionName, assistant: assistant)
-                        if assistant.submitsPromptWithPaste {
-                            try await tmuxAdapter.pastePrompt(to: sessionName, text: prompt)
-                        } else {
-                            try await tmuxAdapter.sendPrompt(to: sessionName, text: prompt)
-                        }
-                        return
-                    } catch {
-                        KanbanCodeLog.warn(
-                            "subagent",
-                            "Could not deliver fork goal to \(cardId.prefix(12)): \(error.localizedDescription)"
-                        )
-                        return
+    ) async throws {
+        for _ in 0..<120 {
+            if let sessionName = store.state.links[cardId]?.tmuxLink?.sessionName,
+               let liveSessions = try? await tmuxAdapter.listSessions(),
+               liveSessions.contains(where: { $0.name == sessionName }) {
+                do {
+                    let sender = ImageSender(tmux: tmuxAdapter)
+                    try await sender.waitForReady(sessionName: sessionName, assistant: assistant)
+                    if assistant.submitsPromptWithPaste {
+                        try await tmuxAdapter.pastePrompt(to: sessionName, text: prompt)
+                    } else {
+                        try await tmuxAdapter.sendPrompt(to: sessionName, text: prompt)
                     }
+                    return
+                } catch {
+                    KanbanCodeLog.warn(
+                        "subagent",
+                        "Could not deliver fork goal to \(cardId.prefix(12)): \(error.localizedDescription)"
+                    )
+                    throw SubagentCommandExecutionError.promptDelivery(
+                        cardId: cardId,
+                        reason: error.localizedDescription
+                    )
                 }
-                try? await Task.sleep(for: .milliseconds(250))
             }
-            KanbanCodeLog.warn("subagent", "Fork goal timed out waiting for tmux on \(cardId.prefix(12))")
+            try? await Task.sleep(for: .milliseconds(250))
         }
+        let reason = "timed out waiting for the child tmux session"
+        KanbanCodeLog.warn("subagent", "Fork goal \(reason) on \(cardId.prefix(12))")
+        throw SubagentCommandExecutionError.promptDelivery(cardId: cardId, reason: reason)
     }
 }
 
@@ -254,6 +330,8 @@ private enum SubagentCommandExecutionError: LocalizedError {
     case missingPrompt
     case missingSession(String)
     case assistantUnavailable(CodingAssistant)
+    case promptDelivery(cardId: String, reason: String)
+    case expiredRequest
 
     var errorDescription: String? {
         switch self {
@@ -266,9 +344,13 @@ private enum SubagentCommandExecutionError: LocalizedError {
         case .missingPrompt:
             "A subagent goal is required"
         case .missingSession(let id):
-            "Card \(id) has no session to fork"
+            "Card \(id) has no session to fork. Use `kanban subagent spawn` to start a new child instead."
         case .assistantUnavailable(let assistant):
             "\(assistant.displayName) is not enabled"
+        case .promptDelivery(let cardId, let reason):
+            "Subagent \(cardId) was created, but its initial prompt was not delivered: \(reason). Open the child card to recover manually."
+        case .expiredRequest:
+            "This subagent command expired before Kanban Code could process it. Inspect existing child cards before retrying."
         }
     }
 }

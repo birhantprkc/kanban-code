@@ -253,6 +253,8 @@ struct SettingsStoreTests {
         settings.subagents.maximumDepth = 2
         try await store.write(settings)
         #expect(try await store.read().subagents.maximumDepth == 2)
+        #expect(SubagentSettings(maximumDepth: -1).maximumDepth == 0)
+        #expect(SubagentSettings(maximumDepth: 99).maximumDepth == SubagentSettings.maximumSupportedDepth)
     }
 
     @Test("selfCompact defaults disabled with threshold defaults")

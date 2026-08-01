@@ -15,6 +15,7 @@ struct SubagentHierarchyTests {
         #expect(SubagentHierarchy.depth(of: grandchild.id, in: links) == 2)
         #expect(SubagentHierarchy.rootId(of: grandchild.id, in: links) == root.id)
         #expect(SubagentHierarchy.descendantIds(of: root.id, in: links) == [child.id, grandchild.id])
+        #expect(SubagentHierarchy.descendantCounts(in: links) == [root.id: 2, child.id: 1])
     }
 
     @Test("Archived children are hidden inline but available to management")

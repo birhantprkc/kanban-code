@@ -71,6 +71,8 @@ import {
   currentCardOrThrow,
   descendantIds,
   makeSubagentRequest,
+  missingForkSessionError,
+  resolveSubagentPrompt,
   subagentDepth,
   submitSubagentRequest,
   validateCanSpawn,
@@ -571,6 +573,18 @@ function readMessageFromArgsOrStdin(args: string[]): string {
   }
 }
 
+function readSubagentPromptFromArgsOrStdin(args: string[]): string {
+  if (args.length > 0 && !(args.length === 1 && args[0] === "-")) {
+    return resolveSubagentPrompt(args, "");
+  }
+  if (process.stdin.isTTY) return resolveSubagentPrompt(args, "");
+  try {
+    return resolveSubagentPrompt(args, readFileSync(0, "utf-8"));
+  } catch {
+    return resolveSubagentPrompt(args, "");
+  }
+}
+
 function selfCompactTarget(): { card: Link; tmuxSession: string } {
   const tmuxSession = currentTmuxSessionName();
   if (!tmuxSession) {
@@ -796,7 +810,7 @@ program
     const links = readLinks();
     const tmux = listTmuxSessions();
     const liveTmux = new Set(tmux.map((t) => t.name));
-    const active = filterActiveCards(links);
+    const active = filterActiveCards(links).filter((link) => !link.parentCardId);
 
     const byColumn: Record<string, number> = {};
     let aliveCount = 0;
@@ -984,7 +998,10 @@ async function runSubagentCreate(
   const links = readLinks();
   const parent = currentCardOrThrow(links);
   validateCanSpawn(parent, links);
-  const prompt = readMessageFromArgsOrStdin(promptArgs);
+  if (operation === "fork" && !parent.sessionLink?.sessionPath) {
+    throw new Error(missingForkSessionError(parent.id));
+  }
+  const prompt = readSubagentPromptFromArgsOrStdin(promptArgs);
   if (!prompt.trim()) {
     throw new Error("A subagent goal is required. Pass it as arguments or use `-` with stdin.");
   }
@@ -1013,10 +1030,10 @@ Subagents are normal Kanban Code cards with their own tmux session, transcript,
 auto-compact protection, and assistant. Commands must run from the parent card's
 primary tmux session. Use a quoted argument for short goals, or stdin for long goals:
 
-  kanban subagent spawn - <<'EOL'
+  kanban subagent spawn - <<'EOF'
   Investigate the failing integration test.
   Report the root cause and a tested fix.
-  EOL
+  EOF
 
 Parent management aliases are guarded so they only target owned descendants:
   kanban subagent capture|transcript|dm|send <card-id> ...
@@ -1085,7 +1102,7 @@ subagentCmd
           if (summary) console.log(formatCardSummary(summary));
         }
       };
-      const archived = rows.filter((card) => card.manuallyArchived || card.column === "all_sessions");
+      const archived = rows.filter((card) => card.manuallyArchived);
       printGroup("Active", rows.filter((card) => !archived.includes(card)));
       console.log("");
       printGroup("Archived", archived);
@@ -1166,16 +1183,22 @@ subagentCmd
   .description("Low-level: paste directly into an owned subagent's tmux session")
   .argument("<card>", "Owned subagent card")
   .argument("<message...>", "Message or assistant command")
-  .action((query: string, message: string[]) => {
+  .option("--keys", "Use send-keys instead of paste-buffer for a short single-line command")
+  .option("-j, --json", "Output as JSON")
+  .action((query: string, message: string[], opts) => {
     try {
       const links = readLinks();
       const caller = currentCardOrThrow(links);
       const target = requireSubagentTarget(caller, query, links);
       const session = target.tmuxLink?.sessionName;
       if (!session) throw new Error(`Subagent ${target.id} has no tmux session.`);
-      const result = pasteTmuxPrompt(session, readMessageFromArgsOrStdin(message));
+      const body = readMessageFromArgsOrStdin(message);
+      const result = opts.keys
+        ? sendTmuxKeys(session, body)
+        : pasteTmuxPrompt(session, body);
       if (!result.ok) throw new Error(result.error ?? "tmux paste failed");
-      console.log(`Sent to ${target.id}`);
+      if (opts.json) output({ cardId: target.id, sent: true }, { json: true });
+      else console.log(`Sent to ${target.id}`);
     } catch (error) {
       console.error(String(error instanceof Error ? error.message : error));
       process.exitCode = 1;

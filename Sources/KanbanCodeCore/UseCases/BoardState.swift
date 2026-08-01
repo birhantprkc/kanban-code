@@ -129,7 +129,7 @@ public final class BoardState: @unchecked Sendable {
 
     /// Cards for a specific column, sorted by manual sortOrder then last activity (newest first).
     public func cards(in column: KanbanCodeColumn) -> [KanbanCodeCard] {
-        filteredCards.filter { $0.column == column }
+        filteredCards.filter { $0.column == column && $0.link.parentCardId == nil }
             .sorted {
                 // Cards with sortOrder come first, ordered by sortOrder ascending
                 switch ($0.link.sortOrder, $1.link.sortOrder) {
@@ -147,7 +147,7 @@ public final class BoardState: @unchecked Sendable {
 
     /// Count of cards in a column.
     public func cardCount(in column: KanbanCodeColumn) -> Int {
-        filteredCards.filter { $0.column == column }.count
+        filteredCards.filter { $0.column == column && $0.link.parentCardId == nil }.count
     }
 
     /// Check if a card matches the current project filter.

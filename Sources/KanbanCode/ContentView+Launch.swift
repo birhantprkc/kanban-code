@@ -47,19 +47,22 @@ extension ContentView {
                 remoteHost: globalRemote?.host,
                 promptImagePaths: card.link.promptImagePaths ?? [],
                 assistant: card.link.effectiveAssistant,
-                apiServiceId: card.link.apiServiceId
+                apiServiceId: card.link.apiServiceId,
+                modelOverride: card.link.modelOverride
             )
         }
     }
 
-    func executeLaunch(cardId: String, prompt: String, projectPath: String, worktreeName: String?, runRemotely: Bool = true, skipPermissions: Bool = true, commandOverride: String? = nil, images: [ImageAttachment] = [], assistant: CodingAssistant = .claude, serviceIdOverride: String? = nil, modelOverride: String? = nil, focusCard: Bool = true) {
+    func executeLaunch(cardId: String, prompt: String, projectPath: String, worktreeName: String?, runRemotely: Bool = true, skipPermissions: Bool = true, commandOverride: String? = nil, images: [ImageAttachment] = [], assistant: CodingAssistant = .claude, serviceIdOverride: String? = nil, modelOverride: String? = nil, focusCard: Bool = true, completion: ((String?) -> Void)? = nil) {
         let previouslySelectedCardId = store.state.selectedCardId
         // IMMEDIATE state update via reducer — no more dual memory+disk writes
         store.dispatch(.launchCard(cardId: cardId, prompt: prompt, projectPath: projectPath, worktreeName: worktreeName, runRemotely: runRemotely, commandOverride: commandOverride))
         if !focusCard {
             store.dispatch(.selectCard(cardId: previouslySelectedCardId))
+        } else {
+            shouldFocusTerminal = true
         }
-        shouldFocusTerminal = focusCard
+        let effectiveModelOverride = modelOverride ?? store.state.links[cardId]?.modelOverride
         // Reducer computed the unique tmux name and stored it in the link
         let predictedTmuxName = store.state.links[cardId]?.tmuxLink?.sessionName ?? cardId
         KanbanCodeLog.info("launch", "Starting launch for card=\(cardId.prefix(12)) tmux=\(predictedTmuxName) project=\(projectPath)")
@@ -169,7 +172,7 @@ extension ContentView {
                     preamble: preamble,
                     assistant: assistant,
                     service: resolvedService,
-                    modelOverride: modelOverride
+                    modelOverride: effectiveModelOverride
                 )
                 KanbanCodeLog.info("launch", "Tmux session created: \(tmuxName)")
 
@@ -292,9 +295,11 @@ extension ContentView {
                 if let promptDeliveryError, assistant.supportsImageUpload && !images.isEmpty {
                     store.dispatch(.setError("Initial prompt/image delivery failed: \(promptDeliveryError)"))
                 }
+                completion?(promptDeliveryError)
             } catch {
                 KanbanCodeLog.error("launch", "Launch failed for card=\(cardId.prefix(12)): \(error.localizedDescription)")
                 store.dispatch(.launchFailed(cardId: cardId, error: error.localizedDescription))
+                completion?(error.localizedDescription)
             }
         }
     }
@@ -511,7 +516,8 @@ extension ContentView {
             isResume: true,
             sessionId: sessionId,
             assistant: card.link.effectiveAssistant,
-            apiServiceId: card.link.apiServiceId
+            apiServiceId: card.link.apiServiceId,
+            modelOverride: card.link.modelOverride
         )
     }
 
@@ -601,6 +607,7 @@ extension ContentView {
 
     func executeResume(cardId: String, runRemotely: Bool, skipPermissions: Bool = true, commandOverride: String?, assistant: CodingAssistant = .claude, serviceIdOverride: String? = nil, modelOverride: String? = nil, focusCard: Bool = true) {
         guard let card = store.state.cards.first(where: { $0.id == cardId }) else { return }
+        let effectiveModelOverride = modelOverride ?? card.link.modelOverride
         let sessionId = card.link.sessionLink?.sessionId ?? card.link.id
         // For worktree cards, cd into the worktree — that's where Claude stored the session data.
         let projectPath: String
@@ -635,8 +642,9 @@ extension ContentView {
         store.dispatch(.resumeCard(cardId: cardId))
         if !focusCard {
             store.dispatch(.selectCard(cardId: previouslySelectedCardId))
+        } else {
+            shouldFocusTerminal = true
         }
-        shouldFocusTerminal = focusCard
         KanbanCodeLog.info("resume", "Starting resume for card=\(cardId.prefix(12)) session=\(sessionId.prefix(8))")
 
         Task {
@@ -701,7 +709,7 @@ extension ContentView {
                     preamble: preamble,
                     assistant: assistant,
                     service: resolvedService,
-                    modelOverride: modelOverride
+                    modelOverride: effectiveModelOverride
                 )
                 KanbanCodeLog.info("resume", "Resume launched for card=\(cardId.prefix(12)) actualTmux=\(actualTmuxName)")
 

@@ -115,6 +115,37 @@ public actor SubagentCommandStore {
         try? fileManager.removeItem(at: processingURL.appendingPathComponent("\(response.id).json"))
     }
 
+    /// A request left in processing means the app exited before it could answer.
+    /// Report the interruption instead of silently stranding the waiting CLI or
+    /// replaying an operation that may already have changed state.
+    public func recoverInterruptedRequests() throws -> Int {
+        try ensureDirectories()
+        let files = try fileManager.contentsOfDirectory(
+            at: processingURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ).filter { $0.pathExtension == "json" }
+
+        var recovered = 0
+        for file in files {
+            do {
+                let request = try decoder.decode(
+                    SubagentCommandRequest.self,
+                    from: Data(contentsOf: file)
+                )
+                try respond(SubagentCommandResponse(
+                    id: request.id,
+                    ok: false,
+                    error: "Kanban Code restarted while processing this subagent command. Inspect existing child cards before retrying."
+                ))
+                recovered += 1
+            } catch {
+                try? fileManager.removeItem(at: file)
+            }
+        }
+        return recovered
+    }
+
     private var inboxURL: URL { baseURL.appendingPathComponent("inbox", isDirectory: true) }
     private var processingURL: URL { baseURL.appendingPathComponent("processing", isDirectory: true) }
     private var responsesURL: URL { baseURL.appendingPathComponent("responses", isDirectory: true) }

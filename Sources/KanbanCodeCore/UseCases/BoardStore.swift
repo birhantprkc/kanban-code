@@ -1562,6 +1562,10 @@ public enum Reducer {
             if let oldSessionId = link.sessionLink?.sessionId {
                 state.deletedSessionIds.insert(oldSessionId)
             }
+            if link.effectiveAssistant != newAssistant {
+                link.apiServiceId = nil
+                link.modelOverride = nil
+            }
             link.assistant = newAssistant
             link.sessionLink = SessionLink(sessionId: newSessionId, sessionPath: newSessionPath)
             // Kill tmux sessions — the old assistant process must stop

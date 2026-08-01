@@ -122,6 +122,7 @@ struct ListBoardView: View {
     @ViewBuilder
     private var pinnedCardsSection: some View {
         let cards = store.state.pinnedCards
+        let descendantCounts = SubagentHierarchy.descendantCounts(in: store.state.links)
         if !cards.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
@@ -145,13 +146,13 @@ struct ListBoardView: View {
                         reorderState: sidebarReorderState,
                         onMove: reorderPinnedCard
                     ) {
-                        pinnedCardRow(for: card)
+                        pinnedCardRow(for: card, descendantCounts: descendantCounts)
                             .padding(.horizontal, 8)
                     }
                     .id(ListBoardRowIdentity.pinned(card.id))
                     ForEach(visiblePinnedSubagents(for: card.id)) { row in
                         if let child = activeSubagentCardsById[row.cardId] {
-                            pinnedCardRow(for: child)
+                            pinnedCardRow(for: child, descendantCounts: descendantCounts)
                                 .padding(.horizontal, 8)
                                 .padding(.leading, CGFloat(row.depth * 16))
                                 .id(ListBoardRowIdentity.pinned(child.id))
@@ -170,12 +171,15 @@ struct ListBoardView: View {
         }
     }
 
-    private func pinnedCardRow(for card: KanbanCodeCard) -> ListCardRowView {
+    private func pinnedCardRow(
+        for card: KanbanCodeCard,
+        descendantCounts: [String: Int]
+    ) -> ListCardRowView {
         ListCardRowView(
             card: card,
             isSelected: card.id == store.state.selectedCardId,
             onCopyConversationMarkdown: { onCopyConversationMarkdown(card.id) },
-            subagentCount: SubagentHierarchy.descendantIds(of: card.id, in: store.state.links).count,
+            subagentCount: descendantCounts[card.id] ?? 0,
             activeDirectSubagentCount: activeSubagentCardsByParent[card.id]?.count ?? 0,
             onShowSubagents: { onShowSubagents(card.id) },
             subagentsExpanded: !collapsedPinnedSubagentParents.contains(card.id),
@@ -272,7 +276,7 @@ struct ListBoardView: View {
             isRefreshingBacklog: store.state.isRefreshingBacklog,
             availableProjects: availableProjects,
             dragState: dragState,
-            allLinks: store.state.links,
+            descendantCounts: SubagentHierarchy.descendantCounts(in: store.state.links),
             subagentsByParent: activeSubagentCardsByParent,
             onShowSubagents: onShowSubagents,
             onSelectCard: handleCardSelection,
@@ -401,7 +405,7 @@ private struct ListBoardSectionView: View {
     let isRefreshingBacklog: Bool
     let availableProjects: [(name: String, path: String)]
     let dragState: DragState
-    let allLinks: [String: Link]
+    let descendantCounts: [String: Int]
     let subagentsByParent: [String: [KanbanCodeCard]]
     let onShowSubagents: (String) -> Void
     let onSelectCard: (String) -> Void
@@ -620,7 +624,7 @@ private struct ListBoardSectionView: View {
             card: card,
             isSelected: card.id == selectedCardId,
             onCopyConversationMarkdown: { onCopyConversationMarkdown(card.id) },
-            subagentCount: SubagentHierarchy.descendantIds(of: card.id, in: allLinks).count,
+            subagentCount: descendantCounts[card.id] ?? 0,
             activeDirectSubagentCount: subagentsByParent[card.id]?.count ?? 0,
             onShowSubagents: { onShowSubagents(card.id) },
             subagentsExpanded: !collapsedSubagentParents.contains(card.id),

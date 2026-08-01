@@ -20,6 +20,7 @@ struct LaunchConfig: Identifiable {
     let promptImagePaths: [String]
     let assistant: CodingAssistant
     let apiServiceId: String?
+    let modelOverride: String?
 
     init(
         cardId: String,
@@ -34,7 +35,8 @@ struct LaunchConfig: Identifiable {
         sessionId: String? = nil,
         promptImagePaths: [String] = [],
         assistant: CodingAssistant = .claude,
-        apiServiceId: String? = nil
+        apiServiceId: String? = nil,
+        modelOverride: String? = nil
     ) {
         self.cardId = cardId
         self.projectPath = projectPath
@@ -49,6 +51,7 @@ struct LaunchConfig: Identifiable {
         self.promptImagePaths = promptImagePaths
         self.assistant = assistant
         self.apiServiceId = apiServiceId
+        self.modelOverride = modelOverride
     }
 }
 
@@ -371,7 +374,11 @@ struct ContentView: View {
                     cmd += "cd \(projectPath) && "
                 }
                 if let sessionId = card.link.sessionLink?.sessionId {
-                    cmd += card.link.effectiveAssistant.resumeCommand(sessionId: sessionId, skipPermissions: false)
+                    cmd += card.link.effectiveAssistant.resumeCommand(
+                        sessionId: sessionId,
+                        skipPermissions: false,
+                        modelOverride: card.link.modelOverride
+                    )
                 }
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(cmd, forType: .string)
@@ -459,7 +466,11 @@ struct ContentView: View {
                     cmd += "cd \(projectPath) && "
                 }
                 if let sessionId = card.link.sessionLink?.sessionId {
-                    cmd += card.link.effectiveAssistant.resumeCommand(sessionId: sessionId, skipPermissions: false)
+                    cmd += card.link.effectiveAssistant.resumeCommand(
+                        sessionId: sessionId,
+                        skipPermissions: false,
+                        modelOverride: card.link.modelOverride
+                    )
                 }
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(cmd, forType: .string)
@@ -948,16 +959,17 @@ struct ContentView: View {
                     promptImagePaths: config.promptImagePaths,
                     assistant: config.assistant,
                     initialServiceId: config.apiServiceId,
+                    modelOverride: config.modelOverride,
                     isPresented: Binding(
                         get: { launchConfig != nil },
                         set: { if !$0 { launchConfig = nil } }
                     )
                 ) { editedPrompt, createWorktree, worktreeBranch, runRemotely, skipPermissions, commandOverride, images, selectedServiceId in
                     if config.isResume {
-                        executeResume(cardId: config.cardId, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride, assistant: config.assistant, serviceIdOverride: selectedServiceId)
+                        executeResume(cardId: config.cardId, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride, assistant: config.assistant, serviceIdOverride: selectedServiceId, modelOverride: config.modelOverride)
                     } else {
                         let wtName: String? = createWorktree ? (worktreeBranch ?? config.worktreeName ?? "") : nil
-                        executeLaunch(cardId: config.cardId, prompt: editedPrompt, projectPath: config.projectPath, worktreeName: wtName, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride, images: images, assistant: config.assistant, serviceIdOverride: selectedServiceId)
+                        executeLaunch(cardId: config.cardId, prompt: editedPrompt, projectPath: config.projectPath, worktreeName: wtName, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride, images: images, assistant: config.assistant, serviceIdOverride: selectedServiceId, modelOverride: config.modelOverride)
                     }
                 }
             }
@@ -1334,7 +1346,7 @@ struct ContentView: View {
                 await selfCompactMonitorLoop()
             }
             .task(id: "subagent-command-bootstrap") {
-                await processPendingSubagentCommands()
+                await monitorSubagentCommands()
             }
             .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeChannelsChanged).receive(on: RunLoop.main)) { _ in
                 store.dispatch(.refreshChannels)
@@ -2221,7 +2233,11 @@ struct ContentView: View {
                         var cmd = ""
                         if let pp = card.link.projectPath { cmd += "cd \(pp) && " }
                         if let sid = card.link.sessionLink?.sessionId {
-                            cmd += card.link.effectiveAssistant.resumeCommand(sessionId: sid, skipPermissions: false)
+                            cmd += card.link.effectiveAssistant.resumeCommand(
+                                sessionId: sid,
+                                skipPermissions: false,
+                                modelOverride: card.link.modelOverride
+                            )
                         }
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(cmd, forType: .string)

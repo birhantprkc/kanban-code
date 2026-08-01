@@ -947,6 +947,35 @@ struct ReducerTests {
         #expect(state.cards(in: state.links[existingChild.id]!.column).contains(where: { $0.id == existingChild.id }) == false)
     }
 
+    @Test("Cross-assistant migration preserves ownership but clears assistant-specific launch settings")
+    func migrationPreservesOwnershipAndClearsLaunchSettings() {
+        let parent = Link(id: "card_migration_parent")
+        var child = Link(
+            id: "card_migration_child",
+            parentCardId: parent.id,
+            modelOverride: "sonnet",
+            sessionLink: SessionLink(sessionId: "old", sessionPath: "/old.jsonl"),
+            assistant: .claude
+        )
+        child.apiServiceId = "anthropic-service"
+        var state = stateWith([parent, child])
+
+        let _ = Reducer.reduce(
+            state: &state,
+            action: .migrateSession(
+                cardId: child.id,
+                newAssistant: .codex,
+                newSessionId: "new",
+                newSessionPath: "/new.jsonl"
+            )
+        )
+
+        #expect(state.links[child.id]?.parentCardId == parent.id)
+        #expect(state.links[child.id]?.assistant == .codex)
+        #expect(state.links[child.id]?.modelOverride == nil)
+        #expect(state.links[child.id]?.apiServiceId == nil)
+    }
+
     @Test("Reconciled dedup absorbs bare orphans into manual card")
     func reconciledDedupKeepsManualCard() {
         // Manual card + bare orphan (no session, no name) on same branch.

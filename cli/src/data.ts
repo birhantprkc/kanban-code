@@ -499,6 +499,17 @@ export function readLastTranscriptTurns(
               timestamp: obj.timestamp,
             });
           }
+        } else if (
+          obj.type === "event_msg" &&
+          (obj.payload?.type === "user_message" || obj.payload?.type === "agent_message") &&
+          typeof obj.payload?.message === "string" &&
+          obj.payload.message.trim()
+        ) {
+          turns.push({
+            role: obj.payload.type === "user_message" ? "user" : "assistant",
+            text: obj.payload.message.slice(0, 500),
+            timestamp: obj.timestamp,
+          });
         }
       } catch {
         // skip malformed lines

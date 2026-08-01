@@ -70,6 +70,7 @@ struct BoardView: View {
     private var channelsPseudoColumn: some View {
         let channels = store.state.channels
         let pinnedCards = store.state.pinnedCards
+        let descendantCounts = SubagentHierarchy.descendantCounts(in: store.state.links)
         if !channels.isEmpty || !pinnedCards.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 if !channels.isEmpty {
@@ -140,11 +141,11 @@ struct BoardView: View {
                             reorderState: sidebarReorderState,
                             onMove: reorderPinnedCard
                         ) {
-                            pinnedCardView(for: card)
+                            pinnedCardView(for: card, descendantCounts: descendantCounts)
                         }
                         ForEach(visiblePinnedSubagents(for: card.id)) { row in
                             if let child = activeSubagentCardsById[row.cardId] {
-                                pinnedCardView(for: child)
+                                pinnedCardView(for: child, descendantCounts: descendantCounts)
                                     .padding(.leading, CGFloat(row.depth * 16))
                             }
                         }
@@ -172,7 +173,8 @@ struct BoardView: View {
     }
 
     private var boardContent: some View {
-        ScrollViewReader { proxy in
+        let descendantCounts = SubagentHierarchy.descendantCounts(in: store.state.links)
+        return ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: true) {
                 HStack(alignment: .top, spacing: 6) {
                     channelsPseudoColumn
@@ -210,6 +212,7 @@ struct BoardView: View {
                             onCopyConversationMarkdown: onCopyConversationMarkdown,
                             onShowSubagents: onShowSubagents,
                             subagentsByParent: activeSubagentsByParent,
+                            descendantCounts: descendantCounts,
                             onTrimSession: onTrimSession,
                             onSetCardPinned: onSetCardPinned,
                             onDiscoverCard: onDiscoverCard,
@@ -235,14 +238,15 @@ struct BoardView: View {
             .onChange(of: store.state.selectedCardId) {
                 // Scroll to the column containing the selected card
                 guard let selectedId = store.state.selectedCardId else { return }
-                if store.state.pinnedCards.contains(where: { $0.id == selectedId }) {
+                let rootId = SubagentHierarchy.rootId(of: selectedId, in: store.state.links)
+                if store.state.pinnedCards.contains(where: { $0.id == rootId }) {
                     withAnimation(.easeInOut(duration: 0.25)) {
                         proxy.scrollTo("channels", anchor: .leading)
                     }
                     return
                 }
                 for col in store.state.visibleColumns {
-                    if store.state.cards(in: col).contains(where: { $0.id == selectedId }) {
+                    if store.state.cards(in: col).contains(where: { $0.id == rootId }) {
                         withAnimation(.easeInOut(duration: 0.25)) {
                             proxy.scrollTo(col, anchor: .center)
                         }
@@ -323,12 +327,15 @@ struct BoardView: View {
         }
     }
 
-    private func pinnedCardView(for card: KanbanCodeCard) -> CardView {
+    private func pinnedCardView(
+        for card: KanbanCodeCard,
+        descendantCounts: [String: Int]
+    ) -> CardView {
         CardView(
             card: card,
             isSelected: card.id == store.state.selectedCardId,
             onCopyConversationMarkdown: { onCopyConversationMarkdown(card.id) },
-            subagentCount: SubagentHierarchy.descendantIds(of: card.id, in: store.state.links).count,
+            subagentCount: descendantCounts[card.id] ?? 0,
             activeDirectSubagentCount: activeSubagentsByParent[card.id]?.count ?? 0,
             onShowSubagents: { onShowSubagents(card.id) },
             subagentsExpanded: !collapsedPinnedSubagentParents.contains(card.id),

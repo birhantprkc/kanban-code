@@ -1,6 +1,6 @@
 import { describe, test } from "node:test";
 import { strict as assert } from "node:assert";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -9,6 +9,9 @@ import {
   depthLimitError,
   descendantIds,
   makeSubagentRequest,
+  missingForkSessionError,
+  normalizeMaximumDepth,
+  resolveSubagentPrompt,
   subagentDepth,
   submitSubagentRequest,
 } from "./subagents.js";
@@ -62,6 +65,26 @@ describe("subagent hierarchy", () => {
       "You already reached the user-defined maximum subagent depth of 1. You cannot spawn another subagent. Do the work yourself."
     );
   });
+
+  test("missing fork transcript recommends a new spawn", () => {
+    assert.equal(
+      missingForkSessionError("root"),
+      "Card root has no session to fork. Use `kanban subagent spawn` to start a new child instead."
+    );
+  });
+
+  test("configured depth is bounded", () => {
+    assert.equal(normalizeMaximumDepth(undefined), 1);
+    assert.equal(normalizeMaximumDepth(-2), 0);
+    assert.equal(normalizeMaximumDepth(99), 5);
+  });
+
+  test("multiline stdin preserves shell metacharacters and trailing whitespace", () => {
+    const prompt = "line with `backticks` and $HOME\n'quotes' \n\n";
+    assert.equal(resolveSubagentPrompt(["-"], prompt), prompt);
+    assert.equal(resolveSubagentPrompt([], prompt), prompt);
+    assert.equal(resolveSubagentPrompt(["positional", "$value"], "ignored"), "positional $value");
+  });
 });
 
 describe("subagent command transport", () => {
@@ -80,6 +103,27 @@ describe("subagent command transport", () => {
         },
       });
       assert.equal(response.cardId, "child");
+    } finally {
+      if (old === undefined) delete process.env.KANBAN_CODE_HOME;
+      else process.env.KANBAN_CODE_HOME = old;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("removes an unclaimed request after timeout", async () => {
+    const home = mkdtempSync(join(tmpdir(), "kanban-subagent-timeout-"));
+    const old = process.env.KANBAN_CODE_HOME;
+    process.env.KANBAN_CODE_HOME = home;
+    try {
+      const request = makeSubagentRequest("spawn", "root", { prompt: "hello" });
+      await assert.rejects(
+        submitSubagentRequest(request, { timeoutMs: 20, notify: () => {} }),
+        /within 1 seconds/
+      );
+      assert.equal(
+        existsSync(join(home, "commands", "inbox", `${request.id}.json`)),
+        false
+      );
     } finally {
       if (old === undefined) delete process.env.KANBAN_CODE_HOME;
       else process.env.KANBAN_CODE_HOME = old;

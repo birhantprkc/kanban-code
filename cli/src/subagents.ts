@@ -38,6 +38,23 @@ export const depthLimitError = (maximumDepth: number): string =>
   `You already reached the user-defined maximum subagent depth of ${maximumDepth}. ` +
   "You cannot spawn another subagent. Do the work yourself.";
 
+export const missingForkSessionError = (cardId: string): string =>
+  `Card ${cardId} has no session to fork. ` +
+  "Use `kanban subagent spawn` to start a new child instead.";
+
+export const maximumSupportedSubagentDepth = 5;
+
+export function resolveSubagentPrompt(args: string[], stdin: string): string {
+  if (args.length > 0 && !(args.length === 1 && args[0] === "-")) {
+    return args.join(" ");
+  }
+  return stdin;
+}
+
+export function normalizeMaximumDepth(value: number | undefined): number {
+  return Math.min(maximumSupportedSubagentDepth, Math.max(0, value ?? 1));
+}
+
 export function subagentDepth(cardId: string, links: Link[]): number {
   const byId = new Map(links.map((link) => [link.id, link]));
   let current = byId.get(cardId);
@@ -52,12 +69,21 @@ export function subagentDepth(cardId: string, links: Link[]): number {
 }
 
 export function descendantIds(cardId: string, links: Link[]): Set<string> {
+  const childrenByParent = new Map<string, Link[]>();
+  for (const link of links) {
+    if (!link.parentCardId) continue;
+    const children = childrenByParent.get(link.parentCardId) ?? [];
+    children.push(link);
+    childrenByParent.set(link.parentCardId, children);
+  }
   const result = new Set<string>();
+  const visited = new Set<string>([cardId]);
   const pending = [cardId];
   while (pending.length > 0) {
     const parentId = pending.pop()!;
-    for (const child of links) {
-      if (child.parentCardId === parentId && !result.has(child.id)) {
+    for (const child of childrenByParent.get(parentId) ?? []) {
+      if (!visited.has(child.id)) {
+        visited.add(child.id);
         result.add(child.id);
         pending.push(child.id);
       }
@@ -83,7 +109,7 @@ export function currentCardOrThrow(links: Link[] = readLinks()): Link {
 }
 
 export function validateCanSpawn(parent: Link, links: Link[] = readLinks()): number {
-  const maximumDepth = Math.max(0, readSettings().subagents?.maximumDepth ?? 1);
+  const maximumDepth = normalizeMaximumDepth(readSettings().subagents?.maximumDepth);
   if (maximumDepth === 0 || subagentDepth(parent.id, links) >= maximumDepth) {
     throw new Error(depthLimitError(maximumDepth));
   }
@@ -152,15 +178,32 @@ export async function submitSubagentRequest(
     throw new Error(`Could not contact Kanban Code: ${String(error)}`);
   }
 
-  const deadline = Date.now() + (options.timeoutMs ?? 120_000);
+  const timeoutMs = options.timeoutMs ?? 120_000;
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (existsSync(responsePath)) {
-      const response = JSON.parse(readFileSync(responsePath, "utf-8")) as SubagentCommandResponse;
+      let response: SubagentCommandResponse;
+      try {
+        response = JSON.parse(readFileSync(responsePath, "utf-8")) as SubagentCommandResponse;
+      } catch (error) {
+        rmSync(responsePath, { force: true });
+        rmSync(requestPath, { force: true });
+        throw new Error(`Kanban Code returned an invalid subagent response: ${String(error)}`);
+      }
       rmSync(responsePath, { force: true });
       rmSync(requestPath, { force: true });
+      if (response.id !== request.id) {
+        throw new Error(
+          `Kanban Code returned a mismatched subagent response: expected ${request.id}, received ${response.id}.`
+        );
+      }
       return response;
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error("Kanban Code did not process the subagent command within 120 seconds.");
+  rmSync(requestPath, { force: true });
+  rmSync(tempPath, { force: true });
+  throw new Error(
+    `Kanban Code did not process the subagent command within ${Math.ceil(timeoutMs / 1_000)} seconds.`
+  );
 }
