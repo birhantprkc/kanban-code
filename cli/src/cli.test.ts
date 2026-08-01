@@ -13,11 +13,16 @@ import { join, resolve } from "node:path";
 
 const CLI = resolve(import.meta.dirname, "kanban.ts");
 
-function runCli(args: string[], env: NodeJS.ProcessEnv = {}): { stdout: string; stderr: string; code: number } {
+function runCli(
+  args: string[],
+  env: NodeJS.ProcessEnv = {},
+  stdin?: string
+): { stdout: string; stderr: string; code: number } {
   try {
     const stdout = execFileSync("npx", ["tsx", CLI, ...args], {
       encoding: "utf-8",
       env: { ...process.env, ...env },
+      input: stdin,
     });
     return { stdout, stderr: "", code: 0 };
   } catch (e: any) {
@@ -305,6 +310,77 @@ describe("kanban channel (CLI e2e)", () => {
     assert.match(log, /send-keys -t sess-self Enter/);
     assert.match(log, /set-buffer -b kc-\d+-\d+ Continue after compact\./);
     assert.match(log, /paste-buffer -p -d -b kc-\d+-\d+ -t sess-self/);
+  });
+
+  test("self-compact reads a multiline post-compact prompt from piped stdin", () => {
+    const sessionName = "sess-self-stdin";
+    const { binDir, logPath } = seedFakeTmux(sessionName);
+    const env = {
+      HOME: home,
+      PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      TMUX: "/tmp/tmux-123/default,1,0",
+      TMUX_SESSION_NAME: sessionName,
+      TMUX_LOG: logPath,
+    };
+    seedLinks([
+      {
+        id: "card_self_stdin",
+        name: "self card stdin",
+        column: "in_progress",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        tmuxLink: { sessionName },
+        isRemote: false,
+        prLinks: [],
+        manualOverrides: {},
+        source: "manual",
+        manuallyArchived: false,
+      },
+    ]);
+
+    const followUp = "Continue after compact.\n\n1. Recheck CI.\n2. Report back.";
+    const r = runCli(["self-compact", "--follow-up-delay", "0.1"], env, followUp);
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /with post-compact follow-up/);
+    execFileSync("sleep", ["2.8"]);
+
+    const log = readFileSync(logPath, "utf-8");
+    assert.match(log, /set-buffer -b kc-\d+-\d+ Continue after compact/);
+    assert.match(log, /1\. Recheck CI/);
+    assert.match(log, /2\. Report back\./);
+  });
+
+  test("self-compact rejects an explicitly required but empty stdin handoff", () => {
+    const sessionName = "sess-self-empty-stdin";
+    const { binDir, logPath } = seedFakeTmux(sessionName);
+    const env = {
+      HOME: home,
+      PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      TMUX: "/tmp/tmux-123/default,1,0",
+      TMUX_SESSION_NAME: sessionName,
+      TMUX_LOG: logPath,
+    };
+    seedLinks([
+      {
+        id: "card_self_empty_stdin",
+        name: "self card empty stdin",
+        column: "in_progress",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        tmuxLink: { sessionName },
+        isRemote: false,
+        prLinks: [],
+        manualOverrides: {},
+        source: "manual",
+        manuallyArchived: false,
+      },
+    ]);
+
+    const r = runCli(["self-compact", "-"], env, "");
+    assert.notEqual(r.code, 0);
+    assert.match(r.stderr + r.stdout, /stdin was empty/);
+    const log = existsSync(logPath) ? readFileSync(logPath, "utf-8") : "";
+    assert.doesNotMatch(log, /set-buffer/);
   });
 
   test("self-compact submits /compact when no follow-up prompt is provided", () => {

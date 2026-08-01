@@ -551,38 +551,54 @@ slackCmd
 
 // ── kanban self-compact [follow-up] ─────────────────────────────────
 
-function readFollowUpFromArgsOrStdin(args: string[]): string {
-  if (args.length > 0) return args.join(" ");
-  if (process.stdin.isTTY) return "";
+async function readStdinText(label: string): Promise<string> {
+  const chunks: Buffer[] = [];
   try {
-    return readFileSync(0, "utf-8").trimEnd();
-  } catch {
-    return "";
+    for await (const chunk of process.stdin) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+  } catch (error) {
+    throw new Error(`Failed to read ${label} from stdin: ${String(error)}`);
   }
+  return Buffer.concat(chunks).toString("utf-8").trimEnd();
 }
 
-function readMessageFromArgsOrStdin(args: string[]): string {
-  if (args.length > 0 && !(args.length === 1 && args[0] === "-")) {
+async function readFollowUpFromArgsOrStdin(args: string[]): Promise<string> {
+  const explicitStdin = args.length === 1 && args[0] === "-";
+  if (args.length > 0 && !explicitStdin) return args.join(" ");
+  if (process.stdin.isTTY) {
+    if (explicitStdin) throw new Error("Expected a post-compact prompt on stdin after `-`, but stdin is a terminal.");
+    return "";
+  }
+  const followUp = await readStdinText("post-compact prompt");
+  if (explicitStdin && !followUp.trim()) {
+    throw new Error("Expected a post-compact prompt on stdin after `-`, but stdin was empty.");
+  }
+  return followUp;
+}
+
+async function readMessageFromArgsOrStdin(args: string[]): Promise<string> {
+  const explicitStdin = args.length === 1 && args[0] === "-";
+  if (args.length > 0 && !explicitStdin) {
     return args.join(" ");
   }
-  if (process.stdin.isTTY) return "";
-  try {
-    return readFileSync(0, "utf-8").trimEnd();
-  } catch {
+  if (process.stdin.isTTY) {
+    if (explicitStdin) throw new Error("Expected a message on stdin after `-`, but stdin is a terminal.");
     return "";
   }
+  const message = await readStdinText("message");
+  if (explicitStdin && !message.trim()) {
+    throw new Error("Expected a message on stdin after `-`, but stdin was empty.");
+  }
+  return message;
 }
 
-function readSubagentPromptFromArgsOrStdin(args: string[]): string {
+async function readSubagentPromptFromArgsOrStdin(args: string[]): Promise<string> {
   if (args.length > 0 && !(args.length === 1 && args[0] === "-")) {
     return resolveSubagentPrompt(args, "");
   }
   if (process.stdin.isTTY) return resolveSubagentPrompt(args, "");
-  try {
-    return resolveSubagentPrompt(args, readFileSync(0, "utf-8"));
-  } catch {
-    return resolveSubagentPrompt(args, "");
-  }
+  return resolveSubagentPrompt(args, await readStdinText("subagent goal"));
 }
 
 function selfCompactTarget(): { card: Link; tmuxSession: string } {
@@ -633,24 +649,28 @@ program
   .description("Send /compact to this agent's own Kanban Code tmux session")
   .option("--follow-up-delay <seconds>", "Seconds to wait after /compact before sending the follow-up", "1")
   .option("-j, --json", "Output as JSON")
-  .argument("[followUp...]", "Optional post-compact prompt. Quote it, or pipe/heredoc multi-line text on stdin.")
+  .argument("[followUp...]", "Optional post-compact prompt. Quote it, or pass - with piped/heredoc stdin.")
   .addHelpText(
     "after",
     `
 
 Examples:
   kanban self-compact "After compacting, continue with the test run."
-  kanban self-compact <<'EOL'
+  kanban self-compact - <<'EOL'
   After compacting:
   1. Re-read the failing test output.
   2. Continue from the current plan.
   EOL
 `
   )
-  .action((followUpArgs: string[], opts) => {
+  .action(async (followUpArgs: string[], opts) => {
     try {
+      // Consume a pipe before running tmux subprocesses. Claude's Bash tool can
+      // expose stdin as a nonblocking pipe, where readFileSync may race the
+      // heredoc writer and throw EAGAIN. Awaiting the stream preserves the full
+      // handoff instead of silently turning a transient read into no follow-up.
+      const followUp = await readFollowUpFromArgsOrStdin(followUpArgs);
       const { card, tmuxSession } = selfCompactTarget();
-      const followUp = readFollowUpFromArgsOrStdin(followUpArgs);
       const followUpDelay = Number.parseFloat(opts.followUpDelay);
 
       // This command is normally launched from Claude Code's own Bash tool.
@@ -1001,7 +1021,7 @@ async function runSubagentCreate(
   if (operation === "fork" && !parent.sessionLink?.sessionPath) {
     throw new Error(missingForkSessionError(parent.id));
   }
-  const prompt = readSubagentPromptFromArgsOrStdin(promptArgs);
+  const prompt = await readSubagentPromptFromArgsOrStdin(promptArgs);
   if (!prompt.trim()) {
     throw new Error("A subagent goal is required. Pass it as arguments or use `-` with stdin.");
   }
@@ -1185,14 +1205,14 @@ subagentCmd
   .argument("<message...>", "Message or assistant command")
   .option("--keys", "Use send-keys instead of paste-buffer for a short single-line command")
   .option("-j, --json", "Output as JSON")
-  .action((query: string, message: string[], opts) => {
+  .action(async (query: string, message: string[], opts) => {
     try {
       const links = readLinks();
       const caller = currentCardOrThrow(links);
       const target = requireSubagentTarget(caller, query, links);
       const session = target.tmuxLink?.sessionName;
       if (!session) throw new Error(`Subagent ${target.id} has no tmux session.`);
-      const body = readMessageFromArgsOrStdin(message);
+      const body = await readMessageFromArgsOrStdin(message);
       const result = opts.keys
         ? sendTmuxKeys(session, body)
         : pasteTmuxPrompt(session, body);
@@ -1210,7 +1230,7 @@ subagentCmd
   .description("Send a private message to an owned subagent")
   .argument("<card>", "Owned subagent card")
   .argument("<message...>", "Message body")
-  .action((query: string, message: string[]) => {
+  .action(async (query: string, message: string[]) => {
     try {
       const links = readLinks();
       const caller = currentCardOrThrow(links);
@@ -1218,7 +1238,7 @@ subagentCmd
       const result = sendDirectMessage(
         cardParticipant(caller),
         cardParticipant(target),
-        readMessageFromArgsOrStdin(message),
+        await readMessageFromArgsOrStdin(message),
         links,
         undefined,
         { liveSessionProbe: (session) => liveTmuxSet().has(session) }
@@ -1231,13 +1251,13 @@ subagentCmd
     }
   });
 
-function sendToParent(messageArgs: string[]): { child: Link; parent: Link; body: string } {
+async function sendToParent(messageArgs: string[]): Promise<{ child: Link; parent: Link; body: string }> {
   const links = readLinks();
   const child = currentCardOrThrow(links);
   if (!child.parentCardId) throw new Error(`Card ${child.id} is not a subagent.`);
   const parent = links.find((link) => link.id === child.parentCardId);
   if (!parent) throw new Error(`Parent card ${child.parentCardId} no longer exists.`);
-  const body = readMessageFromArgsOrStdin(messageArgs);
+  const body = await readMessageFromArgsOrStdin(messageArgs);
   if (!body.trim()) throw new Error("A parent message is required.");
   const result = sendDirectMessage(
     cardParticipant(child),
@@ -1259,9 +1279,9 @@ parentCmd
   .command("dm")
   .description("Send a private progress or result message to the parent")
   .argument("<message...>", "Message body, or - with stdin")
-  .action((message: string[]) => {
+  .action(async (message: string[]) => {
     try {
-      const { parent } = sendToParent(message);
+      const { parent } = await sendToParent(message);
       console.log(`DM delivered to parent ${parent.id}`);
     } catch (error) {
       console.error(String(error instanceof Error ? error.message : error));
@@ -1275,7 +1295,7 @@ parentCmd
   .argument("<message...>", "Completion message, or - with stdin")
   .action(async (message: string[]) => {
     try {
-      const { child, parent } = sendToParent(message);
+      const { child, parent } = await sendToParent(message);
       console.log(`DM delivered to parent ${parent.id}; archiving ${child.id}`);
       const response = await submitSubagentRequest(
         makeSubagentRequest("archive", parent.id, { cardId: child.id })
