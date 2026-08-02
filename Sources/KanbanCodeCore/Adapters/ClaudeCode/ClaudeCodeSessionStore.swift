@@ -295,6 +295,16 @@ public final class ClaudeCodeSessionStore: SessionStore, @unchecked Sendable {
         var results: [SearchResult] = []
     }
 
+    /// What one scanned file contributed, tagged with its position in the
+    /// caller's priority order so it can be matched back to its path.
+    private struct ScanOutcome: Sendable {
+        let index: Int
+        let matchingTokens: [String]
+        let exactMatches: Int
+        let wordCount: Int
+        let snippets: [String]
+    }
+
     public func searchSessionsStreaming(
         query: String, paths: [String],
         onResult: @MainActor @Sendable ([SearchResult]) -> Void
@@ -329,88 +339,94 @@ public final class ClaudeCodeSessionStore: SessionStore, @unchecked Sendable {
 
         KanbanCodeLog.info("search", "searchSessions: \(validPaths.count)/\(paths.count) valid files, terms=\(searchQuery.terms) exact=\(searchQuery.exactPhrases)")
 
-        // Scan a batch of files at a time. Transcripts run to gigabytes in total,
-        // and one file at a time leaves every core but one idle; a batch keeps
-        // results streaming in the caller's priority order, which one long task
-        // group over all files would lose.
-        let batchSize = max(4, ProcessInfo.processInfo.activeProcessorCount - 2)
+        // Keep a fixed number of files in flight and hand each result over the
+        // moment it lands. Scanning in fixed batches instead makes every batch a
+        // barrier: nothing surfaces until its slowest file finishes, so a single
+        // gigabyte-scale transcript holds back every hit that happens to sit
+        // beside it, even one already found in a file a tenth its size. Priority
+        // order still decides what starts first, which is what the caller cares
+        // about; completion order no longer decides what has to wait.
+        let windowSize = max(4, ProcessInfo.processInfo.activeProcessorCount - 2)
         var scanned = 0
 
-        for start in stride(from: 0, to: validPaths.count, by: batchSize) {
-            try Task.checkCancellation()
-            let batch = Array(validPaths[start..<min(start + batchSize, validPaths.count)])
+        try await withThrowingTaskGroup(of: ScanOutcome.self) { group in
+            var nextIndex = 0
 
-            let extracted = try await withThrowingTaskGroup(
-                of: (Int, [String], Int, Int, [String]).self
-            ) { group in
-                for (offset, entry) in batch.enumerated() {
-                    group.addTask { [query = searchQuery] in
-                        let found = try await self.extractMatchingTokens(from: entry.0, query: query)
-                        return (offset, found.tokens, found.exactMatches, found.wordCount, found.snippets)
-                    }
+            func admitNext() {
+                guard nextIndex < validPaths.count else { return }
+                let index = nextIndex
+                let path = validPaths[index].0
+                nextIndex += 1
+                group.addTask { [query = searchQuery] in
+                    let found = try await self.extractMatchingTokens(from: path, query: query)
+                    return ScanOutcome(
+                        index: index,
+                        matchingTokens: found.tokens,
+                        exactMatches: found.exactMatches,
+                        wordCount: found.wordCount,
+                        snippets: found.snippets
+                    )
                 }
-                var collected: [(Int, [String], Int, Int, [String])] = []
-                for try await item in group { collected.append(item) }
-                return collected.sorted { $0.0 < $1.0 }
             }
 
-            var batchAddedDoc = false
-            for (offset, matchingTokens, exactMatches, wordCount, snippets) in extracted {
-                let (path, mtime) = batch[offset]
+            for _ in 0..<min(windowSize, validPaths.count) { admitNext() }
+
+            while let outcome = try await group.next() {
+                try Task.checkCancellation()
+                admitNext()
+
+                let (path, mtime) = validPaths[outcome.index]
                 scanned += 1
                 if scanned <= 5 || scanned % 100 == 0 {
                     let fileSize = (try? fileManager.attributesOfItem(atPath: path)[.size] as? Int) ?? 0
-                    KanbanCodeLog.info("search", "  [\(scanned)/\(validPaths.count)] \((path as NSString).lastPathComponent) (\(fileSize / 1024)KB) words=\(wordCount) matches=\(matchingTokens.count) exact=\(exactMatches)")
+                    KanbanCodeLog.info("search", "  [\(scanned)/\(validPaths.count)] \((path as NSString).lastPathComponent) (\(fileSize / 1024)KB) words=\(outcome.wordCount) matches=\(outcome.matchingTokens.count) exact=\(outcome.exactMatches)")
                 }
-                totalWordCount += wordCount
+                totalWordCount += outcome.wordCount
 
                 // Only track and yield when file has matching tokens or exact matches.
                 // An exact phrase counts on its own: a `pr-link` record can carry the
                 // whole match in text that tokenizes to nothing scorable.
-                guard !matchingTokens.isEmpty || exactMatches > 0 else { continue }
-                if searchQuery.requiresExactMatch, exactMatches == 0 { continue }
+                guard !outcome.matchingTokens.isEmpty || outcome.exactMatches > 0 else { continue }
+                if searchQuery.requiresExactMatch, outcome.exactMatches == 0 { continue }
 
                 // Track global document frequencies
-                for term in Set(matchingTokens) {
+                for term in Set(outcome.matchingTokens) {
                     globalTermFreqs[term, default: 0] += 1
                 }
 
                 docs.append(DocInfo(
                     path: path,
-                    matchingTokens: matchingTokens,
-                    exactMatches: exactMatches,
-                    wordCount: wordCount,
-                    snippets: snippets,
+                    matchingTokens: outcome.matchingTokens,
+                    exactMatches: outcome.exactMatches,
+                    wordCount: outcome.wordCount,
+                    snippets: outcome.snippets,
                     modifiedTime: mtime
                 ))
-                batchAddedDoc = true
-            }
 
-            guard batchAddedDoc else { continue }
-
-            // Score all matching docs with running stats and yield immediately
-            let avgDocLength = Double(totalWordCount) / max(Double(docs.count), 1.0)
-            var results: [SearchResult] = []
-            for doc in docs {
-                let termsScore = searchQuery.terms.isEmpty ? 0 : BM25Scorer.score(
-                    terms: searchQuery.terms,
-                    documentTokens: doc.matchingTokens,
-                    avgDocLength: avgDocLength,
-                    docCount: docs.count,
-                    docFreqs: globalTermFreqs,
-                    recencyBoost: BM25Scorer.recencyBoost(modifiedTime: doc.modifiedTime)
-                )
-                let score = searchQuery.score(
-                    termsScore: termsScore,
-                    exactMatches: doc.exactMatches,
-                    modifiedTime: doc.modifiedTime
-                )
-                if score > 0 {
-                    results.append(SearchResult(sessionPath: doc.path, score: score, snippets: doc.snippets))
+                // Score all matching docs with running stats and yield immediately
+                let avgDocLength = Double(totalWordCount) / max(Double(docs.count), 1.0)
+                var results: [SearchResult] = []
+                for doc in docs {
+                    let termsScore = searchQuery.terms.isEmpty ? 0 : BM25Scorer.score(
+                        terms: searchQuery.terms,
+                        documentTokens: doc.matchingTokens,
+                        avgDocLength: avgDocLength,
+                        docCount: docs.count,
+                        docFreqs: globalTermFreqs,
+                        recencyBoost: BM25Scorer.recencyBoost(modifiedTime: doc.modifiedTime)
+                    )
+                    let score = searchQuery.score(
+                        termsScore: termsScore,
+                        exactMatches: doc.exactMatches,
+                        modifiedTime: doc.modifiedTime
+                    )
+                    if score > 0 {
+                        results.append(SearchResult(sessionPath: doc.path, score: score, snippets: doc.snippets))
+                    }
                 }
+                results.sort { $0.score > $1.score }
+                await onResult(results)
             }
-            results.sort { $0.score > $1.score }
-            await onResult(results)
         }
 
         KanbanCodeLog.info("search", "searchSessions DONE: \(docs.count) docs in \(t0.duration(to: .now))")

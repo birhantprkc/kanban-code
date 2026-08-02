@@ -543,6 +543,39 @@ struct DeepSearchIntegrationTests {
         #expect(results[0].sessionPath == validPath)
     }
 
+    @Test("Deep search yields each match as it lands, not in batches")
+    func searchYieldsPerMatch() async throws {
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+
+        // More files than fit in the scanning window, so a barrier between
+        // groups of files would show up as far fewer callbacks than matches.
+        let matchCount = 4 * max(4, ProcessInfo.processInfo.activeProcessorCount)
+        var paths: [String] = []
+        for index in 0..<matchCount {
+            let path = (dir as NSString).appendingPathComponent("s\(index).jsonl")
+            try #"{"type":"user","sessionId":"s\#(index)","message":{"content":"Fix the authentication bug"},"cwd":"/test"}"#
+                .write(toFile: path, atomically: true, encoding: .utf8)
+            paths.append(path)
+        }
+
+        let deliveries = Counter()
+        try await store.searchSessionsStreaming(query: "authentication", paths: paths) { results in
+            deliveries.record(results.count)
+        }
+
+        // One delivery per matching file, each carrying every match found so far.
+        #expect(deliveries.counts == Array(1...matchCount))
+    }
+
+    /// Collects the size of every streamed delivery.
+    final class Counter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var values: [Int] = []
+        func record(_ count: Int) { lock.lock(); values.append(count); lock.unlock() }
+        var counts: [Int] { lock.lock(); defer { lock.unlock() }; return values }
+    }
+
     @Test("Deep search respects task cancellation")
     func searchCancellation() async throws {
         let dir = try makeTempDir()

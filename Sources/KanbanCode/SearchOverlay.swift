@@ -537,9 +537,12 @@ struct SearchOverlay: View {
     }
 
     private func updateFilter(_ query: String) {
-        // Cancel any in-progress deep search when query changes
+        // Cancel any in-progress deep search when query changes, but keep the
+        // handle. Cancellation is cooperative, so the scan is still winding
+        // down through its open files; dropping the reference here lets the
+        // next keystroke start a second full-corpus scan beside the first, and
+        // the two then compete for the same disk.
         searchTask?.cancel()
-        searchTask = nil
         searchResults = []
         isDeepSearching = false
     }
