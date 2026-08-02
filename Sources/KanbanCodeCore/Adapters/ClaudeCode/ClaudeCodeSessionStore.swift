@@ -329,40 +329,64 @@ public final class ClaudeCodeSessionStore: SessionStore, @unchecked Sendable {
 
         KanbanCodeLog.info("search", "searchSessions: \(validPaths.count)/\(paths.count) valid files, terms=\(searchQuery.terms) exact=\(searchQuery.exactPhrases)")
 
-        for (idx, (path, mtime)) in validPaths.enumerated() {
+        // Scan a batch of files at a time. Transcripts run to gigabytes in total,
+        // and one file at a time leaves every core but one idle; a batch keeps
+        // results streaming in the caller's priority order, which one long task
+        // group over all files would lose.
+        let batchSize = max(4, ProcessInfo.processInfo.activeProcessorCount - 2)
+        var scanned = 0
+
+        for start in stride(from: 0, to: validPaths.count, by: batchSize) {
             try Task.checkCancellation()
+            let batch = Array(validPaths[start..<min(start + batchSize, validPaths.count)])
 
-            let tFile = ContinuousClock.now
-            let (matchingTokens, exactMatches, wordCount, snippets) = try await extractMatchingTokens(
-                from: path, query: searchQuery
-            )
-            let fileName = (path as NSString).lastPathComponent
-            if idx < 5 || idx % 20 == 0 {
-                let fileSize = (try? fileManager.attributesOfItem(atPath: path)[.size] as? Int) ?? 0
-                KanbanCodeLog.info("search", "  [\(idx+1)/\(validPaths.count)] \(fileName) (\(fileSize / 1024)KB) words=\(wordCount) matches=\(matchingTokens.count) exact=\(exactMatches) \(tFile.duration(to: .now))")
-            }
-            totalWordCount += wordCount
-
-            // Only track and yield when file has matching tokens or exact matches.
-            // An exact phrase counts on its own: a `pr-link` record can carry the
-            // whole match in text that tokenizes to nothing scorable.
-            guard !matchingTokens.isEmpty || exactMatches > 0 else { continue }
-            if searchQuery.requiresExactMatch, exactMatches == 0 { continue }
-
-            // Track global document frequencies
-            let uniqueTerms = Set(matchingTokens)
-            for term in uniqueTerms {
-                globalTermFreqs[term, default: 0] += 1
+            let extracted = try await withThrowingTaskGroup(
+                of: (Int, [String], Int, Int, [String]).self
+            ) { group in
+                for (offset, entry) in batch.enumerated() {
+                    group.addTask { [query = searchQuery] in
+                        let found = try await self.extractMatchingTokens(from: entry.0, query: query)
+                        return (offset, found.tokens, found.exactMatches, found.wordCount, found.snippets)
+                    }
+                }
+                var collected: [(Int, [String], Int, Int, [String])] = []
+                for try await item in group { collected.append(item) }
+                return collected.sorted { $0.0 < $1.0 }
             }
 
-            docs.append(DocInfo(
-                path: path,
-                matchingTokens: matchingTokens,
-                exactMatches: exactMatches,
-                wordCount: wordCount,
-                snippets: snippets,
-                modifiedTime: mtime
-            ))
+            var batchAddedDoc = false
+            for (offset, matchingTokens, exactMatches, wordCount, snippets) in extracted {
+                let (path, mtime) = batch[offset]
+                scanned += 1
+                if scanned <= 5 || scanned % 100 == 0 {
+                    let fileSize = (try? fileManager.attributesOfItem(atPath: path)[.size] as? Int) ?? 0
+                    KanbanCodeLog.info("search", "  [\(scanned)/\(validPaths.count)] \((path as NSString).lastPathComponent) (\(fileSize / 1024)KB) words=\(wordCount) matches=\(matchingTokens.count) exact=\(exactMatches)")
+                }
+                totalWordCount += wordCount
+
+                // Only track and yield when file has matching tokens or exact matches.
+                // An exact phrase counts on its own: a `pr-link` record can carry the
+                // whole match in text that tokenizes to nothing scorable.
+                guard !matchingTokens.isEmpty || exactMatches > 0 else { continue }
+                if searchQuery.requiresExactMatch, exactMatches == 0 { continue }
+
+                // Track global document frequencies
+                for term in Set(matchingTokens) {
+                    globalTermFreqs[term, default: 0] += 1
+                }
+
+                docs.append(DocInfo(
+                    path: path,
+                    matchingTokens: matchingTokens,
+                    exactMatches: exactMatches,
+                    wordCount: wordCount,
+                    snippets: snippets,
+                    modifiedTime: mtime
+                ))
+                batchAddedDoc = true
+            }
+
+            guard batchAddedDoc else { continue }
 
             // Score all matching docs with running stats and yield immediately
             let avgDocLength = Double(totalWordCount) / max(Double(docs.count), 1.0)
@@ -402,6 +426,15 @@ public final class ClaudeCodeSessionStore: SessionStore, @unchecked Sendable {
         from path: String,
         query: SessionSearchQuery
     ) async throws -> (tokens: [String], exactMatches: Int, wordCount: Int, snippets: [String]) {
+        // When only lines carrying an exact phrase can count, a transcript
+        // holding none of them cannot contribute. Deciding that from the raw
+        // bytes skips the file at memory speed, instead of decoding and
+        // lowercasing every line to reach the same answer.
+        let rawNeedles = query.canRawPrefilter ? ByteSearch.asciiNeedles(query.exactPhrases) : nil
+        if let rawNeedles, !ByteSearch.fileContainsAny(path: path, needles: rawNeedles) {
+            return ([], 0, 0, [])
+        }
+
         guard let handle = FileHandle(forReadingAtPath: path) else {
             return ([], 0, 0, [])
         }
@@ -421,7 +454,12 @@ public final class ClaudeCodeSessionStore: SessionStore, @unchecked Sendable {
                 try Task.checkCancellation()
             }
 
-            // Fast string check — skip lines that aren't searchable records.
+            // Cheapest gate first. When only exact-phrase lines can count, a
+            // line without one is dropped whatever kind of record it is, and a
+            // byte scan beats the Unicode-aware `contains` calls below.
+            if let rawNeedles, !line.containsAnyASCII(rawNeedles) { continue }
+
+            // Skip lines that aren't searchable records.
             guard line.contains("\"type\"") else { continue }
             guard line.contains("\"user\"") || line.contains("\"assistant\"") || line.contains("\"pr-link\"") else { continue }
             if query.canRawPrefilter {
