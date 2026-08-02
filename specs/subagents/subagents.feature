@@ -151,6 +151,26 @@ Feature: First-class subagents
     Then it should fail without creating a child card
     And it should recommend `kanban subagent spawn` instead
 
+  Scenario: Parent forks one of its own subagents
+    Given "child-1" is an active child owned by the current parent
+    When the parent runs `kanban subagent fork --from child-1 "same work, other direction"`
+    Then the copy should inherit "child-1" transcript, assistant, model, and worktree
+    And the copy should persist `parentCardId` as the parent, making it a sibling of "child-1"
+    And "child-1" should keep running untouched
+    And the copy should be created even when the configured maximum subagent depth is 1
+
+  Scenario: Fork source must be owned by the caller
+    Given "other-child" is a subagent of a different parent
+    When the parent runs `kanban subagent fork --from other-child "take this over"`
+    Then it should fail without creating a card
+    And it should say the card is not a subagent owned by the caller
+
+  Scenario: Forking a subagent without a transcript names that subagent
+    Given "child-1" is owned by the current parent and has no session file
+    When the parent runs `kanban subagent fork --from child-1 "continue"`
+    Then it should fail without creating a child card
+    And the error should name "child-1" rather than the parent
+
   # Listing and lifecycle
 
   Scenario: List separates active and archived descendants
@@ -209,6 +229,21 @@ Feature: First-class subagents
     When it runs `kanban parent dm "hello"`
     Then it should fail without sending anything
     And it should explain that the current card is not a subagent
+
+  Scenario Outline: Delivered direct messages state the sender's role
+    Given "child-1" is owned by "parent-1"
+    When <sender> sends a direct message to <receiver>
+    Then the text pasted into the receiving tmux session should read "[DM from @<handle><role>]"
+
+    Examples:
+      | sender     | receiver   | handle   | role            |
+      | "parent-1" | "child-1"  | parent-1 |  (parent agent) |
+      | "child-1"  | "parent-1" | child-1  |  (subagent)     |
+
+  Scenario: Unrelated agents get no role label
+    Given two cards without a parent-child relationship
+    When one sends a direct message to the other
+    Then the delivered text should read "[DM from @handle]" with no role suffix
 
   # Codex startup readiness
 
@@ -299,3 +334,24 @@ Feature: First-class subagents
     When background reconciliation runs
     Then the child should remain outside workflow lanes under its parent
     And its underlying status should still be recorded for display and automation
+
+  # Handles
+
+  Scenario: Every child declares a readable handle
+    When an agent runs `kanban subagent spawn "investigate the parser"` without --handle
+    Then it should fail before creating a card
+    And it should say a --handle is required for a readable @handle in chat
+
+  Scenario: The handle names the card and the chat identity
+    When an agent runs `kanban subagent spawn --handle parser-bug "investigate the parser"`
+    Then the child card should be named "parser_bug"
+    And its chat handle should be "@parser_bug" instead of a slug of the goal text
+    And its bootstrap prompt should state its own handle
+
+  # Lifecycle visibility
+
+  Scenario: Archive is visible to the next CLI read
+    Given "child-1" is an active child owned by the current parent
+    When the parent runs `kanban subagent archive child-1`
+    Then the command should return only after the archived state is persisted
+    And an immediately following `kanban subagent list` should show "child-1" under "Archived"

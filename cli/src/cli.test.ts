@@ -86,6 +86,24 @@ describe("kanban help", () => {
     assert.ok(parentIndex < sendIndex, "parent should appear before low-level send");
     assert.ok(dmIndex < sendIndex, "dm should appear before low-level send");
   });
+
+  test("warns agents not to truncate the help page", () => {
+    const r = runCli(["--help"]);
+    assert.match(r.stdout, /Do not pipe it through head or tail/);
+  });
+
+  test("writes the whole page even when stdout is a pipe", () => {
+    const direct = runCli(["--help"]).stdout.length;
+    const piped = execFileSync("/bin/sh", ["-c", `npx tsx ${CLI} --help | cat`], {
+      encoding: "utf8",
+      env: process.env,
+    });
+    assert.equal(
+      piped.length,
+      direct,
+      `piped help was ${piped.length} bytes, direct help was ${direct}`
+    );
+  });
 });
 
 describe("kanban channel (CLI e2e)", () => {

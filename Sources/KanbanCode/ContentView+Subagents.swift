@@ -66,7 +66,12 @@ extension ContentView {
            (threshold <= 0 || threshold > Int.max - SelfCompactPolicy.forcedCompactOffsetTokens) {
             throw SubagentCommandExecutionError.invalidContextThreshold(threshold)
         }
-        let targetAssistant = request.assistant ?? parent.effectiveAssistant
+        // A fork inherits from the card it copies, which may be an owned
+        // subagent rather than the requesting parent.
+        let source = request.operation == .fork
+            ? try forkSource(parent: parent, sourceCardId: request.sourceCardId)
+            : parent
+        let targetAssistant = request.assistant ?? source.effectiveAssistant
         if request.contextThresholdTokens != nil,
            !targetAssistant.supportsContextThresholdSelfCompact {
             throw SubagentCommandExecutionError.unsupportedContextThresholdAssistant(targetAssistant)
@@ -78,10 +83,11 @@ extension ContentView {
             return try await spawnSubagent(parent: parent, request: request)
         case .fork:
             try await validateSubagentSpawn(parentId: parent.id)
-            return try await forkSubagent(parent: parent, request: request)
+            return try await forkSubagent(parent: parent, source: source, request: request)
         case .archive:
             let child = try ownedSubagent(from: parent.id, targetId: request.cardId)
             store.dispatch(.archiveCard(cardId: child.id))
+            await Self.waitForPersistedArchiveState(cardId: child.id, archived: true)
             return child.id
         case .resume:
             var child = try ownedSubagent(from: parent.id, targetId: request.cardId)
@@ -89,6 +95,7 @@ extension ContentView {
             child.column = .inProgress
             child.updatedAt = .now
             store.dispatch(.createManualTask(child))
+            await Self.waitForPersistedArchiveState(cardId: child.id, archived: false)
             executeResume(
                 cardId: child.id,
                 runRemotely: child.isRemote,
@@ -129,6 +136,28 @@ extension ContentView {
         }
     }
 
+    /// Card mutations persist through an async effect, so answering the CLI
+    /// straight after `dispatch` lets the next `kanban subagent list` read a
+    /// links.json that still shows the old state. Wait for the write to land.
+    private static func waitForPersistedArchiveState(cardId: String, archived: Bool) async {
+        for _ in 0..<40 {
+            let persisted = CoordinationStore.readLinksSnapshot()
+                .first { $0.id == cardId }?
+                .manuallyArchived
+            if persisted == archived { return }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        KanbanCodeLog.warn(
+            "subagent",
+            "Persisted archive state for \(cardId.prefix(12)) did not settle to \(archived)"
+        )
+    }
+
+    private func forkSource(parent: Link, sourceCardId: String?) throws -> Link {
+        guard let sourceCardId, sourceCardId != parent.id else { return parent }
+        return try ownedSubagent(from: parent.id, targetId: sourceCardId)
+    }
+
     private func ownedSubagent(from ownerId: String, targetId: String?) throws -> Link {
         guard let targetId, let target = store.state.links[targetId] else {
             throw SubagentCommandExecutionError.cardNotFound(targetId ?? "missing")
@@ -146,10 +175,12 @@ extension ContentView {
         }
         let assistant = request.assistant ?? parent.effectiveAssistant
         var child = makeSubagentLink(
-            parent: parent,
+            owner: parent,
+            template: parent,
             assistant: assistant,
             model: request.model,
             contextThresholdTokens: request.contextThresholdTokens,
+            name: request.name,
             prompt: prompt
         )
         let deliveryPrompt = identifiedSubagentPrompt(prompt, childId: child.id)
@@ -179,15 +210,19 @@ extension ContentView {
         return child.id
     }
 
-    private func forkSubagent(parent: Link, request: SubagentCommandRequest) async throws -> String {
+    private func forkSubagent(
+        parent: Link,
+        source: Link,
+        request: SubagentCommandRequest
+    ) async throws -> String {
         guard let prompt = request.prompt,
               !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw SubagentCommandExecutionError.missingPrompt
         }
-        guard let sourcePath = parent.sessionLink?.sessionPath else {
-            throw SubagentCommandExecutionError.missingSession(parent.id)
+        guard let sourcePath = source.sessionLink?.sessionPath else {
+            throw SubagentCommandExecutionError.missingSession(source.id)
         }
-        let sourceAssistant = parent.effectiveAssistant
+        let sourceAssistant = source.effectiveAssistant
         let targetAssistant = request.assistant ?? sourceAssistant
         guard let sourceStore = assistantRegistry.store(for: sourceAssistant),
               let targetStore = assistantRegistry.store(for: targetAssistant) else {
@@ -213,7 +248,7 @@ extension ContentView {
                 sourceSessionPath: forkedPath,
                 sourceStore: sourceStore,
                 targetStore: targetStore,
-                projectPath: effectiveProjectPath(for: parent),
+                projectPath: effectiveProjectPath(for: source),
                 recentTurnLimit: 500,
                 recentCharacterLimit: SessionMigrator.defaultCrossAssistantCharacterLimit
             )
@@ -224,10 +259,12 @@ extension ContentView {
         }
 
         var child = makeSubagentLink(
-            parent: parent,
+            owner: parent,
+            template: source,
             assistant: targetAssistant,
-            model: request.model ?? (targetAssistant == sourceAssistant ? parent.modelOverride : nil),
+            model: request.model ?? (targetAssistant == sourceAssistant ? source.modelOverride : nil),
             contextThresholdTokens: request.contextThresholdTokens,
+            name: request.name,
             prompt: prompt
         )
         let deliveryPrompt = identifiedSubagentPrompt(prompt, childId: child.id)
@@ -236,7 +273,7 @@ extension ContentView {
         store.dispatch(.createManualTask(child))
         executeResume(
             cardId: child.id,
-            runRemotely: parent.isRemote,
+            runRemotely: source.isRemote,
             commandOverride: nil,
             assistant: targetAssistant,
             serviceIdOverride: child.apiServiceId,
@@ -264,28 +301,39 @@ extension ContentView {
         ))
     }
 
+    /// `owner` decides who the child belongs to, `template` decides what it
+    /// inherits. Forking an owned subagent therefore produces its sibling under
+    /// the same owner while carrying the source card's working environment.
     private func makeSubagentLink(
-        parent: Link,
+        owner: Link,
+        template: Link,
         assistant: CodingAssistant,
         model: String?,
         contextThresholdTokens: Int?,
+        name: String?,
         prompt: String
     ) -> Link {
         var child = Link(
-            name: subagentTitle(from: prompt),
-            projectPath: parent.projectPath,
+            name: Self.requestedName(name) ?? subagentTitle(from: prompt),
+            projectPath: template.projectPath,
             column: .inProgress,
             source: .manual,
             promptBody: prompt,
-            parentCardId: parent.id,
+            parentCardId: owner.id,
             modelOverride: model,
             selfCompactContextThresholdTokens: contextThresholdTokens,
-            worktreeLink: parent.worktreeLink,
+            worktreeLink: template.worktreeLink,
             assistant: assistant,
-            isRemote: parent.isRemote
+            isRemote: template.isRemote
         )
-        child.apiServiceId = assistant == parent.effectiveAssistant ? parent.apiServiceId : nil
+        child.apiServiceId = assistant == template.effectiveAssistant ? template.apiServiceId : nil
         return child
+    }
+
+    private static func requestedName(_ name: String?) -> String? {
+        guard let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else { return nil }
+        return String(trimmed.prefix(80))
     }
 
     private func subagentTitle(from prompt: String) -> String {

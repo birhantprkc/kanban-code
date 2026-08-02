@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, writeSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -72,6 +72,8 @@ import {
   descendantIds,
   makeSubagentRequest,
   missingForkSessionError,
+  missingHandleError,
+  normalizeSubagentHandle,
   resolveSubagentPrompt,
   subagentDepth,
   submitSubagentRequest,
@@ -82,10 +84,38 @@ import { parseContextThreshold } from "./self-compact.js";
 
 const program = new Command();
 
+/**
+ * Commander writes help and then exits. On a pipe `process.stdout.write` is
+ * asynchronous, so `process.exit` can drop everything past the first buffer and
+ * agents piping `--help` into `head` see a truncated command list. Writing the
+ * file descriptor synchronously makes the whole page survive.
+ */
+function writeSyncToFd(fd: number, text: string): void {
+  const buffer = Buffer.from(text, "utf8");
+  let offset = 0;
+  while (offset < buffer.length) {
+    try {
+      offset += writeSync(fd, buffer, offset, buffer.length - offset);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "EAGAIN") continue;
+      if (code === "EPIPE") return;
+      throw error;
+    }
+  }
+}
+
 program
   .name("kanban")
-  .description("Kanban Code CLI — inspect cards, sessions, and orchestrate agents")
-  .version("0.1.0");
+  .description(
+    "Kanban Code CLI — inspect cards, sessions, and orchestrate agents\n" +
+      "Read this help in full. Do not pipe it through head or tail; the command list continues below."
+  )
+  .version("0.1.0")
+  .configureOutput({
+    writeOut: (str) => writeSyncToFd(1, str),
+    writeErr: (str) => writeSyncToFd(2, str),
+  });
 
 function sortTopLevelCommands(names: string[]): void {
   const rank = new Map(names.map((name, index) => [name, index]));
@@ -1014,13 +1044,28 @@ function requestedAssistant(raw: string): CodingAssistant | undefined {
 async function runSubagentCreate(
   operation: "spawn" | "fork",
   promptArgs: string[],
-  opts: { assistant: string; model?: string; contextThreshold?: string; json?: boolean }
+  opts: {
+    assistant: string;
+    handle?: string;
+    model?: string;
+    contextThreshold?: string;
+    from?: string;
+    json?: boolean;
+  }
 ): Promise<void> {
   const links = readLinks();
   const parent = currentCardOrThrow(links);
   validateCanSpawn(parent, links);
-  if (operation === "fork" && !parent.sessionLink?.sessionPath) {
-    throw new Error(missingForkSessionError(parent.id));
+  if (!opts.handle?.trim()) throw new Error(missingHandleError);
+  const handle = normalizeSubagentHandle(opts.handle);
+  // A fork copies a transcript, so it may start from this card or from any
+  // subagent this card already owns. Either way the new card belongs to the
+  // caller, so forking a child produces a sibling rather than a grandchild.
+  const source = operation === "fork" && opts.from
+    ? requireSubagentTarget(parent, opts.from, links)
+    : parent;
+  if (operation === "fork" && !source.sessionLink?.sessionPath) {
+    throw new Error(missingForkSessionError(source.id));
   }
   const prompt = await readSubagentPromptFromArgsOrStdin(promptArgs);
   if (!prompt.trim()) {
@@ -1030,12 +1075,14 @@ async function runSubagentCreate(
     ? undefined
     : parseContextThreshold(opts.contextThreshold);
   const assistantOverride = requestedAssistant(opts.assistant);
-  const targetAssistant = assistantOverride ?? parent.assistant ?? "claude";
+  const targetAssistant = assistantOverride ?? source.assistant ?? "claude";
   if (contextThresholdTokens !== undefined && targetAssistant !== "claude") {
     throw new Error("Per-card context thresholds are currently available for Claude subagents only.");
   }
   const request = makeSubagentRequest(operation, parent.id, {
-    prompt: buildSubagentPrompt(parent, prompt, contextThresholdTokens),
+    sourceCardId: source.id === parent.id ? undefined : source.id,
+    name: handle,
+    prompt: buildSubagentPrompt(parent, prompt, contextThresholdTokens, handle),
     assistant: assistantOverride,
     model: opts.model,
     contextThresholdTokens,
@@ -1058,15 +1105,25 @@ const subagentCmd = program
 
 Subagents are normal Kanban Code cards with their own tmux session, transcript,
 auto-compact protection, and assistant. Commands must run from the parent card's
-primary tmux session. Use a quoted argument for short goals, or stdin for long goals:
+primary tmux session.
 
-  kanban subagent spawn - <<'EOF'
+Every child needs --handle, which becomes its card name and its @handle in chat,
+so DMs read as @parser-bug instead of a slug of the first line of the goal.
+Use a quoted argument for short goals, or stdin for long goals:
+
+  kanban subagent spawn --handle parser-bug - <<'EOF'
   Investigate the failing integration test.
   Report the root cause and a tested fix.
   EOF
 
 Use --context-threshold 250k for a Claude child to override global compaction.
 It receives a nudge at 250k and Kanban Code sends /compact at 450k.
+
+Fork copies a transcript into a new child. Without --from it copies this card;
+with --from it copies one of your own subagents so the same work can continue
+in another direction, and the copy becomes that subagent's sibling:
+
+  kanban subagent fork --from card_abc123 --handle cache-path "try the cache path"
 
 Parent management aliases are guarded so they only target owned descendants:
   kanban subagent capture|transcript|dm|send <card-id> ...
@@ -1076,14 +1133,22 @@ The low-level send alias is intended for assistant commands such as /compact.
   );
 
 for (const operation of ["spawn", "fork"] as const) {
-  subagentCmd
+  const command = subagentCmd
     .command(operation)
     .description(
       operation === "spawn"
         ? "Start a new child session"
-        : "Fork the current session into a child, migrating when the assistant changes"
+        : "Fork this card or an owned subagent into a new child, migrating when the assistant changes"
     )
-    .argument("[prompt...]", "Goal text, or pass - and pipe/heredoc stdin")
+    .argument("[prompt...]", "Goal text, or pass - and pipe/heredoc stdin");
+  if (operation === "fork") {
+    command.option(
+      "--from <card>",
+      "Fork an owned subagent instead of this card; the copy becomes its sibling"
+    );
+  }
+  command
+    .requiredOption("--handle <handle>", "Short chat handle and card name for the child, e.g. parser-bug")
     .option("--assistant <assistant>", "inherit, claude, codex, or gemini", "inherit")
     .option("--model <model>", "Assistant model alias or full model name")
     .option("--context-threshold <tokens>", "Claude card self-compact nudge threshold, e.g. 250k or 250000")

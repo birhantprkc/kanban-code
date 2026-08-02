@@ -13,6 +13,10 @@ public struct SubagentCommandRequest: Codable, Sendable, Equatable {
     public let createdAt: String
     public let parentCardId: String
     public let cardId: String?
+    /// Card whose transcript a fork copies. Absent means the requesting parent.
+    public let sourceCardId: String?
+    /// Child card name, which also becomes its chat handle.
+    public let name: String?
     public let prompt: String?
     public let assistant: CodingAssistant?
     public let model: String?
@@ -24,6 +28,8 @@ public struct SubagentCommandRequest: Codable, Sendable, Equatable {
         createdAt: String,
         parentCardId: String,
         cardId: String? = nil,
+        sourceCardId: String? = nil,
+        name: String? = nil,
         prompt: String? = nil,
         assistant: CodingAssistant? = nil,
         model: String? = nil,
@@ -34,6 +40,8 @@ public struct SubagentCommandRequest: Codable, Sendable, Equatable {
         self.createdAt = createdAt
         self.parentCardId = parentCardId
         self.cardId = cardId
+        self.sourceCardId = sourceCardId
+        self.name = name
         self.prompt = prompt
         self.assistant = assistant
         self.model = model

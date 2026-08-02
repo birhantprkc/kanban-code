@@ -35,6 +35,39 @@ struct SubagentCommandStoreTests {
         #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("processing/request-1.json").path))
     }
 
+    @Test("Fork requests carry an optional source card and stay backward compatible")
+    func forkSourceCardRoundTrip() throws {
+        let request = SubagentCommandRequest(
+            id: "request-fork",
+            operation: .fork,
+            createdAt: "2026-08-02T10:00:00.000Z",
+            parentCardId: "parent-1",
+            sourceCardId: "child-1",
+            prompt: "same work, other direction"
+        )
+        let decoded = try JSONDecoder().decode(
+            SubagentCommandRequest.self,
+            from: JSONEncoder().encode(request)
+        )
+        #expect(decoded == request)
+        #expect(decoded.sourceCardId == "child-1")
+
+        let legacy = """
+        {
+          "id": "request-legacy",
+          "operation": "fork",
+          "createdAt": "2026-08-02T10:00:00.000Z",
+          "parentCardId": "parent-1",
+          "prompt": "try another approach"
+        }
+        """
+        let legacyRequest = try JSONDecoder().decode(
+            SubagentCommandRequest.self,
+            from: Data(legacy.utf8)
+        )
+        #expect(legacyRequest.sourceCardId == nil)
+    }
+
     @Test("Concurrent command processors treat a lost claim race as already claimed")
     func concurrentClaimIsIdempotent() async throws {
         let root = FileManager.default.temporaryDirectory

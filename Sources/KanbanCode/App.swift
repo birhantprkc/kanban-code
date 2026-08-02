@@ -241,6 +241,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         channelShareController?.terminateAllImmediately()
     }
 
+    /// Kanban Code keeps running from the system tray with its managed tmux
+    /// sessions alive, so closing the last window must never start a quit.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !terminationReplyPending else { return .terminateLater }
         let managedSessions = Self.listManagedTmuxSessionsSync()
@@ -379,7 +385,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
     }
 
     /// Synchronous tmux list-sessions — returns all sessions (no filtering).
-    static func listAllTmuxSessionsSync() -> [TmuxSession] {
+    ///
+    /// `applicationShouldTerminate` must answer AppKit synchronously, so this
+    /// runs on the main thread. A wedged tmux server would otherwise freeze the
+    /// whole app there, so the wait is bounded and the child is killed on
+    /// timeout. Output is drained before waiting to avoid a full-pipe deadlock.
+    static func listAllTmuxSessionsSync(timeout: TimeInterval = 5) -> [TmuxSession] {
         let tmuxPath = ShellCommand.findExecutable("tmux") ?? "tmux"
         let process = Process()
         process.executableURL = URL(fileURLWithPath: tmuxPath)
@@ -389,13 +400,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         process.standardError = FileHandle.nullDevice
         do {
             try process.run()
-            process.waitUntilExit()
         } catch {
             return []
         }
+
+        let collected = SyncProcessOutput()
+        let finished = DispatchSemaphore(value: 0)
+        let readHandle = pipe.fileHandleForReading
+        DispatchQueue.global(qos: .userInitiated).async {
+            collected.store(readHandle.readDataToEndOfFile())
+            finished.signal()
+        }
+        if finished.wait(timeout: .now() + timeout) == .timedOut {
+            KanbanCodeLog.warn("quit", "tmux list-sessions timed out after \(Int(timeout))s")
+            process.terminate()
+            return []
+        }
+        process.waitUntilExit()
+
         guard process.terminationStatus == 0 else { return [] }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        guard let output = String(data: data, encoding: .utf8), !output.isEmpty else { return [] }
+        guard let output = String(data: collected.data, encoding: .utf8), !output.isEmpty else { return [] }
 
         return output.components(separatedBy: "\n").compactMap { line -> TmuxSession? in
             let parts = line.components(separatedBy: "\t")
@@ -592,4 +616,23 @@ extension Notification.Name {
     static let browserFocusAddressBar = Notification.Name("browserFocusAddressBar")
     static let browserReload = Notification.Name("browserReload")
     static let kanbanReopenClosedTab = Notification.Name("kanbanReopenClosedTab")
+}
+
+/// Lock-protected box so a bounded synchronous process read can hand its output
+/// back from a background queue.
+private final class SyncProcessOutput: @unchecked Sendable {
+    private let lock = NSLock()
+    private var buffer = Data()
+
+    func store(_ data: Data) {
+        lock.lock()
+        buffer = data
+        lock.unlock()
+    }
+
+    var data: Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return buffer
+    }
 }

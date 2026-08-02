@@ -11,9 +11,14 @@ import {
 import { join } from "node:path";
 import { cardForTmuxSession, currentTmuxSessionName } from "./broadcast.js";
 import { readLinks, readSettings } from "./data.js";
+import { slugifyDisplay, truncateSlug } from "./handles.js";
+import { descendantIds, subagentDepth } from "./hierarchy.js";
 import { commandInboxDir, commandResponsesDir } from "./paths.js";
 import { FORCED_COMPACT_OFFSET_TOKENS, tokenLabel } from "./self-compact.js";
 import type { CodingAssistant, Link } from "./types.js";
+
+export { ancestorIds, descendantIds, subagentDepth, subagentRelationship } from "./hierarchy.js";
+export type { SubagentRelationship } from "./hierarchy.js";
 
 export type SubagentOperation = "spawn" | "fork" | "archive" | "resume";
 
@@ -23,6 +28,10 @@ export interface SubagentCommandRequest {
   createdAt: string;
   parentCardId: string;
   cardId?: string;
+  /** Card whose transcript a fork copies. Defaults to the requesting parent. */
+  sourceCardId?: string;
+  /** Child card name, which also becomes its chat handle. */
+  name?: string;
   prompt?: string;
   assistant?: CodingAssistant;
   model?: string;
@@ -53,45 +62,27 @@ export function resolveSubagentPrompt(args: string[], stdin: string): string {
   return stdin;
 }
 
+export const missingHandleError =
+  "A --handle is required so the subagent has a readable @handle in chat, " +
+  "for example --handle parser-bug.";
+
+/**
+ * Subagent handles are derived from the card name, so requiring an explicit
+ * short handle keeps DMs readable instead of slugifying the first line of a
+ * long delegated goal.
+ */
+export function normalizeSubagentHandle(raw: string): string {
+  const slug = truncateSlug(slugifyDisplay(raw.replace(/^@/, "")));
+  if (!slug) {
+    throw new Error(
+      `Handle "${raw}" has no letters or digits. Use something like --handle parser-bug.`
+    );
+  }
+  return slug;
+}
+
 export function normalizeMaximumDepth(value: number | undefined): number {
   return Math.min(maximumSupportedSubagentDepth, Math.max(0, value ?? 1));
-}
-
-export function subagentDepth(cardId: string, links: Link[]): number {
-  const byId = new Map(links.map((link) => [link.id, link]));
-  let current = byId.get(cardId);
-  let depth = 0;
-  const visited = new Set<string>();
-  while (current?.parentCardId && !visited.has(current.id)) {
-    visited.add(current.id);
-    depth += 1;
-    current = byId.get(current.parentCardId);
-  }
-  return depth;
-}
-
-export function descendantIds(cardId: string, links: Link[]): Set<string> {
-  const childrenByParent = new Map<string, Link[]>();
-  for (const link of links) {
-    if (!link.parentCardId) continue;
-    const children = childrenByParent.get(link.parentCardId) ?? [];
-    children.push(link);
-    childrenByParent.set(link.parentCardId, children);
-  }
-  const result = new Set<string>();
-  const visited = new Set<string>([cardId]);
-  const pending = [cardId];
-  while (pending.length > 0) {
-    const parentId = pending.pop()!;
-    for (const child of childrenByParent.get(parentId) ?? []) {
-      if (!visited.has(child.id)) {
-        visited.add(child.id);
-        result.add(child.id);
-        pending.push(child.id);
-      }
-    }
-  }
-  return result;
 }
 
 export function currentCardOrThrow(links: Link[] = readLinks()): Link {
@@ -121,12 +112,14 @@ export function validateCanSpawn(parent: Link, links: Link[] = readLinks()): num
 export function buildSubagentPrompt(
   parent: Link,
   childPrompt: string,
-  contextThresholdTokens?: number
+  contextThresholdTokens?: number,
+  handle?: string
 ): string {
   const compactInstruction = contextThresholdTokens
     ? `This card has a ${tokenLabel(contextThresholdTokens)} context threshold. It will receive a self-compact nudge at ${tokenLabel(contextThresholdTokens)} tokens and a forced /compact at ${tokenLabel(contextThresholdTokens + FORCED_COMPACT_OFFSET_TOKENS)} tokens. Always pass a post-compact continuation message to \`kanban self-compact\`.`
     : undefined;
   return [
+    handle ? `Your chat handle is @${handle}.` : undefined,
     `You are a Kanban Code subagent owned by card ${parent.id} (${parent.name ?? "untitled parent"}).`,
     "Work independently on the goal below.",
     "Use `kanban parent dm <message>` to report progress or ask the parent a question.",
@@ -159,6 +152,26 @@ export function makeSubagentRequest(
   };
 }
 
+export function kanbanCodeIsRunning(): boolean {
+  try {
+    execFileSync("pgrep", ["-x", "KanbanCode"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A running Kanban Code drains this mailbox on its own poll loop, and `open`
+ * pulls focus away from whatever the user is looking at — including the very
+ * terminal pane this command was typed into. So only use the deep link to wake
+ * the app when it is not running at all.
+ */
+function defaultNotify(requestId: string): void {
+  if (kanbanCodeIsRunning()) return;
+  execFileSync("open", ["-g", `kanbancode://command/${requestId}`], { stdio: "ignore" });
+}
+
 export interface SubmitSubagentRequestOptions {
   timeoutMs?: number;
   notify?: (requestId: string) => void;
@@ -178,9 +191,7 @@ export async function submitSubagentRequest(
   writeFileSync(tempPath, JSON.stringify(request, null, 2));
   renameSync(tempPath, requestPath);
 
-  const notify = options.notify ?? ((requestId: string) => {
-    execFileSync("open", ["-g", `kanbancode://command/${requestId}`], { stdio: "ignore" });
-  });
+  const notify = options.notify ?? defaultNotify;
   try {
     notify(request.id);
   } catch (error) {

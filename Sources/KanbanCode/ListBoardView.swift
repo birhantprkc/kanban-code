@@ -882,14 +882,6 @@ private struct ListCardRowView: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
-            if activeDirectSubagentCount > 0 {
-                Button(action: onToggleSubagents) {
-                    Image(systemName: subagentsExpanded ? "chevron.down" : "chevron.right")
-                        .font(.app(.caption2, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-            }
             VStack(alignment: .leading, spacing: 3) {
                 // Row 1: title + badge + time
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -941,6 +933,14 @@ private struct ListCardRowView: View {
                 }
                 .buttonStyle(.borderless)
                 .help("Start task")
+            }
+
+            if activeDirectSubagentCount > 0 {
+                SubagentDisclosureCaret(
+                    isExpanded: subagentsExpanded,
+                    childCount: activeDirectSubagentCount,
+                    action: onToggleSubagents
+                )
             }
         }
         .padding(.horizontal, 12)

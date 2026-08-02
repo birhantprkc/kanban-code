@@ -8,11 +8,14 @@ import {
   buildSubagentPrompt,
   depthLimitError,
   descendantIds,
+  kanbanCodeIsRunning,
   makeSubagentRequest,
   missingForkSessionError,
   normalizeMaximumDepth,
+  normalizeSubagentHandle,
   resolveSubagentPrompt,
   subagentDepth,
+  subagentRelationship,
   submitSubagentRequest,
 } from "./subagents.js";
 import { formatCardSummary } from "./format.js";
@@ -78,11 +81,59 @@ describe("subagent hierarchy", () => {
     );
   });
 
+  test("does not deep-link a running app, which would steal focus", () => {
+    const opened: string[] = [];
+    const notifyIfNotRunning = (running: boolean) => {
+      if (running) return;
+      opened.push("open");
+    };
+    notifyIfNotRunning(true);
+    assert.deepEqual(opened, []);
+    notifyIfNotRunning(false);
+    assert.deepEqual(opened, ["open"]);
+    assert.equal(typeof kanbanCodeIsRunning(), "boolean");
+  });
+
+  test("labels a sender as parent or subagent relative to the receiver", () => {
+    const root = card("root");
+    const child = card("child", root.id);
+    const grandchild = card("grandchild", child.id);
+    const stranger = card("stranger");
+    const links = [root, child, grandchild, stranger];
+    assert.equal(subagentRelationship(root.id, child.id, links), "parent");
+    assert.equal(subagentRelationship(root.id, grandchild.id, links), "parent");
+    assert.equal(subagentRelationship(child.id, root.id, links), "subagent");
+    assert.equal(subagentRelationship(grandchild.id, root.id, links), "subagent");
+    assert.equal(subagentRelationship(stranger.id, child.id, links), undefined);
+    assert.equal(subagentRelationship(child.id, child.id, links), undefined);
+    assert.equal(subagentRelationship(null, child.id, links), undefined);
+  });
+
   test("missing fork transcript recommends a new spawn", () => {
     assert.equal(
       missingForkSessionError("root"),
       "Card root has no session to fork. Use `kanban subagent spawn` to start a new child instead."
     );
+  });
+
+  test("handles are normalized into readable slugs", () => {
+    assert.equal(normalizeSubagentHandle("parser-bug"), "parser_bug");
+    assert.equal(normalizeSubagentHandle("@Cache Path"), "cache_path");
+    assert.equal(
+      normalizeSubagentHandle("a-very-long-handle-that-exceeds-the-maximum-length"),
+      "a_very_long_handle_that"
+    );
+    assert.throws(() => normalizeSubagentHandle("!!!"), /no letters or digits/);
+  });
+
+  test("bootstrap prompt states the child handle", () => {
+    const prompt = buildSubagentPrompt(
+      { ...card("root"), name: "Parent" },
+      "Investigate the bug",
+      undefined,
+      "parser_bug"
+    );
+    assert.match(prompt, /Your chat handle is @parser_bug\./);
   });
 
   test("configured depth is bounded", () => {
