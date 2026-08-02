@@ -14,7 +14,11 @@ import { readLinks, readSettings } from "./data.js";
 import { slugifyDisplay, truncateSlug } from "./handles.js";
 import { descendantIds, subagentDepth } from "./hierarchy.js";
 import { commandInboxDir, commandResponsesDir } from "./paths.js";
-import { FORCED_COMPACT_OFFSET_TOKENS, tokenLabel } from "./self-compact.js";
+import {
+  FORCED_COMPACT_OFFSET_TOKENS,
+  STEER_COMPACT_OFFSET_TOKENS,
+  tokenLabel,
+} from "./self-compact.js";
 import type { CodingAssistant, Link } from "./types.js";
 
 export { ancestorIds, descendantIds, subagentDepth, subagentRelationship } from "./hierarchy.js";
@@ -130,7 +134,7 @@ export function buildSubagentPrompt(
   handle?: string
 ): string {
   const compactInstruction = contextThresholdTokens
-    ? `This card has a ${tokenLabel(contextThresholdTokens)} context threshold. It will receive a self-compact nudge at ${tokenLabel(contextThresholdTokens)} tokens and a forced /compact at ${tokenLabel(contextThresholdTokens + FORCED_COMPACT_OFFSET_TOKENS)} tokens. Always pass a post-compact continuation message to \`kanban self-compact\`.`
+    ? `This card has a ${tokenLabel(contextThresholdTokens)} context threshold. You get a queued nudge at ${tokenLabel(contextThresholdTokens)} tokens, a steered reminder mid-turn at ${tokenLabel(contextThresholdTokens + STEER_COMPACT_OFFSET_TOKENS)}, and an interrupt with a forced /compact at ${tokenLabel(contextThresholdTokens + FORCED_COMPACT_OFFSET_TOKENS)}. Compact yourself before that last one, and always pass a post-compact continuation message to \`kanban self-compact\`.`
     : undefined;
   return [
     handle ? `Your chat handle is @${handle}.` : undefined,

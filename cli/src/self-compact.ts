@@ -7,6 +7,7 @@ export interface SelfCompactRule {
   message: string;
 }
 
+export const STEER_COMPACT_OFFSET_TOKENS = 100_000;
 export const FORCED_COMPACT_OFFSET_TOKENS = 200_000;
 
 export const DEFAULT_SELF_COMPACT_RULES: SelfCompactRule[] = [
@@ -53,11 +54,19 @@ export function cardSelfCompactRules(thresholdTokens: number): SelfCompactRule[]
   if (!Number.isSafeInteger(thresholdTokens) || thresholdTokens <= 0 || thresholdTokens > Number.MAX_SAFE_INTEGER - FORCED_COMPACT_OFFSET_TOKENS) {
     return [];
   }
+  // Same escalation as the global defaults: ask while the agent can choose its
+  // own moment, steer once it is overdue, interrupt when it is not stopping.
+  const steerThreshold = thresholdTokens + STEER_COMPACT_OFFSET_TOKENS;
   return [
     {
       thresholdTokens,
       action: "queuePrompt",
       message: `You are above the ${tokenLabel(thresholdTokens)} context limit. Whenever it is convenient, use the kanban CLI to send yourself a self-compact, passing an argument for the post-compact message on how to continue.`,
+    },
+    {
+      thresholdTokens: steerThreshold,
+      action: "steer",
+      message: `You are above the ${tokenLabel(steerThreshold)} context limit. Compact yourself now with the kanban CLI self-compact command, passing an argument for the post-compact message on how to continue.`,
     },
     {
       thresholdTokens: thresholdTokens + FORCED_COMPACT_OFFSET_TOKENS,

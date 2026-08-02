@@ -4,15 +4,25 @@ import Testing
 
 @Suite("Self-compact policy")
 struct SelfCompactPolicyTests {
-    @Test("Card threshold creates one nudge and forces compact 200k later")
+    @Test("Card threshold escalates from nudge to steer to interrupt")
     func cardThresholdRules() {
         let rules = SelfCompactPolicy.cardRules(thresholdTokens: 250_000)
 
-        #expect(rules.map(\.thresholdTokens) == [250_000, 450_000])
-        #expect(rules.map(\.action) == [.queuePrompt, .interrupt])
+        #expect(rules.map(\.thresholdTokens) == [250_000, 350_000, 450_000])
+        #expect(rules.map(\.action) == [.queuePrompt, .steer, .interrupt])
         #expect(rules[0].message.contains("250k context limit"))
         #expect(rules[0].message.contains("passing an argument for the post-compact message on how to continue"))
-        #expect(rules[1].message == "/compact")
+        #expect(rules[1].message.contains("350k context limit"))
+        #expect(rules[2].message == "/compact")
+    }
+
+    @Test("Card rules escalate the same way the global defaults do")
+    func cardRulesMirrorGlobalEscalation() {
+        let card = SelfCompactPolicy.cardRules(thresholdTokens: 300_000).map(\.action)
+        let global = SelfCompactRule.defaults.map(\.action)
+
+        #expect(card == [.queuePrompt, .steer, .interrupt])
+        #expect(Array(global.suffix(2)) == Array(card.suffix(2)))
     }
 
     @Test("Defaults steer before the last threshold interrupts")

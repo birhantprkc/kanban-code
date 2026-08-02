@@ -98,7 +98,9 @@ Feature: First-class subagents
     Then the child card should persist a self-compact context threshold of 250000 tokens
     And the child should queue one self-compact nudge when its context reaches 250000 tokens
     And the nudge should tell the child to pass a post-compact continuation message to `kanban self-compact`
+    And the child should be steered with a stronger reminder at 350000 tokens
     And the child should be interrupted with `/compact` when its context reaches 450000 tokens
+    And that escalation should match the one the global defaults use
     And the child-specific policy should replace the global self-compact rules for that card
     And the child-specific policy should remain active when the global self-compact guard is disabled
 

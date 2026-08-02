@@ -75,7 +75,8 @@ describe("subagent hierarchy", () => {
     assert.match(prompt, /250k context threshold/);
     assert.match(prompt, /kanban self-compact/);
     assert.match(prompt, /post-compact continuation message/);
-    assert.match(prompt, /450k tokens/);
+    assert.match(prompt, /steered reminder mid-turn at 350k/);
+    assert.match(prompt, /interrupt with a forced \/compact at 450k/);
   });
 
   test("depth error is explicit", () => {

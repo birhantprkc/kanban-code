@@ -116,6 +116,7 @@ public struct SelfCompactSettings: Codable, Sendable, Equatable {
 }
 
 public enum SelfCompactPolicy {
+    public static let steerOffsetTokens = 100_000
     public static let forcedCompactOffsetTokens = 200_000
     public static let cardThresholdOptions = Array(stride(from: 200_000, through: 750_000, by: 50_000))
 
@@ -137,13 +138,23 @@ public enum SelfCompactPolicy {
               thresholdTokens <= Int.max - forcedCompactOffsetTokens
         else { return [] }
 
+        // Same escalation as the global defaults: ask while the agent can choose
+        // its own moment, steer once it is overdue, interrupt when it is not
+        // stopping on its own.
         let label = tokenLabel(thresholdTokens)
+        let steerThreshold = thresholdTokens + steerOffsetTokens
         return [
             SelfCompactRule(
                 id: "card-ctx-\(thresholdTokens)-nudge",
                 thresholdTokens: thresholdTokens,
                 action: .queuePrompt,
                 message: "You are above the \(label) context limit. Whenever it is convenient, use the kanban CLI to send yourself a self-compact, passing an argument for the post-compact message on how to continue."
+            ),
+            SelfCompactRule(
+                id: "card-ctx-\(steerThreshold)-steer",
+                thresholdTokens: steerThreshold,
+                action: .steer,
+                message: "You are above the \(tokenLabel(steerThreshold)) context limit. Compact yourself now with the kanban CLI self-compact command, passing an argument for the post-compact message on how to continue."
             ),
             SelfCompactRule(
                 id: "card-ctx-\(thresholdTokens + forcedCompactOffsetTokens)-force",

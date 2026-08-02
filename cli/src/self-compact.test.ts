@@ -26,11 +26,13 @@ describe("card self-compact policy", () => {
     const rules = cardSelfCompactRules(250_000);
     assert.deepEqual(rules.map((rule) => [rule.thresholdTokens, rule.action]), [
       [250_000, "queuePrompt"],
+      [350_000, "steer"],
       [450_000, "interrupt"],
     ]);
     assert.match(rules[0].message, /250k context limit/);
     assert.match(rules[0].message, /passing an argument for the post-compact message on how to continue/);
-    assert.equal(rules[1].message, "/compact");
+    assert.match(rules[1].message, /350k context limit/);
+    assert.equal(rules[2].message, "/compact");
   });
 
   test("defaults steer before the last threshold interrupts", () => {

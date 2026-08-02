@@ -1212,7 +1212,8 @@ Use a quoted argument for short goals, or stdin for long goals:
   EOF
 
 Use --context-threshold 250k for a Claude child to override global compaction.
-It receives a nudge at 250k and Kanban Code sends /compact at 450k.
+It gets a queued nudge at 250k, a steered reminder at 350k, and an interrupt with
+/compact at 450k.
 
 Fork copies a transcript into a new child. Without --from it copies this card;
 with --from it copies one of your own subagents so the same work can continue

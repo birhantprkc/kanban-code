@@ -63,7 +63,8 @@ kanban subagent resume parser-bug          # bring an archived child back
   becomes that child's sibling, still owned by you, so it works at depth limit 1.
 - **`--assistant claude|codex|gemini`** switches assistant (a fork migrates the transcript).
   **`--model sonnet`** picks the model. **`--context-threshold 250k`** sets a per-child
-  compaction nudge, with a forced `/compact` 200k tokens later.
+  compaction schedule that escalates like the global one: a queued nudge at 250k, a
+  steered reminder at 350k, and an interrupt with `/compact` at 450k.
 - **A child inherits your model** when you don't pass `--model`, so an Opus card does not
   quietly hand its work to a cheaper model. Switching assistants drops the inheritance.
 - **`kanban subagent model <card> <model>`** switches a running child. On Claude it
