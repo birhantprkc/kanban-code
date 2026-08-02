@@ -42,8 +42,13 @@ function writeContextPct(pct: number, windowSize = 1_000_000): void {
 describe("daemon (sandboxed, injected paste)", () => {
   let home: string;
   let pastes: [string, string][];
+  let interrupts: [string, string][];
   function newDaemon() {
-    return new Daemon({ selfCompact: { enabled: true }, paste: (s, t) => pastes.push([s, t]) });
+    return new Daemon({
+      selfCompact: { enabled: true },
+      paste: (s, t) => pastes.push([s, t]),
+      interrupt: (s, t) => interrupts.push([s, t]),
+    });
   }
 
   beforeEach(() => {
@@ -51,6 +56,7 @@ describe("daemon (sandboxed, injected paste)", () => {
     process.env.KANBAN_CODE_HOME = home;
     process.env.CLAUDE_CONFIG_DIR = join(home, "claude");
     pastes = [];
+    interrupts = [];
   });
   afterEach(() => {
     delete process.env.KANBAN_CODE_HOME;
@@ -114,12 +120,41 @@ describe("daemon (sandboxed, injected paste)", () => {
     assert.equal(readLinks()[0].queuedPrompts?.length, 1, "no duplicate queued warning");
   });
 
-  test("auto-compact sends /compact at the hard threshold", () => {
+  test("auto-compact interrupts with /compact at the hard threshold", () => {
     writeLinks([card()]);
-    writeContextPct(80); // 800k -> crosses 750k compactNow rule
+    writeContextPct(80); // 800k -> crosses the 750k interrupt rule
     const acted = newDaemon().evaluateAutoCompact();
-    assert.deepEqual(acted, [{ sessionId: SID, action: "compactNow", thresholdTokens: 750_000 }]);
+    assert.deepEqual(acted, [{ sessionId: SID, action: "interrupt", thresholdTokens: 750_000 }]);
+    assert.deepEqual(interrupts, [["daemon-agent", "/compact"]]);
+    assert.deepEqual(pastes, [], "an interrupt must not also steer");
+  });
+
+  test("the steer threshold pastes without stopping the turn", () => {
+    writeLinks([card()]);
+    writeContextPct(72); // 720k -> crosses the 700k steer rule
+    const acted = newDaemon().evaluateAutoCompact();
+    assert.deepEqual(acted, [{ sessionId: SID, action: "steer", thresholdTokens: 700_000 }]);
+    assert.deepEqual(pastes, [["daemon-agent", DEFAULT_SELF_COMPACT_RULES[2].message]]);
+    assert.deepEqual(interrupts, []);
+  });
+
+  test("settings saved before the split still steer", () => {
+    writeLinks([card()]);
+    writeContextPct(80);
+    const daemon = new Daemon({
+      selfCompact: {
+        enabled: true,
+        rules: [{ thresholdTokens: 750_000, action: "compactNow" as never, message: "/compact" }],
+      },
+      paste: (s, t) => pastes.push([s, t]),
+      interrupt: (s, t) => interrupts.push([s, t]),
+    });
+
+    const acted = daemon.evaluateAutoCompact();
+
+    assert.deepEqual(acted, [{ sessionId: SID, action: "steer", thresholdTokens: 750_000 }]);
     assert.deepEqual(pastes, [["daemon-agent", "/compact"]]);
+    assert.deepEqual(interrupts, []);
   });
 
   test("card threshold overrides a disabled global guard and queues ahead of user work", () => {
@@ -149,12 +184,13 @@ describe("daemon (sandboxed, injected paste)", () => {
     const daemon = new Daemon({
       selfCompact: { enabled: false },
       paste: (session, text) => pastes.push([session, text]),
+      interrupt: (session, text) => interrupts.push([session, text]),
     });
 
     const acted = daemon.evaluateAutoCompact();
 
-    assert.deepEqual(acted, [{ sessionId: SID, action: "compactNow", thresholdTokens: 450_000 }]);
-    assert.deepEqual(pastes, [["daemon-agent", "/compact"]]);
+    assert.deepEqual(acted, [{ sessionId: SID, action: "interrupt", thresholdTokens: 450_000 }]);
+    assert.deepEqual(interrupts, [["daemon-agent", "/compact"]]);
   });
 
   test("card threshold is ignored for assistants without Claude context telemetry", () => {

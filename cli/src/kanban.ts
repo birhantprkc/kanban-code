@@ -11,9 +11,12 @@ import {
   captureTmuxPane,
   peekTmuxPane,
   sendTmuxKeys,
+  sendTmuxEnter,
   pasteTmuxPrompt,
+  interruptTmuxPrompt,
   sendTmuxEscape,
   scheduleTmuxSelfCompact,
+  findSessionJsonl,
   readLastTranscriptTurns,
   readSessionContext,
   filterActiveCards,
@@ -64,15 +67,21 @@ import {
   sendDirectMessage,
 } from "./broadcast.js";
 import { deriveHandle, formatHandle, stripAt } from "./handles.js";
+import { parseDeliveryMode, type DeliveryMode } from "./delivery.js";
+import { queueCardPrompt } from "./cards.js";
 import { parseDuration, runShare } from "./share-cli.js";
 import {
   assertOwnedSubagent,
   buildSubagentPrompt,
   currentCardOrThrow,
   descendantIds,
+  kanbanCodeIsRunning,
   makeSubagentRequest,
   missingForkSessionError,
+  appliesModelSwitchDirectly,
   missingHandleError,
+  modelSwitchCommand,
+  needsModelSwitchConfirmation,
   normalizeSubagentHandle,
   resolveSubagentPrompt,
   subagentDepth,
@@ -347,31 +356,116 @@ program
     }
   });
 
+// ── kanban relink <card> <session> ───────────────────────────────────
+
+program
+  .command("relink")
+  .description("Point a card at a different session transcript")
+  .argument("<card>", "Card ID, ID prefix, or name search")
+  .argument("<session>", "Session ID of the transcript to link")
+  .option("-j, --json", "Output as JSON")
+  .action(async (cardQuery: string, sessionId: string, opts) => {
+    try {
+      const card = findCard(readLinks(), cardQuery);
+      if (!card) throw new Error(`Card not found: ${cardQuery}`);
+      const sessionPath = findSessionJsonl(sessionId);
+      if (!sessionPath) throw new Error(`No transcript found for session ${sessionId}`);
+      // Reconciliation never moves a card off a session it already has, and the
+      // running app flushes its own board over links.json, so the relink has to
+      // be the app's own write.
+      if (!kanbanCodeIsRunning()) {
+        throw new Error("Kanban Code is not running. Start it so the relink is not overwritten.");
+      }
+      const response = await submitSubagentRequest(
+        makeSubagentRequest("relinkSession", card.id, { cardId: card.id, sessionId, sessionPath })
+      );
+      if (!response.ok) throw new Error(response.error ?? "unknown error");
+      if (opts.json) output({ cardId: card.id, sessionId, sessionPath }, { json: true });
+      else console.log(`Relinked ${card.name ?? card.id} to ${sessionId}`);
+    } catch (error) {
+      console.error(String(error instanceof Error ? error.message : error));
+      process.exit(1);
+    }
+  });
+
 // ── kanban send <card> <message> ─────────────────────────────────────
+
+/** A bad --mode is a usage error, not a crash. */
+function deliveryModeOrExit(raw: string | undefined): DeliveryMode {
+  try {
+    return parseDeliveryMode(raw);
+  } catch (error) {
+    console.error(String(error instanceof Error ? error.message : error));
+    process.exit(1);
+  }
+}
+
+/**
+ * Append a prompt to a card's queue. A running Kanban Code owns links.json and
+ * flushes its own in-memory board over it, so the write has to go through the
+ * command mailbox; without the app there is nothing to race with.
+ */
+async function queuePromptForCard(
+  card: Link,
+  message: string,
+  opts: { json?: boolean }
+): Promise<void> {
+  if (kanbanCodeIsRunning()) {
+    const response = await submitSubagentRequest(
+      makeSubagentRequest("enqueuePrompt", card.id, { cardId: card.id, prompt: message })
+    );
+    if (!response.ok) {
+      console.error(`Failed: ${response.error ?? "unknown error"}`);
+      process.exit(1);
+    }
+  } else if (!queueCardPrompt(card.id, message)) {
+    console.error(`Card not found: ${card.id}`);
+    process.exit(1);
+  }
+
+  if (opts.json) {
+    output({ cardId: card.id, mode: "queue", message, ok: true }, { json: true });
+  } else {
+    console.log(`Queued for ${card.name ?? card.id}`);
+  }
+}
 
 program
   .command("send")
-  .description("Low-level: paste a message directly into one card's tmux session (not channel chat)")
+  .description("Low-level: deliver a message to one card's session (not channel chat)")
   .argument("<card>", "Card ID, ID prefix, or name search")
   .argument("<message>", "Message to send")
+  .option(
+    "--mode <mode>",
+    "steer (paste now, read between turns), queue (wait for the agent to go idle), or interrupt (Escape first, then send)",
+    "steer"
+  )
   .option("--keys", "Use send-keys instead of paste-buffer (for short single-line)")
   .option("--announce", "(deprecated, no-op: prompts are mirrored to Slack on confirmed receipt by the daemon)")
   .option("-j, --json", "Output as JSON")
   .action(async (cardQuery: string, message: string, opts) => {
+    const mode = deliveryModeOrExit(opts.mode);
     const links = readLinks();
     const card = findCard(links, cardQuery);
     if (!card) {
       console.error(`Card not found: ${cardQuery}`);
       process.exit(1);
     }
+
+    if (mode === "queue") {
+      await queuePromptForCard(card, message, { json: opts.json });
+      return;
+    }
+
     if (!card.tmuxLink?.sessionName) {
       console.error(`Card has no tmux session: ${card.id}`);
       process.exit(1);
     }
 
-    const result = opts.keys
-      ? sendTmuxKeys(card.tmuxLink.sessionName, message)
-      : pasteTmuxPrompt(card.tmuxLink.sessionName, message);
+    const send = opts.keys ? sendTmuxKeys : pasteTmuxPrompt;
+    const result = mode === "interrupt"
+      ? interruptTmuxPrompt(card.tmuxLink.sessionName, message, send)
+      : send(card.tmuxLink.sessionName, message);
 
     // No announce here: the prompt is mirrored to Slack only once the agent's
     // UserPromptSubmit hook confirms it was actually received (the daemon does
@@ -383,6 +477,7 @@ program
         {
           cardId: card.id,
           tmuxSession: card.tmuxLink.sessionName,
+          mode,
           message,
           ...result,
         },
@@ -1279,25 +1374,112 @@ subagentCmd
 
 subagentCmd
   .command("send")
-  .description("Low-level: paste directly into an owned subagent's tmux session")
+  .description("Low-level: deliver a message directly into an owned subagent's session")
   .argument("<card>", "Owned subagent card")
   .argument("<message...>", "Message or assistant command")
+  .option(
+    "--mode <mode>",
+    "steer (paste now, read between turns), queue (wait for the agent to go idle), or interrupt (Escape first, then send)",
+    "steer"
+  )
   .option("--keys", "Use send-keys instead of paste-buffer for a short single-line command")
   .option("-j, --json", "Output as JSON")
   .action(async (query: string, message: string[], opts) => {
+    try {
+      const mode = parseDeliveryMode(opts.mode);
+      const links = readLinks();
+      const caller = currentCardOrThrow(links);
+      const target = requireSubagentTarget(caller, query, links);
+      const body = await readMessageFromArgsOrStdin(message);
+      if (mode === "queue") {
+        await queuePromptForCard(target, body, { json: opts.json });
+        return;
+      }
+      const session = target.tmuxLink?.sessionName;
+      if (!session) throw new Error(`Subagent ${target.id} has no tmux session.`);
+      const send = opts.keys ? sendTmuxKeys : pasteTmuxPrompt;
+      const result = mode === "interrupt"
+        ? interruptTmuxPrompt(session, body, send)
+        : send(session, body);
+      if (!result.ok) throw new Error(result.error ?? "tmux paste failed");
+      if (opts.json) output({ cardId: target.id, mode, sent: true }, { json: true });
+      else console.log(`Sent to ${target.id}`);
+    } catch (error) {
+      console.error(String(error instanceof Error ? error.message : error));
+      process.exitCode = 1;
+    }
+  });
+
+/**
+ * Answer the assistant's "switch model?" dialog by taking its default option.
+ * Returns false when a dialog is still on screen afterwards, so the caller can
+ * say so rather than reporting a switch that never happened.
+ */
+async function acceptModelSwitchConfirmation(session: string): Promise<boolean> {
+  for (let attempt = 0; attempt < 12; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const pane = captureTmuxPane(session);
+    if (!needsModelSwitchConfirmation(pane)) {
+      // No dialog on the first look means the assistant applied it directly.
+      if (attempt > 0) return true;
+      continue;
+    }
+    sendTmuxEnter(session);
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    return !needsModelSwitchConfirmation(captureTmuxPane(session));
+  }
+  return true;
+}
+
+subagentCmd
+  .command("model")
+  .description("Switch an owned subagent to another model")
+  .argument("<card>", "Owned subagent card")
+  .argument("<model>", "Model alias, e.g. opus, sonnet, or gpt-5")
+  .option("-j, --json", "Output as JSON")
+  .action(async (query: string, model: string, opts) => {
     try {
       const links = readLinks();
       const caller = currentCardOrThrow(links);
       const target = requireSubagentTarget(caller, query, links);
       const session = target.tmuxLink?.sessionName;
       if (!session) throw new Error(`Subagent ${target.id} has no tmux session.`);
-      const body = await readMessageFromArgsOrStdin(message);
-      const result = opts.keys
-        ? sendTmuxKeys(session, body)
-        : pasteTmuxPrompt(session, body);
+
+      const assistant = target.assistant ?? "claude";
+      const direct = appliesModelSwitchDirectly(assistant);
+      const command = modelSwitchCommand(model, assistant);
+      const result = pasteTmuxPrompt(session, command);
       if (!result.ok) throw new Error(result.error ?? "tmux paste failed");
-      if (opts.json) output({ cardId: target.id, sent: true }, { json: true });
-      else console.log(`Sent to ${target.id}`);
+
+      // Switching mid-conversation costs the prompt cache, so the assistant asks
+      // first and leaves the card parked on a dialog until someone answers.
+      const applied = direct && (await acceptModelSwitchConfirmation(session));
+
+      // The slash command only changes the running turn, so record the switch
+      // too or a later resume relaunches the card on the old model.
+      if (applied && kanbanCodeIsRunning()) {
+        const response = await submitSubagentRequest(
+          makeSubagentRequest("setModel", caller.id, { cardId: target.id, model: model.trim() })
+        );
+        if (!response.ok) throw new Error(response.error ?? "unknown error");
+      }
+
+      // Assistants disagree on how `/model` behaves, so hand back the pane
+      // instead of claiming it worked.
+      const pane = peekTmuxPane(session, 12);
+      if (opts.json) output({ cardId: target.id, command, applied, pane }, { json: true });
+      else {
+        console.log(`Sent ${command} to ${target.id}`);
+        if (!direct) {
+          console.log(
+            `${assistant} takes no model name on /model, so its picker is now open. ` +
+            `Choose ${model.trim()} there, for example with \`kanban subagent send ${target.id} --keys 2\`.`
+          );
+        } else if (!applied) {
+          console.log("The assistant is still showing a prompt; check the pane below.");
+        }
+        console.log(pane);
+      }
     } catch (error) {
       console.error(String(error instanceof Error ? error.message : error));
       process.exitCode = 1;

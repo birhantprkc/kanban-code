@@ -68,7 +68,7 @@ describe("kanban help", () => {
     assert.equal(r.code, 0, r.stderr);
     const helpText = r.stdout.replace(/\s+/g, " ");
     assert.match(helpText, /kanban channel --help/);
-    assert.match(helpText, /Low-level: paste a message directly into one card's tmux session/);
+    assert.match(helpText, /Low-level: deliver a message to one card's session/);
 
     const channelIndex = r.stdout.indexOf("  channel");
     const dmIndex = r.stdout.indexOf("  dm");

@@ -58,7 +58,12 @@ struct SearchOverlay: View {
     private var resultsSection: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(alignment: .leading, spacing: 4) {
+                // Lazy, because a query can produce 80 quick results or a deep
+                // search a screenful of snippet rows. An eager stack rebuilds
+                // every one of them on each incremental scroll update, which is
+                // what made trackpad scrolling crawl while dragging the scroller
+                // (far fewer, larger updates) stayed smooth.
+                LazyVStack(alignment: .leading, spacing: 4) {
                     Color.clear.frame(height: 0).id(Self.scrollTopId)
                     if isCommandMode {
                         commandsView

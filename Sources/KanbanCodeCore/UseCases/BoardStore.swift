@@ -361,6 +361,8 @@ public enum Action: Sendable {
     case renameCard(cardId: String, name: String)
     case setCardPinned(cardId: String, isPinned: Bool)
     case setSelfCompactContextThreshold(cardId: String, thresholdTokens: Int?)
+    case relinkSession(cardId: String, sessionLink: SessionLink)
+    case setCardModel(cardId: String, model: String?)
     case archiveCard(cardId: String)
     case deleteCard(cardId: String)
     case selectCard(cardId: String?)
@@ -817,6 +819,28 @@ public enum Reducer {
                 effects.append(.deleteFiles(removedImages))
             }
             return effects
+
+        case .relinkSession(let cardId, let sessionLink):
+            guard var link = state.links[cardId] else { return [] }
+            guard link.sessionLink?.sessionId != sessionLink.sessionId else { return [] }
+            KanbanCodeLog.info(
+                "store",
+                "Relink: card=\(cardId.prefix(12)) session=\(sessionLink.sessionId.prefix(8))"
+            )
+            link.sessionLink = sessionLink
+            link.updatedAt = .now
+            state.links[cardId] = link
+            return [.upsertLink(link)]
+
+        case .setCardModel(let cardId, let model):
+            guard var link = state.links[cardId] else { return [] }
+            let normalized = model?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let resolved = (normalized?.isEmpty ?? true) ? nil : normalized
+            guard link.modelOverride != resolved else { return [] }
+            link.modelOverride = resolved
+            link.updatedAt = .now
+            state.links[cardId] = link
+            return [.upsertLink(link)]
 
         case .archiveCard(let cardId):
             guard var link = state.links[cardId] else { return [] }
@@ -1868,6 +1892,13 @@ public enum Reducer {
                     link.parentCardId = existing.parentCardId
                     link.modelOverride = existing.modelOverride
                     link.selfCompactContextThresholdTokens = existing.selfCompactContextThresholdTokens
+                    // Manual ordering is UI-owned: the reconciler only ever echoes
+                    // back whatever links.json held when it took its snapshot. A
+                    // drag that lands mid-cycle carries no updatedAt bump (it would
+                    // reset every "x ago" label in the column), so last-writer-wins
+                    // cannot protect it and the card would visibly jump back.
+                    link.sortOrder = existing.sortOrder
+                    link.pinnedSortOrder = existing.pinnedSortOrder
                     if existing.isLaunching == true {
                         // Check if activity hook has confirmed the session is running
                         let activity = result.activityMap[existing.sessionLink?.sessionId ?? ""]

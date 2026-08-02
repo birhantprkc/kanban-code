@@ -3097,10 +3097,13 @@ struct ContentView: View {
                 placement: .front
             ))
 
-        case .compactNow:
-            let command = rule.message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "/compact" : rule.message
-            KanbanCodeLog.warn("self-compact", "Forcing compact for \(cardId.prefix(12)) at \(usedTokens) tokens")
-            try? await tmuxAdapter.pastePrompt(to: sessionName, text: command)
+        case .steer:
+            KanbanCodeLog.warn("self-compact", "Steering \(cardId.prefix(12)) at \(usedTokens) tokens")
+            try? await tmuxAdapter.pastePrompt(to: sessionName, text: SelfCompactPolicy.command(for: rule))
+
+        case .interrupt:
+            KanbanCodeLog.warn("self-compact", "Interrupting \(cardId.prefix(12)) at \(usedTokens) tokens")
+            try? await tmuxAdapter.interruptPrompt(to: sessionName, text: SelfCompactPolicy.command(for: rule))
         }
     }
 

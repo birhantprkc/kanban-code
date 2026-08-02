@@ -1,7 +1,7 @@
 import { existsSync, statSync, openSync, readSync, closeSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { hookEventsPath } from "../paths.js";
-import { readLinks, readSessionContext, pasteTmuxPrompt } from "../data.js";
+import { readLinks, readSessionContext, pasteTmuxPrompt, interruptTmuxPrompt } from "../data.js";
 import { upsertCard, isoNow } from "../cards.js";
 import { installHooks } from "../hooks.js";
 import { announceSuppressPath, ANNOUNCE_SUPPRESS_TTL_MS } from "../slack/announce-suppress.js";
@@ -9,6 +9,7 @@ import { Link, QueuedPrompt, SessionContext } from "../types.js";
 import {
   DEFAULT_SELF_COMPACT_RULES,
   effectiveSelfCompactRules,
+  normalizeSelfCompactRules,
   selfCompactPolicySignature,
   type SelfCompactAction,
   type SelfCompactRule,
@@ -34,6 +35,8 @@ export interface DaemonOptions {
   selfCompact?: { enabled: boolean; rules?: SelfCompactRule[] };
   /// Side effect for sending text to a tmux session. Injectable for tests.
   paste?: (sessionName: string, text: string) => void;
+  /// Same, but stops the current turn with Escape first. Injectable for tests.
+  interrupt?: (sessionName: string, text: string) => void;
   /// Optional: mirror a confirmed-received prompt to the agent's Slack channel.
   /// Called on UserPromptSubmit (real receipt), never on mere paste, and never
   /// for relayed Slack-human messages. Fire-and-forget; not used in tests.
@@ -57,6 +60,7 @@ export class Daemon {
   private readonly selfCompactEnabled: boolean;
   private readonly rules: SelfCompactRule[];
   private readonly paste: (sessionName: string, text: string) => void;
+  private readonly interrupt: (sessionName: string, text: string) => void;
   private readonly announce: (slug: string, text: string) => void;
 
   /// Last time we saw a user/relay prompt per session (ms). Pauses auto-send.
@@ -80,10 +84,10 @@ export class Daemon {
     this.pollIntervalMs = opts.pollIntervalMs ?? 30_000;
     this.autoSendDelayMs = opts.autoSendDelayMs ?? 1_000;
     this.selfCompactEnabled = opts.selfCompact?.enabled ?? true;
-    this.rules = (opts.selfCompact?.rules ?? DEFAULT_SELF_COMPACT_RULES)
-      .slice()
+    this.rules = normalizeSelfCompactRules(opts.selfCompact?.rules ?? DEFAULT_SELF_COMPACT_RULES)
       .sort((a, b) => a.thresholdTokens - b.thresholdTokens);
     this.paste = opts.paste ?? ((s, t) => pasteTmuxPrompt(s, t));
+    this.interrupt = opts.interrupt ?? ((s, t) => interruptTmuxPrompt(s, t));
     this.announce = opts.announce ?? (() => {});
   }
 
@@ -313,8 +317,13 @@ export class Daemon {
       if (rule.action === "queuePrompt") {
         this.enqueueOnce(card.id, rule);
       } else {
-        this.paste(sessionName, "/compact");
-        this.announce(card.name ?? "", `🧹 context over ${Math.round(rule.thresholdTokens / 1000)}k - sending /compact`);
+        const body = rule.message.trim() || "/compact";
+        if (rule.action === "interrupt") {
+          this.interrupt(sessionName, body);
+        } else {
+          this.paste(sessionName, body);
+        }
+        this.announce(card.name ?? "", `🧹 context over ${Math.round(rule.thresholdTokens / 1000)}k - sending ${body.split("\n")[0]}`);
       }
       this.lastTriggered.set(sessionId, rule.thresholdTokens);
       acted.push({ sessionId, action: rule.action, thresholdTokens: rule.thresholdTokens });

@@ -266,7 +266,7 @@ struct SettingsStoreTests {
         #expect(settings.selfCompact.enabled == false)
         #expect(settings.selfCompact.pollIntervalSeconds == 30)
         #expect(settings.selfCompact.rules.map(\.thresholdTokens) == [500_000, 600_000, 700_000, 750_000])
-        #expect(settings.selfCompact.rules.last?.action == .compactNow)
+        #expect(settings.selfCompact.rules.last?.action == .interrupt)
     }
 
     @Test("selfCompact round-trips through SettingsStore")
@@ -283,7 +283,7 @@ struct SettingsStoreTests {
                 SelfCompactRule(
                     id: "test-900k",
                     thresholdTokens: 900_000,
-                    action: .compactNow,
+                    action: .interrupt,
                     message: "/compact"
                 ),
             ]
@@ -295,7 +295,7 @@ struct SettingsStoreTests {
         #expect(read.selfCompact.pollIntervalSeconds == 60)
         #expect(read.selfCompact.rules.count == 1)
         #expect(read.selfCompact.rules[0].thresholdTokens == 900_000)
-        #expect(read.selfCompact.rules[0].action == .compactNow)
+        #expect(read.selfCompact.rules[0].action == .interrupt)
     }
 
     @Test("Old settings JSON without selfCompact decodes with disabled defaults")

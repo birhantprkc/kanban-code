@@ -551,7 +551,7 @@ struct SelfCompactSettingsView: View {
                     .labelsHidden()
                 }
 
-                Text("Kanban Code reads Claude's statusline context usage for live cards. Prompt rules are queued for the agent and auto-sent when it finishes; compact rules paste `/compact` directly into tmux.")
+                Text("Kanban Code reads Claude's statusline context usage for live cards. Queued messages wait for the agent to go idle, steered messages are pasted straight away and read between turns, and interrupts stop the current turn with Escape first.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -573,6 +573,7 @@ struct SelfCompactSettingsView: View {
                             }
                             .labelsHidden()
                             .frame(width: 150)
+                            .help(rule.action.detail)
                             .onChange(of: rule.action) { scheduleSave() }
 
                             Spacer()
@@ -605,7 +606,7 @@ struct SelfCompactSettingsView: View {
                         config.rules.append(SelfCompactRule(
                             id: UUID().uuidString,
                             thresholdTokens: 800_000,
-                            action: .compactNow,
+                            action: .interrupt,
                             message: "/compact"
                         ))
                         config.rules.sort { $0.thresholdTokens < $1.thresholdTokens }

@@ -98,7 +98,7 @@ Feature: First-class subagents
     Then the child card should persist a self-compact context threshold of 250000 tokens
     And the child should queue one self-compact nudge when its context reaches 250000 tokens
     And the nudge should tell the child to pass a post-compact continuation message to `kanban self-compact`
-    And the child should receive a direct `/compact` when its context reaches 450000 tokens
+    And the child should be interrupted with `/compact` when its context reaches 450000 tokens
     And the child-specific policy should replace the global self-compact rules for that card
     And the child-specific policy should remain active when the global self-compact guard is disabled
 
@@ -344,9 +344,70 @@ Feature: First-class subagents
 
   Scenario: The handle names the card and the chat identity
     When an agent runs `kanban subagent spawn --handle parser-bug "investigate the parser"`
-    Then the child card should be named "parser_bug"
-    And its chat handle should be "@parser_bug" instead of a slug of the goal text
+    Then the child card should be named "parser-bug"
+    And its chat handle should be "@parser-bug" instead of a slug of the goal text
+    And a dash the author typed should survive into both, rather than becoming an underscore
     And its bootstrap prompt should state its own handle
+
+  # Inheritance
+
+  Scenario: A child inherits its parent's model
+    Given the current card is running on Opus
+    When it spawns or forks a child without --model
+    Then the child should start on Opus too
+    And an explicitly passed --model should still win
+    And a child launched onto a different assistant should not inherit the model
+
+  # Delivery modes
+
+  Scenario Outline: Messages reach a card three different ways
+    When an agent runs `kanban send <card> "<message>" --mode <mode>`
+    Then the message should be delivered by <delivery>
+
+    Examples:
+      | mode      | delivery                                                    |
+      | steer     | pasting into the session, read between turns                |
+      | queue     | waiting in the card's prompt queue until the agent is idle  |
+      | interrupt | Escape to stop the current turn, then the message           |
+
+  Scenario: Steering is the default and enqueue is an accepted spelling of queue
+    When an agent runs `kanban send <card> "<message>"` with no --mode
+    Then it should steer
+    And `--mode enqueue` should behave exactly like `--mode queue`
+    But an unknown mode should fail before anything is sent
+
+  Scenario: Queueing goes through the app rather than links.json
+    Given Kanban Code is running
+    When an agent runs `kanban send <card> "<message>" --mode queue`
+    Then the prompt should be appended by the app itself
+    And the command should return only after the queue write is persisted
+    But with Kanban Code closed the CLI should write the queue entry directly
+
+  # Model switching
+
+  Scenario: A parent switches an owned Claude subagent's model
+    When the parent runs `kanban subagent model child-1 opus`
+    Then "/model opus" should be submitted into the child's session
+    And the "Switch model?" confirmation should be accepted on the child's behalf
+    And the child card should record the model so resuming it does not revert the switch
+    And the command should return the child's pane so the caller can see whether it took
+
+  Scenario: Codex opens a picker instead of taking a model name
+    Given "child-1" runs on Codex
+    When the parent runs `kanban subagent model child-1 gpt-5`
+    Then a bare "/model" should be submitted, because a name would be sent as a prompt
+    And the reply should say the picker is open and needs a selection
+    But the card should not record a model the switch never applied
+
+  # Relinking
+
+  Scenario: A card is pointed at a different transcript
+    Given a card is linked to a session that is no longer the one it is running
+    When someone runs `kanban relink <card> <session-id>`
+    Then the card should point at that session's transcript
+    And no transcript file should be moved, rewritten, or deleted
+    And reconciliation should not put the old session back
+    But the relink should fail if the transcript does not exist
 
   # Lifecycle visibility
 

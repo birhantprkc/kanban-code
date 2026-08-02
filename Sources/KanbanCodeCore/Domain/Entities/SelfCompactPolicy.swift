@@ -1,14 +1,43 @@
 import Foundation
 
+/// How a threshold message reaches the agent. The three modes are the same
+/// delivery semantics the CLI exposes through `kanban send --mode`.
 public enum SelfCompactAction: String, Codable, Sendable, CaseIterable {
     case queuePrompt
-    case compactNow
+    case steer
+    case interrupt
 
     public var displayName: String {
         switch self {
         case .queuePrompt: "Queue prompt"
-        case .compactNow: "Compact now"
+        case .steer: "Steer"
+        case .interrupt: "Interrupt"
         }
+    }
+
+    public var detail: String {
+        switch self {
+        case .queuePrompt: "Waits in the card's queue and is sent once the agent goes idle."
+        case .steer: "Pasted into the session right away. The agent reads it between turns."
+        case .interrupt: "Stops the agent with Escape first, then sends the message."
+        }
+    }
+
+    /// Settings saved before steering and interrupting were separate modes spell
+    /// the steering action `compactNow`.
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        if raw == "compactNow" {
+            self = .steer
+            return
+        }
+        guard let action = SelfCompactAction(rawValue: raw) else {
+            throw DecodingError.dataCorruptedError(
+                in: try decoder.singleValueContainer(),
+                debugDescription: "Unknown self-compact action \"\(raw)\""
+            )
+        }
+        self = action
     }
 }
 
@@ -46,13 +75,13 @@ public struct SelfCompactRule: Identifiable, Codable, Sendable, Equatable {
         SelfCompactRule(
             id: "ctx-700k",
             thresholdTokens: 700_000,
-            action: .queuePrompt,
+            action: .steer,
             message: "You are above the 700k context limit. Compact yourself IMMEDIATELY using the kanban CLI self-compact command."
         ),
         SelfCompactRule(
             id: "ctx-750k",
             thresholdTokens: 750_000,
-            action: .compactNow,
+            action: .interrupt,
             message: "/compact"
         ),
     ]
@@ -119,10 +148,17 @@ public enum SelfCompactPolicy {
             SelfCompactRule(
                 id: "card-ctx-\(thresholdTokens + forcedCompactOffsetTokens)-force",
                 thresholdTokens: thresholdTokens + forcedCompactOffsetTokens,
-                action: .compactNow,
+                action: .interrupt,
                 message: "/compact"
             ),
         ]
+    }
+
+    /// An empty message on a steer or interrupt rule still has to say something,
+    /// and the only useful thing to say at a context threshold is `/compact`.
+    public static func command(for rule: SelfCompactRule) -> String {
+        let trimmed = rule.message.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "/compact" : rule.message
     }
 
     public static func tokenLabel(_ tokens: Int) -> String {

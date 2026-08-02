@@ -360,6 +360,62 @@ struct ReducerTests {
         #expect(effects.count == 3)
     }
 
+    @Test("A drag survives a reconcile that snapshotted the old order")
+    func reorderSurvivesStaleReconcile() {
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        let first = makeLink(id: "card_1", column: .backlog, updatedAt: timestamp)
+        let second = makeLink(id: "card_2", column: .backlog, updatedAt: timestamp)
+        var state = stateWith([first, second])
+
+        let _ = Reducer.reduce(
+            state: &state,
+            action: .reorderCard(cardId: "card_2", targetCardId: "card_1", above: true)
+        )
+        state.rebuildCards()
+
+        // Reconciliation read links.json before the drag was persisted, so it
+        // echoes back the pre-drag order under a timestamp the drag never bumped.
+        let _ = Reducer.reduce(state: &state, action: .reconciled(ReconciliationResult(
+            links: [first, second],
+            sessions: [],
+            activityMap: [:],
+            tmuxSessions: []
+        )))
+        state.rebuildCards()
+
+        #expect(state.cards(in: .backlog).map(\.id) == ["card_2", "card_1"])
+        #expect(state.links["card_2"]?.sortOrder == 0)
+        #expect(state.links["card_1"]?.sortOrder == 1)
+    }
+
+    @Test("A pinned drag survives a reconcile that snapshotted the old order")
+    func reorderPinnedSurvivesStaleReconcile() {
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        var first = makeLink(id: "card_pin_first", column: .waiting, updatedAt: timestamp)
+        first.pinnedAt = Date(timeIntervalSince1970: 100)
+        first.pinnedSortOrder = 0
+        var second = makeLink(id: "card_pin_second", column: .waiting, updatedAt: timestamp)
+        second.pinnedAt = Date(timeIntervalSince1970: 200)
+        second.pinnedSortOrder = 1
+        var state = stateWith([first, second])
+
+        let _ = Reducer.reduce(
+            state: &state,
+            action: .reorderPinnedCard(cardId: "card_pin_second", targetCardId: "card_pin_first", above: true)
+        )
+        state.rebuildCards()
+
+        let _ = Reducer.reduce(state: &state, action: .reconciled(ReconciliationResult(
+            links: [first, second],
+            sessions: [],
+            activityMap: [:],
+            tmuxSessions: []
+        )))
+        state.rebuildCards()
+
+        #expect(state.pinnedCards.map(\.id) == ["card_pin_second", "card_pin_first"])
+    }
+
     // MARK: - Delete Card
 
     @Test("deleteCard removes link and returns cleanup effects")

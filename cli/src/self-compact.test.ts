@@ -4,8 +4,10 @@ import {
   DEFAULT_SELF_COMPACT_RULES,
   cardSelfCompactRules,
   effectiveSelfCompactRules,
+  normalizeSelfCompactAction,
   parseContextThreshold,
 } from "./self-compact.js";
+import { parseDeliveryMode } from "./delivery.js";
 
 describe("card self-compact policy", () => {
   test("parses k-suffixed and integer token thresholds exactly", () => {
@@ -24,11 +26,34 @@ describe("card self-compact policy", () => {
     const rules = cardSelfCompactRules(250_000);
     assert.deepEqual(rules.map((rule) => [rule.thresholdTokens, rule.action]), [
       [250_000, "queuePrompt"],
-      [450_000, "compactNow"],
+      [450_000, "interrupt"],
     ]);
     assert.match(rules[0].message, /250k context limit/);
     assert.match(rules[0].message, /passing an argument for the post-compact message on how to continue/);
     assert.equal(rules[1].message, "/compact");
+  });
+
+  test("defaults steer before the last threshold interrupts", () => {
+    const actions = DEFAULT_SELF_COMPACT_RULES.map((rule) => rule.action);
+
+    assert.equal(actions.at(-1), "interrupt");
+    assert.equal(actions.at(-2), "steer");
+    assert.ok(actions.slice(0, -2).every((action) => action === "queuePrompt"));
+  });
+
+  test("settings saved before the split read compactNow as steer", () => {
+    assert.equal(normalizeSelfCompactAction("compactNow"), "steer");
+    assert.equal(normalizeSelfCompactAction("interrupt"), "interrupt");
+    assert.equal(normalizeSelfCompactAction("steer"), "steer");
+    assert.equal(normalizeSelfCompactAction(undefined), "queuePrompt");
+  });
+
+  test("delivery modes accept both spellings of queue", () => {
+    assert.equal(parseDeliveryMode(undefined), "steer");
+    assert.equal(parseDeliveryMode("queue"), "queue");
+    assert.equal(parseDeliveryMode("enqueue"), "queue");
+    assert.equal(parseDeliveryMode("INTERRUPT"), "interrupt");
+    assert.throws(() => parseDeliveryMode("yell"), /Invalid --mode/);
   });
 
   test("a card threshold replaces global rules even when the global guard is disabled", () => {

@@ -4,8 +4,11 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  appliesModelSwitchDirectly,
   assertOwnedSubagent,
   buildSubagentPrompt,
+  modelSwitchCommand,
+  needsModelSwitchConfirmation,
   depthLimitError,
   descendantIds,
   kanbanCodeIsRunning,
@@ -18,6 +21,7 @@ import {
   subagentRelationship,
   submitSubagentRequest,
 } from "./subagents.js";
+import { deriveHandle } from "./handles.js";
 import { formatCardSummary } from "./format.js";
 import type { CardSummary, Link } from "./types.js";
 
@@ -109,6 +113,31 @@ describe("subagent hierarchy", () => {
     assert.equal(subagentRelationship(null, child.id, links), undefined);
   });
 
+  test("model switching matches how each assistant reads /model", () => {
+    assert.equal(modelSwitchCommand("opus"), "/model opus");
+    assert.equal(modelSwitchCommand("/model opus"), "/model opus");
+    assert.equal(modelSwitchCommand("sonnet", "claude"), "/model sonnet");
+    // Codex takes no argument and opens a picker, so a name there would be
+    // submitted as an ordinary prompt.
+    assert.equal(modelSwitchCommand("gpt-5", "codex"), "/model");
+    assert.equal(appliesModelSwitchDirectly("codex"), false);
+    assert.equal(appliesModelSwitchDirectly("claude"), true);
+    assert.throws(() => modelSwitchCommand("  "), /model name is required/);
+  });
+
+  test("the mid-conversation switch dialog is recognised", () => {
+    const dialog = [
+      "Switch model?",
+      "This conversation is cached for the current model.",
+      "❯ 1. Yes, switch to Sonnet 5",
+      "  2. No, go back",
+    ].join("\n");
+
+    assert.ok(needsModelSwitchConfirmation(dialog));
+    assert.ok(!needsModelSwitchConfirmation("⎿  Set model to Opus 5 and saved as your default"));
+    assert.ok(!needsModelSwitchConfirmation("❯ "));
+  });
+
   test("missing fork transcript recommends a new spawn", () => {
     assert.equal(
       missingForkSessionError("root"),
@@ -117,13 +146,22 @@ describe("subagent hierarchy", () => {
   });
 
   test("handles are normalized into readable slugs", () => {
-    assert.equal(normalizeSubagentHandle("parser-bug"), "parser_bug");
+    assert.equal(normalizeSubagentHandle("parser-bug"), "parser-bug");
     assert.equal(normalizeSubagentHandle("@Cache Path"), "cache_path");
     assert.equal(
       normalizeSubagentHandle("a-very-long-handle-that-exceeds-the-maximum-length"),
-      "a_very_long_handle_that"
+      "a-very-long-handle-that"
     );
     assert.throws(() => normalizeSubagentHandle("!!!"), /no letters or digits/);
+  });
+
+  test("a dashed handle stays dashed as a card name and a chat handle", () => {
+    const handle = normalizeSubagentHandle("hi-tester");
+
+    assert.equal(handle, "hi-tester");
+    // The card is named after the handle and the chat handle is derived back
+    // from that name, so slugifying has to be a no-op or the two drift apart.
+    assert.equal(deriveHandle(handle, new Set()), handle);
   });
 
   test("bootstrap prompt states the child handle", () => {

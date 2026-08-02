@@ -284,39 +284,6 @@ public final class BoardState: @unchecked Sendable {
         return link
     }
 
-    /// Reorder a card within its column by placing it above or below a target card.
-    public func reorderCard(cardId: String, targetCardId: String, above: Bool) {
-        guard let draggedIndex = cards.firstIndex(where: { $0.id == cardId }) else { return }
-        let column = cards[draggedIndex].link.column
-        var columnCards = self.cards(in: column)
-
-        // Remove the dragged card
-        columnCards.removeAll { $0.id == cardId }
-
-        // Find insertion index
-        let insertIndex: Int
-        if let targetIdx = columnCards.firstIndex(where: { $0.id == targetCardId }) {
-            insertIndex = above ? targetIdx : targetIdx + 1
-        } else {
-            insertIndex = columnCards.count
-        }
-        columnCards.insert(cards[draggedIndex], at: insertIndex)
-
-        // Assign sortOrder and persist
-        for (i, card) in columnCards.enumerated() {
-            guard let idx = cards.firstIndex(where: { $0.id == card.id }) else { continue }
-            var link = cards[idx].link
-            link.sortOrder = i
-            let session = cards[idx].session
-            let activity = cards[idx].activityState
-            cards[idx] = KanbanCodeCard(link: link, session: session, activityState: activity)
-
-            Task {
-                try? await coordinationStore.upsertLink(link)
-            }
-        }
-    }
-
     /// Move a card to a different column (manual override — e.g. user drag).
     public func moveCard(cardId: String, to column: KanbanCodeColumn) {
         setCardColumn(cardId: cardId, to: column, manualOverride: true)

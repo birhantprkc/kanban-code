@@ -332,6 +332,26 @@ export function pasteTmuxText(
   }
 }
 
+/**
+ * Stop the assistant's current turn, then submit `text`. Steering waits for the
+ * turn to end; this cuts it short. The pause after Escape gives the composer a
+ * beat to become usable again before the paste lands.
+ */
+export function interruptTmuxPrompt(
+  sessionName: string,
+  text: string,
+  send: (session: string, body: string) => { ok: boolean; error?: string } = pasteTmuxPrompt
+): { ok: boolean; error?: string } {
+  const stopped = sendTmuxEscape(sessionName);
+  if (!stopped.ok) return stopped;
+  try {
+    execSync("sleep 0.4");
+  } catch {
+    // A failed sleep only costs the settle time, not the send itself.
+  }
+  return send(sessionName, text);
+}
+
 export function sendTmuxEscape(
   sessionName: string
 ): { ok: boolean; error?: string } {

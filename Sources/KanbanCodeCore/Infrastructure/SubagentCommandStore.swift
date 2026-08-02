@@ -5,6 +5,14 @@ public enum SubagentCommandOperation: String, Codable, Sendable {
     case fork
     case archive
     case resume
+    /// Card-level, not subagent-level: the CLI cannot append to a card's prompt
+    /// queue itself because the running app owns links.json.
+    case enqueuePrompt
+    /// Point a card at a different transcript, for when reconciliation left it on
+    /// a stale session. Also a links.json write, so also the app's to make.
+    case relinkSession
+    /// Record a model switch so resuming the card does not undo it.
+    case setModel
 }
 
 public struct SubagentCommandRequest: Codable, Sendable, Equatable {
@@ -21,6 +29,9 @@ public struct SubagentCommandRequest: Codable, Sendable, Equatable {
     public let assistant: CodingAssistant?
     public let model: String?
     public let contextThresholdTokens: Int?
+    /// Transcript a relink points the card at.
+    public let sessionId: String?
+    public let sessionPath: String?
 
     public init(
         id: String,
@@ -33,7 +44,9 @@ public struct SubagentCommandRequest: Codable, Sendable, Equatable {
         prompt: String? = nil,
         assistant: CodingAssistant? = nil,
         model: String? = nil,
-        contextThresholdTokens: Int? = nil
+        contextThresholdTokens: Int? = nil,
+        sessionId: String? = nil,
+        sessionPath: String? = nil
     ) {
         self.id = id
         self.operation = operation
@@ -46,6 +59,8 @@ public struct SubagentCommandRequest: Codable, Sendable, Equatable {
         self.assistant = assistant
         self.model = model
         self.contextThresholdTokens = contextThresholdTokens
+        self.sessionId = sessionId
+        self.sessionPath = sessionPath
     }
 }
 
@@ -64,7 +79,7 @@ public struct SubagentCommandResponse: Codable, Sendable, Equatable {
 }
 
 /// Filesystem mailbox used by the CLI to ask the running app to perform
-/// stateful subagent operations through BoardStore's serialized reducer.
+/// stateful card operations through BoardStore's serialized reducer.
 public actor SubagentCommandStore {
     private let baseURL: URL
     private let fileManager: FileManager

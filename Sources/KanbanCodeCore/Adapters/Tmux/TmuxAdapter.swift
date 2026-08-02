@@ -133,47 +133,58 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
         try await ensurePromptSent(sessionName: sessionName)
     }
 
-    /// Poll pane output to verify the prompt was sent. If text remains on the
-    /// prompt line after Enter, send Enter again.
-    /// Also waits through "working" periods (Claude may be mid-thought when
-    /// the paste arrived, so the text sits unsent until Claude finishes).
-    /// Checks for: [Pasted text...] indicator, or text after Claude's ❯ prompt character.
+    /// Poll pane output to verify the prompt was accepted, pressing Enter again
+    /// while it is still sitting in the composer. A cold assistant can take
+    /// several seconds to attach its input handler and silently drops keystrokes
+    /// that arrive before then, so the window is generous and the delay grows
+    /// rather than hammering the pane. Failing to submit throws so callers can
+    /// requeue the prompt instead of leaving a card parked on unsent text.
+    private func ensurePromptSent(
+        sessionName: String,
+        timeout: Duration = .seconds(30)
+    ) async throws {
+        let start = ContinuousClock.now
+        var delay = Duration.milliseconds(300)
+        var attempts = 0
+        while ContinuousClock.now - start < timeout {
+            try await Task.sleep(for: delay)
+            delay = min(delay * 3 / 2, .seconds(2))
+            let output = try await capturePane(sessionName: sessionName)
+            if !Self.paneHasUnsentPrompt(output) { return }
+            attempts += 1
+            KanbanCodeLog.info("send", "Unsent text detected on attempt \(attempts), pressing Enter again")
+            let _ = try await ShellCommand.run(
+                tmuxPath, arguments: ["send-keys", "-t", sessionName, "Enter"]
+            )
+        }
+        KanbanCodeLog.warn("send", "ensurePromptSent gave up after \(attempts) attempts for \(sessionName)")
+        throw TmuxError.promptNotSubmitted(sessionName: sessionName)
+    }
+
+    /// Detects text still waiting in the composer: the `[Pasted text …]` chip, or
+    /// anything typed after Claude's `❯` prompt character.
     /// Codex renders submitted prompts as historical `› text` lines, so treating
     /// `›` as unsent input causes duplicate Enter presses.
-    private func ensurePromptSent(sessionName: String) async throws {
-        for attempt in 0..<10 {
-            try await Task.sleep(for: .milliseconds(attempt == 0 ? 300 : 500))
-            let output = try await capturePane(sessionName: sessionName)
-
-            let hasUnsentText: Bool
-            if output.contains("[Pasted text") || output.contains("[Pasted Text") {
-                hasUnsentText = true
-            } else {
-                let lastPromptRange = output.range(of: "\u{276F}", options: .backwards)
-                if let promptRange = lastPromptRange {
-                    let afterPrompt = output[promptRange.upperBound...]
-                    let sameLine = afterPrompt.prefix(while: { $0 != "\n" })
-                    hasUnsentText = !sameLine.trimmingCharacters(in: .whitespaces).isEmpty
-                } else {
-                    hasUnsentText = false
-                }
-            }
-
-            if hasUnsentText {
-                KanbanCodeLog.info("send", "Unsent text detected on attempt \(attempt + 1), pressing Enter again")
-                let _ = try await ShellCommand.run(
-                    tmuxPath, arguments: ["send-keys", "-t", sessionName, "Enter"]
-                )
-            } else {
-                return
-            }
-        }
-        KanbanCodeLog.warn("send", "ensurePromptSent gave up after 10 attempts for \(sessionName)")
+    public nonisolated static func paneHasUnsentPrompt(_ output: String) -> Bool {
+        if output.contains("[Pasted text") || output.contains("[Pasted Text") { return true }
+        guard let promptRange = output.range(of: "\u{276F}", options: .backwards) else { return false }
+        let sameLine = output[promptRange.upperBound...].prefix { $0 != "\n" }
+        return !sameLine.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     public func pastePrompt(to sessionName: String, text: String) async throws {
         try await pasteText(to: sessionName, text: text)
         try await submitPrompt(to: sessionName)
+    }
+
+    /// Stop whatever the assistant is doing, then submit `text`. Steering waits
+    /// for the current turn to end; this cuts it short, which is what the last
+    /// context threshold needs when a runaway turn is the thing burning tokens.
+    /// Escape leaves the composer usable again after a short beat.
+    public func interruptPrompt(to sessionName: String, text: String) async throws {
+        try await sendEscape(sessionName: sessionName)
+        try await Task.sleep(for: .milliseconds(400))
+        try await pastePrompt(to: sessionName, text: text)
     }
 
     public func pasteText(to sessionName: String, text: String) async throws {
@@ -263,11 +274,13 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
 public enum TmuxError: Error, LocalizedError {
     case createFailed(name: String, message: String)
     case killFailed(name: String, message: String)
+    case promptNotSubmitted(sessionName: String)
 
     public var errorDescription: String? {
         switch self {
         case .createFailed(let name, let message): "Failed to create tmux session '\(name)': \(message)"
         case .killFailed(let name, let message): "Failed to kill tmux session '\(name)': \(message)"
+        case .promptNotSubmitted(let sessionName): "The prompt stayed in the composer of '\(sessionName)' after repeated Enter presses"
         }
     }
 }

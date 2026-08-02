@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import KanbanCodeCore
 
@@ -8,10 +9,37 @@ struct SelfCompactPolicyTests {
         let rules = SelfCompactPolicy.cardRules(thresholdTokens: 250_000)
 
         #expect(rules.map(\.thresholdTokens) == [250_000, 450_000])
-        #expect(rules.map(\.action) == [.queuePrompt, .compactNow])
+        #expect(rules.map(\.action) == [.queuePrompt, .interrupt])
         #expect(rules[0].message.contains("250k context limit"))
         #expect(rules[0].message.contains("passing an argument for the post-compact message on how to continue"))
         #expect(rules[1].message == "/compact")
+    }
+
+    @Test("Defaults steer before the last threshold interrupts")
+    func defaultsEscalateToInterrupt() {
+        let actions = SelfCompactRule.defaults.map(\.action)
+
+        #expect(actions.last == .interrupt)
+        #expect(actions.dropLast().last == .steer)
+        #expect(actions.dropLast(2).allSatisfy { $0 == .queuePrompt })
+    }
+
+    @Test("Settings saved before the split decode compactNow as steer")
+    func legacyActionDecodesAsSteer() throws {
+        let legacy = Data(#"{"id":"ctx-750k","thresholdTokens":750000,"action":"compactNow","message":"/compact"}"#.utf8)
+
+        let rule = try JSONDecoder().decode(SelfCompactRule.self, from: legacy)
+
+        #expect(rule.action == .steer)
+    }
+
+    @Test("An empty steer or interrupt message still compacts")
+    func emptyMessageFallsBackToCompact() {
+        let blank = SelfCompactRule(id: "x", thresholdTokens: 1, action: .interrupt, message: "  \n ")
+        let custom = SelfCompactRule(id: "y", thresholdTokens: 1, action: .steer, message: "wrap up")
+
+        #expect(SelfCompactPolicy.command(for: blank) == "/compact")
+        #expect(SelfCompactPolicy.command(for: custom) == "wrap up")
     }
 
     @Test("Card threshold replaces global rules while global guard is disabled")

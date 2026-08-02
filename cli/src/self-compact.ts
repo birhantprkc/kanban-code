@@ -1,4 +1,5 @@
-export type SelfCompactAction = "queuePrompt" | "compactNow";
+/** How a threshold message reaches the agent. Mirrors `kanban send --mode`. */
+export type SelfCompactAction = "queuePrompt" | "steer" | "interrupt";
 
 export interface SelfCompactRule {
   thresholdTokens: number;
@@ -11,9 +12,23 @@ export const FORCED_COMPACT_OFFSET_TOKENS = 200_000;
 export const DEFAULT_SELF_COMPACT_RULES: SelfCompactRule[] = [
   { thresholdTokens: 500_000, action: "queuePrompt", message: "You are above the 500k context limit. Whenever it is convenient, use the kanban CLI to send yourself a self-compact." },
   { thresholdTokens: 600_000, action: "queuePrompt", message: "You are above the 600k context limit. Please compact yourself soon using the kanban CLI self-compact command." },
-  { thresholdTokens: 700_000, action: "queuePrompt", message: "You are above the 700k context limit. Compact yourself IMMEDIATELY using the kanban CLI self-compact command." },
-  { thresholdTokens: 750_000, action: "compactNow", message: "/compact" },
+  { thresholdTokens: 700_000, action: "steer", message: "You are above the 700k context limit. Compact yourself IMMEDIATELY using the kanban CLI self-compact command." },
+  { thresholdTokens: 750_000, action: "interrupt", message: "/compact" },
 ];
+
+/**
+ * Settings saved before steering and interrupting were separate modes spell the
+ * steering action `compactNow`.
+ */
+export function normalizeSelfCompactAction(raw: string | undefined): SelfCompactAction {
+  if (raw === "compactNow") return "steer";
+  if (raw === "queuePrompt" || raw === "steer" || raw === "interrupt") return raw;
+  return "queuePrompt";
+}
+
+export function normalizeSelfCompactRules(rules: SelfCompactRule[]): SelfCompactRule[] {
+  return rules.map((rule) => ({ ...rule, action: normalizeSelfCompactAction(rule.action) }));
+}
 
 export function parseContextThreshold(raw: string): number {
   const value = raw.trim();
@@ -46,7 +61,7 @@ export function cardSelfCompactRules(thresholdTokens: number): SelfCompactRule[]
     },
     {
       thresholdTokens: thresholdTokens + FORCED_COMPACT_OFFSET_TOKENS,
-      action: "compactNow",
+      action: "interrupt",
       message: "/compact",
     },
   ];
@@ -61,9 +76,8 @@ export function effectiveSelfCompactRules(
     return cardSelfCompactRules(cardThresholdTokens);
   }
   if (!globalEnabled) return [];
-  return globalRules
+  return normalizeSelfCompactRules(globalRules)
     .filter((rule) => rule.thresholdTokens > 0)
-    .slice()
     .sort((a, b) => a.thresholdTokens - b.thresholdTokens);
 }
 

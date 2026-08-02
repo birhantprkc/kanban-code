@@ -93,6 +93,26 @@ struct SubagentCommandStoreTests {
         #expect(results.compactMap { $0 } == [request])
     }
 
+    @Test("A queue request round-trips as a card-level operation")
+    func enqueuePromptRoundTrip() throws {
+        let request = SubagentCommandRequest(
+            id: "request-queue",
+            operation: .enqueuePrompt,
+            createdAt: "2026-08-01T10:00:00.000Z",
+            parentCardId: "card-1",
+            cardId: "card-1",
+            prompt: "Look at the flaky test when you are free"
+        )
+
+        let decoded = try JSONDecoder().decode(
+            SubagentCommandRequest.self,
+            from: try JSONEncoder().encode(request)
+        )
+
+        #expect(decoded == request)
+        #expect(decoded.operation == .enqueuePrompt)
+    }
+
     @Test("Interrupted processing requests become explicit failures")
     func recoverInterruptedRequest() async throws {
         let root = FileManager.default.temporaryDirectory

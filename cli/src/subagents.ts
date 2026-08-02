@@ -20,7 +20,18 @@ import type { CodingAssistant, Link } from "./types.js";
 export { ancestorIds, descendantIds, subagentDepth, subagentRelationship } from "./hierarchy.js";
 export type { SubagentRelationship } from "./hierarchy.js";
 
-export type SubagentOperation = "spawn" | "fork" | "archive" | "resume";
+/**
+ * `enqueuePrompt` is card-level rather than subagent-level: the CLI cannot append
+ * to a card's prompt queue itself because the running app owns links.json.
+ */
+export type SubagentOperation =
+  | "spawn"
+  | "fork"
+  | "archive"
+  | "resume"
+  | "enqueuePrompt"
+  | "relinkSession"
+  | "setModel";
 
 export interface SubagentCommandRequest {
   id: string;
@@ -36,6 +47,9 @@ export interface SubagentCommandRequest {
   assistant?: CodingAssistant;
   model?: string;
   contextThresholdTokens?: number;
+  /** Transcript a relink points the card at. */
+  sessionId?: string;
+  sessionPath?: string;
 }
 
 export interface SubagentCommandResponse {
@@ -150,6 +164,33 @@ export function makeSubagentRequest(
     parentCardId,
     ...fields,
   };
+}
+
+/**
+ * Claude Code applies `/model <name>` directly. Codex's `/model` takes no
+ * argument and opens a picker, so passing a name there just submits the whole
+ * thing as an ordinary prompt.
+ */
+export function modelSwitchCommand(model: string, assistant: CodingAssistant = "claude"): string {
+  const name = model.trim().replace(/^\/?(model\s+)?/i, "");
+  if (!name) throw new Error("A model name is required, for example opus or gpt-5.");
+  return assistant === "codex" ? "/model" : `/model ${name}`;
+}
+
+/** Whether the assistant applies a named model switch without further input. */
+export function appliesModelSwitchDirectly(assistant: CodingAssistant): boolean {
+  return assistant !== "codex";
+}
+
+/**
+ * Switching models mid-conversation invalidates the prompt cache, so assistants
+ * ask before doing it. Claude Code renders "Switch model?" with a numbered list,
+ * Codex a similar picker; in both the wanted option is the selected default, so
+ * accepting is a bare Enter.
+ */
+export function needsModelSwitchConfirmation(pane: string): boolean {
+  if (/^\s*[❯>]?\s*1\.\s*Yes/im.test(pane)) return true;
+  return /Switch model\?/i.test(pane) && /\b1\./.test(pane);
 }
 
 export function kanbanCodeIsRunning(): boolean {

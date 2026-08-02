@@ -235,38 +235,6 @@ struct BoardStateIntegrationTests {
         #expect(card?.link.manualOverrides.column == true)
     }
 
-    @Test("reorderCard persists through refresh cycle")
-    func reorderCardPersistsThroughRefresh() async throws {
-        let dir = try makeTempDir()
-        defer { cleanup(dir) }
-
-        let discovery = MockSessionDiscovery()
-        let store = CoordinationStore(basePath: dir)
-        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
-        try await store.writeLinks([
-            Link(id: "card_1", name: "First", projectPath: "/test/project", column: .backlog, createdAt: timestamp, updatedAt: timestamp, source: .manual, sortOrder: 0),
-            Link(id: "card_2", name: "Second", projectPath: "/test/project", column: .backlog, createdAt: timestamp, updatedAt: timestamp, source: .manual, sortOrder: 1),
-            Link(id: "card_3", name: "Third", projectPath: "/test/project", column: .backlog, createdAt: timestamp, updatedAt: timestamp, source: .manual, sortOrder: 2),
-        ])
-        let state = BoardState(discovery: discovery, coordinationStore: store)
-
-        await state.refresh()
-        #expect(state.cards(in: .backlog).map(\.id) == ["card_1", "card_2", "card_3"])
-
-        state.reorderCard(cardId: "card_3", targetCardId: "card_1", above: true)
-        try await Task.sleep(for: .milliseconds(100))
-
-        await state.refresh()
-
-        #expect(state.cards(in: .backlog).map(\.id) == ["card_3", "card_1", "card_2"])
-
-        let links = try await store.readLinks()
-        let persisted = Dictionary(uniqueKeysWithValues: links.map { ($0.id, $0) })
-        #expect(persisted["card_3"]?.sortOrder == 0)
-        #expect(persisted["card_1"]?.sortOrder == 1)
-        #expect(persisted["card_2"]?.sortOrder == 2)
-    }
-
     // MARK: - Refresh persists merged links
 
     @Test("Refresh writes all links to CoordinationStore")

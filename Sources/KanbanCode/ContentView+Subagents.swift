@@ -59,6 +59,14 @@ extension ContentView {
         guard !Self.subagentRequestIsExpired(request.createdAt) else {
             throw SubagentCommandExecutionError.expiredRequest
         }
+        // Queueing targets any card and has no owner to validate against, so it
+        // resolves before the parent lookup the subagent operations rely on.
+        if request.operation == .enqueuePrompt {
+            return try await enqueueCardPrompt(request)
+        }
+        if request.operation == .relinkSession {
+            return try await relinkCardSession(request)
+        }
         guard let parent = await waitForCard(request.parentCardId) else {
             throw SubagentCommandExecutionError.cardNotFound(request.parentCardId)
         }
@@ -84,10 +92,23 @@ extension ContentView {
         case .fork:
             try await validateSubagentSpawn(parentId: parent.id)
             return try await forkSubagent(parent: parent, source: source, request: request)
+        case .enqueuePrompt:
+            return try await enqueueCardPrompt(request)
+        case .relinkSession:
+            return try await relinkCardSession(request)
+        case .setModel:
+            // The slash command switches the live turn; this makes the switch
+            // outlive a resume, which would otherwise relaunch the old model.
+            let child = try ownedSubagent(from: parent.id, targetId: request.cardId)
+            store.dispatch(.setCardModel(cardId: child.id, model: request.model))
+            await Self.waitForPersistedLink(cardId: child.id, reaching: "model \(request.model ?? "default")") {
+                $0.modelOverride == request.model
+            }
+            return child.id
         case .archive:
             let child = try ownedSubagent(from: parent.id, targetId: request.cardId)
             store.dispatch(.archiveCard(cardId: child.id))
-            await Self.waitForPersistedArchiveState(cardId: child.id, archived: true)
+            await Self.waitForPersistedLink(cardId: child.id, reaching: "archived") { $0.manuallyArchived }
             return child.id
         case .resume:
             var child = try ownedSubagent(from: parent.id, targetId: request.cardId)
@@ -95,7 +116,7 @@ extension ContentView {
             child.column = .inProgress
             child.updatedAt = .now
             store.dispatch(.createManualTask(child))
-            await Self.waitForPersistedArchiveState(cardId: child.id, archived: false)
+            await Self.waitForPersistedLink(cardId: child.id, reaching: "unarchived") { !$0.manuallyArchived }
             executeResume(
                 cardId: child.id,
                 runRemotely: child.isRemote,
@@ -139,18 +160,80 @@ extension ContentView {
     /// Card mutations persist through an async effect, so answering the CLI
     /// straight after `dispatch` lets the next `kanban subagent list` read a
     /// links.json that still shows the old state. Wait for the write to land.
-    private static func waitForPersistedArchiveState(cardId: String, archived: Bool) async {
+    private static func waitForPersistedLink(
+        cardId: String,
+        reaching description: String,
+        satisfies: (Link) -> Bool
+    ) async {
         for _ in 0..<40 {
-            let persisted = CoordinationStore.readLinksSnapshot()
-                .first { $0.id == cardId }?
-                .manuallyArchived
-            if persisted == archived { return }
+            if let persisted = CoordinationStore.readLinksSnapshot().first(where: { $0.id == cardId }),
+               satisfies(persisted) {
+                return
+            }
             try? await Task.sleep(for: .milliseconds(50))
         }
         KanbanCodeLog.warn(
             "subagent",
-            "Persisted archive state for \(cardId.prefix(12)) did not settle to \(archived)"
+            "Persisted state for \(cardId.prefix(12)) did not settle to \(description)"
         )
+    }
+
+    /// Queued prompts live in the app's own state, so `kanban send --mode queue`
+    /// routes here instead of writing links.json underneath the running board.
+    private func enqueueCardPrompt(_ request: SubagentCommandRequest) async throws -> String {
+        guard let prompt = request.prompt,
+              !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw SubagentCommandExecutionError.missingPrompt
+        }
+        let targetId = request.cardId ?? request.parentCardId
+        guard let card = await waitForCard(targetId) else {
+            throw SubagentCommandExecutionError.cardNotFound(targetId)
+        }
+        let queued = QueuedPrompt(body: prompt, sendAutomatically: true)
+        store.dispatch(.addQueuedPrompt(cardId: card.id, prompt: queued, placement: .back))
+        await Self.waitForPersistedLink(cardId: card.id, reaching: "queued") { link in
+            link.queuedPrompts?.contains { $0.id == queued.id } == true
+        }
+        return card.id
+    }
+
+    /// Reconciliation never moves a card off a session it already has, so a card
+    /// left pointing at a stale transcript stays there until something says
+    /// otherwise. Writing links.json from outside cannot do it: the running app
+    /// flushes its own board over the file within seconds.
+    private func relinkCardSession(_ request: SubagentCommandRequest) async throws -> String {
+        guard let sessionId = request.sessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !sessionId.isEmpty,
+              let sessionPath = request.sessionPath?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !sessionPath.isEmpty else {
+            throw SubagentCommandExecutionError.missingSessionTarget
+        }
+        guard FileManager.default.fileExists(atPath: sessionPath) else {
+            throw SubagentCommandExecutionError.transcriptNotFound(sessionPath)
+        }
+        let targetId = request.cardId ?? request.parentCardId
+        guard let card = await waitForCard(targetId) else {
+            throw SubagentCommandExecutionError.cardNotFound(targetId)
+        }
+        store.dispatch(.relinkSession(
+            cardId: card.id,
+            sessionLink: SessionLink(sessionId: sessionId, sessionPath: sessionPath)
+        ))
+        await Self.waitForPersistedLink(cardId: card.id, reaching: "session \(sessionId.prefix(8))") {
+            $0.sessionLink?.sessionId == sessionId
+        }
+        return card.id
+    }
+
+    /// Inheriting the assistant has to mean inheriting its model too, or a child
+    /// of an Opus card silently starts on whatever the assistant CLI defaults to.
+    /// A card launched without an explicit override still runs on some model, and
+    /// Claude's statusline is the only place that records which one.
+    private static func inheritedModel(from card: Link, assistant: CodingAssistant) -> String? {
+        guard assistant == card.effectiveAssistant else { return nil }
+        if let override = card.modelOverride { return override }
+        guard assistant == .claude, let sessionId = card.sessionLink?.sessionId else { return nil }
+        return ContextUsageReader.read(sessionId: sessionId)?.modelAlias
     }
 
     private func forkSource(parent: Link, sourceCardId: String?) throws -> Link {
@@ -174,11 +257,12 @@ extension ContentView {
             throw SubagentCommandExecutionError.missingPrompt
         }
         let assistant = request.assistant ?? parent.effectiveAssistant
+        let model = request.model ?? Self.inheritedModel(from: parent, assistant: assistant)
         var child = makeSubagentLink(
             owner: parent,
             template: parent,
             assistant: assistant,
-            model: request.model,
+            model: model,
             contextThresholdTokens: request.contextThresholdTokens,
             name: request.name,
             prompt: prompt
@@ -195,7 +279,7 @@ extension ContentView {
                 runRemotely: parent.isRemote,
                 assistant: assistant,
                 serviceIdOverride: child.apiServiceId,
-                modelOverride: request.model,
+                modelOverride: model,
                 focusCard: false,
                 completion: { continuation.resume(returning: $0) }
             )
@@ -262,7 +346,7 @@ extension ContentView {
             owner: parent,
             template: source,
             assistant: targetAssistant,
-            model: request.model ?? (targetAssistant == sourceAssistant ? source.modelOverride : nil),
+            model: request.model ?? Self.inheritedModel(from: source, assistant: targetAssistant),
             contextThresholdTokens: request.contextThresholdTokens,
             name: request.name,
             prompt: prompt
@@ -395,6 +479,8 @@ private enum SubagentCommandExecutionError: LocalizedError {
     case depthLimit(Int)
     case missingPrompt
     case missingSession(String)
+    case missingSessionTarget
+    case transcriptNotFound(String)
     case assistantUnavailable(CodingAssistant)
     case promptDelivery(cardId: String, reason: String)
     case invalidContextThreshold(Int)
@@ -413,6 +499,10 @@ private enum SubagentCommandExecutionError: LocalizedError {
             "A subagent goal is required"
         case .missingSession(let id):
             "Card \(id) has no session to fork. Use `kanban subagent spawn` to start a new child instead."
+        case .missingSessionTarget:
+            "A relink needs both a session id and the transcript path to point at"
+        case .transcriptNotFound(let path):
+            "No transcript at \(path)"
         case .assistantUnavailable(let assistant):
             "\(assistant.displayName) is not enabled"
         case .promptDelivery(let cardId, let reason):
