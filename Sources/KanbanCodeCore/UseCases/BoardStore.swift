@@ -58,6 +58,10 @@ public final class AppState: @unchecked Sendable {
     public var links: [String: Link] = [:]                     // cardId → Link
     public var sessions: [String: Session] = [:]               // sessionId → Session
     public var activityMap: [String: ActivityState] = [:]       // sessionId → activity
+    /// sessionId → model the session is running now, e.g. "opus". Polled from
+    /// Claude's statusline rather than derived from the card, so an in-session
+    /// `/model` switch shows up.
+    public var sessionModels: [String: String] = [:]
     public var tmuxSessions: Set<String> = []                  // live tmux names
     /// Single source of truth for which drawer is open. Only ONE thing can be
     /// selected at a time; the type system enforces that invariant. The legacy
@@ -233,7 +237,14 @@ public final class AppState: @unchecked Sendable {
             let session = link.sessionLink.flatMap { sessions[$0.sessionId] }
             let activity = link.sessionLink.flatMap { activityMap[$0.sessionId] }
             let rateLimited = link.projectPath.map { rateLimitedRepos.contains($0) } ?? false
-            return KanbanCodeCard(link: link, session: session, activityState: activity, isBusy: busyCards.contains(link.id), isRateLimited: rateLimited)
+            return KanbanCodeCard(
+                link: link,
+                session: session,
+                activityState: activity,
+                isBusy: busyCards.contains(link.id),
+                isRateLimited: rateLimited,
+                liveModel: link.sessionLink.flatMap { sessionModels[$0.sessionId] }
+            )
         }
         if newCards != cards { cards = newCards }
 
@@ -362,6 +373,7 @@ public enum Action: Sendable {
     case setCardPinned(cardId: String, isPinned: Bool)
     case setSelfCompactContextThreshold(cardId: String, thresholdTokens: Int?)
     case relinkSession(cardId: String, sessionLink: SessionLink)
+    case sessionModelsScanned([String: String])
     case setCardModel(cardId: String, model: String?)
     case archiveCard(cardId: String)
     case deleteCard(cardId: String)
@@ -831,6 +843,14 @@ public enum Reducer {
             link.updatedAt = .now
             state.links[cardId] = link
             return [.upsertLink(link)]
+
+        case .sessionModelsScanned(let models):
+            // Polled every few seconds, so rebuild only on a real change rather
+            // than walking every card each time the scan comes back identical.
+            guard state.sessionModels != models else { return [] }
+            state.sessionModels = models
+            state.rebuildCards()
+            return []
 
         case .setCardModel(let cardId, let model):
             guard var link = state.links[cardId] else { return [] }
@@ -2237,7 +2257,7 @@ public final class BoardStore: @unchecked Sendable {
     /// Actions that only toggle UI state and don't affect card data — skip rebuildCards().
     private static func needsRebuild(_ action: Action) -> Bool {
         switch action {
-        case .reconciled, .setRateLimitedRepos, .tmuxLivenessScanned:
+        case .reconciled, .setRateLimitedRepos, .tmuxLivenessScanned, .sessionModelsScanned:
             // These reducers diff their card inputs and rebuild only when the
             // derived card snapshots can actually change. A periodic PR/status
             // pass that produces the same links must not relayout the board.

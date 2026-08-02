@@ -33,6 +33,7 @@ struct SearchOverlay: View {
     @State private var isDeepSearching = false
     @State private var selectedId: String?
     @State private var searchTask: Task<Void, Never>?
+    @State private var searchGeneration = 0
     @State private var focusRequestToken = 0
     @FocusState private var isSearchFocused: Bool
 
@@ -546,10 +547,16 @@ struct SearchOverlay: View {
     private func deepSearch() async {
         guard !query.isEmpty else { return }
 
-        // Cancel previous search and wait for it to stop
+        // Cancel previous search and wait for it to stop. Waiting is a suspension
+        // point, so a third keystroke can start its own search meanwhile; without
+        // the generation check both would run and the older one would no longer
+        // be tracked in searchTask, making it impossible to cancel.
+        searchGeneration += 1
+        let generation = searchGeneration
         if let old = searchTask {
             old.cancel()
             _ = await old.value
+            guard generation == searchGeneration else { return }
             searchTask = nil
         }
 

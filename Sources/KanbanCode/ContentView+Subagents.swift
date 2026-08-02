@@ -96,6 +96,22 @@ extension ContentView {
             return try await enqueueCardPrompt(request)
         case .relinkSession:
             return try await relinkCardSession(request)
+        case .setContextThreshold:
+            let child = try ownedSubagent(from: parent.id, targetId: request.cardId)
+            // The child's own assistant decides this, not whatever the parent runs.
+            guard request.contextThresholdTokens == nil
+                    || child.effectiveAssistant.supportsContextThresholdSelfCompact else {
+                throw SubagentCommandExecutionError
+                    .unsupportedContextThresholdAssistant(child.effectiveAssistant)
+            }
+            store.dispatch(.setSelfCompactContextThreshold(
+                cardId: child.id,
+                thresholdTokens: request.contextThresholdTokens
+            ))
+            await Self.waitForPersistedLink(cardId: child.id, reaching: "context threshold") {
+                $0.selfCompactContextThresholdTokens == request.contextThresholdTokens
+            }
+            return child.id
         case .setModel:
             // The slash command switches the live turn; this makes the switch
             // outlive a resume, which would otherwise relaunch the old model.

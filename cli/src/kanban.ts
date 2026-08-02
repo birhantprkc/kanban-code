@@ -89,7 +89,7 @@ import {
   validateCanSpawn,
 } from "./subagents.js";
 import type { CodingAssistant } from "./types.js";
-import { parseContextThreshold } from "./self-compact.js";
+import { cardSelfCompactRules, parseContextThreshold, tokenLabel } from "./self-compact.js";
 
 const program = new Command();
 
@@ -1480,6 +1480,48 @@ subagentCmd
           console.log("The assistant is still showing a prompt; check the pane below.");
         }
         console.log(pane);
+      }
+    } catch (error) {
+      console.error(String(error instanceof Error ? error.message : error));
+      process.exitCode = 1;
+    }
+  });
+
+subagentCmd
+  .command("context-threshold")
+  .alias("compact-at")
+  .description("Retune an owned subagent's self-compact threshold as its task grows or shrinks")
+  .argument("<card>", "Owned subagent card")
+  .argument("<tokens>", "Nudge threshold, e.g. 300k or 300000, or `global` to follow the app settings")
+  .option("-j, --json", "Output as JSON")
+  .action(async (query: string, tokens: string, opts) => {
+    try {
+      const links = readLinks();
+      const caller = currentCardOrThrow(links);
+      const target = requireSubagentTarget(caller, query, links);
+      const followGlobal = /^(global|default|none)$/i.test(tokens.trim());
+      const contextThresholdTokens = followGlobal ? undefined : parseContextThreshold(tokens);
+
+      const response = await submitSubagentRequest(
+        makeSubagentRequest("setContextThreshold", caller.id, {
+          cardId: target.id,
+          contextThresholdTokens,
+        })
+      );
+      if (!response.ok) throw new Error(response.error ?? "unknown error");
+
+      const rules = contextThresholdTokens ? cardSelfCompactRules(contextThresholdTokens) : [];
+      if (opts.json) {
+        output({ cardId: target.id, contextThresholdTokens: contextThresholdTokens ?? null, rules }, { json: true });
+      } else if (followGlobal) {
+        console.log(`${target.id} now follows the global self-compact settings`);
+      } else {
+        const [nudge, steer, force] = rules;
+        console.log(
+          `${target.id} nudges at ${tokenLabel(nudge.thresholdTokens)}, ` +
+          `steers at ${tokenLabel(steer.thresholdTokens)}, ` +
+          `and is interrupted at ${tokenLabel(force.thresholdTokens)}`
+        );
       }
     } catch (error) {
       console.error(String(error instanceof Error ? error.message : error));

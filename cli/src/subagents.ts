@@ -35,7 +35,8 @@ export type SubagentOperation =
   | "resume"
   | "enqueuePrompt"
   | "relinkSession"
-  | "setModel";
+  | "setModel"
+  | "setContextThreshold";
 
 export interface SubagentCommandRequest {
   id: string;

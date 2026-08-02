@@ -31,7 +31,7 @@ public final class ClaudeCodeSessionStore: SessionStore, @unchecked Sendable {
             .replacingOccurrences(of: ".jsonl", with: "")
 
         var lines: [String] = []
-        for try await line in handle.bytes.lines {
+        for try await line in handle.blockLines {
             let replaced = line.replacingOccurrences(
                 of: "\"\(oldSessionId)\"",
                 with: "\"\(newSessionId)\""
@@ -341,11 +341,11 @@ public final class ClaudeCodeSessionStore: SessionStore, @unchecked Sendable {
                 let fileSize = (try? fileManager.attributesOfItem(atPath: path)[.size] as? Int) ?? 0
                 KanbanCodeLog.info("search", "  [\(idx+1)/\(validPaths.count)] \(fileName) (\(fileSize / 1024)KB) words=\(wordCount) matches=\(matchingTokens.count) exact=\(exactMatches) \(tFile.duration(to: .now))")
             }
-            guard wordCount > 0 else { continue }
-
             totalWordCount += wordCount
 
             // Only track and yield when file has matching tokens or exact matches.
+            // An exact phrase counts on its own: a `pr-link` record can carry the
+            // whole match in text that tokenizes to nothing scorable.
             guard !matchingTokens.isEmpty || exactMatches > 0 else { continue }
             if searchQuery.requiresExactMatch, exactMatches == 0 { continue }
 
@@ -414,7 +414,7 @@ public final class ClaudeCodeSessionStore: SessionStore, @unchecked Sendable {
         var topSnippets: [(score: Int, text: String)] = []
         var lineCount = 0
 
-        for try await line in handle.bytes.lines {
+        for try await line in handle.blockLines {
             // Check cancellation every 100 lines to stay responsive
             lineCount += 1
             if lineCount % 100 == 0 {

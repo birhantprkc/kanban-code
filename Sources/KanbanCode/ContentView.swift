@@ -1358,6 +1358,9 @@ struct ContentView: View {
             .task(id: "subagent-command-bootstrap") {
                 await monitorSubagentCommands()
             }
+            .task(id: "session-model-monitor") {
+                await sessionModelMonitorLoop()
+            }
             .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeChannelsChanged).receive(on: RunLoop.main)) { _ in
                 store.dispatch(.refreshChannels)
                 channelsWatcher.syncChannelLogs(store.state.channels.map(\.name))
@@ -3078,6 +3081,27 @@ struct ContentView: View {
         selfCompactTriggeredThresholds = selfCompactTriggeredThresholds.filter { liveSessionIds.contains($0.key) }
         selfCompactPolicySignatures = selfCompactPolicySignatures.filter { liveSessionIds.contains($0.key) }
         return interval
+    }
+
+    /// A card's `modelOverride` records what it was launched with, which stops
+    /// being true the moment anyone runs `/model` inside the session. Claude's
+    /// statusline is the only place the running model shows up, so poll it for
+    /// live sessions only, which keeps this to a handful of small file reads.
+    private func sessionModelMonitorLoop() async {
+        while !Task.isCancelled {
+            let sessionIds = store.state.links.values.compactMap { link -> String? in
+                guard link.tmuxLink != nil, !link.manuallyArchived else { return nil }
+                return link.sessionLink?.sessionId
+            }
+            var models: [String: String] = [:]
+            for sessionId in sessionIds {
+                if let alias = ContextUsageReader.read(sessionId: sessionId)?.modelAlias {
+                    models[sessionId] = alias
+                }
+            }
+            store.dispatch(.sessionModelsScanned(models))
+            try? await Task.sleep(for: .seconds(5))
+        }
     }
 
     private func triggerSelfCompactRule(_ rule: SelfCompactRule, allRules: [SelfCompactRule], cardId: String, sessionName: String, usedTokens: Int) async {

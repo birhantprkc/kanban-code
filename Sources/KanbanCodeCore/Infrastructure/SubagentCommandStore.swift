@@ -13,6 +13,9 @@ public enum SubagentCommandOperation: String, Codable, Sendable {
     case relinkSession
     /// Record a model switch so resuming the card does not undo it.
     case setModel
+    /// Retune a card's compaction schedule when the work turns out bigger or
+    /// smaller than the goal it was spawned with.
+    case setContextThreshold
 }
 
 public struct SubagentCommandRequest: Codable, Sendable, Equatable {

@@ -386,10 +386,17 @@ struct CardBadgesRow: View {
                 }
                 .help("\(tmux.terminalCount) terminals open")
             } else {
-                AssistantIcon(assistant: card.link.effectiveAssistant)
-                    .frame(width: CGFloat(11).scaled, height: CGFloat(11).scaled)
-                    .foregroundStyle(Color.primary.opacity(0.45))
-                    .help("\(card.link.effectiveAssistant.displayName) session")
+                HStack(spacing: 3) {
+                    AssistantIcon(assistant: card.link.effectiveAssistant)
+                        .frame(width: CGFloat(11).scaled, height: CGFloat(11).scaled)
+                    if let model = card.liveModel {
+                        Text(model)
+                            .font(.app(size: 9, weight: .medium))
+                    }
+                }
+                .foregroundStyle(Color.primary.opacity(0.45))
+                .help(card.liveModel.map { "\(card.link.effectiveAssistant.displayName) session on \($0)" }
+                    ?? "\(card.link.effectiveAssistant.displayName) session")
             }
         }
 

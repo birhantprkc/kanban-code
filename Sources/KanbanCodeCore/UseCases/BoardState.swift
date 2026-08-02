@@ -11,14 +11,26 @@ public struct KanbanCodeCard: Identifiable, Sendable, Equatable {
     public let isBusy: Bool
     /// True when this card's repo is affected by GitHub API rate limiting.
     public let isRateLimited: Bool
+    /// Model the live session is actually running, e.g. "opus". Read from
+    /// Claude's statusline, so it reflects an in-session `/model` switch that
+    /// the card's own `modelOverride` knows nothing about.
+    public let liveModel: String?
 
-    public init(link: Link, session: Session? = nil, activityState: ActivityState? = nil, isBusy: Bool = false, isRateLimited: Bool = false) {
+    public init(
+        link: Link,
+        session: Session? = nil,
+        activityState: ActivityState? = nil,
+        isBusy: Bool = false,
+        isRateLimited: Bool = false,
+        liveModel: String? = nil
+    ) {
         self.id = link.id
         self.link = link
         self.session = session
         self.activityState = activityState
         self.isBusy = isBusy
         self.isRateLimited = isRateLimited
+        self.liveModel = liveModel
     }
 
     /// Whether Claude is confirmed actively working right now (not just waiting).
