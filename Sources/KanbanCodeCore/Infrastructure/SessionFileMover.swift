@@ -75,11 +75,39 @@ public enum SessionFileMover {
     }
 
     /// Encode a project path for use as a directory name.
-    /// Matches Claude CLI's encoding: replaces / with - and . with -.
+    /// Matches Claude CLI's encoding: resolves symlinks, then replaces / with
+    /// - and . with -.
     /// Example: /Users/foo/.claude/worktrees/bar → -Users-foo--claude-worktrees-bar
+    ///
+    /// The symlink step matters: Claude resolves the working directory before
+    /// encoding it, so a session started in a symlinked project lives under
+    /// the real path's folder. Encoding the symlink instead puts the file
+    /// somewhere Claude never looks and `--resume` reports "No conversation
+    /// found". Visible in the wild as `/tmp` paths encoded as `-private-tmp-…`.
     public static func encodeProjectPath(_ projectPath: String) -> String {
-        projectPath
+        resolveSymlinks(projectPath)
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ".", with: "-")
+    }
+
+    /// Real path for a project directory, or the input when it can't be
+    /// resolved (path doesn't exist yet, permissions). Only the existing
+    /// prefix is resolved, so paths for not-yet-created worktrees still
+    /// resolve their parent symlinks.
+    public static func resolveSymlinks(_ path: String) -> String {
+        guard path.hasPrefix("/") else { return path }
+        var components = (path as NSString).pathComponents
+        var suffix: [String] = []
+        while !components.isEmpty {
+            let candidate = NSString.path(withComponents: components)
+            if FileManager.default.fileExists(atPath: candidate) {
+                let resolved = (candidate as NSString).resolvingSymlinksInPath
+                return suffix.isEmpty
+                    ? resolved
+                    : NSString.path(withComponents: [resolved] + suffix)
+            }
+            suffix.insert(components.removeLast(), at: 0)
+        }
+        return path
     }
 }
