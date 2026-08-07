@@ -774,6 +774,16 @@ public enum Reducer {
                 link.pinnedAt = .now
                 let firstOrder = state.pinnedCards.compactMap(\.link.pinnedSortOrder).min() ?? 0
                 link.pinnedSortOrder = firstOrder - 1
+                // Pinning an archived card brings it back: leaving it archived
+                // pins something that stays hidden in All Sessions.
+                if link.manuallyArchived {
+                    link.manuallyArchived = false
+                    if link.column == .allSessions {
+                        link.column = .backlog
+                        // Let reconciliation promote it by real activity.
+                        link.manualOverrides.column = false
+                    }
+                }
             } else {
                 if link.pinnedAt == nil { return [] }
                 link.pinnedAt = nil

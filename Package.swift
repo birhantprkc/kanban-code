@@ -13,7 +13,8 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "LocalPackages/SwiftTerm"),
-        .package(url: "https://github.com/gonzalezreal/swift-markdown-ui", from: "2.4.0"),
+        // Vendored fork: see LocalPackages/swift-markdown-ui/FORK.md
+        .package(path: "LocalPackages/swift-markdown-ui"),
         .package(url: "https://github.com/swiftlang/swift-testing", from: "0.15.0"),
     ],
     targets: [

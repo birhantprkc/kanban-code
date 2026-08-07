@@ -508,6 +508,35 @@ struct ReducerTests {
         #expect(unpinEffects.contains(where: { if case .upsertLink = $0 { return true }; return false }))
     }
 
+    @Test("Pinning an archived card brings it back onto the board")
+    func setCardPinnedUnarchives() {
+        var link = makeLink(id: "card_arch1", column: .allSessions)
+        link.manuallyArchived = true
+        link.manualOverrides.column = true
+        var state = stateWith([link])
+
+        _ = Reducer.reduce(state: &state, action: .setCardPinned(cardId: "card_arch1", isPinned: true))
+        state.rebuildCards()
+
+        let pinned = state.links["card_arch1"]
+        #expect(pinned?.isPinned == true)
+        #expect(pinned?.manuallyArchived == false, "a pinned card must not stay archived")
+        #expect(pinned?.column != .allSessions)
+        #expect(pinned?.manualOverrides.column == false, "reconcile should be free to place it")
+        #expect(state.pinnedCards.map(\.id) == ["card_arch1"])
+    }
+
+    @Test("Pinning a card that is not archived leaves its column alone")
+    func setCardPinnedKeepsColumnWhenNotArchived() {
+        let link = makeLink(id: "card_live1", column: .inReview)
+        var state = stateWith([link])
+
+        _ = Reducer.reduce(state: &state, action: .setCardPinned(cardId: "card_live1", isPinned: true))
+
+        #expect(state.links["card_live1"]?.column == .inReview)
+        #expect(state.links["card_live1"]?.manuallyArchived == false)
+    }
+
     @Test("Per-card compact threshold replaces only queued compact warnings")
     func setSelfCompactContextThresholdClearsCompactWarnings() {
         var link = Link(id: "card_compact", name: "Compact")
