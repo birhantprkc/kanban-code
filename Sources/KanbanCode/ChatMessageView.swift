@@ -70,10 +70,7 @@ struct ChatMessageView: View {
                 HStack {
                     Spacer(minLength: 0)
                     let text = turn.contentBlocks.first { if case .text = $0.kind { return true }; return false }?.text ?? ""
-                    Text(text)
-                        .font(.app(.caption))
-                        .foregroundStyle(.tertiary)
-                        .italic()
+                    truncatedSystemText(text, blockIndex: 0, style: .tertiary)
                     Spacer(minLength: 0)
                 }
             } else if suppressBackground {
@@ -134,15 +131,9 @@ struct ChatMessageView: View {
                     if case .text = block.kind {
                         if block.text.hasPrefix("✓ ") || block.text.hasPrefix("⏳ ") {
                             // Task notification — render as system-style message
-                            Text(block.text)
-                                .font(.app(.caption))
-                                .foregroundStyle(.secondary)
-                                .italic()
+                            truncatedSystemText(block.text, blockIndex: i, style: .secondary)
                         } else if block.text.contains("[Request interrupted by user") {
-                            Text(block.text)
-                                .font(.app(.caption))
-                                .italic()
-                                .foregroundStyle(.secondary)
+                            truncatedSystemText(block.text, blockIndex: i, style: .secondary)
                         } else {
                             truncatedTextBlock(block.text, blockIndex: i, font: .app(.body))
                         }
@@ -306,6 +297,38 @@ struct ChatMessageView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.borderless)
+        }
+    }
+
+    /// System-style rows (task notifications, interruptions) render raw text
+    /// rather than markdown. They still need the same cap as everything else:
+    /// a task notification can carry a whole transcript, and laying that out
+    /// in one pass locks the view up.
+    @ViewBuilder
+    private func truncatedSystemText<S: ShapeStyle>(
+        _ text: String,
+        blockIndex: Int,
+        style: S
+    ) -> some View {
+        let truncated = text.count > Self.textTruncationLimit && !isBlockExpanded(blockIndex)
+        let display = truncated ? String(text.prefix(Self.textTruncationLimit)) : text
+        VStack(alignment: .leading, spacing: 2) {
+            Text(display)
+                .font(.app(.caption))
+                .foregroundStyle(style)
+                .italic()
+                .textSelection(.enabled)
+            if truncated {
+                Button {
+                    expandedTextBlocks.insert(blockKey(blockIndex))
+                } label: {
+                    Text("Show more (\(text.count / 1024)KB)")
+                        .font(.app(.caption))
+                        .foregroundStyle(Color.accentColor)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+            }
         }
     }
 
