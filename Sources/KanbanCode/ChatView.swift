@@ -516,9 +516,13 @@ private struct ChatMessageList: View {
                                         githubBaseURL: githubBaseURL,
                                         expandedTextBlocks: $expandedTextBlocks
                                     )
+                                    // Every turn is addressable, not just the
+                                    // first: search scrolls to a line number,
+                                    // and a match on the third tool call in a
+                                    // group would otherwise have no target.
+                                    .id(toolTurn.lineNumber)
                                 }
                             }
-                            .id(group.first?.lineNumber ?? 0)
                             .background(
                                 RoundedRectangle(cornerRadius: 8)
                                     .fill(Color.primary.opacity(0.04))

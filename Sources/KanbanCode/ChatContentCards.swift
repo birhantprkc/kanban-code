@@ -23,11 +23,25 @@ struct ToolCallCard: View, Equatable {
     var showBackground: Bool = true
     /// When true, the card starts expanded. Resets to false when user manually toggles.
     var autoExpand: Bool = false
+    var highlight: ChatTextHighlight?
     @State private var isExpanded = false
     @State private var userToggled = false
 
     nonisolated static func == (lhs: ToolCallCard, rhs: ToolCallCard) -> Bool {
-        lhs.name == rhs.name && lhs.displayText == rhs.displayText && lhs.rawInputJSON == rhs.rawInputJSON && lhs.autoExpand == rhs.autoExpand
+        lhs.name == rhs.name && lhs.displayText == rhs.displayText && lhs.rawInputJSON == rhs.rawInputJSON && lhs.autoExpand == rhs.autoExpand && lhs.highlight == rhs.highlight
+    }
+
+    /// The search scans tool text too, so a card holding the match opens itself.
+    /// Landing on a turn whose match is hidden reads as a search that went to
+    /// the wrong place.
+    private var holdsSearchMatch: Bool {
+        guard let query = highlight?.query.lowercased(), !query.isEmpty else { return false }
+        if displayText.lowercased().contains(query) { return true }
+        if resultText?.lowercased().contains(query) == true { return true }
+        guard let json = rawInputJSON, let text = String(data: json, encoding: .utf8) else {
+            return false
+        }
+        return text.lowercased().contains(query)
     }
 
     private func parseSummary() -> (action: String, target: String, additions: Int?, deletions: Int?, replaceAll: Bool) {
@@ -131,7 +145,13 @@ struct ToolCallCard: View, Equatable {
                 if autoExpand { NotificationCenter.default.post(name: .chatCardExpanded, object: nil) }
             }
         }
+        // Opening for a search does not post `.chatCardExpanded`: that pins the
+        // scroll to the bottom, which would fight the scroll to the match.
+        .onChange(of: holdsSearchMatch) {
+            if holdsSearchMatch { isExpanded = true }
+        }
         .onAppear {
+            if holdsSearchMatch { isExpanded = true }
             if autoExpand && !userToggled {
                 isExpanded = true
                 NotificationCenter.default.post(name: .chatCardExpanded, object: nil)
@@ -161,7 +181,8 @@ struct ToolCallCard: View, Equatable {
                     appearance: .init(
                         font: .monospacedSystemFont(ofSize: 10, weight: .regular),
                         foregroundColor: .white
-                    )
+                    ),
+                    highlight: highlight
                 )
                 .padding(8)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -175,6 +196,7 @@ struct ToolCallCard: View, Equatable {
                         font: .monospacedSystemFont(ofSize: 10, weight: .regular),
                         foregroundColor: .secondaryLabelColor
                     ),
+                    highlight: highlight,
                     lineLimit: 20
                 )
                 .padding(8)
@@ -233,9 +255,15 @@ struct SimpleDiffView: View {
 
 struct ThinkingCard: View {
     let text: String
+    var highlight: ChatTextHighlight?
     private static let truncationLimit = 2_000
     @State private var isExpanded = false
     @State private var showFullText = false
+
+    private var holdsSearchMatch: Bool {
+        guard let query = highlight?.query.lowercased(), !query.isEmpty else { return false }
+        return text.lowercased().contains(query)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -257,7 +285,8 @@ struct ThinkingCard: View {
                 let display = truncated ? String(text.prefix(Self.truncationLimit)) : text
                 SelectableMarkdownText(
                     content: .plain(display),
-                    appearance: .init(font: .app(.caption), foregroundColor: .secondaryLabelColor)
+                    appearance: .init(font: .app(.caption), foregroundColor: .secondaryLabelColor),
+                    highlight: highlight
                 )
                 .padding(.top, 4)
                 if truncated {
@@ -273,6 +302,8 @@ struct ThinkingCard: View {
                 }
             }
         }
+        .onAppear { if holdsSearchMatch { isExpanded = true } }
+        .onChange(of: holdsSearchMatch) { if holdsSearchMatch { isExpanded = true } }
     }
 }
 
@@ -283,12 +314,18 @@ struct PlanModeExitCard: View {
     let resultText: String?
     var onAnswer: ((String) -> Void)?
     var tmuxSessionName: String?
+    var highlight: ChatTextHighlight?
     @State private var isExpanded = false
     @State private var selectedOption: Int?
     @State private var paneOptions: [String] = []
     @State private var didLoadOptions = false
 
     private var isAnswered: Bool { resultText != nil }
+
+    private var holdsSearchMatch: Bool {
+        guard let query = highlight?.query.lowercased(), !query.isEmpty else { return false }
+        return plan.lowercased().contains(query)
+    }
 
     private var approvalStatus: String? {
         guard let r = resultText else { return nil }
@@ -338,7 +375,8 @@ struct PlanModeExitCard: View {
             if isExpanded {
                 SelectableMarkdownText(
                     content: .markdown(plan),
-                    appearance: .init(font: .app(.body), foregroundColor: .labelColor)
+                    appearance: .init(font: .app(.body), foregroundColor: .labelColor),
+                    highlight: highlight
                 )
                 .padding(.horizontal, 8)
                 .padding(.bottom, 4)
@@ -386,6 +424,8 @@ struct PlanModeExitCard: View {
                 .fill(Color.primary.opacity(0.04))
                 .padding(.leading, -8)
         )
+        .onAppear { if holdsSearchMatch { isExpanded = true } }
+        .onChange(of: holdsSearchMatch) { if holdsSearchMatch { isExpanded = true } }
         .task {
             guard !isAnswered, let session = tmuxSessionName else {
                 didLoadOptions = true
@@ -423,7 +463,14 @@ struct AgentCallCard: View {
     let subagentType: String?
     let resultText: String?
     let rawInputJSON: Data?
+    var highlight: ChatTextHighlight?
     @State private var isExpanded = false
+
+    private var holdsSearchMatch: Bool {
+        guard let query = highlight?.query.lowercased(), !query.isEmpty else { return false }
+        if description.lowercased().contains(query) { return true }
+        return resultText?.lowercased().contains(query) == true
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -457,6 +504,7 @@ struct AgentCallCard: View {
                     appearance: .init(
                         font: .systemFont(ofSize: 12), foregroundColor: .secondaryLabelColor
                     ),
+                    highlight: highlight,
                     lineLimit: 30
                 )
                 .padding(.horizontal, 8)
@@ -468,6 +516,8 @@ struct AgentCallCard: View {
                 .fill(Color.primary.opacity(0.04))
                 .padding(.leading, -8)
         )
+        .onAppear { if holdsSearchMatch { isExpanded = true } }
+        .onChange(of: holdsSearchMatch) { if holdsSearchMatch { isExpanded = true } }
     }
 }
 

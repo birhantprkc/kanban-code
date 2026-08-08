@@ -184,6 +184,65 @@ struct ChatCardTextParityTests {
         #expect(abs(cappedHeight - uncappedHeight / 2) <= 2)
     }
 
+    // MARK: - Search
+
+    @Test("a search match paints behind the text it matched")
+    func highlightLandsOnTheMatch() {
+        let attributed = ChatAttributedText.make(
+            content: .plain("bumped to 985 today"),
+            appearance: .init(font: .systemFont(ofSize: 13), foregroundColor: .labelColor),
+            highlight: .init(query: "985", isCurrentMatch: true),
+            width: Self.width
+        )
+        var painted: [NSRange] = []
+        attributed.enumerateAttribute(
+            .backgroundColor, in: NSRange(location: 0, length: attributed.length), options: []
+        ) { value, range, _ in
+            if value != nil { painted.append(range) }
+        }
+        #expect(painted == [NSRange(location: 10, length: 3)])
+    }
+
+    /// The search scans tool text too, so landing on a turn whose only match is
+    /// inside a collapsed card looks like a search that went nowhere.
+    @Test("a card holding the match opens itself")
+    func cardOpensForItsMatch() throws {
+        let card = ToolCallCard(
+            name: "Bash",
+            displayText: "gh pr view 985",
+            rawInputJSON: Data(#"{"command":"gh pr view 985"}"#.utf8),
+            resultText: "pull request 985 is open"
+        )
+        let collapsed = try #require(
+            MarkdownParityTests.swiftUIImage(card, width: Self.width))
+
+        var searching = card
+        searching.highlight = .init(query: "985", isCurrentMatch: true)
+        let expanded = try #require(
+            MarkdownParityTests.swiftUIImage(searching, width: Self.width))
+
+        print("card collapsed=\(collapsed.size.height) expanded=\(expanded.size.height)")
+        #expect(expanded.size.height > collapsed.size.height)
+    }
+
+    @Test("a card with no match stays shut")
+    func cardWithoutAMatchStaysShut() throws {
+        let card = ToolCallCard(
+            name: "Bash",
+            displayText: "gh pr view 985",
+            rawInputJSON: Data(#"{"command":"gh pr view 985"}"#.utf8),
+            resultText: "pull request 985 is open"
+        )
+        let plain = try #require(MarkdownParityTests.swiftUIImage(card, width: Self.width))
+
+        var searching = card
+        searching.highlight = .init(query: "nowhere", isCurrentMatch: true)
+        let searched = try #require(
+            MarkdownParityTests.swiftUIImage(searching, width: Self.width))
+
+        #expect(searched.size.height == plain.size.height)
+    }
+
     /// A single wrapped line has to keep wrapping under a cap, not get cut at
     /// the first screenful.
     @Test("a capped block still truncates a wrapping line")

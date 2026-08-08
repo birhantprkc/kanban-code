@@ -192,7 +192,8 @@ struct ChatMessageView: View {
                                     rawInputJSON: group.items[ti].paired.block.rawInputJSON,
                                     resultText: group.items[ti].paired.resultBlock?.text,
                                     showBackground: false,
-                                    autoExpand: isLast
+                                    autoExpand: isLast,
+                                    highlight: searchHighlight
                                 )
                             }
                         }
@@ -227,19 +228,20 @@ struct ChatMessageView: View {
                 rawInputJSON: paired.block.rawInputJSON,
                 resultText: paired.resultBlock?.text,
                 showBackground: !suppressBackground,
-                autoExpand: hasLastToolCall && isLastBlock
+                autoExpand: hasLastToolCall && isLastBlock,
+                highlight: searchHighlight
             )
         case .toolResult:
             EmptyView()
         case .thinking:
-            ThinkingCard(text: paired.block.text)
+            ThinkingCard(text: paired.block.text, highlight: searchHighlight)
         case .planModeEnter:
             Text("Entered plan mode")
                 .font(.app(.caption))
                 .italic()
                 .foregroundStyle(.tertiary)
         case .planModeExit(let plan):
-            PlanModeExitCard(plan: plan, resultText: paired.resultBlock?.text, onAnswer: onSendAnswer, tmuxSessionName: tmuxSessionName)
+            PlanModeExitCard(plan: plan, resultText: paired.resultBlock?.text, onAnswer: onSendAnswer, tmuxSessionName: tmuxSessionName, highlight: searchHighlight)
         case .askUserQuestion(let questions, _):
             AskUserQuestionCard(
                 questions: questions,
@@ -251,9 +253,18 @@ struct ChatMessageView: View {
                 description: description,
                 subagentType: subagentType,
                 resultText: paired.resultBlock?.text,
-                rawInputJSON: paired.block.rawInputJSON
+                rawInputJSON: paired.block.rawInputJSON,
+                highlight: searchHighlight
             )
         }
+    }
+
+    /// The search match to paint, shared by the message text and the cards.
+    ///
+    /// The scan matches on tool text as well as message text, so a card has to
+    /// be able to show why the search stopped where it did.
+    private var searchHighlight: ChatTextHighlight? {
+        highlightText.map { .init(query: $0, isCurrentMatch: isCurrentMatch) }
     }
 
     // MARK: - Large text truncation
@@ -278,9 +289,7 @@ struct ChatMessageView: View {
         SelectableMarkdownText(
             content: content,
             appearance: textAppearance(for: content, font: font),
-            highlight: highlightText.map {
-                .init(query: $0, isCurrentMatch: isCurrentMatch)
-            }
+            highlight: searchHighlight
         )
         if truncated {
             Button {
