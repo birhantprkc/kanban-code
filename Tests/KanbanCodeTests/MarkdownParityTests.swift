@@ -81,11 +81,31 @@ struct MarkdownParityTests {
         return image
     }
 
-    static func appKitImage(_ markdown: String, width: CGFloat) -> NSImage? {
-        let renderer = MarkdownAttributedStringRenderer(
-            theme: chatMarkdownTheme, metrics: chatMarkdownMetrics, containerWidth: width
-        )
-        let attributed = renderer.render(markdown: markdown)
+    /// Rasterises any SwiftUI view the same way, so paths other than the
+    /// markdown one can be compared too.
+    static func swiftUIImage(_ view: some View, width: CGFloat) -> NSImage? {
+        let root = view
+            .frame(width: width, alignment: .leading)
+            .background(Color(nsColor: .textBackgroundColor))
+        let host = NSHostingView(rootView: root)
+        host.frame = NSRect(x: 0, y: 0, width: width, height: host.fittingSize.height)
+        for _ in 0..<8 {
+            host.layoutSubtreeIfNeeded()
+            host.displayIfNeeded()
+            let settled = host.fittingSize.height
+            if abs(settled - host.frame.height) < 0.5 { break }
+            host.frame = NSRect(x: 0, y: 0, width: width, height: settled)
+        }
+        guard host.bounds.height > 1,
+            let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds)
+        else { return nil }
+        host.cacheDisplay(in: host.bounds, to: rep)
+        let image = NSImage(size: host.bounds.size)
+        image.addRepresentation(rep)
+        return image
+    }
+
+    static func appKitImage(attributed: NSAttributedString, width: CGFloat) -> NSImage? {
         let storage = NSTextStorage(attributedString: attributed)
         let layout = MarkdownLayoutManager()
         let container = NSTextContainer(
@@ -110,6 +130,13 @@ struct MarkdownParityTests {
         let image = NSImage(size: textView.bounds.size)
         image.addRepresentation(rep)
         return image
+    }
+
+    static func appKitImage(_ markdown: String, width: CGFloat) -> NSImage? {
+        let renderer = MarkdownAttributedStringRenderer(
+            theme: chatMarkdownTheme, metrics: chatMarkdownMetrics, containerWidth: width
+        )
+        return self.appKitImage(attributed: renderer.render(markdown: markdown), width: width)
     }
 
     static func writeComparison(
@@ -210,6 +237,54 @@ struct MarkdownParityTests {
                     name as NSString, left, right, delta
                 )
             )
+        }
+        print("\n" + rows.joined(separator: "\n") + "\n")
+    }
+
+    /// The inline only path, which is what most assistant text takes today.
+    ///
+    /// It has to keep behaving like a plain SwiftUI `Text` over an inline
+    /// parsed `AttributedString`, including leaving block syntax literal.
+    @Test("matches the inline only text path")
+    func inlineOnlyParity() throws {
+        let samples = [
+            "Plain text with **bold**, *italic* and `code` in one line.",
+            "Text long enough to wrap onto a second line so the four point line "
+                + "spacing this path uses shows up in the height.",
+            "- a dash line that this path leaves literal\n- and another",
+            "A [link](https://example.com) and some ~~struck~~ words.",
+        ]
+        let appearance = ChatTextAppearance(
+            font: .systemFont(ofSize: 13), foregroundColor: .labelColor, lineSpacing: 4
+        )
+
+        var rows: [String] = []
+        for (index, sample) in samples.enumerated() {
+            let parsed =
+                (try? AttributedString(
+                    markdown: sample,
+                    options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+                )) ?? AttributedString(sample)
+            let left = Self.swiftUIImage(
+                Text(parsed).font(.system(size: 13)).lineSpacing(4), width: Self.width
+            )
+            let right = Self.appKitImage(
+                attributed: ChatAttributedText.make(
+                    content: .inlineMarkdown(sample), appearance: appearance, width: Self.width),
+                width: Self.width
+            )
+            let leftHeight = left?.size.height ?? -1
+            let rightHeight = right?.size.height ?? -1
+            rows.append(
+                String(
+                    format: "inline[%d] swiftui=%6.1f appkit=%6.1f delta=%+6.1f",
+                    index, leftHeight, rightHeight, rightHeight - leftHeight
+                )
+            )
+            if index == 0, let left, let right {
+                try Self.writeComparison(
+                    left, right, to: ".claude/tmp/markdown-parity/inline-path.png")
+            }
         }
         print("\n" + rows.joined(separator: "\n") + "\n")
     }

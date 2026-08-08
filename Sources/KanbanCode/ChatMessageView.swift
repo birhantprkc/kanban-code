@@ -70,7 +70,7 @@ struct ChatMessageView: View {
                 HStack {
                     Spacer(minLength: 0)
                     let text = turn.contentBlocks.first { if case .text = $0.kind { return true }; return false }?.text ?? ""
-                    truncatedSystemText(text, blockIndex: 0, style: .tertiary)
+                    truncatedSystemText(text, blockIndex: 0, color: .tertiaryLabelColor)
                     Spacer(minLength: 0)
                 }
             } else if suppressBackground {
@@ -131,9 +131,9 @@ struct ChatMessageView: View {
                     if case .text = block.kind {
                         if block.text.hasPrefix("✓ ") || block.text.hasPrefix("⏳ ") {
                             // Task notification — render as system-style message
-                            truncatedSystemText(block.text, blockIndex: i, style: .secondary)
+                            truncatedSystemText(block.text, blockIndex: i, color: .secondaryLabelColor)
                         } else if block.text.contains("[Request interrupted by user") {
-                            truncatedSystemText(block.text, blockIndex: i, style: .secondary)
+                            truncatedSystemText(block.text, blockIndex: i, color: .secondaryLabelColor)
                         } else {
                             truncatedTextBlock(block.text, blockIndex: i, font: .app(.body))
                         }
@@ -218,7 +218,7 @@ struct ChatMessageView: View {
         case .text:
             let trimmed = paired.block.text.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty {
-                truncatedTextBlock(trimmed, blockIndex: paired.index, font: .system(size: 13))
+                truncatedTextBlock(trimmed, blockIndex: paired.index, font: .systemFont(ofSize: 13))
             }
         case .toolUse(let name, _, _):
             ToolCallCard(
@@ -266,26 +266,22 @@ struct ChatMessageView: View {
         expandedTextBlocks.contains(blockKey(blockIndex))
     }
 
+    /// Every text row goes through one text view, so a drag can run from one
+    /// message into the next. Splitting these across different view types would
+    /// break the selection at whichever rows took a different path.
     @ViewBuilder
-    private func truncatedTextBlock(_ text: String, blockIndex: Int, font: Font) -> some View {
+    private func truncatedTextBlock(_ text: String, blockIndex: Int, font: NSFont) -> some View {
         let truncated = text.count > Self.textTruncationLimit && !isBlockExpanded(blockIndex)
         let rawDisplay = truncated ? String(text.prefix(Self.textTruncationLimit)) : text
         let display = (turn.role == "user" || highlightText != nil) ? rawDisplay : linkifyIssueRefs(rawDisplay)
-        if highlightText != nil {
-            highlightedText(display)
-                .font(font)
-        } else if turn.role == "user" {
-            Text(display)
-                .font(font)
-        } else if display.containsBlockMarkdown {
-            Markdown(display)
-                .markdownTheme(chatMarkdownTheme)
-                .textSelection(.enabled)
-        } else {
-            markdownText(display)
-                .font(font)
-                .lineSpacing(4)
-        }
+        let content = textContent(display)
+        SelectableMarkdownText(
+            content: content,
+            appearance: textAppearance(for: content, font: font),
+            highlight: highlightText.map {
+                .init(query: $0, isCurrentMatch: isCurrentMatch)
+            }
+        )
         if truncated {
             Button {
                 expandedTextBlocks.insert(blockKey(blockIndex))
@@ -300,24 +296,45 @@ struct ChatMessageView: View {
         }
     }
 
+    /// Which of the chat's text treatments a row takes.
+    ///
+    /// Search drops markdown entirely so matches can be highlighted over the
+    /// raw text, and a message with no block syntax stays inline only, which
+    /// leaves things like a leading dash as literal text.
+    private func textContent(_ display: String) -> ChatTextContent {
+        if highlightText != nil || turn.role == "user" { return .plain(display) }
+        return display.containsBlockMarkdown ? .markdown(display) : .inlineMarkdown(display)
+    }
+
+    private func textAppearance(
+        for content: ChatTextContent, font: NSFont
+    ) -> ChatTextAppearance {
+        // Only the inline path carries line spacing of its own; a markdown
+        // message takes it from the theme, and the plain paths have none.
+        let lineSpacing: CGFloat
+        if case .inlineMarkdown = content { lineSpacing = 4 } else { lineSpacing = 0 }
+        return .init(font: font, foregroundColor: .labelColor, lineSpacing: lineSpacing)
+    }
+
     /// System-style rows (task notifications, interruptions) render raw text
     /// rather than markdown. They still need the same cap as everything else:
     /// a task notification can carry a whole transcript, and laying that out
     /// in one pass locks the view up.
     @ViewBuilder
-    private func truncatedSystemText<S: ShapeStyle>(
+    private func truncatedSystemText(
         _ text: String,
         blockIndex: Int,
-        style: S
+        color: NSColor
     ) -> some View {
         let truncated = text.count > Self.textTruncationLimit && !isBlockExpanded(blockIndex)
         let display = truncated ? String(text.prefix(Self.textTruncationLimit)) : text
         VStack(alignment: .leading, spacing: 2) {
-            Text(display)
-                .font(.app(.caption))
-                .foregroundStyle(style)
-                .italic()
-                .textSelection(.enabled)
+            SelectableMarkdownText(
+                content: .plain(display),
+                appearance: .init(
+                    font: .app(.caption), foregroundColor: color, italic: true
+                )
+            )
             if truncated {
                 Button {
                     expandedTextBlocks.insert(blockKey(blockIndex))
@@ -330,43 +347,6 @@ struct ChatMessageView: View {
                 .buttonStyle(.borderless)
             }
         }
-    }
-
-    // MARK: - Markdown text rendering
-
-    /// Renders markdown as native SwiftUI Text via AttributedString, enabling
-    /// cross-paragraph and cross-bubble text selection. Falls back to plain text
-    /// if markdown parsing fails.
-    private func markdownText(_ text: String) -> Text {
-        if let attributed = try? AttributedString(
-            markdown: text,
-            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        ) {
-            return Text(attributed)
-        }
-        return Text(text)
-    }
-
-    // MARK: - Text highlighting for search
-
-    private func highlightedText(_ text: String) -> Text {
-        guard let query = highlightText?.lowercased(), !query.isEmpty else {
-            return Text(text)
-        }
-        var attr = AttributedString(text)
-        let lower = text.lowercased()
-        var pos = lower.startIndex
-        let hlBg: Color = isCurrentMatch ? .orange.opacity(0.4) : .yellow.opacity(0.3)
-        while let range = lower.range(of: query, range: pos..<lower.endIndex) {
-            let startOff = lower.distance(from: lower.startIndex, to: range.lowerBound)
-            let endOff = lower.distance(from: lower.startIndex, to: range.upperBound)
-            let chars = attr.characters
-            let attrStart = chars.index(chars.startIndex, offsetBy: startOff)
-            let attrEnd = chars.index(chars.startIndex, offsetBy: endOff)
-            attr[attrStart..<attrEnd].backgroundColor = hlBg
-            pos = range.upperBound
-        }
-        return Text(attr)
     }
 
     // MARK: Pair tool results
