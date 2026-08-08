@@ -22,6 +22,20 @@ enum ChatTextContent: Hashable {
         case .diff(let old, let new): old + new
         }
     }
+
+    /// Whether a row of this may report less width than it was offered.
+    ///
+    /// Running text may: laying it out again at the width of its longest line
+    /// gives the same line breaks. Block layout may not, because a table sizes
+    /// its columns against the width available and a block fill spans it, so
+    /// asking for less would re-wrap the text taller than the height that came
+    /// with the request.
+    var shrinksToFit: Bool {
+        switch self {
+        case .inlineMarkdown, .plain: true
+        case .markdown, .diff: false
+        }
+    }
 }
 
 /// Font and colour for the non markdown cases, and for the text a markdown

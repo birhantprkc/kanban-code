@@ -139,17 +139,25 @@ struct ChatCardTextParityTests {
         #expect(view.fittingSize(forWidth: Self.width).width == Self.width)
     }
 
-    @Test("a code block claims the full width, a paragraph does not")
-    func codeBlockFillsTheWidth() {
+    /// Block layout claims the whole width it is offered; running text reports
+    /// its own so a bubble can wrap it and a notice can be centred.
+    @Test("markdown claims the full width, running text does not")
+    func widthClaims() {
         let appearance = ChatTextAppearance(
             font: .systemFont(ofSize: 13), foregroundColor: .labelColor)
 
         let code = SelectableMarkdownText.WrappingTextView.make()
-        code.configure(content: .markdown("```\nlet a = 1\n```"), appearance: appearance, highlight: nil)
+        code.configure(
+            content: .markdown("```\nlet a = 1\n```"), appearance: appearance, highlight: nil)
         #expect(code.fittingSize(forWidth: Self.width).width == Self.width)
 
+        let markdown = SelectableMarkdownText.WrappingTextView.make()
+        markdown.configure(
+            content: .markdown("A short line."), appearance: appearance, highlight: nil)
+        #expect(markdown.fittingSize(forWidth: Self.width).width == Self.width)
+
         let prose = SelectableMarkdownText.WrappingTextView.make()
-        prose.configure(content: .markdown("A short line."), appearance: appearance, highlight: nil)
+        prose.configure(content: .plain("A short line."), appearance: appearance, highlight: nil)
         #expect(prose.fittingSize(forWidth: Self.width).width < 200)
     }
 

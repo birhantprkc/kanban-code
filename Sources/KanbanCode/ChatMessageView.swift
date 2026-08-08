@@ -285,6 +285,7 @@ struct ChatMessageView: View {
         if truncated {
             Button {
                 expandedTextBlocks.insert(blockKey(blockIndex))
+                NotificationCenter.default.post(name: .chatCardExpanded, object: nil)
             } label: {
                 Text("Show more (\(text.count / 1024)KB)")
                     .font(.app(.caption))

@@ -113,6 +113,9 @@ struct SelectableMarkdownText: NSViewRepresentable {
             let attributed = self.attributedText(width: width)
             let size = ChatTextMeasurement.size(
                 of: attributed, width: width, lineLimit: self.lineLimit)
+            guard self.content.shrinksToFit else {
+                return CGSize(width: width, height: size.height)
+            }
             // Report the text's own width, not the whole proposal. A short row
             // that claims the full width cannot be centred by its container,
             // which is how system notices are laid out, and it stretches a user
