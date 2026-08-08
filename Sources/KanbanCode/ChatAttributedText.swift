@@ -13,10 +13,13 @@ enum ChatTextContent: Hashable {
     case inlineMarkdown(String)
     /// No markdown at all.
     case plain(String)
+    /// An edit, drawn as removed lines followed by added lines.
+    case diff(old: String, new: String)
 
     var rawText: String {
         switch self {
         case .markdown(let text), .inlineMarkdown(let text), .plain(let text): text
+        case .diff(let old, let new): old + new
         }
     }
 }
@@ -36,6 +39,20 @@ struct ChatTextHighlight: Hashable {
     var isCurrentMatch: Bool
 }
 
+/// Links laid over the built text.
+///
+/// References arrive already resolved rather than as a closure: the channel
+/// resolves them against the pull requests it knows about, which a cache key
+/// could never describe.
+struct ChatTextLinks: Hashable {
+    /// Reference to destination, keyed by the reference exactly as written.
+    var issueRefs: [String: URL] = [:]
+    /// Whether plain http(s) URLs become links too.
+    var urls: Bool = false
+
+    var isEmpty: Bool { self.issueRefs.isEmpty && !self.urls }
+}
+
 /// Builds the attributed string a chat row displays.
 ///
 /// Results are cached: the chat re-renders on every poll and asks every
@@ -48,6 +65,7 @@ enum ChatAttributedText {
         let content: ChatTextContent
         let appearance: ChatTextAppearance
         let highlight: ChatTextHighlight?
+        let links: ChatTextLinks
         let width: CGFloat
     }
 
@@ -57,18 +75,20 @@ enum ChatAttributedText {
         content: ChatTextContent,
         appearance: ChatTextAppearance,
         highlight: ChatTextHighlight? = nil,
+        links: ChatTextLinks = ChatTextLinks(),
         width: CGFloat
     ) -> NSAttributedString {
         // Table columns are sized from their content against the available
         // width, so the width belongs in the key.
         let key = Key(
-            content: content, appearance: appearance, highlight: highlight,
+            content: content, appearance: appearance, highlight: highlight, links: links,
             width: width.rounded()
         )
         if let cached = self.cache[key] { return cached }
 
         let result = self.build(
-            content: content, appearance: appearance, highlight: highlight, width: width)
+            content: content, appearance: appearance, highlight: highlight, links: links,
+            width: width)
         self.cache[key] = result
         return result
     }
@@ -77,6 +97,7 @@ enum ChatAttributedText {
         content: ChatTextContent,
         appearance: ChatTextAppearance,
         highlight: ChatTextHighlight?,
+        links: ChatTextLinks,
         width: CGFloat
     ) -> NSAttributedString {
         let result: NSMutableAttributedString
@@ -94,12 +115,63 @@ enum ChatAttributedText {
         case .plain(let text):
             result = NSMutableAttributedString(
                 string: text, attributes: self.plainAttributes(appearance))
+        case .diff(let old, let new):
+            result = self.diff(old: old, new: new, appearance: appearance)
         }
 
+        if !links.isEmpty {
+            self.applyLinks(links, to: result)
+        }
         if let highlight, !highlight.query.isEmpty {
             self.applyHighlight(highlight, to: result)
         }
         return result
+    }
+
+    // MARK: - Links
+
+    private static let issueRefRegex = try? NSRegularExpression(
+        pattern: TerminalURLDetector.markdownIssueRefPattern, options: [])
+    private static let urlRegex = try? NSRegularExpression(
+        pattern: #"https?://[^\s<>"'\])*]*[^\s<>"'\]).,:;!?]"#, options: [])
+
+    private static func applyLinks(
+        _ links: ChatTextLinks, to string: NSMutableAttributedString
+    ) {
+        let text = string.string
+        let nsText = text as NSString
+        let full = NSRange(location: 0, length: nsText.length)
+
+        if !links.issueRefs.isEmpty, let regex = self.issueRefRegex {
+            for match in regex.matches(in: text, range: full) {
+                guard let url = links.issueRefs[nsText.substring(with: match.range)] else {
+                    continue
+                }
+                self.setLink(url, color: .systemBlue, range: match.range, on: string)
+            }
+        }
+
+        if links.urls, let regex = self.urlRegex {
+            let color = NSColor(srgbRed: 0.45, green: 0.65, blue: 1.0, alpha: 1)
+            for match in regex.matches(in: text, range: full) {
+                guard let url = URL(string: nsText.substring(with: match.range)) else { continue }
+                self.setLink(url, color: color, range: match.range, on: string)
+            }
+        }
+    }
+
+    private static func setLink(
+        _ url: URL, color: NSColor, range: NSRange, on string: NSMutableAttributedString
+    ) {
+        guard NSMaxRange(range) <= string.length else { return }
+        string.addAttributes(
+            [
+                .link: url,
+                .foregroundColor: color,
+                .underlineStyle: NSUnderlineStyle.single.rawValue,
+            ],
+            range: range
+        )
     }
 
     // MARK: - Non markdown paths
@@ -174,6 +246,101 @@ enum ChatAttributedText {
             out.append(NSAttributedString(string: piece, attributes: attributes))
         }
         return out
+    }
+
+    // MARK: - Diffs
+
+    /// An edit rendered as one run of text rather than a stack of coloured rows,
+    /// so a drag can pass through it like any other block.
+    ///
+    /// The full width bands behind the lines are block decorations, because a
+    /// background colour attribute only paints behind the glyphs and would stop
+    /// at the end of each line.
+    private enum DiffStyle {
+        static let removedForeground = NSColor(srgbRed: 1, green: 0.4, blue: 0.4, alpha: 1)
+        static let addedForeground = NSColor(srgbRed: 0.4, green: 0.9, blue: 0.4, alpha: 1)
+        static let removedFill = NSColor.systemRed.withAlphaComponent(0.12)
+        static let addedFill = NSColor.systemGreen.withAlphaComponent(0.1)
+        static let horizontalPadding: CGFloat = 10
+        static let verticalPadding: CGFloat = 1
+        /// One line's box, matching the row height these lines had as separate
+        /// `Text` views: a 13pt text box with a point of padding either side.
+        static let lineHeight: CGFloat = 15
+    }
+
+    private static func diff(
+        old: String, new: String, appearance: ChatTextAppearance
+    ) -> NSMutableAttributedString {
+        let out = NSMutableAttributedString()
+        self.appendDiffLines(
+            old.components(separatedBy: "\n"), marker: "- ",
+            foreground: DiffStyle.removedForeground, fill: DiffStyle.removedFill,
+            appearance: appearance, to: out
+        )
+        self.appendDiffLines(
+            new.components(separatedBy: "\n"), marker: "+ ",
+            foreground: DiffStyle.addedForeground, fill: DiffStyle.addedFill,
+            appearance: appearance, to: out
+        )
+        return out
+    }
+
+    private static func appendDiffLines(
+        _ lines: [String],
+        marker: String,
+        foreground: NSColor,
+        fill: NSColor,
+        appearance: ChatTextAppearance,
+        to out: NSMutableAttributedString
+    ) {
+        guard !lines.isEmpty else { return }
+
+        let style = NSMutableParagraphStyle()
+        style.lineBreakMode = .byWordWrapping
+        style.firstLineHeadIndent = DiffStyle.horizontalPadding
+        style.headIndent = DiffStyle.horizontalPadding
+        style.tailIndent = -DiffStyle.horizontalPadding
+        // The padding lives in the line box rather than in paragraph spacing,
+        // which TextKit drops at the first and last paragraph of a run.
+        style.minimumLineHeight = DiffStyle.lineHeight
+        style.maximumLineHeight = DiffStyle.lineHeight
+
+        if out.length > 0 {
+            // The separator carries the attributes of the line it ends, or that
+            // line would take its height from a terminator styled with the
+            // system defaults.
+            var previous = out.attributes(at: out.length - 1, effectiveRange: nil)
+            previous[.markdownBlockDecoration] = nil
+            out.append(NSAttributedString(string: "\n", attributes: previous))
+        }
+        // TextKit puts the whole difference between the natural line and the
+        // forced box above the glyphs; the row it replaces put a point of it
+        // below. Lift the text by the rest.
+        let natural = NSLayoutManager().defaultLineHeight(for: appearance.font)
+        let lift = max(DiffStyle.lineHeight - natural - DiffStyle.verticalPadding, 0)
+
+        let body = lines.map { marker + $0 }.joined(separator: "\n")
+        out.append(
+            NSAttributedString(
+                string: body,
+                attributes: [
+                    .font: appearance.font,
+                    .foregroundColor: foreground,
+                    .paragraphStyle: style,
+                    .baselineOffset: lift,
+                ]
+            )
+        )
+
+        let decoration = MarkdownBlockDecoration(kind: .fill, color: fill)
+        // The separator before this group belongs to the group above it: a
+        // paragraph terminator lays out on the line it ends, and painting past
+        // it would stretch this band up over that line.
+        let bodyStart = out.length - body.utf16.count
+        out.addAttribute(
+            .markdownBlockDecoration, value: decoration,
+            range: NSRange(location: bodyStart, length: body.utf16.count)
+        )
     }
 
     // MARK: - Search highlighting

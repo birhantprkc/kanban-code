@@ -1,4 +1,5 @@
 import AppKit
+import MarkdownUI
 import SwiftUI
 
 /// A read-only text view that renders a whole chat row as one selectable run.
@@ -11,6 +12,9 @@ struct SelectableMarkdownText: NSViewRepresentable {
     let content: ChatTextContent
     var appearance: ChatTextAppearance
     var highlight: ChatTextHighlight?
+    var links = ChatTextLinks()
+    /// Caps the drawn text at this many lines, ellipsis and all.
+    var lineLimit: Int?
 
     @Environment(\.chatSelectionCoordinator) private var coordinator
 
@@ -21,7 +25,8 @@ struct SelectableMarkdownText: NSViewRepresentable {
     func updateNSView(_ nsView: WrappingTextView, context: Context) {
         nsView.coordinator = self.coordinator
         nsView.configure(
-            content: self.content, appearance: self.appearance, highlight: self.highlight)
+            content: self.content, appearance: self.appearance, highlight: self.highlight,
+            links: self.links, lineLimit: self.lineLimit)
     }
 
     func sizeThatFits(
@@ -29,7 +34,8 @@ struct SelectableMarkdownText: NSViewRepresentable {
     ) -> CGSize? {
         guard let width = proposal.width, width > 1, width.isFinite else { return nil }
         nsView.configure(
-            content: self.content, appearance: self.appearance, highlight: self.highlight)
+            content: self.content, appearance: self.appearance, highlight: self.highlight,
+            links: self.links, lineLimit: self.lineLimit)
         return nsView.fittingSize(forWidth: width)
     }
 
@@ -76,37 +82,48 @@ struct SelectableMarkdownText: NSViewRepresentable {
         private var textAppearance = ChatTextAppearance(
             font: .systemFont(ofSize: NSFont.systemFontSize), foregroundColor: .labelColor)
         private var highlight: ChatTextHighlight?
+        private var links = ChatTextLinks()
+        private var lineLimit: Int?
         private var renderedWidth: CGFloat = 0
 
         func configure(
             content: ChatTextContent,
             appearance: ChatTextAppearance,
-            highlight: ChatTextHighlight?
+            highlight: ChatTextHighlight?,
+            links: ChatTextLinks = ChatTextLinks(),
+            lineLimit: Int? = nil
         ) {
             let changed =
                 content != self.content || appearance != self.textAppearance
-                || highlight != self.highlight
+                || highlight != self.highlight || links != self.links
+                || lineLimit != self.lineLimit
             self.content = content
             self.textAppearance = appearance
             self.highlight = highlight
+            self.links = links
+            self.lineLimit = lineLimit
             if changed { self.renderedWidth = 0 }
+            self.textContainer?.maximumNumberOfLines = lineLimit ?? 0
+            self.textContainer?.lineBreakMode = lineLimit == nil ? .byWordWrapping : .byTruncatingTail
             self.render(width: self.bounds.width)
         }
 
         func fittingSize(forWidth width: CGFloat) -> CGSize {
             self.render(width: width)
             let attributed = self.attributedText(width: width)
-            let size = ChatTextMeasurement.size(of: attributed, width: width)
+            let size = ChatTextMeasurement.size(
+                of: attributed, width: width, lineLimit: self.lineLimit)
             // Report the text's own width, not the whole proposal. A short row
             // that claims the full width cannot be centred by its container,
-            // which is how system notices are laid out.
+            // which is how system notices are laid out, and it stretches a user
+            // bubble across the whole column.
             return CGSize(width: min(width, size.width), height: size.height)
         }
 
         private func attributedText(width: CGFloat) -> NSAttributedString {
             ChatAttributedText.make(
                 content: self.content, appearance: self.textAppearance,
-                highlight: self.highlight, width: width
+                highlight: self.highlight, links: self.links, width: width
             )
         }
 
@@ -147,7 +164,8 @@ struct SelectableMarkdownText: NSViewRepresentable {
             }
         }
 
-        private var carriedSelection: NSRange?
+        /// The part of a cross message selection this view is painting.
+        private(set) var carriedSelectionRange: NSRange?
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
@@ -171,14 +189,14 @@ struct SelectableMarkdownText: NSViewRepresentable {
                 [.backgroundColor: NSColor.selectedTextBackgroundColor],
                 forCharacterRange: range
             )
-            self.carriedSelection = range
+            self.carriedSelectionRange = range
         }
 
         func clearCarriedSelection() {
-            guard let carried = self.carriedSelection, let layoutManager = self.layoutManager
+            guard let carried = self.carriedSelectionRange, let layoutManager = self.layoutManager
             else { return }
             layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: carried)
-            self.carriedSelection = nil
+            self.carriedSelectionRange = nil
         }
 
         override func mouseDown(with event: NSEvent) {
@@ -251,20 +269,28 @@ enum ChatTextMeasurement {
         let text: String
         let length: Int
         let width: CGFloat
+        let lineLimit: Int
     }
 
     private static var cache = LRUCache<Key, CGSize>(limit: 2_000)
 
-    static func size(of attributed: NSAttributedString, width: CGFloat) -> CGSize {
+    static func size(
+        of attributed: NSAttributedString, width: CGFloat, lineLimit: Int? = nil
+    ) -> CGSize {
         let rounded = width.rounded()
-        let key = Key(text: attributed.string, length: attributed.length, width: rounded)
+        let key = Key(
+            text: attributed.string, length: attributed.length, width: rounded,
+            lineLimit: lineLimit ?? 0
+        )
         if let cached = self.cache[key] { return cached }
-        let measured = self.measure(attributed, width: rounded)
+        let measured = self.measure(attributed, width: rounded, lineLimit: lineLimit)
         self.cache[key] = measured
         return measured
     }
 
-    private static func measure(_ attributed: NSAttributedString, width: CGFloat) -> CGSize {
+    private static func measure(
+        _ attributed: NSAttributedString, width: CGFloat, lineLimit: Int?
+    ) -> CGSize {
         // Measure on a detached stack. The live view's container width tracks a
         // frame SwiftUI has not set during the sizing pass, so heights come
         // back short and messages end up drawn on top of each other.
@@ -273,6 +299,8 @@ enum ChatTextMeasurement {
             size: CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)
         )
         container.lineFragmentPadding = 0
+        container.maximumNumberOfLines = lineLimit ?? 0
+        container.lineBreakMode = lineLimit == nil ? .byWordWrapping : .byTruncatingTail
         let layoutManager = MarkdownLayoutManager()
         layoutManager.addTextContainer(container)
         storage.addLayoutManager(layoutManager)
@@ -287,6 +315,24 @@ enum ChatTextMeasurement {
                 forGlyphAt: layoutManager.numberOfGlyphs - 1, effectiveRange: nil)
             height = max(height, last.maxY)
         }
-        return CGSize(width: ceil(used.maxX), height: ceil(height))
+        // A block fill spans the container, so a code block or a diff has to
+        // claim the whole width even when its longest line is short, or the
+        // band behind it would stop where the text does.
+        let spansContainer = self.hasFullWidthFill(attributed)
+        return CGSize(width: spansContainer ? width : ceil(used.maxX), height: ceil(height))
+    }
+
+    private static func hasFullWidthFill(_ attributed: NSAttributedString) -> Bool {
+        var found = false
+        attributed.enumerateAttribute(
+            .markdownBlockDecoration, in: NSRange(location: 0, length: attributed.length),
+            options: []
+        ) { value, _, stop in
+            guard let decoration = value as? MarkdownBlockDecoration, decoration.kind == .fill
+            else { return }
+            found = true
+            stop.pointee = true
+        }
+        return found
     }
 }

@@ -46,76 +46,11 @@ struct ChannelSearchQuery: Equatable {
     }
 }
 
-// MARK: - Cmd+click URL helpers (shared by channel + DM chats)
-
-/// Regex matching http(s) URLs. Stops at whitespace / common punctuation
-/// closers so trailing `)` or `.` don't get captured as part of the URL.
-private let chatURLRegex: NSRegularExpression? = {
-    try? NSRegularExpression(pattern: "https?://[^\\s<>\"'\\])*]*[^\\s<>\"'\\]).,:;!?]")
-}()
+// MARK: - Issue reference links (shared by channel + DM chats)
 
 private let chatPullRequestRefRegex: NSRegularExpression? = {
-    try? NSRegularExpression(
-        pattern: #"(?<![&/a-zA-Z0-9\[(\]])(?:[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)?#\d+(?![^\[]*\])"#,
-        options: []
-    )
+    try? NSRegularExpression(pattern: TerminalURLDetector.markdownIssueRefPattern, options: [])
 }()
-
-/// Apply `.link = url` attributes to every URL occurrence in `attr`. Only
-/// called when the user is cmd+hovering the line — plain text otherwise so
-/// `.textSelection` keeps working normally.
-private func applyChatURLLinks(to attr: inout AttributedString, linkColor: Color = .init(red: 0.45, green: 0.65, blue: 1.0)) {
-    guard let regex = chatURLRegex else { return }
-    let text = String(attr.characters)
-    let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
-    for match in matches {
-        guard let range = Range(match.range, in: text),
-              let url = URL(string: String(text[range])) else { continue }
-        let startOff = text.distance(from: text.startIndex, to: range.lowerBound)
-        let endOff = text.distance(from: text.startIndex, to: range.upperBound)
-        let chars = attr.characters
-        let attrStart = chars.index(chars.startIndex, offsetBy: startOff)
-        let attrEnd = chars.index(chars.startIndex, offsetBy: endOff)
-        attr[attrStart..<attrEnd].link = url
-        attr[attrStart..<attrEnd].foregroundColor = linkColor
-        attr[attrStart..<attrEnd].underlineStyle = .single
-    }
-}
-
-private func applyChatPullRequestLinks(
-    to attr: inout AttributedString,
-    urlForNumber: (Int) -> URL?,
-    linkColor: Color = .blue
-) {
-    guard let regex = chatPullRequestRefRegex else { return }
-    let text = String(attr.characters)
-    let nsText = text as NSString
-    let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
-    for match in matches {
-        guard let textRange = Range(match.range, in: text) else { continue }
-        let ref = nsText.substring(with: match.range)
-        guard let hashIndex = ref.firstIndex(of: "#"),
-              let number = Int(ref[ref.index(after: hashIndex)...]) else { continue }
-
-        let prefix = String(ref[ref.startIndex..<hashIndex])
-        let url: URL?
-        if prefix.isEmpty {
-            url = urlForNumber(number)
-        } else {
-            url = URL(string: "https://github.com/\(prefix)/pull/\(number)")
-        }
-        guard let url else { continue }
-
-        let startOff = text.distance(from: text.startIndex, to: textRange.lowerBound)
-        let endOff = text.distance(from: text.startIndex, to: textRange.upperBound)
-        let chars = attr.characters
-        let attrStart = chars.index(chars.startIndex, offsetBy: startOff)
-        let attrEnd = chars.index(chars.startIndex, offsetBy: endOff)
-        attr[attrStart..<attrEnd].link = url
-        attr[attrStart..<attrEnd].foregroundColor = linkColor
-        attr[attrStart..<attrEnd].underlineStyle = .single
-    }
-}
 
 enum ChatMessageBodyRenderMode: Equatable {
     case plainText
@@ -172,18 +107,15 @@ enum ChatMessageBodyRenderMode: Equatable {
 private struct ChatMessageBody: View {
     let text: String
     let isCmdHeld: Bool
-    var urlForPullRequestNumber: (Int) -> URL? = { _ in nil }
+    var urlForPullRequestRef: (String) -> URL? = { _ in nil }
     @State private var hovered = false
     @State private var expanded = false
-    @State private var selectionEnabled = false
-    @State private var selectionActivationToken = 0
 
     /// Chosen to match ChatMessageView.textTruncationLimit (4 KB). At the
     /// default font, that's roughly 50 lines — long enough that a normal
     /// reply is never clipped, short enough that a pasted design doc or
     /// LLM "thinking out loud" dump doesn't eat the whole scroll.
     private static let truncationLimit = 4_000
-    private static let selectionRetentionSeconds: UInt64 = 10 * 60
 
     private var linksActive: Bool { isCmdHeld && hovered }
     private var isTruncated: Bool { text.count > Self.truncationLimit && !expanded }
@@ -206,97 +138,48 @@ private struct ChatMessageBody: View {
                 .help("Expand the full message")
             }
         }
-        .onHover { isHovered in
-            hovered = isHovered
-            if isHovered { activateSelectionWindow() }
-        }
+        .onHover { hovered = $0 }
     }
 
-    @ViewBuilder
+    /// One text view per message, so a drag runs from one into the next instead
+    /// of stopping at the bubble it started in. It also makes the selection
+    /// always live, which is what the hover window used to stand in for.
     private var messageContent: some View {
-        switch ChatMessageBodyRenderMode.resolve(for: displayText) {
-        case .blockMarkdown:
-            if selectionEnabled {
-                Markdown(displayText)
-                    .markdownTheme(chatMarkdownTheme)
-                    .textSelection(.enabled)
-            } else {
-                Markdown(displayText)
-                    .markdownTheme(chatMarkdownTheme)
-            }
-        case .inlineMarkdown:
-            if selectionEnabled {
-                Text(inlineAttributed)
-                    .font(.app(.body))
-                    .textSelection(.enabled)
-            } else {
-                Text(inlineAttributed)
-                    .font(.app(.body))
-            }
-        case .plainText:
-            if selectionEnabled {
-                Text(plainAttributed)
-                    .font(.app(.body))
-                    .textSelection(.enabled)
-            } else {
-                Text(plainAttributed)
-                    .font(.app(.body))
-            }
-        }
-    }
-
-    private func activateSelectionWindow() {
-        selectionEnabled = true
-        selectionActivationToken += 1
-        let token = selectionActivationToken
-        Task {
-            try? await Task.sleep(nanoseconds: Self.selectionRetentionSeconds * 1_000_000_000)
-            await MainActor.run {
-                if selectionActivationToken == token && !hovered {
-                    selectionEnabled = false
-                }
-            }
-        }
-    }
-
-    /// Parse `displayText` as inline markdown (bold, italic, links, inline code)
-    /// and layer our own cmd+hover URL linkification on top. Falls back to plain
-    /// text if the parser chokes.
-    private var inlineAttributed: AttributedString {
-        RenderDiagnostics.measure(
-            "ChannelChatView.inlineMarkdown",
+        RenderDiagnostics.measureView(
+            "ChannelChatView.messageBody",
             thresholdMs: 8,
             metadata: "chars=\(displayText.count) links=\(linksActive)"
         ) {
-            let parsed = try? AttributedString(
-                markdown: displayText,
-                options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+            SelectableMarkdownText(
+                content: content,
+                appearance: .init(font: .app(.body), foregroundColor: .labelColor),
+                links: links
             )
-            var attr = parsed ?? AttributedString(displayText)
-            applyCheapLinks(to: &attr)
-            return attr
         }
     }
 
-    private var plainAttributed: AttributedString {
-        RenderDiagnostics.measure(
-            "ChannelChatView.plainText",
-            thresholdMs: 8,
-            metadata: "chars=\(displayText.count) links=\(linksActive)"
-        ) {
-            var attr = AttributedString(displayText)
-            applyCheapLinks(to: &attr)
-            return attr
+    private var content: ChatTextContent {
+        switch ChatMessageBodyRenderMode.resolve(for: displayText) {
+        case .blockMarkdown: .markdown(displayText)
+        case .inlineMarkdown: .inlineMarkdown(displayText)
+        case .plainText: .plain(displayText)
         }
     }
 
-    private func applyCheapLinks(to attr: inout AttributedString) {
-        if displayText.contains("#") {
-            applyChatPullRequestLinks(to: &attr, urlForNumber: urlForPullRequestNumber)
+    /// References resolve out here rather than in the renderer, because the
+    /// channel knows which pull requests each sender has open.
+    private var links: ChatTextLinks {
+        var refs: [String: URL] = [:]
+        if displayText.contains("#"), let regex = chatPullRequestRefRegex {
+            let nsText = displayText as NSString
+            let full = NSRange(location: 0, length: nsText.length)
+            for match in regex.matches(in: displayText, range: full) {
+                let ref = nsText.substring(with: match.range)
+                guard refs[ref] == nil, let url = urlForPullRequestRef(ref) else { continue }
+                refs[ref] = url
+            }
         }
-        if linksActive, displayText.contains("http") {
-            applyChatURLLinks(to: &attr)
-        }
+        return ChatTextLinks(issueRefs: refs, urls: linksActive && displayText.contains("http"))
     }
 }
 
@@ -1363,7 +1246,7 @@ struct ChannelChatView: View {
                 ChatMessageBody(
                     text: m.body,
                     isCmdHeld: isCmdHeld,
-                    urlForPullRequestNumber: { urlForPullRequest(number: $0, from: m) }
+                    urlForPullRequestRef: { urlForPullRequestRef($0, from: m) }
                 )
                     .environment(\.openURL, OpenURLAction { url in
                         onOpenPullRequest(url)
@@ -1391,6 +1274,33 @@ struct ChannelChatView: View {
                 Label("Copy Message", systemImage: "doc.on.doc")
             }
         }
+    }
+
+    /// Resolve a whole reference, so `scenario#41` next to a langwatch card
+    /// lands on `langwatch/scenario` rather than nowhere.
+    private func urlForPullRequestRef(_ ref: String, from message: ChannelMessage) -> URL? {
+        guard let hashIndex = ref.firstIndex(of: "#"),
+              let number = Int(ref[ref.index(after: hashIndex)...]) else { return nil }
+        let prefix = String(ref[ref.startIndex..<hashIndex])
+        if prefix.isEmpty {
+            return urlForPullRequest(number: number, from: message)
+        }
+        if prefix.contains("/") {
+            return URL(string: "https://github.com/\(prefix)/pull/\(number)")
+        }
+        guard let owner = TerminalURLDetector.owner(of: pullRequestBase(from: message)) else {
+            return nil
+        }
+        return URL(string: "https://github.com/\(owner)/\(prefix)/pull/\(number)")
+    }
+
+    /// The repo a message's references are relative to.
+    private func pullRequestBase(from message: ChannelMessage) -> String? {
+        if let cardId = message.from.cardId, let base = pullRequestBaseURLsByCardId[cardId] {
+            return base
+        }
+        let uniqueBases = Set(pullRequestBaseURLsByCardId.values)
+        return uniqueBases.count == 1 ? uniqueBases.first : nil
     }
 
     private func urlForPullRequest(number: Int, from message: ChannelMessage) -> URL? {
