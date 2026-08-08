@@ -71,4 +71,44 @@ struct TerminalURLDetectorTests {
         let hit = detect(text, clickOn: "#65")
         #expect(hit?.url == "https://github.com/langwatch/kanban-code/pull/65")
     }
+
+    /// A sibling repo is usually written on its own, and used to be dead text.
+    @Test("repo#123 takes the owner from the card's repo")
+    func repoOnlyIssueRef() {
+        let text = "Fix is up: kanban-code#6745."
+        let hit = detect(text, clickOn: "kanban-code#6745", base: "https://github.com/langwatch/langwatch")
+        #expect(hit?.url == "https://github.com/langwatch/kanban-code/pull/6745")
+        // The whole reference highlights, not just the number.
+        #expect(hit?.colStart == 11)
+        #expect(hit?.colEnd == 26)
+    }
+
+    @Test("clicking the repo name of repo#123 is a hit too")
+    func repoOnlyIssueRefClickedOnName() {
+        let text = "shipped scenario#41 today"
+        let hit = detect(text, clickOn: "scenario", base: "https://github.com/langwatch/langwatch")
+        #expect(hit?.url == "https://github.com/langwatch/scenario/pull/41")
+    }
+
+    @Test("repo#123 stays plain text when there is no repo to infer from")
+    func repoOnlyIssueRefWithoutBase() {
+        let text = "shipped scenario#41 today"
+        #expect(detect(text, clickOn: "scenario") == nil)
+    }
+
+    /// The lookbehind is what keeps a fragment in a URL from reading as one.
+    @Test("a URL fragment is not a reference")
+    func urlFragmentIsNotARef() {
+        let text = "docs at https://example.com/a#5 end"
+        let hit = detect(text, clickOn: "example.com", base: "https://github.com/langwatch/langwatch")
+        #expect(hit?.url == "https://example.com/a#5")
+    }
+
+    @Test("the owner comes off a repo URL with or without a scheme")
+    func ownerParsing() {
+        #expect(TerminalURLDetector.owner(of: "https://github.com/langwatch/langwatch") == "langwatch")
+        #expect(TerminalURLDetector.owner(of: "github.com/acme/widgets") == "acme")
+        #expect(TerminalURLDetector.owner(of: nil) == nil)
+        #expect(TerminalURLDetector.owner(of: "langwatch") == nil)
+    }
 }

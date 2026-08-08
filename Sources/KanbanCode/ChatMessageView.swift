@@ -564,12 +564,11 @@ struct LazyImageChip: View {
 // MARK: - GitHub Issue/PR Reference Linking
 
 extension ChatMessageView {
-    /// Regex matching owner/repo#123 or bare #123 (not inside URLs or markdown links).
+    /// Regex matching owner/repo#123, repo#123 or bare #123 (not inside URLs or
+    /// markdown links).
     private static let issueRefPattern: NSRegularExpression? = {
         try? NSRegularExpression(
-            pattern: #"(?<![&/a-zA-Z0-9\[(\]])(?:[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)?#\d+(?![^\[]*\])"#,
-            options: []
-        )
+            pattern: TerminalURLDetector.markdownIssueRefPattern, options: [])
     }()
 
     /// Convert GitHub issue/PR references in text to markdown links.
@@ -585,16 +584,9 @@ extension ChatMessageView {
         // Process in reverse to preserve offsets
         for match in matches.reversed() {
             let ref = nsText.substring(with: match.range)
-            guard let hashIndex = ref.firstIndex(of: "#"),
-                  let number = Int(ref[ref.index(after: hashIndex)...]) else { continue }
-            let prefix = String(ref[ref.startIndex..<hashIndex])
-            let url: String
-            if prefix.isEmpty {
-                guard let base = githubBaseURL else { continue }
-                url = "\(base)/pull/\(number)"
-            } else {
-                url = "https://github.com/\(prefix)/pull/\(number)"
-            }
+            guard
+                let url = TerminalURLDetector.resolveIssueRef(ref, githubBaseURL: githubBaseURL)
+            else { continue }
             let startIdx = text.index(text.startIndex, offsetBy: match.range.location)
             let endIdx = text.index(startIdx, offsetBy: match.range.length)
             result.replaceSubrange(startIdx..<endIdx, with: "[\(ref)](\(url))")
