@@ -1,5 +1,6 @@
 import AppKit
 import MarkdownUI
+import SwiftUI
 import Testing
 
 @testable import KanbanCode
@@ -139,6 +140,59 @@ struct ChatTextHeightTests {
         #expect(Self.fitsInTheSizeItAsksFor(.markdown(long)))
         #expect(Self.fitsInTheSizeItAsksFor(.plain(long)))
         #expect(Self.fitsInTheSizeItAsksFor(.inlineMarkdown(long)))
+    }
+
+    /// SwiftUI asks for the minimum, ideal and maximum size with zero,
+    /// unspecified and infinite widths. Those have to answer with the width the
+    /// row is laid out at: nil sends SwiftUI to the text view's own fitting
+    /// size, which follows whatever was last rendered, and a stale narrow
+    /// answer becomes a narrow frame.
+    @Test("probes for minimum, ideal and maximum answer with the layout width")
+    func probesAnswerWithTheLayoutWidth() {
+        let view = SelectableMarkdownText.WrappingTextView.make()
+        view.configure(
+            content: .markdown("| A | B |\n| --- | --- |\n| 1 | 2 |"),
+            appearance: Self.appearance, highlight: nil)
+        _ = view.fittingSize(for: ProposedViewSize(width: Self.width, height: nil))
+
+        for probe in [
+            ProposedViewSize.zero, ProposedViewSize.unspecified, ProposedViewSize.infinity,
+        ] {
+            #expect(view.fittingSize(for: probe)?.width == Self.width)
+        }
+    }
+
+    /// A message that starts as running text and grows a table mid-stream keeps
+    /// being laid out at the width it was measured at, not the narrower one the
+    /// running text asked for.
+    @Test("a table arriving mid stream lays out at the full width")
+    func tableArrivingMidStream() {
+        let view = SelectableMarkdownText.WrappingTextView.make()
+        view.configure(content: .inlineMarkdown("Short."), appearance: Self.appearance, highlight: nil)
+        let narrow = view.fittingSize(for: ProposedViewSize(width: Self.width, height: nil))
+        #expect((narrow?.width ?? Self.width) < 100)
+        view.setFrameSize(narrow ?? .zero)
+
+        view.configure(
+            content: .markdown("Short.\n\n\(Self.table(rows: 3))"),
+            appearance: Self.appearance, highlight: nil)
+        let wide = view.fittingSize(for: ProposedViewSize(width: Self.width, height: nil))
+        #expect(wide?.width == Self.width)
+
+        view.setFrameSize(wide ?? .zero)
+        guard let layout = view.layoutManager, let container = view.textContainer else {
+            Issue.record("no layout")
+            return
+        }
+        #expect(container.size.width == Self.width)
+        layout.ensureLayout(for: container)
+        var bottom = layout.usedRect(for: container).maxY
+        layout.enumerateLineFragments(
+            forGlyphRange: NSRange(location: 0, length: layout.numberOfGlyphs)
+        ) { rect, used, _, _, _ in
+            bottom = max(bottom, max(rect.maxY, used.maxY))
+        }
+        #expect(bottom <= (wide?.height ?? 0) + 0.5)
     }
 
     @Test("a table wider than the container still reports what it draws")

@@ -32,11 +32,10 @@ struct SelectableMarkdownText: NSViewRepresentable {
     func sizeThatFits(
         _ proposal: ProposedViewSize, nsView: WrappingTextView, context: Context
     ) -> CGSize? {
-        guard let width = proposal.width, width > 1, width.isFinite else { return nil }
         nsView.configure(
             content: self.content, appearance: self.appearance, highlight: self.highlight,
             links: self.links, lineLimit: self.lineLimit)
-        return nsView.fittingSize(forWidth: width)
+        return nsView.fittingSize(for: proposal)
     }
 
     static func dismantleNSView(_ nsView: WrappingTextView, coordinator: ()) {
@@ -61,7 +60,10 @@ struct SelectableMarkdownText: NSViewRepresentable {
                 size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
             )
             container.lineFragmentPadding = 0
-            container.widthTracksTextView = true
+            // The container's width is set from the width the text was built
+            // for, never from the frame. Tracking the view would let AppKit
+            // re-wrap behind the renderer's back, at a width nothing measured.
+            container.widthTracksTextView = false
             storage.addLayoutManager(layoutManager)
             layoutManager.addTextContainer(container)
 
@@ -108,6 +110,33 @@ struct SelectableMarkdownText: NSViewRepresentable {
             self.render(width: self.bounds.width)
         }
 
+        /// The width this row is laid out at, kept so a probe can answer with it.
+        private var layoutWidth: CGFloat = 0
+
+        func fittingSize(for proposal: ProposedViewSize) -> CGSize? {
+            guard let width = self.resolveWidth(proposal) else { return nil }
+            return self.fittingSize(forWidth: width)
+        }
+
+        /// SwiftUI probes a representable with zero, unspecified and infinite
+        /// widths to learn how flexible it is. Answering nil sends it to the
+        /// text view's own fitting size, which follows whatever was last
+        /// rendered: a stale narrow answer becomes a narrow frame, and a table
+        /// laid out one character per column over the message below it.
+        private func resolveWidth(_ proposal: ProposedViewSize) -> CGFloat? {
+            if let proposed = proposal.width, proposed > 1, proposed.isFinite {
+                self.layoutWidth = proposed
+                return proposed
+            }
+            return self.layoutWidth > 1 ? self.layoutWidth : nil
+        }
+
+        /// Nothing here has a size of its own: every answer comes from
+        /// measuring the text against a width.
+        override var intrinsicContentSize: NSSize {
+            NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
+        }
+
         func fittingSize(forWidth width: CGFloat) -> CGSize {
             self.render(width: width)
             let attributed = self.attributedText(width: width)
@@ -133,6 +162,8 @@ struct SelectableMarkdownText: NSViewRepresentable {
         private func render(width: CGFloat) {
             guard width > 1, abs(width - self.renderedWidth) > 0.5 else { return }
             self.renderedWidth = width
+            self.textContainer?.size = CGSize(
+                width: width, height: CGFloat.greatestFiniteMagnitude)
 
             let attributed = self.attributedText(width: width)
             guard self.textStorage?.isEqual(to: attributed) != true else { return }
