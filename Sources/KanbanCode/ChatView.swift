@@ -242,6 +242,9 @@ private struct ChatMessageList: View {
     @State private var shouldAutoScroll = true
     @State private var scrollPosition = ScrollPosition(edge: .bottom)
 
+    /// Carries a drag from one message's text view into the next.
+    @State private var selectionCoordinator = ChatSelectionCoordinator()
+
     // Search state
     @State private var showSearch = false
     @State private var searchText = ""
@@ -598,6 +601,7 @@ private struct ChatMessageList: View {
                 }
                 .padding(.horizontal, 16)
                 .textSelection(.enabled)
+                .environment(\.chatSelectionCoordinator, selectionCoordinator)
     }
 
     // MARK: - Search Bar

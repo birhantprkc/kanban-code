@@ -12,11 +12,14 @@ struct SelectableMarkdownText: NSViewRepresentable {
     var appearance: ChatTextAppearance
     var highlight: ChatTextHighlight?
 
+    @Environment(\.chatSelectionCoordinator) private var coordinator
+
     func makeNSView(context: Context) -> WrappingTextView {
         WrappingTextView.make()
     }
 
     func updateNSView(_ nsView: WrappingTextView, context: Context) {
+        nsView.coordinator = self.coordinator
         nsView.configure(
             content: self.content, appearance: self.appearance, highlight: self.highlight)
     }
@@ -28,6 +31,11 @@ struct SelectableMarkdownText: NSViewRepresentable {
         nsView.configure(
             content: self.content, appearance: self.appearance, highlight: self.highlight)
         return nsView.fittingSize(forWidth: width)
+    }
+
+    static func dismantleNSView(_ nsView: WrappingTextView, coordinator: ()) {
+        nsView.coordinator?.unregister(nsView)
+        nsView.coordinator = nil
     }
 
     /// Renders and measures itself, rebuilding whenever its width changes.
@@ -127,6 +135,108 @@ struct SelectableMarkdownText: NSViewRepresentable {
         /// Scrolling belongs to the surrounding chat scroll view.
         override func scrollWheel(with event: NSEvent) {
             self.nextResponder?.scrollWheel(with: event)
+        }
+
+        // MARK: - Cross message selection
+
+        var coordinator: ChatSelectionCoordinator? {
+            didSet {
+                guard oldValue !== self.coordinator else { return }
+                oldValue?.unregister(self)
+                if self.window != nil { self.coordinator?.register(self) }
+            }
+        }
+
+        private var carriedSelection: NSRange?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if self.window == nil {
+                self.coordinator?.unregister(self)
+            } else {
+                self.coordinator?.register(self)
+            }
+        }
+
+        /// Paints a selection this view did not make itself.
+        ///
+        /// A range set through `setSelectedRange` on a view that is not first
+        /// responder draws in the unemphasised colour, so a selection spanning
+        /// messages would change shade at every boundary.
+        func carrySelection(_ range: NSRange) {
+            guard let layoutManager = self.layoutManager else { return }
+            self.clearCarriedSelection()
+            guard range.length > 0 else { return }
+            layoutManager.addTemporaryAttributes(
+                [.backgroundColor: NSColor.selectedTextBackgroundColor],
+                forCharacterRange: range
+            )
+            self.carriedSelection = range
+        }
+
+        func clearCarriedSelection() {
+            guard let carried = self.carriedSelection, let layoutManager = self.layoutManager
+            else { return }
+            layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: carried)
+            self.carriedSelection = nil
+        }
+
+        override func mouseDown(with event: NSEvent) {
+            guard let coordinator else { return super.mouseDown(with: event) }
+            let point = self.convert(event.locationInWindow, from: nil)
+
+            // Word and line selection, and following a link, stay with AppKit.
+            if event.clickCount > 1 || self.hasLink(at: point) {
+                coordinator.clearAll()
+                return super.mouseDown(with: event)
+            }
+
+            self.window?.makeFirstResponder(self)
+            coordinator.beginDrag(in: self, at: self.characterIndexForInsertion(at: point))
+
+            // NSTextView tracks a drag in its own loop inside mouseDown, so
+            // mouseDragged never arrives and a drag can never leave the view.
+            // Tracking it here is what lets the selection reach the next
+            // message.
+            while let next = NSApp.nextEvent(
+                matching: [.leftMouseDragged, .leftMouseUp],
+                until: .distantFuture, inMode: .eventTracking, dequeue: true
+            ) {
+                if next.type == .leftMouseUp { break }
+                coordinator.extendDrag(toWindowPoint: next.locationInWindow)
+                self.autoscroll(with: next)
+            }
+            coordinator.endDrag()
+        }
+
+        private func hasLink(at point: NSPoint) -> Bool {
+            guard let storage = self.textStorage, storage.length > 0 else { return false }
+            let index = self.characterIndexForInsertion(at: point)
+            guard index < storage.length else { return false }
+            return storage.attribute(.link, at: index, effectiveRange: nil) != nil
+        }
+
+        override func copy(_ sender: Any?) {
+            let text = self.coordinator?.selectedText() ?? self.ownSelectionText()
+            guard let text else { return super.copy(sender) }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+        }
+
+        /// This view's own selection, flattened for pasting.
+        ///
+        /// Even a selection inside one message needs it: a code block is held
+        /// together by line separators and a table cell is its own paragraph.
+        private func ownSelectionText() -> String? {
+            guard let storage = self.textStorage, self.selectedRange().length > 0 else {
+                return nil
+            }
+            return ChatSelectionText.plainText(storage, range: self.selectedRange())
+        }
+
+        override func selectAll(_ sender: Any?) {
+            guard let coordinator else { return super.selectAll(sender) }
+            coordinator.selectAll()
         }
     }
 }
