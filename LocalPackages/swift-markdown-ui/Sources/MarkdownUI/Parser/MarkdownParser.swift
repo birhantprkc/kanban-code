@@ -1,6 +1,11 @@
 import Foundation
-@_implementationOnly import cmark_gfm
-@_implementationOnly import cmark_gfm_extensions
+
+// kanban-code: plain imports. `@_implementationOnly` is only meaningful with
+// library evolution turned on, which a local package does not use, and the
+// compiler warns that the combination is unstable. Nothing public here exposes
+// a cmark type, so hiding the import bought nothing.
+import cmark_gfm
+import cmark_gfm_extensions
 
 extension Array where Element == BlockNode {
   init(markdown: String) {

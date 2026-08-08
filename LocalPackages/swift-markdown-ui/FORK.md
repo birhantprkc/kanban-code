@@ -48,6 +48,11 @@ upstream file is modified.
   code block background or quote bar is painted by
   `Sources/KanbanCode/MarkdownLayoutManager.swift` instead.
 
+The one edit to an upstream file is in `Parser/MarkdownParser.swift`, where the
+two cmark imports lost their `@_implementationOnly`. That attribute only means
+anything with library evolution turned on, which a local package does not use,
+and the compiler warns that the combination is unstable.
+
 ## Known differences from the SwiftUI path
 
 - Code blocks wrap instead of scrolling horizontally. Upstream's theme puts
