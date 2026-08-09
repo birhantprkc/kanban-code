@@ -1,5 +1,73 @@
 # Changelog
 
+## [0.1.31](https://github.com/langwatch/kanban-code/compare/v0.1.30...v0.1.31) (2026-08-09)
+
+
+### Features
+
+* add first-class subagents ([f4d4a85](https://github.com/langwatch/kanban-code/commit/f4d4a85ca1a08ba22629b398d59eabf34dc19d50))
+* add first-class subagents ([8e749e3](https://github.com/langwatch/kanban-code/commit/8e749e37640dbdbf7c533ae204a7837a4f06a483))
+* add per-subagent compact thresholds ([8ad6f5f](https://github.com/langwatch/kanban-code/commit/8ad6f5f4c0a94eb9b1461b542adb7c8fef7d5f01))
+* **chat:** carry a text selection from one message into the next ([23cea10](https://github.com/langwatch/kanban-code/commit/23cea10b83b13a2b6a8fc5338591848713be10e9))
+* **chat:** draw every message text row in one selectable text view ([11b0564](https://github.com/langwatch/kanban-code/commit/11b05643ce7ae3d1d3a3ab6bf91746c5e4cfd9b0))
+* **chat:** give the chat composer the keyboard back, the way the terminal has it ([1974d5c](https://github.com/langwatch/kanban-code/commit/1974d5ca7b68e9173c7a8c730d2504721074eac5))
+* **chat:** let a selection run through cards and channel messages ([35920d1](https://github.com/langwatch/kanban-code/commit/35920d1f76e2df39cf4393ada5e633e48e296193))
+* **delivery:** steer, queue, and interrupt as first-class semantics ([69bb219](https://github.com/langwatch/kanban-code/commit/69bb219571397afb2222446e1567592257ba58d4))
+* **diagnostics:** attribute memory pressure to tmux session process trees ([a2e7c17](https://github.com/langwatch/kanban-code/commit/a2e7c17d38a96833fb8f6df434edfc58b6d0119f))
+* **markdown:** render markdown into one attributed string with real tables ([2f9197d](https://github.com/langwatch/kanban-code/commit/2f9197df22bb7de9195abebcd705dbf10c8480a1))
+* **queue:** add a prompt history to the card menu ([b446b10](https://github.com/langwatch/kanban-code/commit/b446b1085ef9e1952c72afe7636730885be901d1))
+* **queue:** journal every queued prompt before it can be lost ([2f03797](https://github.com/langwatch/kanban-code/commit/2f03797dcdcd7398b82d71039e6dd04bd25b95f8))
+* **shortcuts:** make Cmd+P pin the selected card ([843b711](https://github.com/langwatch/kanban-code/commit/843b711ec53ca94a2dc0802a33ebfa963fa7fc4c))
+* **subagent:** let a child ask for its own worktree ([ae0a8f0](https://github.com/langwatch/kanban-code/commit/ae0a8f09b52a11866a0d288e694dc6102171d5a5))
+* **subagents:** escalate per-card compaction the same way as global ([b5bfff3](https://github.com/langwatch/kanban-code/commit/b5bfff36f3de040fa669ddaecf3b9f57d9fe4831))
+* **subagents:** fork owned children and label parent DMs ([667aff6](https://github.com/langwatch/kanban-code/commit/667aff69181dee0e1d0fee10ac65a858ddfc7e57))
+
+
+### Bug Fixes
+
+* accumulated verified fixes from recent sessions ([d01cd10](https://github.com/langwatch/kanban-code/commit/d01cd1076b85ee30a4fb72f37ec8d1edc16ecf2c))
+* **board:** centre the notice banner on the window ([b533d1f](https://github.com/langwatch/kanban-code/commit/b533d1f16119066e3e24e5b940e7e5cac0ebf034))
+* **board:** make the notice banner readable over a terminal ([43bb7b3](https://github.com/langwatch/kanban-code/commit/43bb7b38cc06b0d6482f724ceca144f1aef55ce2))
+* **board:** show session ended instead of tmux attach error after reboot ([c52695f](https://github.com/langwatch/kanban-code/commit/c52695fa71286020a9fa9a52fccb256914a0f3b7))
+* **board:** stop good news arriving as a warning ([ffeb985](https://github.com/langwatch/kanban-code/commit/ffeb98569bafcf3b2ddefaf4fbdb2554469a9294))
+* **chat:** cap system-style messages like every other block ([5e5f85b](https://github.com/langwatch/kanban-code/commit/5e5f85bd03fc31b628e676449d4b2238028a3bc5))
+* **chat:** hold task notifications to the same column as every message ([096900f](https://github.com/langwatch/kanban-code/commit/096900fc57866f49c759b767598445725ef3c1da))
+* **chat:** keep a table at the width it was measured at ([3e3301b](https://github.com/langwatch/kanban-code/commit/3e3301b3dbe4ddd418d7b14e41fd3ed9ba1cca69))
+* **chat:** land the search on the match instead of near it ([4033035](https://github.com/langwatch/kanban-code/commit/4033035d4113850abe8de478fe37683ba38aca08))
+* **chat:** make in-conversation search find and paint its match ([16c0480](https://github.com/langwatch/kanban-code/commit/16c0480515742656a2cfe9406b242e6584b6d104))
+* **chat:** make search agree with the transcript on which turn is which ([237734c](https://github.com/langwatch/kanban-code/commit/237734cbaf3ba28b01b0f5f4ab75921d32d3d6db))
+* **chat:** resolve repo[#123](https://github.com/langwatch/kanban-code/issues/123) references against the card's owner ([20d3a7d](https://github.com/langwatch/kanban-code/commit/20d3a7dd0482eb9328ee60f0786e1a7cc265d928))
+* **chat:** stop a message with a table drawing over the one below it ([11637f3](https://github.com/langwatch/kanban-code/commit/11637f30163d443fa3f1d4759fe2abcd3389885d))
+* **chat:** stop a restored draft from being thrown away on the next keystroke ([8abd6fd](https://github.com/langwatch/kanban-code/commit/8abd6fdd063914edb3af42792d8ec4cf1560061a))
+* **codex:** make restore-to-turn actually truncate ([8102284](https://github.com/langwatch/kanban-code/commit/8102284b07c85eb4d06c262249c22ffe1311a00b))
+* **diagnostics:** survive-the-night defenses after 28GB balloon incident ([bfafaf0](https://github.com/langwatch/kanban-code/commit/bfafaf02f2b6b0d81e132491cd1ac2cc6b905fb2))
+* **gh:** group PR lookups by remote slug so worktrees stop multiplying GraphQL calls ([1249195](https://github.com/langwatch/kanban-code/commit/1249195893bdfd22c0408673dc0b0db59f5a8431))
+* harden subagent workflows ([4de5046](https://github.com/langwatch/kanban-code/commit/4de5046d12328a93dcbabca55904934749c52652))
+* **migration:** write message.model so claude --resume works ([bdda634](https://github.com/langwatch/kanban-code/commit/bdda634c8890164d7b729c13e2a1be38378e6838))
+* preserve piped self-compact handoffs ([7ec472c](https://github.com/langwatch/kanban-code/commit/7ec472cc0f7c4ce7a76b8d6b48edd60b123ac9ea))
+* **search:** put the quick palette back on an eager stack ([6b97180](https://github.com/langwatch/kanban-code/commit/6b9718014ffb7e2ed4b17b3e529aa38722691f01))
+* **sessions:** resolve symlinks when encoding Claude project folders ([d086f45](https://github.com/langwatch/kanban-code/commit/d086f457b0903f0fd66a67cbc4f70f6a082b1280))
+* **shell:** close the pipe descriptors every spawned command borrows ([5ff532a](https://github.com/langwatch/kanban-code/commit/5ff532a7482c9b89ffa487e6262b11dd4e0e36e6))
+* **terminal:** don't glue soft-wrap boundaries in implicit links ([090070d](https://github.com/langwatch/kanban-code/commit/090070d22517b2659e4e3e24d81e12c6806cbbca))
+* **terminal:** stop the terminal eating scrolls meant for the palette ([43c2dba](https://github.com/langwatch/kanban-code/commit/43c2dba3c9553b00ccaa340db85cb6f2bcddb8c0))
+* **terminal:** trim URL punctuation; parse current codex rollouts ([4442098](https://github.com/langwatch/kanban-code/commit/44420986c94461c43275f40ca8da8962893990b4))
+* **windows:** wrap pinnedCards Zustand selector in useShallow ([#139](https://github.com/langwatch/kanban-code/issues/139)) ([1db691f](https://github.com/langwatch/kanban-code/commit/1db691fd50b2a4af5d738ddc7540c3ca8ec3ca8b))
+
+
+### Performance
+
+* **search:** deliver each match as it lands instead of per batch ([5cfe872](https://github.com/langwatch/kanban-code/commit/5cfe872639e98a4e9ecc75c1bb3bb3e5ac83e740))
+* **search:** open the quick palette on the frame it is asked for ([a25441f](https://github.com/langwatch/kanban-code/commit/a25441fe9fa4220abc28fbfa2aa761118ab5e359))
+* **search:** read transcripts in blocks instead of byte by byte ([a17c51c](https://github.com/langwatch/kanban-code/commit/a17c51c27bd24450cd98f73cff2148e9a37a659b))
+* **search:** stop scanning every transcript byte for every query ([1ab21c5](https://github.com/langwatch/kanban-code/commit/1ab21c571fccbf8766611fc5cbd8934d444c12ee))
+* **search:** stop the quick palette indexing every card before it opens ([edcf5d2](https://github.com/langwatch/kanban-code/commit/edcf5d2c8fb789498bf6e28dba6857d252676a3c))
+* **search:** stop the quick palette re-sorting the board on every render ([7b2fb70](https://github.com/langwatch/kanban-code/commit/7b2fb7039a70318db4967f577e63dd2731739947))
+
+
+### Refactoring
+
+* **gh:** extract PR lookup grouping into a tested pure helper ([503fabf](https://github.com/langwatch/kanban-code/commit/503fabf265476e4f44153a3e5aefbf32da7bfc41))
+
 ## [0.1.30](https://github.com/langwatch/kanban-code/compare/v0.1.29...v0.1.30) (2026-06-16)
 
 
