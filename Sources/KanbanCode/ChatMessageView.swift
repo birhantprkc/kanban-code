@@ -71,6 +71,11 @@ struct ChatMessageView: View {
                     Spacer(minLength: 0)
                     let text = turn.contentBlocks.first { if case .text = $0.kind { return true }; return false }?.text ?? ""
                     truncatedSystemText(text, blockIndex: 0, color: .tertiaryLabelColor)
+                        // Held to the same column as every other row. A long
+                        // notification is still a message, and reading one that
+                        // runs the full width of the window means tracking back
+                        // across text nothing else crosses.
+                        .frame(maxWidth: chatMaxWidth, alignment: .leading)
                     Spacer(minLength: 0)
                 }
             } else if suppressBackground {
