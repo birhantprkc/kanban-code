@@ -2637,14 +2637,35 @@ public final class BoardStore: @unchecked Sendable {
             if let ghAdapter, shouldFetchPRs {
                 let t = ContinuousClock.now
                 let allRepos = Set(branchesByRepo.keys).union(prNumbersByRepo.keys)
+
+                // Worktrees of one repository are one GitHub repo: group the
+                // lookups by remote slug so N worktrees cost one batched query
+                // instead of N. Slug resolution is local git plus a cache, so
+                // the grouping itself spends no API points. Roots that fail to
+                // resolve keep a group of their own.
+                var groupRoot: [String: String] = [:]      // group key → representative root
+                var groupMembers: [String: [String]] = [:] // group key → all member roots
+                var groupBranches: [String: Set<String>] = [:]
+                var groupNumbers: [String: Set<Int>] = [:]
+                for repoRoot in allRepos {
+                    let branches = branchesByRepo[repoRoot] ?? []
+                    let numbers = prNumbersByRepo[repoRoot] ?? []
+                    guard !branches.isEmpty || !numbers.isEmpty else { continue }
+                    let slug = await ghAdapter.resolveRepoSlug(repoRoot: repoRoot)
+                    let key = slug.map { "\($0.host)/\($0.owner)/\($0.name)" } ?? repoRoot
+                    if groupRoot[key] == nil { groupRoot[key] = repoRoot }
+                    groupMembers[key, default: []].append(repoRoot)
+                    groupBranches[key, default: []].formUnion(branches)
+                    groupNumbers[key, default: []].formUnion(numbers)
+                }
+
                 typealias PRResult = (String, [String: PullRequest], [Int: PullRequest], Bool)
                 let results: [PRResult] = await withTaskGroup(of: PRResult.self) { group in
                     var pending = 0
                     var collected: [PRResult] = []
-                    for repoRoot in allRepos {
-                        let branches = Array(branchesByRepo[repoRoot] ?? [])
-                        let numbers = Array(prNumbersByRepo[repoRoot] ?? [])
-                        guard !branches.isEmpty || !numbers.isEmpty else { continue }
+                    for (key, repoRoot) in groupRoot {
+                        let branches = Array(groupBranches[key] ?? [])
+                        let numbers = Array(groupNumbers[key] ?? [])
 
                         // Concurrency limit: drain one before adding more
                         if pending >= 5, let result = await group.next() {
@@ -2658,13 +2679,12 @@ public final class BoardStore: @unchecked Sendable {
                                 let (byBranch, byNumber) = try await ghAdapter.batchPRLookup(
                                     repoRoot: repoRoot, branches: branches, prNumbers: numbers
                                 )
-                                let repoName = (repoRoot as NSString).lastPathComponent
-                                KanbanCodeLog.info("reconcile", "  batchPRLookup(\(repoName)): \(tBatch.duration(to: .now)) (\(branches.count) branches, \(numbers.count) PRs)")
-                                return (repoRoot, byBranch, byNumber, false)
+                                KanbanCodeLog.info("reconcile", "  batchPRLookup(\(key)): \(tBatch.duration(to: .now)) (\(branches.count) branches, \(numbers.count) PRs)")
+                                return (key, byBranch, byNumber, false)
                             } catch is GhCliError {
-                                return (repoRoot, [:], [:], true)
+                                return (key, [:], [:], true)
                             } catch {
-                                return (repoRoot, [:], [:], false)
+                                return (key, [:], [:], false)
                             }
                         }
                         pending += 1
@@ -2674,13 +2694,19 @@ public final class BoardStore: @unchecked Sendable {
                 }
 
                 var rateLimitedRepos: Set<String> = []
-                for (repoRoot, byBranch, byNumber, rateLimited) in results {
-                    if rateLimited { rateLimitedRepos.insert(repoRoot) }
+                for (key, byBranch, byNumber, rateLimited) in results {
+                    let members = groupMembers[key] ?? []
+                    if rateLimited { rateLimitedRepos.formUnion(members) }
                     for (branch, pr) in byBranch {
                         pullRequests[branch] = pr
                     }
                     if !byNumber.isEmpty {
-                        prsByRepoAndNumber[repoRoot] = byNumber
+                        // Every member root that asked for numbers gets the
+                        // group's result, since downstream lookups key by the
+                        // card's own repoRoot
+                        for member in members where !(prNumbersByRepo[member] ?? []).isEmpty {
+                            prsByRepoAndNumber[member] = byNumber
+                        }
                     }
                 }
                 if !rateLimitedRepos.isEmpty {

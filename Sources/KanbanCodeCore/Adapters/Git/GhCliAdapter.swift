@@ -4,8 +4,91 @@ import Foundation
 public final class GhCliAdapter: PRTrackerPort, @unchecked Sendable {
     private let ghPath: String
 
+    /// owner/name/host per checkout, resolved once per adapter lifetime.
+    /// Worktrees of one repository all hit this cache, and resolution goes
+    /// through local git first, so steady state spends zero API points on
+    /// repo identity.
+    private let slugLock = NSLock()
+    private var slugCache: [String: (owner: String, name: String, host: String)] = [:]
+
     public init() {
         self.ghPath = ShellCommand.findExecutable("gh") ?? "gh"
+    }
+
+    /// Parse a git remote URL into (owner, name, host). Handles
+    /// "git@host:owner/repo.git", "https://host/owner/repo(.git)" and
+    /// "ssh://git@host/owner/repo.git".
+    static func parseRepoSlug(_ url: String) -> (owner: String, name: String, host: String)? {
+        var s = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.hasSuffix(".git") { s = String(s.dropLast(4)) }
+        var host = ""
+        var path = ""
+        if let schemeRange = s.range(of: "://") {
+            let rest = String(s[schemeRange.upperBound...])
+            let parts = rest.split(separator: "/", maxSplits: 1).map(String.init)
+            guard parts.count == 2 else { return nil }
+            host = parts[0]
+            if let at = host.range(of: "@") { host = String(host[at.upperBound...]) }
+            path = parts[1]
+        } else if s.contains("@"), let colon = s.range(of: ":") {
+            var h = String(s[..<colon.lowerBound])
+            if let at = h.range(of: "@") { h = String(h[at.upperBound...]) }
+            host = h
+            path = String(s[colon.upperBound...])
+        } else {
+            return nil
+        }
+        let comps = path.split(separator: "/").map(String.init)
+        guard comps.count >= 2, !host.isEmpty else { return nil }
+        return (comps[comps.count - 2], comps[comps.count - 1], host)
+    }
+
+    /// Resolve the GitHub owner/name for a checkout. Local `git remote
+    /// get-url origin` first (free), `gh repo view` as the fallback for
+    /// remotes the parser does not recognise, cached either way.
+    private func cachedSlug(for repoRoot: String) -> (owner: String, name: String, host: String)? {
+        slugLock.withLock { slugCache[repoRoot] }
+    }
+
+    private func storeSlug(_ slug: (owner: String, name: String, host: String), for repoRoot: String) {
+        slugLock.withLock { slugCache[repoRoot] = slug }
+    }
+
+    public func resolveRepoSlug(repoRoot: String) async -> (owner: String, name: String, host: String)? {
+        if let hit = cachedSlug(for: repoRoot) {
+            return hit
+        }
+
+        var resolved: (owner: String, name: String, host: String)?
+        let gitPath = ShellCommand.findExecutable("git") ?? "git"
+        if let out = try? await ShellCommand.run(
+            gitPath,
+            arguments: ["remote", "get-url", "origin"],
+            currentDirectory: repoRoot
+        ), out.succeeded {
+            resolved = Self.parseRepoSlug(out.stdout)
+        }
+
+        if resolved == nil {
+            let repoResult = try? await ShellCommand.run(
+                ghPath,
+                arguments: ["repo", "view", "--json", "owner,name"],
+                currentDirectory: repoRoot
+            )
+            if let repoResult, repoResult.succeeded,
+               let repoData = repoResult.stdout.data(using: .utf8),
+               let repoInfo = try? JSONSerialization.jsonObject(with: repoData) as? [String: Any],
+               let owner = repoInfo["owner"] as? [String: Any],
+               let ownerLogin = owner["login"] as? String,
+               let repoName = repoInfo["name"] as? String {
+                resolved = (ownerLogin, repoName, "github.com")
+            }
+        }
+
+        if let resolved {
+            storeSlug(resolved, for: repoRoot)
+        }
+        return resolved
     }
 
     public func fetchPRs(repoRoot: String) async throws -> [String: PullRequest] {
@@ -224,20 +307,12 @@ public final class GhCliAdapter: PRTrackerPort, @unchecked Sendable {
     ) async throws -> (byBranch: [String: PullRequest], byNumber: [Int: PullRequest]) {
         guard !branches.isEmpty || !prNumbers.isEmpty else { return ([:], [:]) }
 
-        // Get repo owner/name
-        let repoResult = try await ShellCommand.run(
-            ghPath,
-            arguments: ["repo", "view", "--json", "owner,name"],
-            currentDirectory: repoRoot
-        )
-        guard repoResult.succeeded,
-              let repoData = repoResult.stdout.data(using: .utf8),
-              let repoInfo = try? JSONSerialization.jsonObject(with: repoData) as? [String: Any],
-              let owner = repoInfo["owner"] as? [String: Any],
-              let ownerLogin = owner["login"] as? String,
-              let repoName = repoInfo["name"] as? String else {
+        // Repo identity from the cached local-git resolution, not an API call
+        guard let slug = await resolveRepoSlug(repoRoot: repoRoot) else {
             return ([:], [:])
         }
+        let ownerLogin = slug.owner
+        let repoName = slug.name
 
         var queryParts: [String] = []
         var branchAliases: [String: String] = [:] // alias → branch
