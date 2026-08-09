@@ -34,16 +34,18 @@ struct NoticeBanner: View {
             Text(self.notice.message)
                 .font(.app(.body, weight: .medium))
                 .lineLimit(2)
-            Spacer()
+                .fixedSize(horizontal: false, vertical: true)
             Button("Dismiss", action: self.onDismiss)
                 .buttonStyle(.bordered)
                 .controlSize(.small)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 14)
+        // No Spacer and no width of its own, so it takes the width of the
+        // message and its alignment does the centring. Stretched to fill, a
+        // centred banner would just be a bar with the text back on the left.
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
         .shadow(color: .black.opacity(0.1), radius: 8, y: 4)
-        .padding(.horizontal, 16)
         .padding(.bottom, 12)
         .transition(.move(edge: .bottom).combined(with: .opacity))
     }

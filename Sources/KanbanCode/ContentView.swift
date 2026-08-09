@@ -1651,6 +1651,15 @@ struct ContentView: View {
             }
             .animation(.easeInOut(duration: 0.15), value: showSearch)
         }
+        // Over the window rather than inside the board, which is a column down
+        // the left and would leave a message about the selected card sitting
+        // nowhere near it.
+        .overlay(alignment: .bottom) {
+            if let notice = store.state.notice {
+                NoticeBanner(notice: notice) { store.dispatch(.setError(nil)) }
+            }
+        }
+        .animation(.easeInOut(duration: 0.25), value: store.state.notice != nil)
         .id(uiTextSize) // Force full re-render when UI scale changes
     }
 

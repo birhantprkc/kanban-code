@@ -78,8 +78,6 @@ struct ListBoardView: View {
 
     var body: some View {
         listContent
-        .overlay(alignment: .bottom) { errorOverlay }
-        .animation(.easeInOut(duration: 0.25), value: store.state.notice != nil)
         .overlay { emptyStateOverlay }
         .sheet(isPresented: Binding(
             get: { renamingPinnedCardId != nil },
@@ -344,13 +342,6 @@ struct ListBoardView: View {
                 updated.insert(column)
             }
             collapsedColumns = updated
-        }
-    }
-
-    @ViewBuilder
-    private var errorOverlay: some View {
-        if let notice = store.state.notice {
-            NoticeBanner(notice: notice) { store.dispatch(.setError(nil)) }
         }
     }
 

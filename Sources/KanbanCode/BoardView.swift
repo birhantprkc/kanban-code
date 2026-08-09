@@ -257,12 +257,6 @@ struct BoardView: View {
                 }
             }
         }
-        .overlay(alignment: .bottom) {
-            if let notice = store.state.notice {
-                NoticeBanner(notice: notice) { store.dispatch(.setError(nil)) }
-            }
-        }
-        .animation(.easeInOut(duration: 0.25), value: store.state.notice != nil)
         // Empty board hint
         .overlay {
             if store.state.filteredCards.isEmpty && !store.state.isLoading {
