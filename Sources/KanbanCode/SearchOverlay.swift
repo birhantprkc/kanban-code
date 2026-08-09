@@ -120,8 +120,31 @@ struct SearchOverlay: View {
     }
 
     private func handleAppear() {
+        let started = RenderDiagnostics.mark()
         snapshotCards = cards  // Freeze cards at open time
-        cardSearchIndex = cards.map(CardSearchIndexItem.init(card:))
+
+        // Indexing lowercases every card's stored prompt body, which for a
+        // board with hundreds of cards is far more work than fits between the
+        // keystroke and the window appearing. Nothing on screen needs it: the
+        // recents list reads the cards directly, and the index is only consulted
+        // once a query is typed. Build it off the main thread and pick up
+        // whatever query arrived while it ran.
+        let toIndex = cards
+        Task.detached(priority: .userInitiated) {
+            let indexStarted = RenderDiagnostics.mark()
+            let index = toIndex.map(CardSearchIndexItem.init(card:))
+            await MainActor.run {
+                RenderDiagnostics.logIfSlow(
+                    "SearchOverlay.buildIndex",
+                    since: indexStarted,
+                    thresholdMs: 8,
+                    metadata: "cards=\(index.count)"
+                )
+                self.cardSearchIndex = index
+                if !self.query.isEmpty { self.handleQueryChange(self.query) }
+            }
+        }
+
         requestSearchFocus()
         if !initialQuery.isEmpty {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
@@ -141,6 +164,12 @@ struct SearchOverlay: View {
                 selectedId = merged.first?.id
             }
         }
+        RenderDiagnostics.logIfSlow(
+            "SearchOverlay.appear",
+            since: started,
+            thresholdMs: 8,
+            metadata: "cards=\(cards.count) channels=\(channels.count)"
+        )
     }
 
     private func handleReturn() {

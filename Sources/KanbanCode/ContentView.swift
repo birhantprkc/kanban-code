@@ -1641,49 +1641,59 @@ struct ContentView: View {
         } // detail
         .toolbar(removing: .sidebarToggle)
         .overlay {
-            if showSearch {
-                Color.black.opacity(0.3)
-                    .ignoresSafeArea()
-                    .onTapGesture { closePalette() }
-
-                SearchOverlay(
-                    isPresented: Binding(
-                        get: { showSearch },
-                        set: { if !$0 { closePalette() } }
-                    ),
-                    cards: store.state.cards,
-                    sessionStore: store.sessionStore,
-                    onSelectCard: { card in
-                        switchToProjectIfNeeded(for: card)
-                        store.dispatch(.selectCard(cardId: card.id))
-                    },
-                    onResumeCard: { card in
-                        switchToProjectIfNeeded(for: card)
-                        resumeCard(cardId: card.id)
-                    },
-                    onForkCard: { card in presentForkDialog(cardId: card.id) },
-                    onCheckpointCard: { card in
-                        switchToProjectIfNeeded(for: card)
-                        store.dispatch(.selectCard(cardId: card.id))
-                    },
-                    channels: store.state.channels,
-                    channelLastOpened: store.state.channelLastOpened,
-                    channelLastActivity: store.state.channels.reduce(into: [String: Date]()) { acc, ch in
-                        if let ts = store.state.channelMessages[ch.name]?.last?.ts { acc[ch.name] = ts }
-                    },
-                    onSelectChannel: { name in
-                        store.dispatch(.selectChannel(name: name))
-                    },
-                    commands: paletteCommands,
-                    initialQuery: searchInitialQuery,
-                    deepSearchTrigger: deepSearchTrigger
-                )
-                .padding(40)
-                .transition(.opacity.combined(with: .scale(scale: 0.95)))
+            // The animation belongs to the overlay, not to everything the
+            // detail view holds. Attached further out it made opening the
+            // palette an animated transition for the whole board behind it.
+            ZStack {
+                if showSearch {
+                    paletteOverlay
+                }
             }
+            .animation(.easeInOut(duration: 0.15), value: showSearch)
         }
-        .animation(.easeInOut(duration: 0.15), value: showSearch)
         .id(uiTextSize) // Force full re-render when UI scale changes
+    }
+
+    @ViewBuilder
+    private var paletteOverlay: some View {
+        Color.black.opacity(0.3)
+            .ignoresSafeArea()
+            .onTapGesture { closePalette() }
+
+        SearchOverlay(
+            isPresented: Binding(
+                get: { showSearch },
+                set: { if !$0 { closePalette() } }
+            ),
+            cards: store.state.cards,
+            sessionStore: store.sessionStore,
+            onSelectCard: { card in
+                switchToProjectIfNeeded(for: card)
+                store.dispatch(.selectCard(cardId: card.id))
+            },
+            onResumeCard: { card in
+                switchToProjectIfNeeded(for: card)
+                resumeCard(cardId: card.id)
+            },
+            onForkCard: { card in presentForkDialog(cardId: card.id) },
+            onCheckpointCard: { card in
+                switchToProjectIfNeeded(for: card)
+                store.dispatch(.selectCard(cardId: card.id))
+            },
+            channels: store.state.channels,
+            channelLastOpened: store.state.channelLastOpened,
+            channelLastActivity: store.state.channels.reduce(into: [String: Date]()) { acc, ch in
+                if let ts = store.state.channelMessages[ch.name]?.last?.ts { acc[ch.name] = ts }
+            },
+            onSelectChannel: { name in
+                store.dispatch(.selectChannel(name: name))
+            },
+            commands: paletteCommands,
+            initialQuery: searchInitialQuery,
+            deepSearchTrigger: deepSearchTrigger
+        )
+        .padding(40)
+        .transition(.opacity.combined(with: .scale(scale: 0.95)))
     }
 
     /// Watch ~/.kanban-code/hook-events.jsonl for writes → post notification.
