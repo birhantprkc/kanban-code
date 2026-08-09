@@ -362,8 +362,8 @@ enum ChatAttributedText {
     private static func applyHighlight(
         _ highlight: ChatTextHighlight, to string: NSMutableAttributedString
     ) {
-        let haystack = string.string.lowercased()
-        let needle = highlight.query.lowercased()
+        let haystack = string.string
+        let needle = highlight.query
         guard !needle.isEmpty else { return }
 
         let color: NSColor =
@@ -371,14 +371,17 @@ enum ChatAttributedText {
             ? NSColor.systemOrange.withAlphaComponent(0.4)
             : NSColor.systemYellow.withAlphaComponent(0.3)
 
+        // Matched case insensitively in place rather than over a lowercased
+        // copy, and converted through `NSRange(_:in:)`. Counting characters
+        // gives an offset an emoji or an accent puts one or more short of the
+        // UTF-16 offset the attribute is addressed by, so a match after one
+        // paints the wrong words.
         var searchStart = haystack.startIndex
-        while let found = haystack.range(of: needle, range: searchStart..<haystack.endIndex) {
-            let location = haystack.distance(from: haystack.startIndex, to: found.lowerBound)
-            let length = haystack.distance(from: found.lowerBound, to: found.upperBound)
-            let range = NSRange(location: location, length: length)
-            if NSMaxRange(range) <= string.length {
-                string.addAttribute(.backgroundColor, value: color, range: range)
-            }
+        while let found = haystack.range(
+            of: needle, options: [.caseInsensitive], range: searchStart..<haystack.endIndex)
+        {
+            string.addAttribute(
+                .backgroundColor, value: color, range: NSRange(found, in: haystack))
             searchStart = found.upperBound
         }
     }

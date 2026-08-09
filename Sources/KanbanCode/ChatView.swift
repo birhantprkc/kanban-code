@@ -333,7 +333,6 @@ private struct ChatMessageList: View {
             }
         }
         .onChange(of: turns.last?.lineNumber) { handleNewTurns() }
-        .onChange(of: currentMatchPosition) { handleMatchNavigation() }
         .onChange(of: pendingMessage) {
             if pendingMessage != nil {
                 shouldAutoScroll = true
@@ -711,6 +710,11 @@ private struct ChatMessageList: View {
             isSearchScanning = false
             if !matches.isEmpty {
                 currentMatchPosition = matches.count - 1
+                // Called rather than left to the change notification. A search
+                // that finds exactly one match lands back on the position the
+                // scan started from, so nothing changes, and the one match
+                // would never be loaded, scrolled to or highlighted.
+                handleMatchNavigation()
             }
         }
     }
@@ -722,6 +726,7 @@ private struct ChatMessageList: View {
         } else {
             currentMatchPosition = (currentMatchPosition - 1 + searchMatchIndices.count) % searchMatchIndices.count
         }
+        handleMatchNavigation()
     }
 
     private func dismissSearch() {
