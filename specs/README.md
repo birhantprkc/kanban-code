@@ -89,4 +89,4 @@ specs/
 
 ## License
 
-AGPLv3
+Apache 2.0

@@ -120,6 +120,7 @@ struct CardDetailView: View {
     @Binding var selectedTab: DetailTab
     @Binding var pendingTerminalSession: String?
     @State private var showRenameSheet = false
+    @State private var showPromptHistory = false
     @State private var renameText = ""
 
     // Checkpoint mode
@@ -444,6 +445,13 @@ struct CardDetailView: View {
             pathPollTask?.cancel()
             pathPollTask = nil
             flushChatDraftSave(cardId: card.id)
+        }
+        .sheet(isPresented: $showPromptHistory) {
+            PromptHistorySheet(cardId: card.id) { body in
+                let prompt = QueuedPrompt(body: body, sendAutomatically: true)
+                onAddQueuedPrompt(prompt)
+                onSendQueuedPrompt(prompt.id)
+            }
         }
         .sheet(isPresented: $showRenameSheet) {
             RenameSessionDialog(
@@ -1628,7 +1636,8 @@ struct CardDetailView: View {
                     onDelete: { onDeleteCard(); onDismiss() },
                     onMoveToProject: onMoveToProject,
                     onMoveToFolder: onMoveToFolder,
-                    onMigrateAssistant: onMigrateAssistant
+                    onMigrateAssistant: onMigrateAssistant,
+                    onShowPromptHistory: { showPromptHistory = true }
                 ),
                 showBranchInfo: isExpanded,
                 githubBaseURL: githubBaseURL,

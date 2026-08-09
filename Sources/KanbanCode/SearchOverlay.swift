@@ -38,6 +38,15 @@ struct SearchOverlay: View {
     @FocusState private var isSearchFocused: Bool
 
     var body: some View {
+        RenderDiagnostics.measure(
+            "SearchOverlay.body",
+            metadata: "query=\(query.count) results=\(visibleIds.count) deep=\(isDeepSearching)"
+        ) {
+            palette
+        }
+    }
+
+    private var palette: some View {
         VStack(spacing: 0) {
             searchFieldBar
             Divider()
@@ -46,6 +55,10 @@ struct SearchOverlay: View {
         .frame(maxWidth: 600, maxHeight: 500)
         .glassOverlay()
         .onAppear(perform: handleAppear)
+        // This is drawn over the board, so the terminal's scroll interception
+        // would otherwise eat the wheel here and scroll the pane behind it.
+        .onAppear { TerminalCache.shared.beginScrollPassthrough() }
+        .onDisappear { TerminalCache.shared.endScrollPassthrough() }
         .onExitCommand { isPresented = false }
         .onKeyPress(.downArrow) { moveSelection(by: 1); return .handled }
         .onKeyPress(.upArrow) { moveSelection(by: -1); return .handled }
@@ -59,12 +72,12 @@ struct SearchOverlay: View {
     private var resultsSection: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                // Lazy, because a query can produce 80 quick results or a deep
-                // search a screenful of snippet rows. An eager stack rebuilds
-                // every one of them on each incremental scroll update, which is
-                // what made trackpad scrolling crawl while dragging the scroller
-                // (far fewer, larger updates) stayed smooth.
-                LazyVStack(alignment: .leading, spacing: 4) {
+                // Eager, and it has to be. `scrollTo` can only reach a row that
+                // exists, so under a lazy stack the arrow keys walk the
+                // selection off the end of what is built and the highlight
+                // stops following. Every list here is bounded, so building all
+                // of it costs a bounded amount.
+                VStack(alignment: .leading, spacing: 4) {
                     Color.clear.frame(height: 0).id(Self.scrollTopId)
                     if isCommandMode {
                         commandsView
@@ -269,6 +282,7 @@ struct SearchOverlay: View {
     }
 
     private static let maxQuickResults = 80
+    private static let maxDeepResults = 80
 
     /// When the user types a query, match against channel names + card fields and
     /// interleave both in a single recency-ordered list. This is materialized
@@ -601,7 +615,10 @@ struct SearchOverlay: View {
                     query: currentQuery, paths: paths
                 ) { [cardByPath] results in
                     let maxScore = results.first?.score ?? 1.0
-                    searchResults = results.map { result in
+                    // Results arrive ranked and this runs again on every batch,
+                    // so the tail is both the least relevant and the most
+                    // expensive to keep rebuilding.
+                    searchResults = results.prefix(Self.maxDeepResults).map { result in
                         SearchResultItem(
                             id: result.sessionPath,
                             card: cardByPath[result.sessionPath],

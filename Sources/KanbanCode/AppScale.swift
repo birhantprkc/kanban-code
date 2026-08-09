@@ -42,7 +42,7 @@ extension Font {
     }
 
     // macOS default sizes for semantic text styles
-    private static func baseSize(for style: TextStyle) -> CGFloat {
+    static func baseSize(for style: TextStyle) -> CGFloat {
         switch style {
         case .largeTitle: 26
         case .title: 22
@@ -61,6 +61,19 @@ extension Font {
 
     private static func defaultWeight(for style: TextStyle) -> Weight {
         style == .headline ? .semibold : .regular
+    }
+}
+
+// MARK: - Scaled AppKit fonts
+
+extension NSFont {
+    /// Scaled semantic font style, matching `Font.app(_:weight:design:)`.
+    ///
+    /// Text rendered through AppKit needs the same sizes as the SwiftUI side,
+    /// so both read from the one scale factor.
+    static func app(_ style: Font.TextStyle, weight: NSFont.Weight? = nil) -> NSFont {
+        let size = Font.baseSize(for: style) * AppScale.factor
+        return .systemFont(ofSize: size, weight: weight ?? (style == .headline ? .semibold : .regular))
     }
 }
 

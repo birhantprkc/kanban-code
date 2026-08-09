@@ -453,6 +453,27 @@ final class TerminalCache {
         return nil
     }
 
+    /// How many overlays are currently drawn over the board and own the scroll
+    /// wheel themselves.
+    ///
+    /// Scroll interception is an application-wide event monitor, and it decides
+    /// what a scroll belongs to from the terminal's frame rather than from a hit
+    /// test, so anything drawn on top of a terminal is invisible to it: it eats
+    /// the wheel and spends it driving tmux copy-mode in the terminal
+    /// underneath. A counter rather than a flag, so two overlays open at once
+    /// cannot have the first one to close speak for the second.
+    private var scrollPassthroughDepth = 0
+
+    var passesScrollThrough: Bool { self.scrollPassthroughDepth > 0 }
+
+    func beginScrollPassthrough() {
+        self.scrollPassthroughDepth += 1
+    }
+
+    func endScrollPassthrough() {
+        self.scrollPassthroughDepth = max(0, self.scrollPassthroughDepth - 1)
+    }
+
     /// Tracks tmux copy-mode state per session for scroll interception.
     fileprivate var copyModeSessions: Set<String> = []
 
@@ -519,6 +540,12 @@ final class TerminalCache {
         // intercepted by SwiftUI overlay views (e.g. inspector panel).
         scrollWheelMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
             guard event.deltaY != 0 else { return event }
+
+            // An overlay drawn over the board scrolls its own contents. The
+            // bounds check below cannot see it, so without this a scroll inside
+            // the quick search palette is swallowed here and spent scrolling the
+            // terminal behind it, one tmux command per wheel tick.
+            guard self?.passesScrollThrough != true else { return event }
 
             guard let window = event.window else { return event }
             guard let session = self?.sessionUnderPoint(event.locationInWindow, in: window) else { return event }

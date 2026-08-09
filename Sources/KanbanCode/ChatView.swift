@@ -242,6 +242,9 @@ private struct ChatMessageList: View {
     @State private var shouldAutoScroll = true
     @State private var scrollPosition = ScrollPosition(edge: .bottom)
 
+    /// Carries a drag from one message's text view into the next.
+    @State private var selectionCoordinator = ChatSelectionCoordinator()
+
     // Search state
     @State private var showSearch = false
     @State private var searchText = ""
@@ -513,9 +516,13 @@ private struct ChatMessageList: View {
                                         githubBaseURL: githubBaseURL,
                                         expandedTextBlocks: $expandedTextBlocks
                                     )
+                                    // Every turn is addressable, not just the
+                                    // first: search scrolls to a line number,
+                                    // and a match on the third tool call in a
+                                    // group would otherwise have no target.
+                                    .id(toolTurn.lineNumber)
                                 }
                             }
-                            .id(group.first?.lineNumber ?? 0)
                             .background(
                                 RoundedRectangle(cornerRadius: 8)
                                     .fill(Color.primary.opacity(0.04))
@@ -598,6 +605,7 @@ private struct ChatMessageList: View {
                 }
                 .padding(.horizontal, 16)
                 .textSelection(.enabled)
+                .environment(\.chatSelectionCoordinator, selectionCoordinator)
     }
 
     // MARK: - Search Bar

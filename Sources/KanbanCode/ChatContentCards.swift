@@ -2,6 +2,17 @@ import SwiftUI
 import KanbanCodeCore
 import MarkdownUI
 
+/// The first `limit` lines, which is all a capped block can show anyway.
+///
+/// The cap itself stays with the text container so a wrapped line still ends in
+/// an ellipsis; this only keeps the clipboard from carrying what nobody can see.
+func firstLines(_ text: String, limit: Int) -> String {
+    let lines = text.split(
+        separator: "\n", maxSplits: limit, omittingEmptySubsequences: false)
+    guard lines.count > limit else { return text }
+    return lines.prefix(limit).joined(separator: "\n")
+}
+
 // MARK: - Tool Call Card
 
 struct ToolCallCard: View, Equatable {
@@ -12,11 +23,25 @@ struct ToolCallCard: View, Equatable {
     var showBackground: Bool = true
     /// When true, the card starts expanded. Resets to false when user manually toggles.
     var autoExpand: Bool = false
+    var highlight: ChatTextHighlight?
     @State private var isExpanded = false
     @State private var userToggled = false
 
     nonisolated static func == (lhs: ToolCallCard, rhs: ToolCallCard) -> Bool {
-        lhs.name == rhs.name && lhs.displayText == rhs.displayText && lhs.rawInputJSON == rhs.rawInputJSON && lhs.autoExpand == rhs.autoExpand
+        lhs.name == rhs.name && lhs.displayText == rhs.displayText && lhs.rawInputJSON == rhs.rawInputJSON && lhs.autoExpand == rhs.autoExpand && lhs.highlight == rhs.highlight
+    }
+
+    /// The search scans tool text too, so a card holding the match opens itself.
+    /// Landing on a turn whose match is hidden reads as a search that went to
+    /// the wrong place.
+    private var holdsSearchMatch: Bool {
+        guard let query = highlight?.query.lowercased(), !query.isEmpty else { return false }
+        if displayText.lowercased().contains(query) { return true }
+        if resultText?.lowercased().contains(query) == true { return true }
+        guard let json = rawInputJSON, let text = String(data: json, encoding: .utf8) else {
+            return false
+        }
+        return text.lowercased().contains(query)
     }
 
     private func parseSummary() -> (action: String, target: String, additions: Int?, deletions: Int?, replaceAll: Bool) {
@@ -120,7 +145,13 @@ struct ToolCallCard: View, Equatable {
                 if autoExpand { NotificationCenter.default.post(name: .chatCardExpanded, object: nil) }
             }
         }
+        // Opening for a search does not post `.chatCardExpanded`: that pins the
+        // scroll to the bottom, which would fight the scroll to the match.
+        .onChange(of: holdsSearchMatch) {
+            if holdsSearchMatch { isExpanded = true }
+        }
         .onAppear {
+            if holdsSearchMatch { isExpanded = true }
             if autoExpand && !userToggled {
                 isExpanded = true
                 NotificationCenter.default.post(name: .chatCardExpanded, object: nil)
@@ -145,22 +176,32 @@ struct ToolCallCard: View, Equatable {
             }
 
             if name == "Bash", let cmd = extractField("command") {
-                Text(cmd)
-                    .font(.system(.caption, design: .monospaced))
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(white: 0.12), in: RoundedRectangle(cornerRadius: 6))
-                    .foregroundStyle(.white)
+                SelectableMarkdownText(
+                    content: .plain(cmd),
+                    appearance: .init(
+                        font: .monospacedSystemFont(ofSize: 10, weight: .regular),
+                        foregroundColor: .white
+                    ),
+                    highlight: highlight
+                )
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(white: 0.12), in: RoundedRectangle(cornerRadius: 6))
             }
 
             if let result = resultText, !result.isEmpty {
-                Text(result)
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(20)
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 6))
+                SelectableMarkdownText(
+                    content: .plain(firstLines(result, limit: 20)),
+                    appearance: .init(
+                        font: .monospacedSystemFont(ofSize: 10, weight: .regular),
+                        foregroundColor: .secondaryLabelColor
+                    ),
+                    highlight: highlight,
+                    lineLimit: 20
+                )
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 6))
             }
         }
     }
@@ -172,13 +213,6 @@ struct SimpleDiffView: View {
     let oldText: String
     let newText: String
     let filePath: String
-
-    private var diffLines: [(text: String, isAdded: Bool, isRemoved: Bool)] {
-        var result: [(String, Bool, Bool)] = []
-        for line in oldText.components(separatedBy: "\n") { result.append((line, false, true)) }
-        for line in newText.components(separatedBy: "\n") { result.append((line, true, false)) }
-        return result
-    }
 
     private var addedCount: Int { newText.isEmpty ? 0 : newText.components(separatedBy: "\n").count }
     private var removedCount: Int { oldText.isEmpty ? 0 : oldText.components(separatedBy: "\n").count }
@@ -200,19 +234,17 @@ struct SimpleDiffView: View {
             .padding(.vertical, 6)
             .background(Color(white: 0.18))
 
-            // Diff lines on dark background
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(diffLines.indices, id: \.self) { i in
-                    let line = diffLines[i]
-                    Text((line.isRemoved ? "- " : "+ ") + line.text)
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(line.isRemoved ? Color(red: 1, green: 0.4, blue: 0.4) : Color(red: 0.4, green: 0.9, blue: 0.4))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 1)
-                        .background(line.isRemoved ? Color.red.opacity(0.12) : Color.green.opacity(0.1))
-                }
-            }
+            // Diff lines on dark background. One text run rather than a stack
+            // of rows, so a drag runs straight through the diff; the per line
+            // bands are block decorations behind it.
+            SelectableMarkdownText(
+                content: .diff(old: oldText, new: newText),
+                appearance: .init(
+                    font: .monospacedSystemFont(ofSize: 10, weight: .regular),
+                    foregroundColor: .labelColor
+                )
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color(white: 0.1))
         }
         .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -223,9 +255,15 @@ struct SimpleDiffView: View {
 
 struct ThinkingCard: View {
     let text: String
+    var highlight: ChatTextHighlight?
     private static let truncationLimit = 2_000
     @State private var isExpanded = false
     @State private var showFullText = false
+
+    private var holdsSearchMatch: Bool {
+        guard let query = highlight?.query.lowercased(), !query.isEmpty else { return false }
+        return text.lowercased().contains(query)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -245,11 +283,12 @@ struct ThinkingCard: View {
             if isExpanded {
                 let truncated = !showFullText && text.count > Self.truncationLimit
                 let display = truncated ? String(text.prefix(Self.truncationLimit)) : text
-                Text(display)
-                    .font(.app(.caption))
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 4)
-                    .textSelection(.enabled)
+                SelectableMarkdownText(
+                    content: .plain(display),
+                    appearance: .init(font: .app(.caption), foregroundColor: .secondaryLabelColor),
+                    highlight: highlight
+                )
+                .padding(.top, 4)
                 if truncated {
                     Button {
                         showFullText = true
@@ -263,6 +302,8 @@ struct ThinkingCard: View {
                 }
             }
         }
+        .onAppear { if holdsSearchMatch { isExpanded = true } }
+        .onChange(of: holdsSearchMatch) { if holdsSearchMatch { isExpanded = true } }
     }
 }
 
@@ -273,12 +314,18 @@ struct PlanModeExitCard: View {
     let resultText: String?
     var onAnswer: ((String) -> Void)?
     var tmuxSessionName: String?
+    var highlight: ChatTextHighlight?
     @State private var isExpanded = false
     @State private var selectedOption: Int?
     @State private var paneOptions: [String] = []
     @State private var didLoadOptions = false
 
     private var isAnswered: Bool { resultText != nil }
+
+    private var holdsSearchMatch: Bool {
+        guard let query = highlight?.query.lowercased(), !query.isEmpty else { return false }
+        return plan.lowercased().contains(query)
+    }
 
     private var approvalStatus: String? {
         guard let r = resultText else { return nil }
@@ -326,11 +373,13 @@ struct PlanModeExitCard: View {
             .buttonStyle(.plain)
 
             if isExpanded {
-                Markdown(plan)
-                    .markdownTheme(chatMarkdownTheme)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 8)
-                    .padding(.bottom, 4)
+                SelectableMarkdownText(
+                    content: .markdown(plan),
+                    appearance: .init(font: .app(.body), foregroundColor: .labelColor),
+                    highlight: highlight
+                )
+                .padding(.horizontal, 8)
+                .padding(.bottom, 4)
             }
 
             // Interactive approval — options read from tmux pane
@@ -375,6 +424,8 @@ struct PlanModeExitCard: View {
                 .fill(Color.primary.opacity(0.04))
                 .padding(.leading, -8)
         )
+        .onAppear { if holdsSearchMatch { isExpanded = true } }
+        .onChange(of: holdsSearchMatch) { if holdsSearchMatch { isExpanded = true } }
         .task {
             guard !isAnswered, let session = tmuxSessionName else {
                 didLoadOptions = true
@@ -412,7 +463,14 @@ struct AgentCallCard: View {
     let subagentType: String?
     let resultText: String?
     let rawInputJSON: Data?
+    var highlight: ChatTextHighlight?
     @State private var isExpanded = false
+
+    private var holdsSearchMatch: Bool {
+        guard let query = highlight?.query.lowercased(), !query.isEmpty else { return false }
+        if description.lowercased().contains(query) { return true }
+        return resultText?.lowercased().contains(query) == true
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -441,13 +499,16 @@ struct AgentCallCard: View {
             .buttonStyle(.plain)
 
             if isExpanded, let result = resultText, !result.isEmpty {
-                Text(result)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(30)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 8)
-                    .padding(.bottom, 8)
+                SelectableMarkdownText(
+                    content: .plain(firstLines(result, limit: 30)),
+                    appearance: .init(
+                        font: .systemFont(ofSize: 12), foregroundColor: .secondaryLabelColor
+                    ),
+                    highlight: highlight,
+                    lineLimit: 30
+                )
+                .padding(.horizontal, 8)
+                .padding(.bottom, 8)
             }
         }
         .background(
@@ -455,6 +516,8 @@ struct AgentCallCard: View {
                 .fill(Color.primary.opacity(0.04))
                 .padding(.leading, -8)
         )
+        .onAppear { if holdsSearchMatch { isExpanded = true } }
+        .onChange(of: holdsSearchMatch) { if holdsSearchMatch { isExpanded = true } }
     }
 }
 
@@ -491,13 +554,20 @@ struct AskUserQuestionCard: View {
     @ViewBuilder
     private func questionView(_ q: AskQuestion) -> some View {
         VStack(alignment: .leading, spacing: 6) {
+            // Only the prose joins the selection run. The options below are
+            // buttons, and a text view inside one would swallow the click.
             if let header = q.header {
-                Text(header)
-                    .font(.app(.callout))
-                    .fontWeight(.semibold)
+                SelectableMarkdownText(
+                    content: .plain(header),
+                    appearance: .init(
+                        font: .app(.callout, weight: .semibold), foregroundColor: .labelColor
+                    )
+                )
             }
-            Text(q.question)
-                .font(.app(.body))
+            SelectableMarkdownText(
+                content: .plain(q.question),
+                appearance: .init(font: .app(.body), foregroundColor: .labelColor)
+            )
 
             ForEach(q.options.indices, id: \.self) { idx in
                 let option = q.options[idx]

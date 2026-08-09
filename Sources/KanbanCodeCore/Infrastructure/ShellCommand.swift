@@ -23,7 +23,8 @@ public enum ShellCommand {
         proc.arguments = ["-l", "-c", "env"]
         let pipe = Pipe()
         proc.standardOutput = pipe
-        proc.standardError = Pipe()
+        proc.standardError = FileHandle.nullDevice
+        defer { try? pipe.fileHandleForReading.close() }
         do {
             try proc.run()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
@@ -96,16 +97,40 @@ public enum ShellCommand {
                 process.standardOutput = stdoutPipe
                 process.standardError = stderrPipe
 
+                var stdinPipe: Pipe?
                 if let stdin, let data = stdin.data(using: .utf8) {
-                    let stdinPipe = Pipe()
-                    process.standardInput = stdinPipe
-                    stdinPipe.fileHandleForWriting.write(data)
-                    stdinPipe.fileHandleForWriting.closeFile()
+                    let pipe = Pipe()
+                    stdinPipe = pipe
+                    process.standardInput = pipe
+                    pipe.fileHandleForWriting.write(data)
+                    pipe.fileHandleForWriting.closeFile()
+                }
+
+                // Foundation hands the child its ends of these pipes and closes
+                // its own copies of those. The read ends are ours, and leaving
+                // them to close when the `Pipe` is deallocated makes the
+                // descriptors' lifetime a question of when the object happens to
+                // be released, which is not something a scarce process-wide
+                // resource can be left to depend on: the same shape leaks two
+                // descriptors per call in a standalone binary, and the running
+                // app was holding hundreds whose far end was long gone.
+                //
+                // The cost of getting it wrong lands outside this app. The
+                // kernel caps how much buffer memory all pipes on a machine may
+                // use, and past roughly half that cap XNU quietly gives every
+                // newly created pipe a 512 byte buffer instead of 16KB.
+                // Unrelated programs that write more than that to a pipe before
+                // anything reads it then block forever.
+                func closePipes() {
+                    try? stdoutPipe.fileHandleForReading.close()
+                    try? stderrPipe.fileHandleForReading.close()
+                    try? stdinPipe?.fileHandleForReading.close()
                 }
 
                 do {
                     try process.run()
                 } catch {
+                    closePipes()
                     continuation.resume(throwing: error)
                     return
                 }
@@ -131,6 +156,10 @@ public enum ShellCommand {
                 if drained.wait(timeout: .now() + timeout) == .timedOut {
                     process.terminate()
                     _ = drained.wait(timeout: .now() + 5)
+                    // Foundation collects the child on its own, but only once
+                    // something waits on it.
+                    process.waitUntilExit()
+                    closePipes()
                     continuation.resume(throwing: ShellCommandError.timedOut(
                         command: ([executable] + arguments).joined(separator: " "),
                         seconds: timeout
@@ -139,6 +168,7 @@ public enum ShellCommand {
                 }
 
                 process.waitUntilExit()
+                closePipes()
 
                 let result = Result(
                     exitCode: process.terminationStatus,

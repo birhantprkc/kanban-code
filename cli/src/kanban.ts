@@ -83,6 +83,7 @@ import {
   modelSwitchCommand,
   needsModelSwitchConfirmation,
   normalizeSubagentHandle,
+  requestedWorktreeName,
   resolveSubagentPrompt,
   subagentDepth,
   submitSubagentRequest,
@@ -1145,6 +1146,7 @@ async function runSubagentCreate(
     model?: string;
     contextThreshold?: string;
     from?: string;
+    worktree?: string | boolean;
     json?: boolean;
   }
 ): Promise<void> {
@@ -1181,6 +1183,7 @@ async function runSubagentCreate(
     assistant: assistantOverride,
     model: opts.model,
     contextThresholdTokens,
+    worktreeName: requestedWorktreeName(opts.worktree, handle),
   });
   const response = await submitSubagentRequest(request);
   if (!response.ok) throw new Error(response.error ?? "Kanban Code rejected the subagent command.");
@@ -1215,6 +1218,12 @@ Use --context-threshold 250k for a Claude child to override global compaction.
 It gets a queued nudge at 250k, a steered reminder at 350k, and an interrupt with
 /compact at 450k.
 
+A child shares this card's checkout by default, so spawning several of them
+costs nothing extra on disk. Pass --worktree to give one its own instead, named
+after its handle, or --worktree <name> to choose the name:
+
+  kanban subagent spawn --worktree --handle parser-bug "rewrite the tokenizer"
+
 Fork copies a transcript into a new child. Without --from it copies this card;
 with --from it copies one of your own subagents so the same work can continue
 in another direction, and the copy becomes that subagent's sibling:
@@ -1241,6 +1250,11 @@ for (const operation of ["spawn", "fork"] as const) {
     command.option(
       "--from <card>",
       "Fork an owned subagent instead of this card; the copy becomes its sibling"
+    );
+  } else {
+    command.option(
+      "--worktree [name]",
+      "Give the child its own worktree instead of sharing this card's checkout; defaults to the handle"
     );
   }
   command

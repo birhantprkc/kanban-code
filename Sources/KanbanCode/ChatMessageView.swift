@@ -70,10 +70,7 @@ struct ChatMessageView: View {
                 HStack {
                     Spacer(minLength: 0)
                     let text = turn.contentBlocks.first { if case .text = $0.kind { return true }; return false }?.text ?? ""
-                    Text(text)
-                        .font(.app(.caption))
-                        .foregroundStyle(.tertiary)
-                        .italic()
+                    truncatedSystemText(text, blockIndex: 0, color: .tertiaryLabelColor)
                     Spacer(minLength: 0)
                 }
             } else if suppressBackground {
@@ -134,15 +131,9 @@ struct ChatMessageView: View {
                     if case .text = block.kind {
                         if block.text.hasPrefix("✓ ") || block.text.hasPrefix("⏳ ") {
                             // Task notification — render as system-style message
-                            Text(block.text)
-                                .font(.app(.caption))
-                                .foregroundStyle(.secondary)
-                                .italic()
+                            truncatedSystemText(block.text, blockIndex: i, color: .secondaryLabelColor)
                         } else if block.text.contains("[Request interrupted by user") {
-                            Text(block.text)
-                                .font(.app(.caption))
-                                .italic()
-                                .foregroundStyle(.secondary)
+                            truncatedSystemText(block.text, blockIndex: i, color: .secondaryLabelColor)
                         } else {
                             truncatedTextBlock(block.text, blockIndex: i, font: .app(.body))
                         }
@@ -201,7 +192,8 @@ struct ChatMessageView: View {
                                     rawInputJSON: group.items[ti].paired.block.rawInputJSON,
                                     resultText: group.items[ti].paired.resultBlock?.text,
                                     showBackground: false,
-                                    autoExpand: isLast
+                                    autoExpand: isLast,
+                                    highlight: searchHighlight
                                 )
                             }
                         }
@@ -227,7 +219,7 @@ struct ChatMessageView: View {
         case .text:
             let trimmed = paired.block.text.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty {
-                truncatedTextBlock(trimmed, blockIndex: paired.index, font: .system(size: 13))
+                truncatedTextBlock(trimmed, blockIndex: paired.index, font: .systemFont(ofSize: 13))
             }
         case .toolUse(let name, _, _):
             ToolCallCard(
@@ -236,19 +228,20 @@ struct ChatMessageView: View {
                 rawInputJSON: paired.block.rawInputJSON,
                 resultText: paired.resultBlock?.text,
                 showBackground: !suppressBackground,
-                autoExpand: hasLastToolCall && isLastBlock
+                autoExpand: hasLastToolCall && isLastBlock,
+                highlight: searchHighlight
             )
         case .toolResult:
             EmptyView()
         case .thinking:
-            ThinkingCard(text: paired.block.text)
+            ThinkingCard(text: paired.block.text, highlight: searchHighlight)
         case .planModeEnter:
             Text("Entered plan mode")
                 .font(.app(.caption))
                 .italic()
                 .foregroundStyle(.tertiary)
         case .planModeExit(let plan):
-            PlanModeExitCard(plan: plan, resultText: paired.resultBlock?.text, onAnswer: onSendAnswer, tmuxSessionName: tmuxSessionName)
+            PlanModeExitCard(plan: plan, resultText: paired.resultBlock?.text, onAnswer: onSendAnswer, tmuxSessionName: tmuxSessionName, highlight: searchHighlight)
         case .askUserQuestion(let questions, _):
             AskUserQuestionCard(
                 questions: questions,
@@ -260,9 +253,18 @@ struct ChatMessageView: View {
                 description: description,
                 subagentType: subagentType,
                 resultText: paired.resultBlock?.text,
-                rawInputJSON: paired.block.rawInputJSON
+                rawInputJSON: paired.block.rawInputJSON,
+                highlight: searchHighlight
             )
         }
+    }
+
+    /// The search match to paint, shared by the message text and the cards.
+    ///
+    /// The scan matches on tool text as well as message text, so a card has to
+    /// be able to show why the search stopped where it did.
+    private var searchHighlight: ChatTextHighlight? {
+        highlightText.map { .init(query: $0, isCurrentMatch: isCurrentMatch) }
     }
 
     // MARK: - Large text truncation
@@ -275,29 +277,24 @@ struct ChatMessageView: View {
         expandedTextBlocks.contains(blockKey(blockIndex))
     }
 
+    /// Every text row goes through one text view, so a drag can run from one
+    /// message into the next. Splitting these across different view types would
+    /// break the selection at whichever rows took a different path.
     @ViewBuilder
-    private func truncatedTextBlock(_ text: String, blockIndex: Int, font: Font) -> some View {
+    private func truncatedTextBlock(_ text: String, blockIndex: Int, font: NSFont) -> some View {
         let truncated = text.count > Self.textTruncationLimit && !isBlockExpanded(blockIndex)
         let rawDisplay = truncated ? String(text.prefix(Self.textTruncationLimit)) : text
         let display = (turn.role == "user" || highlightText != nil) ? rawDisplay : linkifyIssueRefs(rawDisplay)
-        if highlightText != nil {
-            highlightedText(display)
-                .font(font)
-        } else if turn.role == "user" {
-            Text(display)
-                .font(font)
-        } else if display.containsBlockMarkdown {
-            Markdown(display)
-                .markdownTheme(chatMarkdownTheme)
-                .textSelection(.enabled)
-        } else {
-            markdownText(display)
-                .font(font)
-                .lineSpacing(4)
-        }
+        let content = textContent(display)
+        SelectableMarkdownText(
+            content: content,
+            appearance: textAppearance(for: content, font: font),
+            highlight: searchHighlight
+        )
         if truncated {
             Button {
                 expandedTextBlocks.insert(blockKey(blockIndex))
+                NotificationCenter.default.post(name: .chatCardExpanded, object: nil)
             } label: {
                 Text("Show more (\(text.count / 1024)KB)")
                     .font(.app(.caption))
@@ -309,41 +306,57 @@ struct ChatMessageView: View {
         }
     }
 
-    // MARK: - Markdown text rendering
-
-    /// Renders markdown as native SwiftUI Text via AttributedString, enabling
-    /// cross-paragraph and cross-bubble text selection. Falls back to plain text
-    /// if markdown parsing fails.
-    private func markdownText(_ text: String) -> Text {
-        if let attributed = try? AttributedString(
-            markdown: text,
-            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        ) {
-            return Text(attributed)
-        }
-        return Text(text)
+    /// Which of the chat's text treatments a row takes.
+    ///
+    /// Search drops markdown entirely so matches can be highlighted over the
+    /// raw text, and a message with no block syntax stays inline only, which
+    /// leaves things like a leading dash as literal text.
+    private func textContent(_ display: String) -> ChatTextContent {
+        if highlightText != nil || turn.role == "user" { return .plain(display) }
+        return display.containsBlockMarkdown ? .markdown(display) : .inlineMarkdown(display)
     }
 
-    // MARK: - Text highlighting for search
+    private func textAppearance(
+        for content: ChatTextContent, font: NSFont
+    ) -> ChatTextAppearance {
+        // Only the inline path carries line spacing of its own; a markdown
+        // message takes it from the theme, and the plain paths have none.
+        let lineSpacing: CGFloat
+        if case .inlineMarkdown = content { lineSpacing = 4 } else { lineSpacing = 0 }
+        return .init(font: font, foregroundColor: .labelColor, lineSpacing: lineSpacing)
+    }
 
-    private func highlightedText(_ text: String) -> Text {
-        guard let query = highlightText?.lowercased(), !query.isEmpty else {
-            return Text(text)
+    /// System-style rows (task notifications, interruptions) render raw text
+    /// rather than markdown. They still need the same cap as everything else:
+    /// a task notification can carry a whole transcript, and laying that out
+    /// in one pass locks the view up.
+    @ViewBuilder
+    private func truncatedSystemText(
+        _ text: String,
+        blockIndex: Int,
+        color: NSColor
+    ) -> some View {
+        let truncated = text.count > Self.textTruncationLimit && !isBlockExpanded(blockIndex)
+        let display = truncated ? String(text.prefix(Self.textTruncationLimit)) : text
+        VStack(alignment: .leading, spacing: 2) {
+            SelectableMarkdownText(
+                content: .plain(display),
+                appearance: .init(
+                    font: .app(.caption), foregroundColor: color, italic: true
+                )
+            )
+            if truncated {
+                Button {
+                    expandedTextBlocks.insert(blockKey(blockIndex))
+                } label: {
+                    Text("Show more (\(text.count / 1024)KB)")
+                        .font(.app(.caption))
+                        .foregroundStyle(Color.accentColor)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+            }
         }
-        var attr = AttributedString(text)
-        let lower = text.lowercased()
-        var pos = lower.startIndex
-        let hlBg: Color = isCurrentMatch ? .orange.opacity(0.4) : .yellow.opacity(0.3)
-        while let range = lower.range(of: query, range: pos..<lower.endIndex) {
-            let startOff = lower.distance(from: lower.startIndex, to: range.lowerBound)
-            let endOff = lower.distance(from: lower.startIndex, to: range.upperBound)
-            let chars = attr.characters
-            let attrStart = chars.index(chars.startIndex, offsetBy: startOff)
-            let attrEnd = chars.index(chars.startIndex, offsetBy: endOff)
-            attr[attrStart..<attrEnd].backgroundColor = hlBg
-            pos = range.upperBound
-        }
-        return Text(attr)
     }
 
     // MARK: Pair tool results
@@ -561,12 +574,11 @@ struct LazyImageChip: View {
 // MARK: - GitHub Issue/PR Reference Linking
 
 extension ChatMessageView {
-    /// Regex matching owner/repo#123 or bare #123 (not inside URLs or markdown links).
+    /// Regex matching owner/repo#123, repo#123 or bare #123 (not inside URLs or
+    /// markdown links).
     private static let issueRefPattern: NSRegularExpression? = {
         try? NSRegularExpression(
-            pattern: #"(?<![&/a-zA-Z0-9\[(\]])(?:[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)?#\d+(?![^\[]*\])"#,
-            options: []
-        )
+            pattern: TerminalURLDetector.markdownIssueRefPattern, options: [])
     }()
 
     /// Convert GitHub issue/PR references in text to markdown links.
@@ -582,16 +594,9 @@ extension ChatMessageView {
         // Process in reverse to preserve offsets
         for match in matches.reversed() {
             let ref = nsText.substring(with: match.range)
-            guard let hashIndex = ref.firstIndex(of: "#"),
-                  let number = Int(ref[ref.index(after: hashIndex)...]) else { continue }
-            let prefix = String(ref[ref.startIndex..<hashIndex])
-            let url: String
-            if prefix.isEmpty {
-                guard let base = githubBaseURL else { continue }
-                url = "\(base)/pull/\(number)"
-            } else {
-                url = "https://github.com/\(prefix)/pull/\(number)"
-            }
+            guard
+                let url = TerminalURLDetector.resolveIssueRef(ref, githubBaseURL: githubBaseURL)
+            else { continue }
             let startIdx = text.index(text.startIndex, offsetBy: match.range.location)
             let endIdx = text.index(startIdx, offsetBy: match.range.length)
             result.replaceSubrange(startIdx..<endIdx, with: "[\(ref)](\(url))")

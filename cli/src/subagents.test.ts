@@ -16,6 +16,7 @@ import {
   missingForkSessionError,
   normalizeMaximumDepth,
   normalizeSubagentHandle,
+  requestedWorktreeName,
   resolveSubagentPrompt,
   subagentDepth,
   subagentRelationship,
@@ -186,6 +187,44 @@ describe("subagent hierarchy", () => {
     assert.equal(resolveSubagentPrompt(["-"], prompt), prompt);
     assert.equal(resolveSubagentPrompt([], prompt), prompt);
     assert.equal(resolveSubagentPrompt(["positional", "$value"], "ignored"), "positional $value");
+  });
+});
+
+describe("subagent worktree opt-in", () => {
+  // A worktree per child means a full checkout per child, and children are
+  // usually working the same branch as the parent, so sharing is the default.
+  test("no flag means the child shares the parent's checkout", () => {
+    assert.equal(requestedWorktreeName(undefined, "parser-bug"), undefined);
+    assert.equal(requestedWorktreeName(false, "parser-bug"), undefined);
+  });
+
+  test("the bare flag names the worktree after the handle", () => {
+    assert.equal(requestedWorktreeName(true, "parser-bug"), "parser-bug");
+  });
+
+  test("a name can be given instead", () => {
+    assert.equal(requestedWorktreeName("cache-path", "parser-bug"), "cache-path");
+  });
+
+  test("a name a directory or branch could not carry is slugged", () => {
+    assert.equal(requestedWorktreeName("Fix The Parser!", "h"), "fix-the-parser");
+    assert.equal(requestedWorktreeName("  spaced  out  ", "h"), "spaced-out");
+  });
+
+  test("an empty name falls back to the handle", () => {
+    assert.equal(requestedWorktreeName("   ", "parser-bug"), "parser-bug");
+  });
+
+  test("a name with nothing usable left still produces one", () => {
+    assert.equal(requestedWorktreeName("!!!", "???"), "subagent");
+  });
+
+  test("the request carries the worktree through to the app", () => {
+    const request = makeSubagentRequest("spawn", "root", {
+      prompt: "hello",
+      worktreeName: requestedWorktreeName(true, "parser-bug"),
+    });
+    assert.equal(request.worktreeName, "parser-bug");
   });
 });
 

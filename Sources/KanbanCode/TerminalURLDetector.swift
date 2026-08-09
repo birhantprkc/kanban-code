@@ -16,14 +16,23 @@ enum TerminalURLDetector {
         )
     }()
 
-    /// Matches owner/repo#123 or bare #123 (GitHub issue/PR references).
-    /// Lookbehind excludes matches inside URLs, hex colors, or HTML entities.
+    /// Matches owner/repo#123, repo#123 or bare #123 (GitHub issue/PR
+    /// references). Lookbehind excludes matches inside URLs, hex colors, or
+    /// HTML entities.
     private static let issueRefRegex: NSRegularExpression? = {
-        try? NSRegularExpression(
-            pattern: #"(?<![&/a-zA-Z0-9])(?:[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+)?#\d+"#,
-            options: []
-        )
+        try? NSRegularExpression(pattern: Self.issueRefPattern, options: [])
     }()
+
+    /// The reference itself, shared by every place that turns one into a link
+    /// so the three surfaces cannot drift apart on what counts as one.
+    static let issueRefBody = #"(?:[a-zA-Z0-9_.-]+/)?[a-zA-Z0-9_.-]*#\d+"#
+
+    static let issueRefPattern = #"(?<![&/a-zA-Z0-9])"# + Self.issueRefBody
+
+    /// The same reference in text that is about to be parsed as markdown, where
+    /// one already inside a link must be left alone.
+    static let markdownIssueRefPattern =
+        #"(?<![&/a-zA-Z0-9\[(\]])"# + Self.issueRefBody + #"(?![^\[]*\])"#
 
     /// Find a clickable URL or GitHub issue/PR reference covering `col` in a
     /// terminal row's text. `col` maps 1:1 to UTF-16 offsets for the ASCII-ish
@@ -78,6 +87,7 @@ enum TerminalURLDetector {
 
     /// Resolve a GitHub issue reference to a URL.
     /// `"langwatch/langwatch#2847"` → `"https://github.com/langwatch/langwatch/pull/2847"`
+    /// `"scenario#41"` → the same owner as the card's repo
     /// `"#123"` → uses `githubBaseURL` from the card's project
     static func resolveIssueRef(_ ref: String, githubBaseURL: String?) -> String? {
         guard let hashIndex = ref.firstIndex(of: "#") else { return nil }
@@ -88,8 +98,21 @@ enum TerminalURLDetector {
         if prefix.isEmpty {
             guard let base = githubBaseURL else { return nil }
             return "\(base)/pull/\(number)"
-        } else {
-            return "https://github.com/\(prefix)/pull/\(number)"
         }
+        if !prefix.contains("/") {
+            // A repo on its own is written when it is a sibling of the one in
+            // hand, so the owner comes from the card's repo.
+            guard let owner = self.owner(of: githubBaseURL) else { return nil }
+            return "https://github.com/\(owner)/\(prefix)/pull/\(number)"
+        }
+        return "https://github.com/\(prefix)/pull/\(number)"
+    }
+
+    /// The owner segment of a repo URL, whatever else is around it.
+    static func owner(of githubBaseURL: String?) -> String? {
+        guard let githubBaseURL else { return nil }
+        let parts = githubBaseURL.split(separator: "/").map(String.init)
+        guard parts.count >= 2 else { return nil }
+        return parts[parts.count - 2]
     }
 }

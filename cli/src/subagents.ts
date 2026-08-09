@@ -55,6 +55,12 @@ export interface SubagentCommandRequest {
   /** Transcript a relink points the card at. */
   sessionId?: string;
   sessionPath?: string;
+  /**
+   * Worktree to check out for a spawned child. Omitted means the child shares
+   * the parent's checkout, which is the default: a worktree per subagent costs
+   * a full checkout, and most children work on the same branch as the parent.
+   */
+  worktreeName?: string;
 }
 
 export interface SubagentCommandResponse {
@@ -155,6 +161,25 @@ export function assertOwnedSubagent(caller: Link, target: Link, links: Link[]): 
   if (!descendantIds(caller.id, links).has(target.id)) {
     throw new Error(`Card ${target.id} is not a subagent owned by ${caller.id}.`);
   }
+}
+
+/**
+ * Resolves `--worktree`, which is off unless asked for. Bare, it names the
+ * worktree after the child's handle, which is what the card is called
+ * everywhere else.
+ */
+export function requestedWorktreeName(
+  requested: string | boolean | undefined,
+  handle: string
+): string | undefined {
+  if (requested === undefined || requested === false) return undefined;
+  const source = (requested === true ? handle : requested).trim() || handle;
+  const slug = source
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  return (slug || "subagent").slice(0, 60);
 }
 
 export function makeSubagentRequest(

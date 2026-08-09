@@ -20,6 +20,9 @@ struct CardActionsMenuActions {
     let onSetSelfCompactContextThreshold: (_ thresholdTokens: Int?) -> Void
     let onCopyResumeCmd: () -> Void
     let onCopyConversationMarkdown: () -> Void
+    /// Opens the record of prompts sent to this card. Nil where there is no
+    /// place to present it from.
+    let onShowPromptHistory: (() -> Void)?
     let subagentCount: Int
     let onShowSubagents: () -> Void
     let onTrimSession: () -> Void
@@ -57,7 +60,8 @@ struct CardActionsMenuActions {
         onDelete: @escaping () -> Void,
         onMoveToProject: @escaping (String) -> Void,
         onMoveToFolder: @escaping () -> Void,
-        onMigrateAssistant: @escaping (CodingAssistant) -> Void
+        onMigrateAssistant: @escaping (CodingAssistant) -> Void,
+        onShowPromptHistory: (() -> Void)? = nil
     ) {
         self.onStart = onStart
         self.onResume = onResume
@@ -81,6 +85,7 @@ struct CardActionsMenuActions {
         self.onMoveToProject = onMoveToProject
         self.onMoveToFolder = onMoveToFolder
         self.onMigrateAssistant = onMigrateAssistant
+        self.onShowPromptHistory = onShowPromptHistory
     }
 }
 
@@ -217,6 +222,12 @@ struct CardActionsMenu: View {
             Label("Trim Session History", systemImage: "scissors")
         }
         .disabled(card.link.sessionLink?.sessionPath == nil)
+
+        if let onShowPromptHistory = actions.onShowPromptHistory {
+            Button(action: onShowPromptHistory) {
+                Label("Prompt History", systemImage: "list.bullet.rectangle.portrait")
+            }
+        }
 
         Button(action: actions.onRenameRequest) {
             Label("Rename", systemImage: "pencil")

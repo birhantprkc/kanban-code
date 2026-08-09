@@ -539,6 +539,7 @@ public enum Effect: Sendable {
     case moveSessionFile(cardId: String, sessionId: String, oldPath: String, newProjectPath: String)
     case sendPromptToTmux(sessionName: String, promptBody: String, assistant: CodingAssistant)
     case sendPromptWithImagesToTmux(sessionName: String, promptBody: String, imagePaths: [String], assistant: CodingAssistant)
+    case journalQueuedPrompt(cardId: String, prompt: QueuedPrompt, reason: QueuedPromptJournalReason)
     case deleteFiles([String])
 
     // Channels
@@ -774,6 +775,16 @@ public enum Reducer {
                 link.pinnedAt = .now
                 let firstOrder = state.pinnedCards.compactMap(\.link.pinnedSortOrder).min() ?? 0
                 link.pinnedSortOrder = firstOrder - 1
+                // Pinning an archived card brings it back: leaving it archived
+                // pins something that stays hidden in All Sessions.
+                if link.manuallyArchived {
+                    link.manuallyArchived = false
+                    if link.column == .allSessions {
+                        link.column = .backlog
+                        // Let reconciliation promote it by real activity.
+                        link.manualOverrides.column = false
+                    }
+                }
             } else {
                 if link.pinnedAt == nil { return [] }
                 link.pinnedAt = nil
@@ -1468,7 +1479,7 @@ public enum Reducer {
             link.queuedPrompts = prompts
             link.updatedAt = .now
             state.links[cardId] = link
-            return [.upsertLink(link)]
+            return [.upsertLink(link), .journalQueuedPrompt(cardId: cardId, prompt: prompt, reason: .queued)]
 
         case .updateQueuedPrompt(let cardId, let promptId, let body, let sendAutomatically):
             guard var link = state.links[cardId] else { return [] }
@@ -1479,15 +1490,24 @@ public enum Reducer {
             link.queuedPrompts = prompts
             link.updatedAt = .now
             state.links[cardId] = link
-            return [.upsertLink(link)]
+            return [
+                .upsertLink(link),
+                .journalQueuedPrompt(cardId: cardId, prompt: prompts[idx], reason: .edited),
+            ]
 
         case .removeQueuedPrompt(let cardId, let promptId):
             guard var link = state.links[cardId] else { return [] }
+            let removed = link.queuedPrompts?.first { $0.id == promptId }
             link.queuedPrompts?.removeAll { $0.id == promptId }
             if link.queuedPrompts?.isEmpty == true { link.queuedPrompts = nil }
             link.updatedAt = .now
             state.links[cardId] = link
-            return [.upsertLink(link)]
+            var effects: [Effect] = [.upsertLink(link)]
+            if let removed {
+                effects.append(
+                    .journalQueuedPrompt(cardId: cardId, prompt: removed, reason: .removed))
+            }
+            return effects
 
         case .sendQueuedPrompt(let cardId, let promptId):
             guard var link = state.links[cardId] else { return [] }
@@ -1504,7 +1524,14 @@ public enum Reducer {
             } else {
                 sendEffect = .sendPromptToTmux(sessionName: sessionName, promptBody: prompt.body, assistant: link.effectiveAssistant)
             }
-            return [.upsertLink(link), sendEffect]
+            // Journalled before the send, because the send is what loses it:
+            // the prompt is already gone from the card by the time tmux is
+            // asked to take it, and nothing retries.
+            return [
+                .journalQueuedPrompt(cardId: cardId, prompt: prompt, reason: .sent),
+                .upsertLink(link),
+                sendEffect,
+            ]
 
         case .reorderQueuedPrompts(let cardId, let promptIds):
             guard var link = state.links[cardId],

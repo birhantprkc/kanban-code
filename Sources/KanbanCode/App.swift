@@ -398,6 +398,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
+        defer { try? pipe.fileHandleForReading.close() }
         do {
             try process.run()
         } catch {
@@ -414,6 +415,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         if finished.wait(timeout: .now() + timeout) == .timedOut {
             KanbanCodeLog.warn("quit", "tmux list-sessions timed out after \(Int(timeout))s")
             process.terminate()
+            process.waitUntilExit()
             return []
         }
         process.waitUntilExit()

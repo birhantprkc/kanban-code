@@ -283,6 +283,16 @@ extension ContentView {
             name: request.name,
             prompt: prompt
         )
+        // A child works in the parent's checkout unless it asked for its own.
+        // Its own means starting from the repository rather than from the
+        // parent's worktree, so the new checkout lands beside that one instead
+        // of inside it, and it starts with no inherited worktree to point at.
+        let worktreeName = SubagentWorktree.name(
+            requested: request.worktreeName, handle: request.name)
+        let launchPath = worktreeName == nil
+            ? effectiveProjectPath(for: parent)
+            : parent.projectPath ?? effectiveProjectPath(for: parent)
+        if worktreeName != nil { child.worktreeLink = nil }
         let deliveryPrompt = identifiedSubagentPrompt(prompt, childId: child.id)
         child.promptBody = deliveryPrompt
         store.dispatch(.createManualTask(child))
@@ -290,8 +300,8 @@ extension ContentView {
             executeLaunch(
                 cardId: child.id,
                 prompt: deliveryPrompt,
-                projectPath: effectiveProjectPath(for: parent),
-                worktreeName: nil,
+                projectPath: launchPath,
+                worktreeName: worktreeName,
                 runRemotely: parent.isRemote,
                 assistant: assistant,
                 serviceIdOverride: child.apiServiceId,

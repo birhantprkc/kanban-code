@@ -11,6 +11,7 @@ public actor EffectHandler {
     private let setClipboardImage: (@Sendable (Data) -> Void)?
     private let channelsStore: ChannelsStore
     private let notifier: NotifierPort?
+    private let queuedPromptJournal: QueuedPromptJournal
 
     // MARK: - Chat notification burst throttler
     //
@@ -35,13 +36,15 @@ public actor EffectHandler {
         tmuxAdapter: TmuxManagerPort? = nil,
         setClipboardImage: (@Sendable (Data) -> Void)? = nil,
         channelsStore: ChannelsStore? = nil,
-        notifier: NotifierPort? = nil
+        notifier: NotifierPort? = nil,
+        queuedPromptJournal: QueuedPromptJournal? = nil
     ) {
         self.coordinationStore = coordinationStore
         self.tmuxAdapter = tmuxAdapter
         self.setClipboardImage = setClipboardImage
         self.channelsStore = channelsStore ?? ChannelsStore()
         self.notifier = notifier
+        self.queuedPromptJournal = queuedPromptJournal ?? QueuedPromptJournal()
     }
 
     public func execute(_ effect: Effect, dispatch: @MainActor @Sendable (Action) -> Void) async {
@@ -121,6 +124,18 @@ public actor EffectHandler {
                 KanbanCodeLog.warn("effect", "moveSessionFile failed: \(error)")
                 await dispatch(.setError("Move failed: \(error.localizedDescription)"))
             }
+        case .journalQueuedPrompt(let cardId, let prompt, let reason):
+            await queuedPromptJournal.append(
+                QueuedPromptJournalEntry(
+                    cardId: cardId,
+                    promptId: prompt.id,
+                    reason: reason,
+                    body: prompt.body,
+                    imagePaths: prompt.imagePaths,
+                    sendAutomatically: prompt.sendAutomatically
+                )
+            )
+
         case .sendPromptToTmux(let sessionName, let promptBody, let assistant):
             do {
                 if assistant.submitsPromptWithPaste {
