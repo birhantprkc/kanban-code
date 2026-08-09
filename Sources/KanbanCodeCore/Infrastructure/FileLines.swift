@@ -23,20 +23,38 @@ public struct FileLines: AsyncSequence, Sendable {
         self.chunkSize = Swift.max(4096, chunkSize)
     }
 
+    /// A line together with where it starts in the file.
+    ///
+    /// Byte offsets cannot be recovered from the lines alone, because blank
+    /// lines are dropped and a trailing carriage return is trimmed. They are
+    /// what a transcript row is identified by, so a reader that has to line its
+    /// results up with another one needs them counted while the split happens.
+    public struct Record: Sendable {
+        public let byteOffset: Int
+        public let text: String
+    }
+
     public struct AsyncIterator: AsyncIteratorProtocol {
         private let handle: FileHandle
         private let chunkSize: Int
         private var buffer = Data()
-        private var ready: [String] = []
+        private var ready: [Record] = []
         private var readyIndex = 0
         private var reachedEnd = false
+        /// Where the next byte staged from `buffer` sits in the file.
+        private var blockOffset: Int
 
         init(handle: FileHandle, chunkSize: Int) {
             self.handle = handle
             self.chunkSize = chunkSize
+            self.blockOffset = Int((try? handle.offset()) ?? 0)
         }
 
         public mutating func next() async throws -> String? {
+            try await self.nextRecord()?.text
+        }
+
+        public mutating func nextRecord() async throws -> Record? {
             while true {
                 if readyIndex < ready.count {
                     defer { readyIndex += 1 }
@@ -49,7 +67,7 @@ public struct FileLines: AsyncSequence, Sendable {
                 if chunk.isEmpty {
                     reachedEnd = true
                     guard !buffer.isEmpty else { return nil }
-                    stage(buffer)
+                    stage(buffer, consumed: buffer.count)
                     buffer = Data()
                     continue
                 }
@@ -59,7 +77,9 @@ public struct FileLines: AsyncSequence, Sendable {
                 // block whole-lines, so a multi-byte character can never be cut
                 // across two chunks.
                 guard let lastNewline = Self.lastNewlineOffset(in: buffer) else { continue }
-                stage(buffer.prefix(lastNewline))
+                // The newline itself is not part of the staged block but is part
+                // of what the file has moved on past.
+                stage(buffer.prefix(lastNewline), consumed: lastNewline + 1)
                 buffer = buffer.count > lastNewline + 1
                     ? Data(buffer.dropFirst(lastNewline + 1))
                     : Data()
@@ -84,8 +104,9 @@ public struct FileLines: AsyncSequence, Sendable {
 
         /// Splits on the newline *byte*. Swift treats "\r\n" as a single
         /// Character, so splitting the decoded string leaves CRLF lines joined.
-        private mutating func stage(_ block: Data) {
-            var lines: [String] = []
+        private mutating func stage(_ block: Data, consumed: Int) {
+            let baseOffset = self.blockOffset
+            var lines: [Record] = []
             block.withUnsafeBytes { raw in
                 guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return }
                 var start = 0
@@ -95,14 +116,18 @@ public struct FileLines: AsyncSequence, Sendable {
                     var end = breakAt
                     if end > start, base[end - 1] == UInt8(ascii: "\r") { end -= 1 }
                     if end > start {
-                        lines.append(String(
-                            decoding: UnsafeBufferPointer(start: base + start, count: end - start),
-                            as: UTF8.self
+                        lines.append(Record(
+                            byteOffset: baseOffset + start,
+                            text: String(
+                                decoding: UnsafeBufferPointer(start: base + start, count: end - start),
+                                as: UTF8.self
+                            )
                         ))
                     }
                     start = breakAt + 1
                 }
             }
+            self.blockOffset += consumed
             ready = lines
             readyIndex = 0
         }
@@ -113,7 +138,35 @@ public struct FileLines: AsyncSequence, Sendable {
     }
 }
 
+/// The same lines, each with the byte offset it starts at.
+public struct FileLineRecords: AsyncSequence, Sendable {
+    public typealias Element = FileLines.Record
+
+    private let lines: FileLines
+
+    public init(lines: FileLines) {
+        self.lines = lines
+    }
+
+    public struct AsyncIterator: AsyncIteratorProtocol {
+        var inner: FileLines.AsyncIterator
+
+        public mutating func next() async throws -> FileLines.Record? {
+            try await self.inner.nextRecord()
+        }
+    }
+
+    public func makeAsyncIterator() -> AsyncIterator {
+        AsyncIterator(inner: self.lines.makeAsyncIterator())
+    }
+}
+
 extension FileHandle {
     /// Lines read in blocks. See ``FileLines`` for why this exists.
     public var blockLines: FileLines { FileLines(handle: self) }
+
+    /// The same lines, each with where it starts in the file.
+    public var blockLineRecords: FileLineRecords {
+        FileLineRecords(lines: FileLines(handle: self))
+    }
 }

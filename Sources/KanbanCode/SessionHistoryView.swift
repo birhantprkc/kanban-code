@@ -38,8 +38,13 @@ struct SessionHistoryView: View {
     @State private var showSearch = false
     @State private var searchText = ""
     @State private var activeQuery = ""  // debounced, min 2 chars
-    @State private var searchMatchIndices: [Int] = []  // all found match turn indices (ascending)
-    @State private var currentMatchPosition: Int = 0   // index into searchMatchIndices, 0 = most recent (last)
+    @State private var searchMatchOffsets: [Int] = []  // byte offsets of every match, ascending
+    @State private var currentMatchPosition: Int = 0   // index into searchMatchOffsets, 0 = most recent (last)
+    /// Bumped every time the current match is set, including when it is set to
+    /// what it already was. A search that finds exactly one match lands back on
+    /// the position the scan started from, and watching the position alone left
+    /// that one match never loaded, never scrolled to and never highlighted.
+    @State private var matchNavigationTick = 0
     @State private var searchDebounceTask: Task<Void, Never>?
     @State private var searchScanTask: Task<Void, Never>?
     @State private var isSearchScanning = false
@@ -60,9 +65,26 @@ struct SessionHistoryView: View {
         return Array(turns.suffix(Self.mountedTurnLimit))
     }
 
-    private var currentMatchTurnIndex: Int? {
-        guard showSearch, !searchMatchIndices.isEmpty, currentMatchPosition < searchMatchIndices.count else { return nil }
-        return searchMatchIndices[currentMatchPosition]
+    private var currentMatchOffset: Int? {
+        guard showSearch, !searchMatchOffsets.isEmpty, currentMatchPosition < searchMatchOffsets.count else { return nil }
+        return searchMatchOffsets[currentMatchPosition]
+    }
+
+    /// The loaded turn a match falls inside. Consecutive assistant entries are
+    /// merged into one turn keeping the first one's offset, so a match in the
+    /// second half of a merged turn matches no row exactly.
+    private func loadedTurn(containing offset: Int) -> ConversationTurn? {
+        var enclosing: ConversationTurn?
+        for turn in turns {
+            if turn.lineNumber > offset { break }
+            enclosing = turn
+        }
+        return enclosing
+    }
+
+    private var currentMatchLineNumber: Int? {
+        guard let offset = currentMatchOffset else { return nil }
+        return loadedTurn(containing: offset)?.lineNumber
     }
 
     var body: some View {
@@ -122,7 +144,7 @@ struct SessionHistoryView: View {
                                         isHovered: hoveredTurnIndex == turn.index,
                                         isDimmed: checkpointMode && hoveredTurnIndex != nil && turn.index > hoveredTurnIndex!,
                                         highlightText: activeQuery.isEmpty ? nil : activeQuery,
-                                        isCurrentMatch: currentMatchTurnIndex == turn.index,
+                                        isCurrentMatch: currentMatchLineNumber == turn.lineNumber,
                                         isCmdHeld: isCmdHeld,
                                         assistant: assistant
                                     )
@@ -181,16 +203,14 @@ struct SessionHistoryView: View {
                             onLoadMore?()
                         }
                     }
-                    .onChange(of: currentMatchPosition) {
-                        guard !searchMatchIndices.isEmpty,
-                              currentMatchPosition < searchMatchIndices.count else { return }
-                        let idx = searchMatchIndices[currentMatchPosition]
-                        if turns.contains(where: { $0.index == idx }) {
+                    .onChange(of: matchNavigationTick) {
+                        guard let offset = currentMatchOffset else { return }
+                        if loadedTurn(containing: offset) != nil {
                             scrollToCurrentMatch(proxy: proxy, delay: false)
                         } else {
                             // Turn not loaded — load it, pendingMatchScroll triggers scroll after
                             pendingMatchScroll = true
-                            onLoadAroundTurn?(idx)
+                            onLoadAroundTurn?(offset)
                         }
                     }
                 }
@@ -254,17 +274,17 @@ struct SessionHistoryView: View {
                         .controlSize(.mini)
                         .tint(.white.opacity(0.5))
 
-                    if !searchMatchIndices.isEmpty {
-                        Text("\(searchMatchIndices.count) found…")
+                    if !searchMatchOffsets.isEmpty {
+                        Text("\(searchMatchOffsets.count) found…")
                             .font(.app(.caption2))
                             .foregroundStyle(.white.opacity(0.4))
                     }
-                } else if searchMatchIndices.isEmpty {
+                } else if searchMatchOffsets.isEmpty {
                     Text("0 results")
                         .font(.app(.caption2))
                         .foregroundStyle(.white.opacity(0.4))
                 } else {
-                    Text("\(searchMatchIndices.count - currentMatchPosition)/\(searchMatchIndices.count)")
+                    Text("\(searchMatchOffsets.count - currentMatchPosition)/\(searchMatchOffsets.count)")
                         .font(.app(.caption2))
                         .foregroundStyle(.white.opacity(0.6))
 
@@ -306,7 +326,7 @@ struct SessionHistoryView: View {
         // Clear immediately if empty
         if searchText.isEmpty {
             activeQuery = ""
-            searchMatchIndices = []
+            searchMatchOffsets = []
             currentMatchPosition = 0
             searchScanTask?.cancel()
             isSearchScanning = false
@@ -326,7 +346,7 @@ struct SessionHistoryView: View {
 
     private func startScan() {
         searchScanTask?.cancel()
-        searchMatchIndices = []
+        searchMatchOffsets = []
         currentMatchPosition = 0
 
         guard let path = sessionPath, !activeQuery.isEmpty else { return }
@@ -337,36 +357,38 @@ struct SessionHistoryView: View {
         searchScanTask = Task {
             var matches: [Int] = []
 
-            for await matchIndex in TranscriptReader.scanForMatches(from: path, query: query) {
+            for await matchOffset in TranscriptReader.scanForMatchOffsets(from: path, query: query) {
                 if Task.isCancelled { break }
-                matches.append(matchIndex)
+                matches.append(matchOffset)
 
                 // Update match count display periodically (no position/scroll changes)
                 if matches.count == 1 || matches.count % 50 == 0 {
-                    searchMatchIndices = matches
+                    searchMatchOffsets = matches
                 }
             }
 
             guard !Task.isCancelled else { return }
 
             // Final update — set position to most recent match, triggering scroll
-            searchMatchIndices = matches
+            searchMatchOffsets = matches
             isSearchScanning = false
             if !matches.isEmpty {
                 currentMatchPosition = matches.count - 1
+                matchNavigationTick += 1
             }
         }
     }
 
     private func navigateSearch(forward: Bool) {
-        guard !searchMatchIndices.isEmpty else { return }
+        guard !searchMatchOffsets.isEmpty else { return }
         if forward {
-            currentMatchPosition = (currentMatchPosition + 1) % searchMatchIndices.count
+            currentMatchPosition = (currentMatchPosition + 1) % searchMatchOffsets.count
         } else {
-            currentMatchPosition = (currentMatchPosition - 1 + searchMatchIndices.count) % searchMatchIndices.count
+            currentMatchPosition = (currentMatchPosition - 1 + searchMatchOffsets.count) % searchMatchOffsets.count
         }
+        matchNavigationTick += 1
         // Ensure the target match turn is loaded
-        let targetIndex = searchMatchIndices[currentMatchPosition]
+        let targetIndex = searchMatchOffsets[currentMatchPosition]
         if !turns.contains(where: { $0.index == targetIndex }) {
             onLoadAroundTurn?(targetIndex)
         }
@@ -380,7 +402,7 @@ struct SessionHistoryView: View {
         isSearchFieldFocused = false
         searchText = ""
         activeQuery = ""  // removes highlights
-        // Don't clear searchMatchIndices/currentMatchPosition — they're harmless
+        // Don't clear searchMatchOffsets/currentMatchPosition — they're harmless
         // when hidden, and clearing them would trigger onChange scroll handlers.
     }
 
@@ -408,10 +430,8 @@ struct SessionHistoryView: View {
     }
 
     private func scrollToCurrentMatch(proxy: ScrollViewProxy, delay: Bool) {
-        guard !searchMatchIndices.isEmpty,
-              currentMatchPosition < searchMatchIndices.count else { return }
-        let idx = searchMatchIndices[currentMatchPosition]
-        guard let turn = turns.first(where: { $0.index == idx }) else { return }
+        guard let offset = currentMatchOffset,
+              let turn = loadedTurn(containing: offset) else { return }
         let lineNum = turn.lineNumber
         if delay {
             Task { @MainActor in

@@ -249,7 +249,7 @@ private struct ChatMessageList: View {
     @State private var showSearch = false
     @State private var searchText = ""
     @State private var activeQuery = ""
-    @State private var searchMatchIndices: [Int] = []
+    @State private var searchMatchOffsets: [Int] = []
     @State private var currentMatchPosition: Int = 0
     @State private var searchDebounceTask: Task<Void, Never>?
     @State private var searchScanTask: Task<Void, Never>?
@@ -260,20 +260,51 @@ private struct ChatMessageList: View {
     private static let mountedTurnLimit = 500
 
     private var renderedTurns: [ConversationTurn] {
-        // Search and explicit history navigation need the loaded target to stay
-        // mounted. During normal chat rendering, cap the mounted window to
-        // avoid making SwiftUI lay out thousands of variable-height rows.
-        guard activeQuery.isEmpty, turns.count > Self.mountedTurnLimit else { return turns }
+        // Capped, so SwiftUI is never asked to lay out thousands of rows whose
+        // heights it can only learn by measuring them.
+        guard turns.count > Self.mountedTurnLimit else { return turns }
+        // A search has to keep the turn it stopped on mounted, so during one the
+        // window follows the match instead of the end of the list.
+        if let lineNumber = currentMatchLineNumber,
+            let position = turns.firstIndex(where: { $0.lineNumber == lineNumber })
+        {
+            let start = min(
+                max(0, position - Self.mountedTurnLimit / 2),
+                turns.count - Self.mountedTurnLimit
+            )
+            return Array(turns[start..<(start + Self.mountedTurnLimit)])
+        }
         if isNearTop && hasMoreTurns {
             return Array(turns.prefix(Self.mountedTurnLimit))
         }
         return Array(turns.suffix(Self.mountedTurnLimit))
     }
 
-    private var currentMatchTurnIndex: Int? {
-        guard showSearch, !searchMatchIndices.isEmpty,
-              currentMatchPosition < searchMatchIndices.count else { return nil }
-        return searchMatchIndices[currentMatchPosition]
+    private var currentMatchOffset: Int? {
+        guard showSearch, !searchMatchOffsets.isEmpty,
+              currentMatchPosition < searchMatchOffsets.count else { return nil }
+        return searchMatchOffsets[currentMatchPosition]
+    }
+
+    /// The loaded turn a match falls inside, identified the way every row here
+    /// is: by the byte offset it starts at.
+    ///
+    /// Not an equality test, because consecutive assistant entries are merged
+    /// into one turn that keeps the first one's offset. A match on the second
+    /// half of a merged turn matches no row exactly, and used to leave the
+    /// search reporting a count it could neither scroll to nor paint.
+    private func loadedTurn(containing offset: Int) -> ConversationTurn? {
+        var enclosing: ConversationTurn?
+        for turn in turns {
+            if turn.lineNumber > offset { break }
+            enclosing = turn
+        }
+        return enclosing
+    }
+
+    private var currentMatchLineNumber: Int? {
+        guard let offset = currentMatchOffset else { return nil }
+        return loadedTurn(containing: offset)?.lineNumber
     }
 
     var body: some View {
@@ -398,18 +429,27 @@ private struct ChatMessageList: View {
     }
 
     private func handleMatchNavigation() {
-        guard !searchMatchIndices.isEmpty,
-              currentMatchPosition < searchMatchIndices.count else { return }
-        let idx = searchMatchIndices[currentMatchPosition]
-        if turns.contains(where: { $0.index == idx }) {
+        guard let offset = currentMatchOffset else { return }
+        // Nothing encloses a match that sits before everything loaded, which is
+        // most of them: the chat opens on the tail and a search runs the file.
+        if loadedTurn(containing: offset) != nil {
             scrollToCurrentMatch(delay: false)
         } else {
             pendingMatchScroll = true
-            onLoadAroundTurn?(idx)
+            onLoadAroundTurn?(offset)
         }
     }
 
     private func handleFirstTurnChange() {
+        // Older turns arriving is how a jump to a match outside the window
+        // completes, and it leaves the last turn alone, so the handler watching
+        // the other end of the list never hears about it.
+        if pendingMatchScroll {
+            pendingMatchScroll = false
+            scrollToCurrentMatch(delay: true)
+            lastSeenCount = turns.count
+            return
+        }
         let lastUnchanged = turns.last?.lineNumber == lastSeenLineNumber
         if lastUnchanged {
             lastSeenCount = turns.count
@@ -508,7 +548,7 @@ private struct ChatMessageList: View {
                                         onSendAnswer: onSendAnswer,
                                         suppressBackground: true,
                                         highlightText: activeQuery.isEmpty ? nil : activeQuery,
-                                        isCurrentMatch: currentMatchTurnIndex == toolTurn.index,
+                                        isCurrentMatch: currentMatchLineNumber == toolTurn.lineNumber,
                                         sessionPath: sessionPath,
                                         tmuxSessionName: tmuxSessionName,
                                         hasLastToolCall: toolTurn.lineNumber == lastToolCallLN,
@@ -561,7 +601,7 @@ private struct ChatMessageList: View {
                                 onCheckpoint: onCheckpoint,
                                 onSendAnswer: onSendAnswer,
                                 highlightText: activeQuery.isEmpty ? nil : activeQuery,
-                                isCurrentMatch: currentMatchTurnIndex == turn.index,
+                                isCurrentMatch: currentMatchLineNumber == turn.lineNumber,
                                 sessionPath: sessionPath,
                                 tmuxSessionName: tmuxSessionName,
                                 hasLastToolCall: turn.lineNumber == lastToolCallLN,
@@ -626,15 +666,15 @@ private struct ChatMessageList: View {
             if !activeQuery.isEmpty {
                 if isSearchScanning {
                     ProgressView().controlSize(.mini)
-                    Text("\(searchMatchIndices.count) found…")
+                    Text("\(searchMatchOffsets.count) found…")
                         .font(.app(.caption2))
                         .foregroundStyle(.secondary)
-                } else if searchMatchIndices.isEmpty {
+                } else if searchMatchOffsets.isEmpty {
                     Text("0 results")
                         .font(.app(.caption2))
                         .foregroundStyle(.secondary)
                 } else {
-                    Text("\(searchMatchIndices.count - currentMatchPosition)/\(searchMatchIndices.count)")
+                    Text("\(searchMatchOffsets.count - currentMatchPosition)/\(searchMatchOffsets.count)")
                         .font(.app(.caption2))
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
@@ -674,7 +714,7 @@ private struct ChatMessageList: View {
         searchDebounceTask?.cancel()
         if searchText.isEmpty {
             activeQuery = ""
-            searchMatchIndices = []
+            searchMatchOffsets = []
             currentMatchPosition = 0
             searchScanTask?.cancel()
             isSearchScanning = false
@@ -691,22 +731,22 @@ private struct ChatMessageList: View {
 
     private func startScan() {
         searchScanTask?.cancel()
-        searchMatchIndices = []
+        searchMatchOffsets = []
         currentMatchPosition = 0
         guard let path = sessionPath, !activeQuery.isEmpty else { return }
         isSearchScanning = true
         let query = activeQuery
         searchScanTask = Task {
             var matches: [Int] = []
-            for await matchIndex in TranscriptReader.scanForMatches(from: path, query: query) {
+            for await matchOffset in TranscriptReader.scanForMatchOffsets(from: path, query: query) {
                 if Task.isCancelled { break }
-                matches.append(matchIndex)
+                matches.append(matchOffset)
                 if matches.count == 1 || matches.count % 50 == 0 {
-                    searchMatchIndices = matches
+                    searchMatchOffsets = matches
                 }
             }
             guard !Task.isCancelled else { return }
-            searchMatchIndices = matches
+            searchMatchOffsets = matches
             isSearchScanning = false
             if !matches.isEmpty {
                 currentMatchPosition = matches.count - 1
@@ -720,11 +760,11 @@ private struct ChatMessageList: View {
     }
 
     private func navigateSearch(forward: Bool) {
-        guard !searchMatchIndices.isEmpty else { return }
+        guard !searchMatchOffsets.isEmpty else { return }
         if forward {
-            currentMatchPosition = (currentMatchPosition + 1) % searchMatchIndices.count
+            currentMatchPosition = (currentMatchPosition + 1) % searchMatchOffsets.count
         } else {
-            currentMatchPosition = (currentMatchPosition - 1 + searchMatchIndices.count) % searchMatchIndices.count
+            currentMatchPosition = (currentMatchPosition - 1 + searchMatchOffsets.count) % searchMatchOffsets.count
         }
         handleMatchNavigation()
     }
@@ -740,10 +780,8 @@ private struct ChatMessageList: View {
     }
 
     private func scrollToCurrentMatch(delay: Bool) {
-        guard !searchMatchIndices.isEmpty,
-              currentMatchPosition < searchMatchIndices.count else { return }
-        let idx = searchMatchIndices[currentMatchPosition]
-        guard let turn = turns.first(where: { $0.index == idx }) else { return }
+        guard let offset = currentMatchOffset,
+              let turn = loadedTurn(containing: offset) else { return }
         if delay {
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(80))
@@ -762,7 +800,10 @@ private struct ChatMessageList: View {
     /// Uses a task guard to prevent overlapping calls and a 500ms cooldown
     /// between loads so re-renders can settle before the next batch.
     private func checkLoadMore() {
-        guard isNearTop, hasMoreTurns, activeQuery.isEmpty else { return }
+        // A search does not stop the history from being read backwards. It used
+        // to, which made a conversation that was being searched the one you
+        // could not scroll back through.
+        guard isNearTop, hasMoreTurns else { return }
         guard loadMoreTask == nil else { return }
         firstVisibleLineNumber = turns.first?.lineNumber
         onLoadMore?()

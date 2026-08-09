@@ -260,10 +260,17 @@ public enum TranscriptReader {
         }
     }
 
-    /// Scan for matching turn indices using the same content extraction as the reader.
-    /// Yields each matching turn index as found. Matches against the same text fields
-    /// that TurnBlockView displays (textPreview + contentBlocks[].text).
-    public static func scanForMatches(
+    /// Scan for matching turns using the same content extraction as the reader.
+    /// Yields the byte offset of each matching turn as it is found. Matches
+    /// against the same text fields the chat displays (textPreview +
+    /// contentBlocks[].text).
+    ///
+    /// Offsets rather than turn numbers, because a turn number means something
+    /// different to every reader here: the tail reader numbers from the start of
+    /// the window it loaded, which is not the start of the file. A byte offset
+    /// is the same number to all of them, and is what a loaded turn already
+    /// carries as its identity.
+    public static func scanForMatchOffsets(
         from filePath: String,
         query: String
     ) -> AsyncStream<Int> {
@@ -278,11 +285,11 @@ public enum TranscriptReader {
                     let handle = try FileHandle(forReadingFrom: url)
                     defer { try? handle.close() }
 
-                    var turnIndex = 0
                     let queryLower = query.lowercased()
 
-                    for try await line in handle.blockLines {
+                    for try await record in handle.blockLineRecords {
                         if Task.isCancelled { break }
+                        let line = record.text
                         guard !line.isEmpty, line.contains("\"type\"") else { continue }
 
                         guard let data = line.data(using: .utf8),
@@ -308,9 +315,8 @@ public enum TranscriptReader {
                         // Match against the same fields TurnBlockView.isSearchMatch checks
                         if textPreview.lowercased().contains(queryLower)
                             || blocks.contains(where: { $0.text.lowercased().contains(queryLower) }) {
-                            continuation.yield(turnIndex)
+                            continuation.yield(record.byteOffset)
                         }
-                        turnIndex += 1
                     }
                 } catch { }
                 continuation.finish()
@@ -319,67 +325,108 @@ public enum TranscriptReader {
         }
     }
 
-    /// Load earlier turns before the current set (for "load more" pagination).
-    public static func readRange(from filePath: String, turnRange: Range<Int>) async throws -> [ConversationTurn] {
+    /// Load the turns surrounding a byte offset, for jumping to a search match
+    /// that sits outside the window currently loaded.
+    ///
+    /// Turns carry the byte offset they start at as their identity, which is
+    /// what makes a chunk from here line up with one from ``readTail(from:maxTurns:)``.
+    public static func readAround(
+        from filePath: String,
+        byteOffset: Int,
+        before: Int = 40,
+        after: Int = 40
+    ) async throws -> [ConversationTurn] {
         guard FileManager.default.fileExists(atPath: filePath) else { return [] }
 
         let url = URL(fileURLWithPath: filePath)
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
 
-        var turns: [ConversationTurn] = []
-        var lineNumber = 0
-        var turnIndex = 0
+        // Only the last `before` turn lines are kept while walking towards the
+        // target, so a hundred megabyte transcript costs a window rather than a
+        // copy of itself.
+        var leading: [FileLines.Record] = []
+        var trailing: [FileLines.Record] = []
+        var reachedTarget = false
 
-        for try await line in handle.blockLines {
-            lineNumber += 1
+        for try await record in handle.blockLineRecords {
+            let line = record.text
             guard !line.isEmpty, line.contains("\"type\"") else { continue }
-
             guard let data = line.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let type = obj["type"] as? String,
-                  type == "user" || type == "assistant" else { continue }
-
-            // Skip caveat wrapper messages entirely
+                  type == "user" || type == "assistant" || type == "queue-operation" else { continue }
             if type == "user" && JsonlParser.isCaveatMessage(obj) { continue }
 
-            // Stdout responses display as assistant-style turns
-            let role = (type == "user" && JsonlParser.isLocalCommandStdout(obj)) ? "assistant" : type
-
-            defer { turnIndex += 1 }
-
-            // Skip turns outside our range
-            guard turnRange.contains(turnIndex) else {
-                if turnIndex >= turnRange.upperBound { break }
+            if reachedTarget {
+                trailing.append(record)
+                if trailing.count >= after { break }
                 continue
             }
-
-            let blocks: [ContentBlock]
-            let textPreview: String
-
-            if type == "user" {
-                blocks = extractUserBlocks(from: obj)
-                textPreview = Self.buildTextPreview(blocks: blocks, role: role)
-            } else {
-                blocks = extractAssistantBlocks(from: obj)
-                textPreview = Self.buildTextPreview(blocks: blocks, role: role)
+            if record.byteOffset >= byteOffset {
+                reachedTarget = true
+                trailing.append(record)
+                continue
             }
-
-            let timestamp = obj["timestamp"] as? String
-            let modelName = (obj["message"] as? [String: Any])?["model"] as? String
-
-            turns.append(ConversationTurn(
-                index: turnIndex,
-                lineNumber: lineNumber,
-                role: role,
-                textPreview: textPreview,
-                timestamp: timestamp,
-                contentBlocks: blocks,
-                modelName: modelName
-            ))
+            leading.append(record)
+            if leading.count > before { leading.removeFirst() }
         }
 
+        let kept = leading + trailing
+        var turns: [ConversationTurn] = []
+        turns.reserveCapacity(kept.count)
+        for (offset, record) in kept.enumerated() {
+            guard let turn = self.parseTurn(line: record.text, index: offset, byteOffset: record.byteOffset)
+            else { continue }
+            turns.append(turn)
+        }
         return mergeConsecutiveAssistantTurns(turns)
+    }
+
+    /// Builds one turn from one transcript line, or nothing when the line does
+    /// not display as a turn.
+    private static func parseTurn(
+        line: String, index: Int, byteOffset: Int
+    ) -> ConversationTurn? {
+        guard let data = line.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let type = obj["type"] as? String else { return nil }
+
+        let role: String
+        let blocks: [ContentBlock]
+        let textPreview: String
+        if type == "queue-operation" {
+            guard let operation = obj["operation"] as? String, operation == "enqueue",
+                  let content = obj["content"] as? String, !content.isEmpty else { return nil }
+            role = "user"
+            if content.contains("<task-notification>") {
+                guard let summary = Self.parseTaskNotification(content) else { return nil }
+                blocks = [ContentBlock(kind: .text, text: summary)]
+                textPreview = summary
+            } else {
+                blocks = [ContentBlock(kind: .text, text: content)]
+                textPreview = content
+            }
+        } else if type == "user" {
+            role = JsonlParser.isLocalCommandStdout(obj) ? "assistant" : type
+            blocks = extractUserBlocks(from: obj)
+            textPreview = Self.buildTextPreview(blocks: blocks, role: role)
+        } else {
+            role = type
+            blocks = extractAssistantBlocks(from: obj)
+            textPreview = Self.buildTextPreview(blocks: blocks, role: role)
+        }
+
+        return ConversationTurn(
+            index: index,
+            lineNumber: byteOffset,
+            role: role,
+            textPreview: textPreview,
+            timestamp: obj["timestamp"] as? String,
+            contentBlocks: blocks,
+            imageCount: type == "user" ? Self.countImages(in: obj) : 0,
+            modelName: (obj["message"] as? [String: Any])?["model"] as? String
+        )
     }
 
     // MARK: - Consecutive assistant merge

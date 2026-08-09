@@ -1837,27 +1837,30 @@ struct CardDetailView: View {
         if card.id == myCardId { isLoadingMore = false }
     }
 
-    /// Load turns around a specific turn index (for search match navigation).
-    /// Loads a page-sized chunk around the target, merging with existing turns.
-    private func loadAroundTurn(_ targetIndex: Int) async {
+    /// Load the turns around a search match, merging them with what is already
+    /// loaded.
+    ///
+    /// Keyed on the byte offset a turn starts at, which is the identity a turn
+    /// carries and the only one every reader here agrees on: the tail reader
+    /// numbers turns from the start of the window it loaded, so its numbers and
+    /// a scan's numbers describe different turns entirely.
+    private func loadAroundTurn(_ targetOffset: Int) async {
         guard card.link.effectiveAssistant == .claude else { return }
         guard let path = card.link.sessionLink?.sessionPath ?? card.session?.jsonlPath else { return }
         let myCardId = card.id
         isLoadingMore = true
 
         let halfPage = Self.pageSize / 2
-        let rangeStart = max(0, targetIndex - halfPage)
-        let rangeEnd = targetIndex + halfPage
-
         do {
-            let chunk = try await TranscriptReader.readRange(from: path, turnRange: rangeStart..<rangeEnd)
+            let chunk = try await TranscriptReader.readAround(
+                from: path, byteOffset: targetOffset, before: halfPage, after: halfPage)
             // Stale-check — see loadHistory().
             guard card.id == myCardId else { return }
-            var byIndex: [Int: ConversationTurn] = [:]
-            for t in turns { byIndex[t.index] = t }
-            for t in chunk { byIndex[t.index] = t }
-            turns = byIndex.values.sorted { $0.index < $1.index }
-            hasMoreTurns = (turns.first?.index ?? 0) > 0
+            var byOffset: [Int: ConversationTurn] = [:]
+            for turn in turns { byOffset[turn.lineNumber] = turn }
+            for turn in chunk { byOffset[turn.lineNumber] = turn }
+            turns = byOffset.values.sorted { $0.lineNumber < $1.lineNumber }
+            hasMoreTurns = (turns.first?.lineNumber ?? 0) > 0
         } catch { }
         if card.id == myCardId { isLoadingMore = false }
     }
