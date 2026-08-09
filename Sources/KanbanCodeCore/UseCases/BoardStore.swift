@@ -2641,31 +2641,20 @@ public final class BoardStore: @unchecked Sendable {
                 // Worktrees of one repository are one GitHub repo: group the
                 // lookups by remote slug so N worktrees cost one batched query
                 // instead of N. Slug resolution is local git plus a cache, so
-                // the grouping itself spends no API points. Roots that fail to
-                // resolve keep a group of their own.
-                var groupRoot: [String: String] = [:]      // group key → representative root
-                var groupMembers: [String: [String]] = [:] // group key → all member roots
-                var groupBranches: [String: Set<String>] = [:]
-                var groupNumbers: [String: Set<Int>] = [:]
-                for repoRoot in allRepos {
-                    let branches = branchesByRepo[repoRoot] ?? []
-                    let numbers = prNumbersByRepo[repoRoot] ?? []
-                    guard !branches.isEmpty || !numbers.isEmpty else { continue }
-                    let slug = await ghAdapter.resolveRepoSlug(repoRoot: repoRoot)
-                    let key = slug.map { "\($0.host)/\($0.owner)/\($0.name)" } ?? repoRoot
-                    if groupRoot[key] == nil { groupRoot[key] = repoRoot }
-                    groupMembers[key, default: []].append(repoRoot)
-                    groupBranches[key, default: []].formUnion(branches)
-                    groupNumbers[key, default: []].formUnion(numbers)
-                }
+                // the grouping itself spends no API points.
+                let groups = await PRLookupGrouping.group(
+                    branchesByRepo: branchesByRepo,
+                    prNumbersByRepo: prNumbersByRepo,
+                    slugForRoot: { await ghAdapter.resolveRepoSlug(repoRoot: $0) }
+                )
 
                 typealias PRResult = (String, [String: PullRequest], [Int: PullRequest], Bool)
                 let results: [PRResult] = await withTaskGroup(of: PRResult.self) { group in
                     var pending = 0
                     var collected: [PRResult] = []
-                    for (key, repoRoot) in groupRoot {
-                        let branches = Array(groupBranches[key] ?? [])
-                        let numbers = Array(groupNumbers[key] ?? [])
+                    for (key, repoRoot) in groups.representativeRoot.sorted(by: { $0.key < $1.key }) {
+                        let branches = Array(groups.branches[key] ?? [])
+                        let numbers = Array(groups.numbers[key] ?? [])
 
                         // Concurrency limit: drain one before adding more
                         if pending >= 5, let result = await group.next() {
@@ -2695,19 +2684,17 @@ public final class BoardStore: @unchecked Sendable {
 
                 var rateLimitedRepos: Set<String> = []
                 for (key, byBranch, byNumber, rateLimited) in results {
-                    let members = groupMembers[key] ?? []
+                    let members = groups.members[key] ?? []
                     if rateLimited { rateLimitedRepos.formUnion(members) }
                     for (branch, pr) in byBranch {
                         pullRequests[branch] = pr
                     }
-                    if !byNumber.isEmpty {
-                        // Every member root that asked for numbers gets the
-                        // group's result, since downstream lookups key by the
-                        // card's own repoRoot
-                        for member in members where !(prNumbersByRepo[member] ?? []).isEmpty {
-                            prsByRepoAndNumber[member] = byNumber
-                        }
-                    }
+                    PRLookupGrouping.distribute(
+                        byNumber: byNumber,
+                        toMembers: members,
+                        requestedNumbers: prNumbersByRepo,
+                        into: &prsByRepoAndNumber
+                    )
                 }
                 if !rateLimitedRepos.isEmpty {
                     ghRateLimitedUntil = .now + .seconds(300)
