@@ -1965,8 +1965,8 @@ struct ContentView: View {
         Button("") { if showSearch { closePalette() } else { openPalette() } }
             .keyboardShortcut(AppShortcut.openPaletteK.key, modifiers: AppShortcut.openPaletteK.modifiers)
             .hidden()
-        Button("") { if showSearch { closePalette() } else { openPalette() } }
-            .keyboardShortcut(AppShortcut.openPaletteP.key, modifiers: AppShortcut.openPaletteP.modifiers)
+        Button("") { togglePinOnSelectedCard() }
+            .keyboardShortcut(AppShortcut.togglePin.key, modifiers: AppShortcut.togglePin.modifiers)
             .hidden()
         Button("") { if showSearch { closePalette() } else { openPalette(initialQuery: ">") } }
             .keyboardShortcut(AppShortcut.openCommandMode.key, modifiers: AppShortcut.openCommandMode.modifiers)
@@ -2437,6 +2437,23 @@ struct ContentView: View {
         terminalHadFocusBeforeSearch = terminalWasFocused
         searchInitialQuery = initialQuery
         showSearch = true
+    }
+
+    /// Pin or unpin whatever card is selected, and say which way it went. The
+    /// pinned row sits at the top of the board, far from the card you pressed
+    /// this on, so without the banner the only feedback is a card you were not
+    /// looking at moving.
+    private func togglePinOnSelectedCard() {
+        guard AppShortcut.togglePin.isActive(in: shortcutContext),
+              let card = store.state.selectedCard else { return }
+        let pinning = !card.link.isPinned
+        store.dispatch(.setCardPinned(cardId: card.id, isPinned: pinning))
+        store.dispatch(.setNotice(
+            pinning
+                ? "Card pinned, press \(AppShortcut.togglePin.displayString) again to unpin"
+                : "Card unpinned",
+            kind: .success
+        ))
     }
 
     private func closePalette() {

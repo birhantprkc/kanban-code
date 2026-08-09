@@ -11,6 +11,7 @@ struct AppShortcutContext {
     var terminalTabActive: Bool
     var promptEditorFocused: Bool
     var canResumeAssistant: Bool
+    var hasSelectedCard: Bool
 
     init(
         paletteOpen: Bool,
@@ -18,7 +19,8 @@ struct AppShortcutContext {
         expandedDetail: Bool,
         terminalTabActive: Bool = false,
         promptEditorFocused: Bool,
-        canResumeAssistant: Bool = false
+        canResumeAssistant: Bool = false,
+        hasSelectedCard: Bool = false
     ) {
         self.paletteOpen = paletteOpen
         self.detailOpen = detailOpen
@@ -26,6 +28,7 @@ struct AppShortcutContext {
         self.terminalTabActive = terminalTabActive
         self.promptEditorFocused = promptEditorFocused
         self.canResumeAssistant = canResumeAssistant
+        self.hasSelectedCard = hasSelectedCard
     }
 
     init(from state: AppState, terminalTabActive: Bool = false) {
@@ -34,6 +37,7 @@ struct AppShortcutContext {
         self.expandedDetail = state.detailExpanded
         self.terminalTabActive = terminalTabActive
         self.promptEditorFocused = state.promptEditorFocused
+        self.hasSelectedCard = state.selectedCardId != nil
         let selectedLink = state.selectedCard?.link
         self.canResumeAssistant = selectedLink?.sessionLink != nil
             && selectedLink?.tmuxLink == nil
@@ -48,10 +52,10 @@ struct AppShortcutContext {
 enum AppShortcut: CaseIterable {
     // Palette
     case openPaletteK           // Cmd+K
-    case openPaletteP           // Cmd+P
     case openCommandMode        // Cmd+Shift+P
 
     // Global actions
+    case togglePin              // Cmd+P (pin or unpin the selected card)
     case newTask                // Cmd+N
     case openSettings           // Cmd+,
 
@@ -84,7 +88,7 @@ enum AppShortcut: CaseIterable {
     case project6, project7, project8, project9
 
     static var allCases: [AppShortcut] {
-        [.openPaletteK, .openPaletteP, .openCommandMode,
+        [.openPaletteK, .openCommandMode, .togglePin,
          .newTask, .openSettings,
          .resumeAssistant, .toggleExpanded, .toggleSidebar, .newTerminal, .navigateBack, .navigateForward, .deepSearch,
          .stopAssistant, .browserReload, .browserFocusAddress, .reopenClosedTab,
@@ -96,8 +100,8 @@ enum AppShortcut: CaseIterable {
     var key: KeyEquivalent {
         switch self {
         case .openPaletteK: return "k"
-        case .openPaletteP: return "p"
         case .openCommandMode: return "p"
+        case .togglePin: return "p"
         case .newTask: return "n"
         case .openSettings: return ","
         case .resumeAssistant, .toggleExpanded, .deepSearch: return .return
@@ -126,7 +130,7 @@ enum AppShortcut: CaseIterable {
 
     var modifiers: EventModifiers {
         switch self {
-        case .openPaletteK, .openPaletteP: return .command
+        case .openPaletteK, .togglePin: return .command
         case .openCommandMode: return [.command, .shift]
         case .newTask, .openSettings: return .command
         case .resumeAssistant, .deepSearch: return .command
@@ -167,9 +171,14 @@ enum AppShortcut: CaseIterable {
     func isActive(in ctx: AppShortcutContext) -> Bool {
         switch self {
         // Palette open/close works everywhere
-        case .openPaletteK, .openPaletteP, .openCommandMode,
+        case .openPaletteK, .openCommandMode,
              .newTask, .openSettings:
             return true
+
+        // Pinning needs a card to pin, and the palette owns the keyboard while
+        // it is up.
+        case .togglePin:
+            return ctx.hasSelectedCard && !ctx.paletteOpen && !ctx.promptEditorFocused
 
         // Toggle between kanban and expanded+sidebar mode
         case .toggleExpanded:
