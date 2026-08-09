@@ -103,11 +103,19 @@ struct PromptEditor: NSViewRepresentable {
             context.coordinator.lastIdentity = identity
         }
         // Only push text from binding when user is NOT actively editing,
-        // OR when the identity changed (card switch — must show new card's draft).
+        // OR when the identity changed (card switch — must show new card's draft),
+        // OR when there is nothing on screen to overwrite. That last case is a
+        // draft restored from disk: the load is async, so it lands after the
+        // composer has already mounted empty and taken focus, and without it
+        // the draft stays invisible until the first keystroke replaces it.
         let isEditing = textView.window?.firstResponder === textView
-        if textView.string != text && (!isEditing || text.isEmpty || identityChanged) {
+        let wasEmpty = textView.string.isEmpty
+        if textView.string != text && (!isEditing || text.isEmpty || identityChanged || wasEmpty) {
             textView.string = text
             textView.needsDisplay = true // redraw placeholder if cleared
+            if !text.isEmpty && (identityChanged || wasEmpty) {
+                textView.moveCaretToEnd()
+            }
         }
         if identityChanged {
             textView.clearUndoStack()
@@ -274,6 +282,13 @@ final class SubmitTextView: NSTextView {
 
     func clearUndoStack() {
         localUndoManager.removeAllActions()
+    }
+
+    /// Puts the caret after the last character and brings it into view.
+    func moveCaretToEnd() {
+        let end = (string as NSString).length
+        setSelectedRange(NSRange(location: end, length: 0))
+        scrollRangeToVisible(selectedRange())
     }
 
     func prepareForDismantle() {

@@ -446,6 +446,11 @@ struct CardDetailView: View {
             pathPollTask = nil
             flushChatDraftSave(cardId: card.id)
         }
+        .onReceive(
+            NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)
+        ) { _ in
+            saveChatDraftNow(cardId: card.id)
+        }
         .sheet(isPresented: $showPromptHistory) {
             PromptHistorySheet(cardId: card.id) { body in
                 let prompt = QueuedPrompt(body: body, sendAutomatically: true)
@@ -1773,6 +1778,18 @@ struct CardDetailView: View {
         Task.detached(priority: .utility) {
             ChatDraft.save(cardId: cardId, draft: draft)
         }
+    }
+
+    /// Writes the draft on this thread, for the way out.
+    ///
+    /// Saving is debounced while typing, and neither the pending timer nor a
+    /// detached write gets another turn once the app has been told to quit, so
+    /// the last few seconds of a draft would go with it.
+    private func saveChatDraftNow(cardId: String) {
+        chatDraftSaveTasks[cardId]?.cancel()
+        chatDraftSaveTasks[cardId] = nil
+        guard let draft = chatDrafts[cardId] else { return }
+        ChatDraft.save(cardId: cardId, draft: draft)
     }
 
     private func loadMoreHistory() async {
