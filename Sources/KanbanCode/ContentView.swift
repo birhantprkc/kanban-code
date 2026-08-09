@@ -1665,7 +1665,10 @@ struct ContentView: View {
 
     @ViewBuilder
     private var paletteOverlay: some View {
-        Color.black.opacity(0.3)
+        // A tap target rather than a scrim. Dimming meant compositing a
+        // translucent layer over the whole window, board and terminals included,
+        // for every frame of the open and close.
+        Color.black.opacity(0.001)
             .ignoresSafeArea()
             .onTapGesture { closePalette() }
 

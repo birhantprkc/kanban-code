@@ -26,6 +26,7 @@ struct SearchOverlay: View {
 
     /// Snapshot of cards at open time — avoids re-rendering when store reconciles.
     @State private var snapshotCards: [KanbanCodeCard] = []
+    @State private var recentItems: [RecentItem] = []
     @State private var cardSearchIndex: [CardSearchIndexItem] = []
     @State private var query = ""
     @State private var searchResults: [SearchResultItem] = []
@@ -122,28 +123,7 @@ struct SearchOverlay: View {
     private func handleAppear() {
         let started = RenderDiagnostics.mark()
         snapshotCards = cards  // Freeze cards at open time
-
-        // Indexing lowercases every card's stored prompt body, which for a
-        // board with hundreds of cards is far more work than fits between the
-        // keystroke and the window appearing. Nothing on screen needs it: the
-        // recents list reads the cards directly, and the index is only consulted
-        // once a query is typed. Build it off the main thread and pick up
-        // whatever query arrived while it ran.
-        let toIndex = cards
-        Task.detached(priority: .userInitiated) {
-            let indexStarted = RenderDiagnostics.mark()
-            let index = toIndex.map(CardSearchIndexItem.init(card:))
-            await MainActor.run {
-                RenderDiagnostics.logIfSlow(
-                    "SearchOverlay.buildIndex",
-                    since: indexStarted,
-                    thresholdMs: 8,
-                    metadata: "cards=\(index.count)"
-                )
-                self.cardSearchIndex = index
-                if !self.query.isEmpty { self.handleQueryChange(self.query) }
-            }
-        }
+        recentItems = computeMergedRecent()
 
         requestSearchFocus()
         if !initialQuery.isEmpty {
@@ -157,7 +137,7 @@ struct SearchOverlay: View {
         }
         if initialQuery.isEmpty {
             // Second item = "the thing before what's currently open" — Enter jumps back.
-            let merged = mergedRecent
+            let merged = recentItems
             if merged.count >= 2 {
                 selectedId = merged[1].id
             } else {
@@ -180,6 +160,24 @@ struct SearchOverlay: View {
         }
     }
 
+    /// Indexing a card lowercases its whole stored prompt body, so for a board
+    /// of any size this costs more than opening the palette does. Most opens
+    /// never need it: they pick something from recents and close. So it is built
+    /// on the first keystroke of the first query instead, once per open.
+    private func indexedCards() -> [CardSearchIndexItem] {
+        if !cardSearchIndex.isEmpty { return cardSearchIndex }
+        let started = RenderDiagnostics.mark()
+        let index = snapshotCards.map(CardSearchIndexItem.init(card:))
+        RenderDiagnostics.logIfSlow(
+            "SearchOverlay.buildIndex",
+            since: started,
+            thresholdMs: 8,
+            metadata: "cards=\(index.count)"
+        )
+        cardSearchIndex = index
+        return index
+    }
+
     private func handleQueryChange(_ newValue: String) {
         updateFilter(newValue)
         if newValue.hasPrefix(">") {
@@ -192,7 +190,7 @@ struct SearchOverlay: View {
             selectedId = items.first?.id
         } else {
             filteredItems = []
-            let merged = mergedRecent
+            let merged = recentItems
             selectedId = merged.count >= 2 ? merged[1].id : merged.first?.id
         }
     }
@@ -242,13 +240,21 @@ struct SearchOverlay: View {
         }
     }
 
-    private var mergedRecent: [RecentItem] {
+    /// Sorting every card and channel by recency, kept rather than recomputed.
+    /// This is read from the body, from the row builders and from the keyboard
+    /// handlers, so as a computed property it re-sorted the whole board several
+    /// times per render.
+    private func computeMergedRecent() -> [RecentItem] {
         let cardItems = snapshotCards.map(RecentItem.card)
         let channelItems = channels.map {
             RecentItem.channel($0, opened: channelLastOpened[$0.name], lastActivity: channelLastActivity[$0.name])
         }
-        return (cardItems + channelItems).sorted { $0.sortKey > $1.sortKey }
+        return Array(
+            (cardItems + channelItems).sorted { $0.sortKey > $1.sortKey }.prefix(Self.recentLimit)
+        )
     }
+
+    private static let recentLimit = 24
 
     private var queryTerms: [String] {
         SessionSearchQuery(query).snippetTerms
@@ -302,7 +308,7 @@ struct SearchOverlay: View {
         if isCommandMode {
             return filteredCommands.map(\.id)
         } else if query.isEmpty {
-            return Array(mergedRecent.prefix(24)).map(\.id)
+            return recentItems.map(\.id)
         } else if !searchResults.isEmpty {
             return searchResults.map(\.id)
         } else {
@@ -380,7 +386,7 @@ struct SearchOverlay: View {
                 .padding(.horizontal, 8)
                 .padding(.top, 4)
 
-            ForEach(Array(mergedRecent.prefix(24))) { item in
+            ForEach(recentItems) { item in
                 mergedItemRow(item, queryTerms: [])
             }
         }
@@ -467,7 +473,7 @@ struct SearchOverlay: View {
         let terms = query.lowercased().components(separatedBy: .whitespaces).filter { !$0.isEmpty }
         guard !terms.isEmpty else { return [] }
 
-        return cardSearchIndex
+        return indexedCards()
             .compactMap { item -> (KanbanCodeCard, Double)? in
                 var score = 0.0
                 for term in terms {

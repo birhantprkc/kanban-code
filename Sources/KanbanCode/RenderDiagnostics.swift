@@ -66,11 +66,15 @@ enum RenderDiagnostics {
         )
     }
 
+    /// `metadata` stays an autoclosure all the way down. Evaluating it eagerly
+    /// made describing a view cost more than drawing it: the search palette's
+    /// metadata counts its visible rows, which sorts every card, and that ran on
+    /// every render rather than on the rare one slow enough to log.
     private static func logIfSlow(
         _ scope: String,
         elapsedMs: Double,
         thresholdMs: Double,
-        metadata: String
+        metadata: @autoclosure () -> String
     ) {
         guard elapsedMs >= thresholdMs else { return }
 
@@ -82,7 +86,8 @@ enum RenderDiagnostics {
         }
         guard shouldLog else { return }
 
-        let detail = metadata.isEmpty ? "" : " \(metadata)"
+        let described = metadata()
+        let detail = described.isEmpty ? "" : " \(described)"
         KanbanCodeLog.warn(
             "ui-slow",
             String(format: "%@ %.1fms%@", scope, elapsedMs, detail)
