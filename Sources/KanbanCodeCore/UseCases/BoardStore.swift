@@ -2250,7 +2250,6 @@ struct WorktreeCacheFingerprint: Equatable, Sendable {
 public final class BoardStore: @unchecked Sendable {
     public private(set) var state: AppState
     private let effectHandler: EffectHandler
-    private var _lastErrorId: UUID?
 
     // Dependencies for reconciliation
     private var isReconciling = false
@@ -2356,30 +2355,6 @@ public final class BoardStore: @unchecked Sendable {
             }
         }
 
-        // Auto-dismiss errors for certain actions
-        switch action {
-        case .setError(let msg) where msg != nil,
-             .setNotice(let msg, _) where msg != nil:
-            let dismissId = UUID()
-            _lastErrorId = dismissId
-            Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .seconds(8))
-                if self?._lastErrorId == dismissId {
-                    self?.state.notice = nil
-                }
-            }
-        case .launchFailed, .resumeFailed, .terminalFailed:
-            let dismissId = UUID()
-            _lastErrorId = dismissId
-            Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .seconds(8))
-                if self?._lastErrorId == dismissId {
-                    self?.state.notice = nil
-                }
-            }
-        default:
-            break
-        }
     }
 
     /// Dispatch an action and wait for all its effects to complete.
