@@ -1252,16 +1252,28 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
             .foregroundColor: nativeForegroundColor,
             .underlineStyle: NSUnderlineStyle.single.rawValue,
         ], range: fullRange)
+        // The clause being converted right now carries a thick underline, which
+        // is how every other macOS text view shows where an IME conversion is
+        // pointing. Without it a multi-clause Japanese composition gives no clue
+        // which part the space bar is about to change.
+        if let activeClause = fullRange.intersection(markedSelectedRange), activeClause.length > 0 {
+            displayString.addAttribute(
+                .underlineStyle, value: NSUnderlineStyle.thick.rawValue, range: activeClause)
+        }
         overlay.attributedStringValue = displayString
 
         // Position at the caret.
         overlay.sizeToFit()
         overlay.frame.origin = caretView.frame.origin
 
-        // Clamp to view bounds so the overlay doesn't extend off-screen.
-        if overlay.frame.maxX > bounds.maxX {
-            overlay.frame.origin.x = max(0, bounds.maxX - overlay.frame.width)
-        }
+        // Clamp to view bounds so the overlay doesn't extend off-screen. It is
+        // taller than the caret it is placed on, so a composition on the top
+        // row runs past the top edge the same way a long one runs past the
+        // right edge.
+        overlay.frame.origin.x = min(
+            max(bounds.minX, overlay.frame.origin.x), max(bounds.minX, bounds.maxX - overlay.frame.width))
+        overlay.frame.origin.y = min(
+            max(bounds.minY, overlay.frame.origin.y), max(bounds.minY, bounds.maxY - overlay.frame.height))
     }
 
     private func kittyEncoder() -> KittyKeyboardEncoder {
@@ -1643,9 +1655,13 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     // NSTextInputClient protocol implementation
     open func selectedRange() -> NSRange {
         if let selection = self.selection, selection.active {
+            // A row's offset is a count of the cells before it, so it scales
+            // with the width of a row and not with how many rows there are.
+            // Anywhere but a square terminal the two disagree, and the range
+            // handed to the input system points at the wrong cell.
             let displayBuffer = terminal.displayBuffer
-            var startLocation = (selection.start.row * displayBuffer.rows) + selection.start.col
-            var endLocation = (selection.end.row * displayBuffer.rows) + selection.end.col
+            var startLocation = (selection.start.row * displayBuffer.cols) + selection.start.col
+            var endLocation = (selection.end.row * displayBuffer.cols) + selection.end.col
             if startLocation > endLocation {
                 swap(&startLocation, &endLocation)
             }
