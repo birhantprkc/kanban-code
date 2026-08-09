@@ -612,6 +612,7 @@ extension Notification.Name {
     static let kanbanSelectTerminalTab = Notification.Name("kanbanSelectTerminalTab")
     static let kanbanCloseTerminalTab = Notification.Name("kanbanCloseTerminalTab")
     static let chatCardExpanded = Notification.Name("chatCardExpanded")
+    static let chatComposerRefocus = Notification.Name("chatComposerRefocus")
     static let kanbanCodeAddLink = Notification.Name("kanbanCodeAddLink")
     static let kanbanCodeOpenProject = Notification.Name("kanbanCodeOpenProject")
     static let kanbanCodeCLICommand = Notification.Name("kanbanCodeCLICommand")

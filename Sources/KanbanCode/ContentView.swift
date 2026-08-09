@@ -2486,6 +2486,12 @@ struct ContentView: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                 refocusTerminal()
             }
+        } else if detailTab == .history {
+            // Same idea for the chat composer, which is where the keyboard was
+            // before the palette took it.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                NotificationCenter.default.post(name: .chatComposerRefocus, object: nil)
+            }
         }
     }
 

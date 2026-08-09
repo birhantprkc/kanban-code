@@ -31,6 +31,10 @@ struct PromptEditor: NSViewRepresentable {
     var onImagePaste: ((Data) -> String?)?
     var onEscape: (() -> Void)?
     var onHeightChange: (CGFloat) -> Void = { _ in }
+    /// Bump this to take the keyboard, with the caret after the last character
+    /// and that end of the draft in view. Focus alone leaves a long draft
+    /// showing its first line with the caret somewhere below the fold.
+    var focusToken: Int = 0
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -142,17 +146,28 @@ struct PromptEditor: NSViewRepresentable {
         scrollView.onHeightChange = onHeightChange
         scrollView.recalcIntrinsicHeight()
         scrollView.scheduleRecalcIntrinsicHeight()
+
+        if context.coordinator.lastFocusToken != focusToken {
+            context.coordinator.lastFocusToken = focusToken
+            // A turn later: on the pass that mounts the view there is no window
+            // to make it first responder in, and the height it just asked for
+            // has not been applied, so scrolling to the caret would measure
+            // against the old one.
+            DispatchQueue.main.async { textView.focusAtEnd() }
+        }
     }
 
     @MainActor class Coordinator: NSObject, NSTextViewDelegate {
         var parent: PromptEditor
         var placeholder: String = ""
         var lastIdentity: String = ""
+        var lastFocusToken: Int
 
         init(_ parent: PromptEditor) {
             self.parent = parent
             self.placeholder = parent.placeholder
             self.lastIdentity = parent.identity
+            self.lastFocusToken = parent.focusToken
         }
 
         func textDidChange(_ notification: Notification) {
@@ -289,6 +304,12 @@ final class SubmitTextView: NSTextView {
         let end = (string as NSString).length
         setSelectedRange(NSRange(location: end, length: 0))
         scrollRangeToVisible(selectedRange())
+    }
+
+    /// Takes the keyboard and picks up where typing left off.
+    func focusAtEnd() {
+        window?.makeFirstResponder(self)
+        moveCaretToEnd()
     }
 
     func prepareForDismantle() {

@@ -675,6 +675,8 @@ struct ChatInputBar: View {
     @State private var mentionSelectedIndex: Int = 0
     @State private var usesInlineImageMarkers = false
     @State private var editorHeight: CGFloat = 36
+    /// Bumped every time the composer should take the keyboard back.
+    @State private var focusToken = 0
 
     private var canSend: Bool {
         !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -763,7 +765,8 @@ struct ChatInputBar: View {
                     onEscape: { handleEscape() },
                     onHeightChange: { height in
                         editorHeight = clampedEditorHeight(height, minHeight: 24, maxHeight: 160)
-                    }
+                    },
+                    focusToken: focusToken
                 )
                 .focused($isFocused)
                 .frame(height: clampedEditorHeight(editorHeight, minHeight: 24, maxHeight: 160), alignment: .top)
@@ -862,7 +865,8 @@ struct ChatInputBar: View {
                     onEscape: onEscape,
                     onHeightChange: { height in
                         editorHeight = clampedEditorHeight(height, minHeight: 36, maxHeight: 160)
-                    }
+                    },
+                    focusToken: focusToken
                 )
                 .focused($isFocused)
                 .frame(height: clampedEditorHeight(editorHeight, minHeight: 36, maxHeight: 160), alignment: .top)
@@ -937,10 +941,23 @@ struct ChatInputBar: View {
             usesInlineImageMarkers = text.contains(PromptImageLayout.markerPrefix)
             focusInput()
         }
+        // The composer is recycled across card switches, so .onAppear fires
+        // once and never again. Terminal mode takes the keyboard back on every
+        // switch and after every overlay; this is what gives chat the same.
+        .onChange(of: cardId) { _, _ in
+            focusInput()
+        }
+        .onChange(of: focusRequestToken) { _, _ in
+            focusInput()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .chatComposerRefocus)) { _ in
+            focusInput()
+        }
     }
 
     private func focusInput() {
         isFocused = true
+        focusToken += 1
         DispatchQueue.main.async {
             isFocused = true
         }
