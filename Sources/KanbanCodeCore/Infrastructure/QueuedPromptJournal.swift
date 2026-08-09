@@ -74,7 +74,7 @@ public actor QueuedPromptJournal {
             return
         }
         defer { try? handle.close() }
-        try? handle.seekToEnd()
+        _ = try? handle.seekToEnd()
         try? handle.write(contentsOf: data)
 
         self.trimIfNeeded()

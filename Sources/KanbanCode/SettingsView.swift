@@ -1527,10 +1527,13 @@ struct ProjectEditSheet: View {
             process.arguments = ["search", "issues", "--limit", "100", "--json", "number"] + filterArgs
             let pipe = Pipe()
             process.standardOutput = pipe
-            process.standardError = Pipe()
+            process.standardError = FileHandle.nullDevice
+            defer { try? pipe.fileHandleForReading.close() }
             try? process.run()
-            process.waitUntilExit()
+            // Drain before waiting: a child that fills the pipe buffer blocks on
+            // its own write and never exits.
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
             let count: Int
             if let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
                 count = arr.count

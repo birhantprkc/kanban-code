@@ -18,6 +18,36 @@ public enum SubagentCommandOperation: String, Codable, Sendable {
     case setContextThreshold
 }
 
+/// Resolves the worktree a spawn asked for.
+///
+/// A child shares its parent's checkout unless it asks otherwise. A worktree
+/// per child is a full checkout per child, and a parent that fans out to
+/// several of them would pay for every one, so sharing is the default and its
+/// own checkout is the request.
+public enum SubagentWorktree {
+    /// - Parameters:
+    ///   - requested: nil when the child did not ask for its own worktree, and
+    ///     empty when it asked without saying what to call it.
+    ///   - handle: the child's chat handle, which names an unnamed worktree
+    ///     because that is what the card is called everywhere else.
+    /// - Returns: a name a directory and a branch can both carry.
+    public static func name(requested: String?, handle: String?) -> String? {
+        guard let requested else { return nil }
+        let trimmedHandle = handle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let trimmed = requested.trimmingCharacters(in: .whitespacesAndNewlines)
+        let source = trimmed.isEmpty ? trimmedHandle : trimmed
+        let slug = source.lowercased().map { character -> Character in
+            character.isLetter || character.isNumber || character == "-" || character == "_"
+                ? character
+                : "-"
+        }
+        let collapsed = String(slug)
+            .split(separator: "-", omittingEmptySubsequences: true)
+            .joined(separator: "-")
+        return collapsed.isEmpty ? "subagent" : String(collapsed.prefix(60))
+    }
+}
+
 public struct SubagentCommandRequest: Codable, Sendable, Equatable {
     public let id: String
     public let operation: SubagentCommandOperation
@@ -35,6 +65,11 @@ public struct SubagentCommandRequest: Codable, Sendable, Equatable {
     /// Transcript a relink points the card at.
     public let sessionId: String?
     public let sessionPath: String?
+    /// Worktree to check out for a spawned child. Absent means the child shares
+    /// the parent's checkout, which is the default: a worktree per subagent
+    /// costs a full checkout and most children are working on the same branch
+    /// as the parent anyway.
+    public let worktreeName: String?
 
     public init(
         id: String,
@@ -49,7 +84,8 @@ public struct SubagentCommandRequest: Codable, Sendable, Equatable {
         model: String? = nil,
         contextThresholdTokens: Int? = nil,
         sessionId: String? = nil,
-        sessionPath: String? = nil
+        sessionPath: String? = nil,
+        worktreeName: String? = nil
     ) {
         self.id = id
         self.operation = operation
@@ -64,6 +100,7 @@ public struct SubagentCommandRequest: Codable, Sendable, Equatable {
         self.contextThresholdTokens = contextThresholdTokens
         self.sessionId = sessionId
         self.sessionPath = sessionPath
+        self.worktreeName = worktreeName
     }
 }
 

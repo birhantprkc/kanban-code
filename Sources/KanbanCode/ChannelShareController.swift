@@ -135,7 +135,19 @@ final class ChannelShareController {
                 cont.resume()
             }
         }
+        Self.closePipes(of: proc)
         phases[channel] = .idle
+    }
+
+    /// The ends of a child's pipes that stayed in this process. They outlive the
+    /// child unless they are closed by hand, and a descriptor held for the rest
+    /// of the app's life is pipe buffer the whole machine cannot get back.
+    private static func closePipes(of process: Process) {
+        for end in [process.standardOutput, process.standardError, process.standardInput] {
+            guard let pipe = end as? Pipe else { continue }
+            try? pipe.fileHandleForReading.close()
+            try? pipe.fileHandleForWriting.close()
+        }
     }
 
     /// Stop every active share — call on app quit.
@@ -151,8 +163,9 @@ final class ChannelShareController {
     /// period, but SIGTERM still gives the share CLI a chance to clean up its
     /// cloudflared child process.
     func terminateAllImmediately() {
-        for process in processes.values where process.isRunning {
-            process.terminate()
+        for process in processes.values {
+            if process.isRunning { process.terminate() }
+            Self.closePipes(of: process)
         }
         processes.removeAll()
         phases.removeAll()

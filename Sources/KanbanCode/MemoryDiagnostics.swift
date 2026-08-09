@@ -162,6 +162,7 @@ final class MemoryDiagnostics: @unchecked Sendable {
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
+        defer { try? pipe.fileHandleForReading.close() }
         do {
             try process.run()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
@@ -421,10 +422,14 @@ final class MemoryDiagnostics: @unchecked Sendable {
             let pipe = Pipe()
             process.standardOutput = pipe
             process.standardError = pipe
+            defer { try? pipe.fileHandleForReading.close() }
             do {
                 try process.run()
-                process.waitUntilExit()
+                // Read first: `vmmap -summary` writes more than a pipe buffer
+                // holds, so waiting for exit before draining would hang here for
+                // as long as the app runs.
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
                 try? data.write(to: URL(fileURLWithPath: outputPath))
                 KanbanCodeLog.info("memory", "diagnostic artifact written: \(outputPath)")
             } catch {
