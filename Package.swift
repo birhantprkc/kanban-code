@@ -15,7 +15,6 @@ let package = Package(
         .package(path: "LocalPackages/SwiftTerm"),
         // Vendored fork: see LocalPackages/swift-markdown-ui/FORK.md
         .package(path: "LocalPackages/swift-markdown-ui"),
-        .package(url: "https://github.com/swiftlang/swift-testing", from: "0.15.0"),
     ],
     targets: [
         .executableTarget(
@@ -34,12 +33,12 @@ let package = Package(
         ),
         .testTarget(
             name: "KanbanCodeCoreTests",
-            dependencies: ["KanbanCodeCore", .product(name: "Testing", package: "swift-testing")],
+            dependencies: ["KanbanCodeCore"],
             path: "Tests/KanbanCodeCoreTests"
         ),
         .testTarget(
             name: "KanbanCodeTests",
-            dependencies: ["KanbanCode", "KanbanCodeCore", .product(name: "Testing", package: "swift-testing")],
+            dependencies: ["KanbanCode", "KanbanCodeCore"],
             path: "Tests/KanbanCodeTests"
         ),
     ]
