@@ -314,7 +314,7 @@ The core library uses **port/adapter** pattern — all external integrations (Cl
 
 ## Contributing
 
-Kanban Code is open source under the AGPLv3 license. Contributions are welcome.
+Kanban Code is open source under the Apache 2.0 license. Contributions are welcome.
 
 ```bash
 # Run the full test suite
@@ -334,7 +334,7 @@ The spec files in `spec/` document every feature and edge case in detail.
 
 ## License
 
-[AGPLv3](LICENSE) — Kanban Code is free software. You can use, modify, and distribute it under the terms of the GNU Affero General Public License v3.
+[Apache 2.0](LICENSE) — Kanban Code is free software. You can use, modify, and distribute it under the terms of the Apache License, Version 2.0.
 
 ---
 
