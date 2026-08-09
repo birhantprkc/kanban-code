@@ -257,33 +257,12 @@ struct BoardView: View {
                 }
             }
         }
-        // Error banner at bottom
         .overlay(alignment: .bottom) {
-            if let error = store.state.error {
-                HStack(spacing: 10) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.app(.title3))
-                        .foregroundStyle(.orange.opacity(0.7))
-                    Text(error)
-                        .font(.app(.body, weight: .medium))
-                        .lineLimit(2)
-                    Spacer()
-                    Button("Dismiss") {
-                        store.dispatch(.setError(nil))
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 14)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-                .shadow(color: .black.opacity(0.1), radius: 8, y: 4)
-                .padding(.horizontal, 16)
-                .padding(.bottom, 12)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
+            if let notice = store.state.notice {
+                NoticeBanner(notice: notice) { store.dispatch(.setError(nil)) }
             }
         }
-        .animation(.easeInOut(duration: 0.25), value: store.state.error != nil)
+        .animation(.easeInOut(duration: 0.25), value: store.state.notice != nil)
         // Empty board hint
         .overlay {
             if store.state.filteredCards.isEmpty && !store.state.isLoading {

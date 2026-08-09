@@ -268,7 +268,7 @@ struct ReducerTests {
 
         #expect(state.links["card_f1"]?.tmuxLink == nil)
         #expect(state.links["card_f1"]?.isLaunching == nil)
-        #expect(state.error == "Launch failed: Connection refused")
+        #expect(state.notice?.message == "Launch failed: Connection refused")
     }
 
     // MARK: - Queued Prompts
@@ -905,10 +905,10 @@ struct ReducerTests {
         var state = AppState()
 
         let _ = Reducer.reduce(state: &state, action: .setError("Something went wrong"))
-        #expect(state.error == "Something went wrong")
+        #expect(state.notice?.message == "Something went wrong")
 
         let _ = Reducer.reduce(state: &state, action: .setError(nil))
-        #expect(state.error == nil)
+        #expect(state.notice?.message == nil)
     }
 
     // MARK: - AppState Computed Properties
@@ -1352,7 +1352,7 @@ struct ReducerTests {
 
         // Both cards should remain, error set
         #expect(state.links.count == 2)
-        #expect(state.error != nil)
+        #expect(state.notice?.message != nil)
         #expect(effects.isEmpty)
     }
 
@@ -1365,7 +1365,7 @@ struct ReducerTests {
         let effects = Reducer.reduce(state: &state, action: .mergeCards(sourceId: "card_src", targetId: "card_tgt"))
 
         #expect(state.links.count == 2)
-        #expect(state.error != nil)
+        #expect(state.notice?.message != nil)
         #expect(effects.isEmpty)
     }
 
@@ -1380,7 +1380,7 @@ struct ReducerTests {
         let effects = Reducer.reduce(state: &state, action: .mergeCards(sourceId: "card_src", targetId: "card_tgt"))
 
         #expect(state.links.count == 2)
-        #expect(state.error != nil)
+        #expect(state.notice?.message != nil)
         #expect(effects.isEmpty)
     }
 

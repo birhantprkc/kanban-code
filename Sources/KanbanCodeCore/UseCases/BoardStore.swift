@@ -50,9 +50,27 @@ public enum Drawer: Equatable, Sendable {
 
 /// Single source of truth for the entire board.
 /// All mutations go through the Reducer — no direct writes.
+/// What a banner is telling you. Everything used to go out as an error, so a
+/// copied-to-clipboard confirmation arrived wearing a warning triangle.
+public enum NoticeKind: String, Sendable, Equatable, Codable {
+    case success
+    case warning
+    case error
+}
+
+public struct Notice: Sendable, Equatable {
+    public let message: String
+    public let kind: NoticeKind
+
+    public init(_ message: String, kind: NoticeKind = .error) {
+        self.message = message
+        self.kind = kind
+    }
+}
+
 /// @Observable gives SwiftUI fine-grained per-property tracking:
 /// views reading `state.cards` only re-render when `cards` changes,
-/// not when `state.error` or other unrelated fields change.
+/// not when `state.notice` or other unrelated fields change.
 @Observable
 public final class AppState: @unchecked Sendable {
     public var links: [String: Link] = [:]                     // cardId → Link
@@ -72,7 +90,7 @@ public final class AppState: @unchecked Sendable {
     public var paletteOpen: Bool = false
     public var detailExpanded: Bool = false
     public var promptEditorFocused: Bool = false
-    public var error: String?
+    public var notice: Notice?
     public var isLoading: Bool = false
     public var lastRefresh: Date?
 
@@ -436,6 +454,8 @@ public enum Action: Sendable {
     // Settings / misc
     case settingsLoaded(projects: [Project], excludedPaths: [String], remote: RemoteSettings?)
     case setError(String?)
+    /// Same banner as `setError`, but says what kind of news it is.
+    case setNotice(String?, kind: NoticeKind)
     case setRateLimitedRepos(Set<String>)
     case setSelectedProject(String?)
     case setLoading(Bool)
@@ -1253,7 +1273,7 @@ public enum Reducer {
             guard !oldName.isEmpty, !newName.isEmpty, oldName != newName else { return [] }
             guard state.channels.contains(where: { $0.name == oldName }) else { return [] }
             guard !state.channels.contains(where: { $0.name == newName }) else {
-                state.error = "Channel #\(newName) already exists"
+                state.notice = Notice("Channel #\(newName) already exists")
                 return []
             }
             // Carry in-memory state over to the new key so the UI updates instantly;
@@ -1678,7 +1698,7 @@ public enum Reducer {
             link.updatedAt = .now
             state.links[cardId] = link
             state.busyCards.remove(cardId)
-            state.error = "Migration failed: \(error)"
+            state.notice = Notice("Migration failed: \(error)")
             return []
 
         case .mergeCards(let sourceId, let targetId):
@@ -1688,18 +1708,18 @@ public enum Reducer {
 
             // Validation: don't merge two cards that both have sessions
             if source.sessionLink != nil && target.sessionLink != nil {
-                state.error = "Cannot merge: both cards have sessions"
+                state.notice = Notice("Cannot merge: both cards have sessions")
                 return []
             }
             // Don't merge two cards that both have tmux terminals
             if source.tmuxLink != nil && target.tmuxLink != nil {
-                state.error = "Cannot merge: both cards have terminals"
+                state.notice = Notice("Cannot merge: both cards have terminals")
                 return []
             }
             // Don't merge two cards that both have different issues
             if source.issueLink != nil && target.issueLink != nil
                 && source.issueLink != target.issueLink {
-                state.error = "Cannot merge: both cards have different issues"
+                state.notice = Notice("Cannot merge: both cards have different issues")
                 return []
             }
 
@@ -1788,7 +1808,7 @@ public enum Reducer {
             link.isLaunching = nil
             link.updatedAt = .now
             state.links[cardId] = link
-            state.error = "Launch failed: \(error)"
+            state.notice = Notice("Launch failed: \(error)")
             return [.upsertLink(link)]
 
         case .resumeCompleted(let cardId, let tmuxName, let isRemote):
@@ -1808,7 +1828,7 @@ public enum Reducer {
             link.isLaunching = nil
             link.updatedAt = .now
             state.links[cardId] = link
-            state.error = "Resume failed: \(error)"
+            state.notice = Notice("Resume failed: \(error)")
             return [.upsertLink(link)]
 
         case .terminalCreated(let cardId, _):
@@ -1821,7 +1841,7 @@ public enum Reducer {
             link.updatedAt = .now
             state.links[cardId] = link
             state.busyCards.remove(cardId)
-            state.error = "Terminal failed: \(error)"
+            state.notice = Notice("Terminal failed: \(error)")
             return [.upsertLink(link)]
 
         case .extraTerminalCreated(let cardId, _):
@@ -2160,7 +2180,11 @@ public enum Reducer {
             return []
 
         case .setError(let message):
-            state.error = message
+            state.notice = message.map { Notice($0) }
+            return []
+
+        case .setNotice(let message, let kind):
+            state.notice = message.map { Notice($0, kind: kind) }
             return []
 
         case .setRateLimitedRepos(let repos):
@@ -2290,7 +2314,7 @@ public final class BoardStore: @unchecked Sendable {
             // pass that produces the same links must not relayout the board.
             return false
         case .setPaletteOpen, .setDetailExpanded, .setPromptEditorFocused,
-             .showDialog, .dismissDialog, .setError, .setLoading, .setIsRefreshingBacklog:
+             .showDialog, .dismissDialog, .setError, .setNotice, .setLoading, .setIsRefreshingBacklog:
             return false
         case .refreshChannels, .refreshChannelMessages, .channelsLoaded,
              .channelMessagesLoaded, .createChannel, .sendChannelMessage,
@@ -2334,13 +2358,14 @@ public final class BoardStore: @unchecked Sendable {
 
         // Auto-dismiss errors for certain actions
         switch action {
-        case .setError(let msg) where msg != nil:
+        case .setError(let msg) where msg != nil,
+             .setNotice(let msg, _) where msg != nil:
             let dismissId = UUID()
             _lastErrorId = dismissId
             Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .seconds(8))
                 if self?._lastErrorId == dismissId {
-                    self?.state.error = nil
+                    self?.state.notice = nil
                 }
             }
         case .launchFailed, .resumeFailed, .terminalFailed:
@@ -2349,7 +2374,7 @@ public final class BoardStore: @unchecked Sendable {
             Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .seconds(8))
                 if self?._lastErrorId == dismissId {
-                    self?.state.error = nil
+                    self?.state.notice = nil
                 }
             }
         default:

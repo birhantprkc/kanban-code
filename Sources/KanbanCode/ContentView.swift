@@ -712,7 +712,7 @@ struct ContentView: View {
     private func copyConversationMarkdown(cardId: String) {
         guard let card = store.state.cards.first(where: { $0.id == cardId }) else { return }
         guard let sessionPath = card.link.sessionLink?.sessionPath ?? card.session?.jsonlPath else {
-            store.dispatch(.setError("No conversation transcript found"))
+            store.dispatch(.setNotice("No conversation transcript found", kind: .warning))
             return
         }
 
@@ -736,7 +736,7 @@ struct ContentView: View {
 
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(markdown, forType: .string)
-                store.dispatch(.setError("Conversation markdown copied to clipboard"))
+                store.dispatch(.setNotice("Conversation markdown copied to clipboard", kind: .success))
                 RenderDiagnostics.logIfSlow(
                     "ContentView.copyConversationMarkdown",
                     since: exportStart,
@@ -764,7 +764,7 @@ struct ContentView: View {
 
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(markdown, forType: .string)
-            store.dispatch(.setError("Channel conversation markdown copied to clipboard"))
+            store.dispatch(.setNotice("Channel conversation markdown copied to clipboard", kind: .success))
             RenderDiagnostics.logIfSlow(
                 "ContentView.copyChannelConversationMarkdown",
                 since: exportStart,
@@ -2709,7 +2709,7 @@ struct ContentView: View {
         case .move:
             store.dispatch(.moveCard(cardId: cardId, to: column))
         case .invalid(let message):
-            store.dispatch(.setError(message))
+            store.dispatch(.setNotice(message, kind: .warning))
         }
     }
 

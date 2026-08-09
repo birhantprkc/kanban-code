@@ -456,7 +456,7 @@ struct LaunchFlowIntegrationTests {
 
         #expect(state.links["card_fail"]?.tmuxLink == nil)
         #expect(state.links["card_fail"]?.isLaunching == nil)
-        #expect(state.error == "Launch failed: Session file not found")
+        #expect(state.notice?.message == "Launch failed: Session file not found")
 
         // The tmux session is still running — effects should NOT kill it
         // (launchFailed doesn't emit killTmuxSession effects)
