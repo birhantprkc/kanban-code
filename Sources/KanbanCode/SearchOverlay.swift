@@ -92,8 +92,14 @@ struct SearchOverlay: View {
                 }
                 .padding(8)
             }
-            .onChange(of: selectedId) { _, newId in
-                if let newId {
+            .onChange(of: selectedId) { oldId, newId in
+                guard let newId else { return }
+                // The first selection is made while the palette is opening, and
+                // animating that one means the list slides into place under an
+                // arrow key nobody has pressed yet.
+                if oldId == nil {
+                    proxy.scrollTo(newId, anchor: .center)
+                } else {
                     withAnimation { proxy.scrollTo(newId, anchor: .center) }
                 }
             }
@@ -244,14 +250,56 @@ struct SearchOverlay: View {
     /// This is read from the body, from the row builders and from the keyboard
     /// handlers, so as a computed property it re-sorted the whole board several
     /// times per render.
+    ///
+    /// Only the recency key takes part in the sort. Wrapping every card in a
+    /// `RecentItem` first meant copying the whole card into an enum payload and
+    /// reading it back out on each of the tens of thousands of comparisons, to
+    /// then throw all but the two dozen rows that are shown away.
     private func computeMergedRecent() -> [RecentItem] {
-        let cardItems = snapshotCards.map(RecentItem.card)
-        let channelItems = channels.map {
-            RecentItem.channel($0, opened: channelLastOpened[$0.name], lastActivity: channelLastActivity[$0.name])
-        }
-        return Array(
-            (cardItems + channelItems).sorted { $0.sortKey > $1.sortKey }.prefix(Self.recentLimit)
+        Self.mergedRecent(
+            cards: snapshotCards,
+            channels: channels,
+            channelLastOpened: channelLastOpened,
+            channelLastActivity: channelLastActivity
         )
+    }
+
+    static func mergedRecent(
+        cards: [KanbanCodeCard],
+        channels: [Channel],
+        channelLastOpened: [String: Date],
+        channelLastActivity: [String: Date],
+        limit: Int = recentLimit
+    ) -> [RecentItem] {
+        enum Source {
+            case card(Int)
+            case channel(Int)
+        }
+        var keyed: [(key: Date, source: Source)] = []
+        keyed.reserveCapacity(cards.count + channels.count)
+        for (offset, card) in cards.enumerated() {
+            let key = card.link.lastOpenedAt ?? card.link.lastActivity ?? card.link.updatedAt
+            keyed.append((key, .card(offset)))
+        }
+        for (offset, channel) in channels.enumerated() {
+            let key = channelLastOpened[channel.name] ?? channelLastActivity[channel.name] ?? .distantPast
+            keyed.append((key, .channel(offset)))
+        }
+        keyed.sort { $0.key > $1.key }
+
+        return keyed.prefix(limit).map { entry in
+            switch entry.source {
+            case .card(let offset):
+                return RecentItem.card(cards[offset])
+            case .channel(let offset):
+                let channel = channels[offset]
+                return RecentItem.channel(
+                    channel,
+                    opened: channelLastOpened[channel.name],
+                    lastActivity: channelLastActivity[channel.name]
+                )
+            }
+        }
     }
 
     private static let recentLimit = 24

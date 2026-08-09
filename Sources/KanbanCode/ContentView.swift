@@ -1641,15 +1641,14 @@ struct ContentView: View {
         } // detail
         .toolbar(removing: .sidebarToggle)
         .overlay {
-            // The animation belongs to the overlay, not to everything the
-            // detail view holds. Attached further out it made opening the
-            // palette an animated transition for the whole board behind it.
+            // Unanimated on purpose. The palette is a keyboard tool reached
+            // dozens of times an hour, and a fade and scale on the way in is
+            // time spent between asking for it and being able to type into it.
             ZStack {
                 if showSearch {
                     paletteOverlay
                 }
             }
-            .animation(.easeInOut(duration: 0.15), value: showSearch)
         }
         // Over the window rather than inside the board, which is a column down
         // the left and would leave a message about the selected card sitting
@@ -1705,7 +1704,6 @@ struct ContentView: View {
             deepSearchTrigger: deepSearchTrigger
         )
         .padding(40)
-        .transition(.opacity.combined(with: .scale(scale: 0.95)))
     }
 
     /// Watch ~/.kanban-code/hook-events.jsonl for writes → post notification.
@@ -2481,9 +2479,11 @@ struct ContentView: View {
     private func closePalette() {
         showSearch = false
         if terminalHadFocusBeforeSearch {
-            // Delay past the dismiss animation (150ms) so the terminal can accept focus.
-            // Use direct AppKit focus as the SwiftUI binding path can miss updates.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            // One turn past the render that removes the palette, so the terminal
+            // is back in the responder chain by the time it is asked to take
+            // focus. Direct AppKit focus, as the SwiftUI binding path can miss
+            // updates.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                 refocusTerminal()
             }
         }
