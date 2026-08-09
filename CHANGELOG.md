@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.32](https://github.com/langwatch/kanban-code/compare/v0.1.31...v0.1.32) (2026-08-09)
+
+
+### Bug Fixes
+
+* **terminal:** show IME/dictation marked text in the embedded terminal ([fcce2f6](https://github.com/langwatch/kanban-code/commit/fcce2f64c942432e43674143ddf050f96bf1497f))
+
 ## [0.1.31](https://github.com/langwatch/kanban-code/compare/v0.1.30...v0.1.31) (2026-08-09)
 
 
