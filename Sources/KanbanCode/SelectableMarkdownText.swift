@@ -15,6 +15,10 @@ struct SelectableMarkdownText: NSViewRepresentable {
     var links = ChatTextLinks()
     /// Caps the drawn text at this many lines, ellipsis and all.
     var lineLimit: Int?
+    /// Called with the height the text needs, when the frame it was laid out in
+    /// cannot hold it. A text view does not clip, so the overflow is drawn
+    /// straight over whatever is below it.
+    var onHeightOverflow: ((CGFloat) -> Void)?
 
     @Environment(\.chatSelectionCoordinator) private var coordinator
 
@@ -24,6 +28,7 @@ struct SelectableMarkdownText: NSViewRepresentable {
 
     func updateNSView(_ nsView: WrappingTextView, context: Context) {
         nsView.coordinator = self.coordinator
+        nsView.onHeightOverflow = self.onHeightOverflow
         nsView.configure(
             content: self.content, appearance: self.appearance, highlight: self.highlight,
             links: self.links, lineLimit: self.lineLimit)
@@ -104,7 +109,10 @@ struct SelectableMarkdownText: NSViewRepresentable {
             self.highlight = highlight
             self.links = links
             self.lineLimit = lineLimit
-            if changed { self.renderedWidth = 0 }
+            if changed {
+                self.renderedWidth = 0
+                self.reportedOverflow = nil
+            }
             self.textContainer?.maximumNumberOfLines = lineLimit ?? 0
             self.textContainer?.lineBreakMode = lineLimit == nil ? .byWordWrapping : .byTruncatingTail
             self.render(width: self.bounds.width)
@@ -178,9 +186,37 @@ struct SelectableMarkdownText: NSViewRepresentable {
             }
         }
 
+        var onHeightOverflow: ((CGFloat) -> Void)?
+        private var reportedOverflow: CGFloat?
+
         override func setFrameSize(_ newSize: NSSize) {
             super.setFrameSize(newSize)
             self.render(width: newSize.width)
+            self.reportOverflow(inHeight: newSize.height)
+        }
+
+        /// Says so when the text no longer fits the frame it was given.
+        ///
+        /// The height a row gets comes from `sizeThatFits`, and that measures
+        /// correctly. What it cannot do is notice a frame that was decided
+        /// before the text grew, which is what expanding a truncated message
+        /// does to a row that is already on screen. Nothing clips the result:
+        /// the rest of the message is drawn over the next one.
+        private func reportOverflow(inHeight height: CGFloat) {
+            guard self.onHeightOverflow != nil, self.renderedWidth > 1 else { return }
+            let needed = self.fittingSize(forWidth: self.renderedWidth).height
+            guard needed > height + 0.5, needed != self.reportedOverflow else { return }
+            // Off this layout pass, since the answer is a state change that
+            // decides the next one, and checked again once it has finished. A
+            // row is resized in steps while its text is laid out, and a step on
+            // the way to the right height is not a row drawing over anything.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let onHeightOverflow = self.onHeightOverflow,
+                    self.frame.height + 0.5 < needed, needed != self.reportedOverflow
+                else { return }
+                self.reportedOverflow = needed
+                onHeightOverflow(needed)
+            }
         }
 
         /// Scrolling belongs to the surrounding chat scroll view.
@@ -293,15 +329,48 @@ struct SelectableMarkdownText: NSViewRepresentable {
     }
 }
 
+/// A chat row's text, held to a height that covers what it draws.
+///
+/// Expanding a truncated message replaces the text of a row that is already
+/// laid out, and the height it was laid out at does not always follow. A text
+/// view draws past its frame rather than clipping, so what that leaves is a
+/// message drawn over the one after it. The floor is a minimum rather than an
+/// exact height, so it can only ever correct upwards, and it is dropped when the
+/// text changes so a message that shrinks is not held open.
+struct ChatText: View {
+    let content: ChatTextContent
+    var appearance: ChatTextAppearance
+    var highlight: ChatTextHighlight?
+    var links = ChatTextLinks()
+    var lineLimit: Int?
+
+    @State private var heightFloor: CGFloat?
+
+    var body: some View {
+        SelectableMarkdownText(
+            content: self.content,
+            appearance: self.appearance,
+            highlight: self.highlight,
+            links: self.links,
+            lineLimit: self.lineLimit,
+            onHeightOverflow: { self.heightFloor = $0 }
+        )
+        .frame(minHeight: self.heightFloor, alignment: .top)
+        .onChange(of: self.content) { self.heightFloor = nil }
+    }
+}
+
 /// Measures attributed text off screen, memoised per text and width.
 ///
 /// Every mounted message is asked for its size on each layout pass, so an
 /// uncached layout here shows up directly as scroll jank.
 @MainActor
 enum ChatTextMeasurement {
+    /// The whole attributed string, not its characters. Two rows can hold the
+    /// same words in a different font, at a different line spacing, or as a
+    /// table rather than a paragraph, and those are different heights.
     private struct Key: Hashable {
-        let text: String
-        let length: Int
+        let text: NSAttributedString
         let width: CGFloat
         let lineLimit: Int
     }
@@ -312,10 +381,7 @@ enum ChatTextMeasurement {
         of attributed: NSAttributedString, width: CGFloat, lineLimit: Int? = nil
     ) -> CGSize {
         let rounded = width.rounded()
-        let key = Key(
-            text: attributed.string, length: attributed.length, width: rounded,
-            lineLimit: lineLimit ?? 0
-        )
+        let key = Key(text: attributed, width: rounded, lineLimit: lineLimit ?? 0)
         if let cached = self.cache[key] { return cached }
         let measured = self.measure(attributed, width: rounded, lineLimit: lineLimit)
         self.cache[key] = measured

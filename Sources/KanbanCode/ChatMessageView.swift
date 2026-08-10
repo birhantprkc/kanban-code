@@ -291,7 +291,7 @@ struct ChatMessageView: View {
         let rawDisplay = truncated ? String(text.prefix(Self.textTruncationLimit)) : text
         let display = (turn.role == "user" || highlightText != nil) ? rawDisplay : linkifyIssueRefs(rawDisplay)
         let content = textContent(display)
-        SelectableMarkdownText(
+        ChatText(
             content: content,
             appearance: textAppearance(for: content, font: font),
             highlight: searchHighlight
@@ -344,7 +344,7 @@ struct ChatMessageView: View {
         let truncated = text.count > Self.textTruncationLimit && !isBlockExpanded(blockIndex)
         let display = truncated ? String(text.prefix(Self.textTruncationLimit)) : text
         VStack(alignment: .leading, spacing: 2) {
-            SelectableMarkdownText(
+            ChatText(
                 content: .plain(display),
                 appearance: .init(
                     font: .app(.caption), foregroundColor: color, italic: true

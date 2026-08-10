@@ -214,4 +214,90 @@ struct ChatTextHeightTests {
         print("wide table: reported=\(reported) drawn=\(drawn)")
         #expect(reported >= drawn)
     }
+
+    /// The height a row gets is decided by `sizeThatFits`, which measures
+    /// correctly but cannot revisit a frame that was settled before the text
+    /// grew. Expanding a truncated message does exactly that to a row already on
+    /// screen, and nothing clips the result.
+    @Test("a row says so when the frame it has cannot hold its text")
+    func reportsOverflowAfterGrowing() async {
+        let full = """
+            Intro paragraph that stays put.
+
+            \(Self.table(rows: 12))
+            """
+        let truncated = String(full.prefix(120))
+
+        let view = SelectableMarkdownText.WrappingTextView.make()
+        var reported: CGFloat?
+        view.onHeightOverflow = { reported = $0 }
+
+        view.configure(content: .markdown(truncated), appearance: Self.appearance, highlight: nil)
+        let short = view.fittingSize(forWidth: Self.width)
+        view.setFrameSize(short)
+        #expect(reported == nil)
+
+        // The frame stays at the height the truncated text asked for.
+        view.configure(content: .markdown(full), appearance: Self.appearance, highlight: nil)
+        view.setFrameSize(short)
+        try? await Task.sleep(for: .milliseconds(50))
+
+        let needed = view.fittingSize(forWidth: Self.width).height
+        #expect(reported == needed)
+        #expect((reported ?? 0) > short.height)
+    }
+
+    @Test("a row that fits says nothing")
+    func staysQuietWhenItFits() async {
+        let view = SelectableMarkdownText.WrappingTextView.make()
+        var reported: CGFloat?
+        view.onHeightOverflow = { reported = $0 }
+
+        view.configure(
+            content: .markdown("Intro.\n\n\(Self.table(rows: 4))"),
+            appearance: Self.appearance, highlight: nil)
+        view.setFrameSize(view.fittingSize(forWidth: Self.width))
+        try? await Task.sleep(for: .milliseconds(50))
+
+        #expect(reported == nil)
+    }
+
+    /// Two rows can hold the same words at different sizes. Measuring by the
+    /// characters alone handed the second one the first one's height.
+    @Test("the same words in a different appearance measure differently")
+    func appearanceChangesTheMeasurement() {
+        let text = String(repeating: "the same words over and over again ", count: 12)
+        let small = ChatAttributedText.make(
+            content: .plain(text),
+            appearance: ChatTextAppearance(font: .systemFont(ofSize: 10), foregroundColor: .labelColor),
+            width: Self.width)
+        let large = ChatAttributedText.make(
+            content: .plain(text),
+            appearance: ChatTextAppearance(font: .systemFont(ofSize: 22), foregroundColor: .labelColor),
+            width: Self.width)
+
+        let smallHeight = ChatTextMeasurement.size(of: small, width: Self.width).height
+        let largeHeight = ChatTextMeasurement.size(of: large, width: Self.width).height
+
+        #expect(largeHeight > smallHeight)
+    }
+
+    @Test("line spacing counts towards the measurement")
+    func lineSpacingChangesTheMeasurement() {
+        let text = String(repeating: "wrapping prose that keeps on going ", count: 10)
+        let tight = ChatAttributedText.make(
+            content: .plain(text),
+            appearance: ChatTextAppearance(
+                font: .systemFont(ofSize: 13), foregroundColor: .labelColor, lineSpacing: 0),
+            width: Self.width)
+        let loose = ChatAttributedText.make(
+            content: .plain(text),
+            appearance: ChatTextAppearance(
+                font: .systemFont(ofSize: 13), foregroundColor: .labelColor, lineSpacing: 8),
+            width: Self.width)
+
+        #expect(
+            ChatTextMeasurement.size(of: loose, width: Self.width).height
+                > ChatTextMeasurement.size(of: tight, width: Self.width).height)
+    }
 }
