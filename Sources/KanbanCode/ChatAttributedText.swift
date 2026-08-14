@@ -1,5 +1,6 @@
 import AppKit
 import MarkdownUI
+import SwiftUI
 
 /// What a chat row draws.
 ///
@@ -144,6 +145,19 @@ enum ChatAttributedText {
 
     // MARK: - Links
 
+    /// The colour a link is drawn in.
+    ///
+    /// Read from the theme rather than restated, because the block markdown
+    /// path takes it from there. A message without block syntax is rendered by
+    /// the inline path instead, and a link that keeps the colour of the text
+    /// around it does not read as one at all.
+    static let linkColor: NSColor = {
+        var attributes = AttributeContainer()
+        chatMarkdownTheme.link._collectAttributes(in: &attributes)
+        guard let color = attributes.foregroundColor else { return .linkColor }
+        return NSColor(color)
+    }()
+
     private static let issueRefRegex = try? NSRegularExpression(
         pattern: TerminalURLDetector.markdownIssueRefPattern, options: [])
     private static let urlRegex = try? NSRegularExpression(
@@ -256,6 +270,7 @@ enum ChatAttributedText {
             }
             if let url = run.link {
                 attributes[.link] = url
+                attributes[.foregroundColor] = self.linkColor
             }
             out.append(NSAttributedString(string: piece, attributes: attributes))
         }
