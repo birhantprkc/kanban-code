@@ -1,4 +1,5 @@
 import Foundation
+import SwiftTerm
 import Testing
 
 @testable import KanbanCode
@@ -110,5 +111,167 @@ struct TerminalURLDetectorTests {
         #expect(TerminalURLDetector.owner(of: "github.com/acme/widgets") == "acme")
         #expect(TerminalURLDetector.owner(of: nil) == nil)
         #expect(TerminalURLDetector.owner(of: "langwatch") == nil)
+    }
+}
+
+@Suite("Terminal hyperlinks")
+struct TerminalHyperlinkTests {
+
+    /// A row where every cell of `label` carries `payload`, as a terminal marks
+    /// the cells an OSC 8 sequence covers.
+    private func row(_ text: String, label: String, payload: String)
+        -> (cols: Int, start: Int, end: Int, payloadAt: (Int) -> String?)
+    {
+        let start = text.distance(from: text.startIndex, to: text.range(of: label)!.lowerBound)
+        let end = start + label.count
+        return (text.count, start, end, { $0 >= start && $0 < end ? payload : nil })
+    }
+
+    @Test("the URL is the half of the payload after the first semicolon")
+    func payloadURL() {
+        #expect(TerminalURLDetector.hyperlinkURL(from: ";https://example.com/a") == "https://example.com/a")
+        #expect(
+            TerminalURLDetector.hyperlinkURL(from: "id=7:x=2;https://example.com/a")
+                == "https://example.com/a")
+    }
+
+    @Test("a URL keeps semicolons of its own")
+    func payloadURLWithSemicolons() {
+        #expect(
+            TerminalURLDetector.hyperlinkURL(from: "id=7;https://example.com/a?b=1;c=2")
+                == "https://example.com/a?b=1;c=2")
+    }
+
+    @Test("a payload with no URL in it is not a link")
+    func payloadWithoutURL() {
+        #expect(TerminalURLDetector.hyperlinkURL(from: "id=7") == nil)
+        #expect(TerminalURLDetector.hyperlinkURL(from: "id=7;") == nil)
+        #expect(TerminalURLDetector.hyperlinkURL(from: "") == nil)
+    }
+
+    @Test("a label that looks like nothing still resolves to its destination")
+    func labelIsNotAURL() {
+        let text = "The ADR is at realtime-voice-gateway-adr for you to comment on."
+        let label = row(
+            text, label: "realtime-voice-gateway-adr",
+            payload: ";https://nexus.langwatch.ai/wiki/realtime-voice-gateway-adr")
+
+        let hit = TerminalURLDetector.hyperlink(
+            cols: label.cols, col: label.start + 4, payloadAt: label.payloadAt)
+
+        #expect(hit?.url == "https://nexus.langwatch.ai/wiki/realtime-voice-gateway-adr")
+        #expect(hit?.colStart == label.start)
+        #expect(hit?.colEnd == label.end - 1)
+    }
+
+    @Test("a cell outside the label carries no link")
+    func outsideTheLabel() {
+        let text = "The ADR is at realtime-voice-gateway-adr for you"
+        let label = row(text, label: "realtime-voice-gateway-adr", payload: ";https://example.com/a")
+
+        #expect(
+            TerminalURLDetector.hyperlink(
+                cols: label.cols, col: label.start - 1, payloadAt: label.payloadAt) == nil)
+        #expect(
+            TerminalURLDetector.hyperlink(
+                cols: label.cols, col: label.end, payloadAt: label.payloadAt) == nil)
+    }
+
+    @Test("two links side by side stay apart")
+    func adjacentLinks() {
+        // "aaabbb": one link over the first three columns, another over the next.
+        let payloadAt: (Int) -> String? = { $0 < 3 ? ";https://a.example" : ";https://b.example" }
+
+        let first = TerminalURLDetector.hyperlink(cols: 6, col: 1, payloadAt: payloadAt)
+        let second = TerminalURLDetector.hyperlink(cols: 6, col: 4, payloadAt: payloadAt)
+
+        #expect(first?.url == "https://a.example")
+        #expect(first?.colStart == 0)
+        #expect(first?.colEnd == 2)
+        #expect(second?.url == "https://b.example")
+        #expect(second?.colStart == 3)
+        #expect(second?.colEnd == 5)
+    }
+
+    @Test("a link running to either edge of the row stops there")
+    func linkAtTheEdges() {
+        let hit = TerminalURLDetector.hyperlink(cols: 4, col: 0, payloadAt: { _ in ";https://a.example" })
+
+        #expect(hit?.colStart == 0)
+        #expect(hit?.colEnd == 3)
+    }
+
+    @Test("a column off the end of the row is not a link")
+    func outOfBounds() {
+        let payloadAt: (Int) -> String? = { _ in ";https://a.example" }
+
+        #expect(TerminalURLDetector.hyperlink(cols: 4, col: 4, payloadAt: payloadAt) == nil)
+        #expect(TerminalURLDetector.hyperlink(cols: 4, col: -1, payloadAt: payloadAt) == nil)
+    }
+}
+
+@Suite("Terminal hyperlink parsing")
+struct TerminalHyperlinkFeedTests {
+
+    /// A terminal that answers nothing, which is all a parsing test needs.
+    private final class Mute: TerminalDelegate {
+        func send(source: Terminal, data: ArraySlice<UInt8>) {}
+    }
+
+    @Test("an OSC 8 sequence read off the wire resolves back to its URL")
+    func readsAFedHyperlink() {
+        let terminal = Terminal(delegate: Mute())
+        let open = "\u{1b}]8;;https://example.com/adr\u{1b}\\"
+        let close = "\u{1b}]8;;\u{1b}\\"
+        terminal.feed(text: "The ADR is at \(open)the ADR\(close) for you\n")
+
+        let line = terminal.getLine(row: 0)
+        let hit = TerminalURLDetector.hyperlink(
+            cols: terminal.cols, col: 16, payloadAt: { line?[$0].getPayload() as? String })
+
+        #expect(hit?.url == "https://example.com/adr")
+        #expect(hit?.colStart == 14)
+        #expect(hit?.colEnd == 20)
+    }
+
+    @Test("text outside the sequence carries no link")
+    func plainTextIsNotALink() {
+        let terminal = Terminal(delegate: Mute())
+        let open = "\u{1b}]8;;https://example.com/adr\u{1b}\\"
+        terminal.feed(text: "The ADR is at \(open)the ADR\u{1b}]8;;\u{1b}\\ for you\n")
+
+        let line = terminal.getLine(row: 0)
+        let hit = TerminalURLDetector.hyperlink(
+            cols: terminal.cols, col: 2, payloadAt: { line?[$0].getPayload() as? String })
+
+        #expect(hit == nil)
+    }
+}
+
+@MainActor
+@Suite("tmux attach command")
+struct TmuxAttachScriptTests {
+
+    @Test("the client tells tmux it understands hyperlinks")
+    func asksForHyperlinks() {
+        let script = TerminalCache.attachScript(tmux: "/opt/tmux", session: "claude-1")
+
+        #expect(script.contains("'/opt/tmux' -T hyperlinks attach-session -t 'claude-1'"))
+    }
+
+    @Test("a tmux that does not know the flag still attaches")
+    func fallsBackToAPlainAttach() {
+        let script = TerminalCache.attachScript(tmux: "/opt/tmux", session: "claude-1")
+
+        #expect(script.contains("'/opt/tmux' -T hyperlinks -V >/dev/null 2>&1"))
+        #expect(script.contains("else exec '/opt/tmux' attach-session -t 'claude-1'"))
+    }
+
+    @Test("a quote in the session name cannot break out of the command")
+    func escapesTheSessionName() {
+        let script = TerminalCache.attachScript(tmux: "/opt/tmux", session: "a'; rm -rf /; '")
+
+        #expect(!script.contains("a'; rm"))
+        #expect(script.contains("'a'\\''; rm -rf /; '\\'''"))
     }
 }

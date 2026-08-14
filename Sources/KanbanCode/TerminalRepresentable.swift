@@ -354,6 +354,18 @@ final class BatchedTerminalView: LocalProcessTerminalView {
     /// Also detects GitHub issue/PR references like `owner/repo#123` or bare `#123`.
     private func detectURL(col: Int, screenRow: Int) -> (url: String, colStart: Int, colEnd: Int)? {
         guard let line = terminal.getLine(row: screenRow) else { return nil }
+
+        // An OSC 8 hyperlink carries its own destination, so it wins over
+        // anything read out of the text: the label of one rarely looks like a
+        // URL, and where it does look like a reference the guess we would make
+        // from it can point somewhere else entirely.
+        let cols = min(terminal.cols, line.count)
+        if let hyperlink = TerminalURLDetector.hyperlink(
+            cols: cols, col: col, payloadAt: { line[$0].getPayload() as? String })
+        {
+            return (hyperlink.url, hyperlink.colStart, hyperlink.colEnd)
+        }
+
         let text = line.translateToString(trimRight: true)
         guard let detection = TerminalURLDetector.detect(in: text, col: col, githubBaseURL: githubBaseURL) else {
             return nil
@@ -689,16 +701,30 @@ final class TerminalCache {
         guard terminal.frame.width > 0, terminal.frame.height > 0 else { return }
         startedSessions.insert(sessionName)
 
-        let escaped = sessionName.replacingOccurrences(of: "'", with: "'\\''")
-        let tmux = Self.tmuxPath
         let userShell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         terminal.startProcess(
             executable: userShell,
-            args: ["-l", "-c", "for i in $(seq 1 50); do '\(tmux)' has-session -t '\(escaped)' 2>/dev/null && exec '\(tmux)' attach-session -t '\(escaped)'; sleep 0.1; done; echo 'Session ended.'"],
+            args: ["-l", "-c", Self.attachScript(tmux: Self.tmuxPath, session: sessionName)],
             environment: nil,
             execName: nil,
             currentDirectory: nil
         )
+    }
+
+    /// The shell command a terminal runs to reach its tmux session.
+    ///
+    /// `-T hyperlinks` tells tmux that this client understands OSC 8. Without
+    /// it tmux drops the escape and passes on only the label, so a link an
+    /// agent writes arrives as ordinary text with no destination behind it.
+    /// The flag is probed rather than assumed, because tmux gained it in 3.2
+    /// and an older one answers a flag it does not know by refusing to start.
+    static func attachScript(tmux: String, session: String) -> String {
+        let escaped = session.replacingOccurrences(of: "'", with: "'\\''")
+        let attach = { (flags: String) in "exec '\(tmux)' \(flags)attach-session -t '\(escaped)'" }
+        return "for i in $(seq 1 50); do '\(tmux)' has-session -t '\(escaped)' 2>/dev/null"
+            + " && if '\(tmux)' -T hyperlinks -V >/dev/null 2>&1;"
+            + " then \(attach("-T hyperlinks ")); else \(attach("")); fi;"
+            + " sleep 0.1; done; echo 'Session ended.'"
     }
 
     /// Remove and terminate a specific terminal (e.g., when user kills a session).

@@ -70,6 +70,36 @@ enum TerminalURLDetector {
         return nil
     }
 
+    /// The URL inside an OSC 8 hyperlink payload, which arrives as `params;URL`.
+    ///
+    /// Parameters are `key=value` pairs joined by `:`, and a URL may carry
+    /// semicolons of its own, so only the first one divides the two halves.
+    static func hyperlinkURL(from payload: String) -> String? {
+        let halves = payload.split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)
+        guard halves.count == 2 else { return nil }
+        let url = String(halves[1])
+        return url.isEmpty ? nil : url
+    }
+
+    /// The hyperlink covering `col`, taken from what each cell of the row
+    /// carries rather than from how the row reads.
+    ///
+    /// This is the only way to reach a link whose label is not itself a URL,
+    /// which is how an agent writes most of them. Every cell of one link holds
+    /// the same payload, so the run of equal payloads around the cursor is the
+    /// whole label.
+    static func hyperlink(cols: Int, col: Int, payloadAt: (Int) -> String?) -> Detection? {
+        guard col >= 0, col < cols, let payload = payloadAt(col),
+            let url = self.hyperlinkURL(from: payload)
+        else { return nil }
+
+        var start = col
+        while start > 0, payloadAt(start - 1) == payload { start -= 1 }
+        var end = col
+        while end + 1 < cols, payloadAt(end + 1) == payload { end += 1 }
+        return Detection(url: url, colStart: start, colEnd: end)
+    }
+
     /// Strip trailing `.` and `,` (repeatedly) from a match range — they are
     /// sentence punctuation, not URL characters, when they end the match.
     static func trimmingTrailingPunctuation(_ range: NSRange, in nsText: NSString) -> NSRange {
