@@ -2838,6 +2838,9 @@ public final class BoardStore: @unchecked Sendable {
         lastAutoBranchDiscoveryByCard = lastAutoBranchDiscoveryByCard.filter { cardId, _ in
             links.contains { $0.id == cardId }
         }
+
+        await autoLinkRecordedPR(links: &links, index: i, sessionPath: sessionPath)
+
         guard !scanned.isEmpty else { return }
 
         var branches = links[i].discoveredBranches ?? []
@@ -2856,6 +2859,36 @@ public final class BoardStore: @unchecked Sendable {
         KanbanCodeLog.info(
             "reconcile",
             "auto branch discovery: card=\(link.id.prefix(12)) branches=\(scanned.map(\.branch).joined(separator: ","))"
+        )
+    }
+
+    /// Link the pull request the session is working on, when its branch is not
+    /// one the session pushed.
+    ///
+    /// Branch scanning covers the pull requests a card opens itself. It cannot
+    /// see one that was opened from another worktree or by someone else, which
+    /// is what the session's own record of the pull request is for.
+    private func autoLinkRecordedPR(links: inout [Link], index: Int, sessionPath: String) async {
+        guard let ghAdapter, links[index].effectiveAssistant != .codex else { return }
+        guard let discovered = try? await JsonlParser.extractLatestLinkedPR(from: sessionPath),
+            let repository = discovered.repository,
+            !links[index].prLinks.contains(where: { $0.number == discovered.number }),
+            !links[index].manualOverrides.isPRDismissed(discovered.number)
+        else { return }
+
+        guard
+            let pr = (try? await ghAdapter.fetchPRs(
+                repository: repository, numbers: [discovered.number]))?[discovered.number]
+        else { return }
+
+        links[index].prLinks.append(PRLink(
+            number: pr.number, url: pr.url, status: pr.status, title: pr.title,
+            approvalCount: pr.approvalCount > 0 ? pr.approvalCount : nil,
+            mergeStateStatus: pr.mergeStateStatus
+        ))
+        KanbanCodeLog.info(
+            "reconcile",
+            "auto PR discovery: card=\(links[index].id.prefix(12)) PR #\(pr.number) in \(repository)"
         )
     }
 

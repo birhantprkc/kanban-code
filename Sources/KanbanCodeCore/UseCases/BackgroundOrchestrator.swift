@@ -153,6 +153,37 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
                 }
             }
 
+            // Pull requests the session recorded working on. A branch the
+            // session never pushed leaves no other trace of one, which is the
+            // case for every pull request it reviewed or drove on a branch
+            // that was pushed somewhere else.
+            if let prTracker, links[idx].effectiveAssistant != .codex {
+                let linked = (try? await JsonlParser.extractLinkedPRs(from: sessionPath)) ?? []
+                var wanted: [String: [Int]] = [:]
+                for pr in linked {
+                    guard let repository = pr.repository,
+                        !links[idx].prLinks.contains(where: { $0.number == pr.number })
+                    else { continue }
+                    wanted[repository, default: []].append(pr.number)
+                }
+                for (repository, numbers) in wanted.sorted(by: { $0.key < $1.key }) {
+                    let found =
+                        (try? await prTracker.fetchPRs(repository: repository, numbers: numbers))
+                        ?? [:]
+                    for number in numbers {
+                        guard let pr = found[number],
+                            !links[idx].prLinks.contains(where: { $0.number == number })
+                        else { continue }
+                        links[idx].prLinks.append(PRLink(
+                            number: pr.number, url: pr.url,
+                            status: pr.status, title: pr.title,
+                            approvalCount: pr.approvalCount > 0 ? pr.approvalCount : nil,
+                            mergeStateStatus: pr.mergeStateStatus
+                        ))
+                    }
+                }
+            }
+
             // Run column assignment after discovery
             var activityState: ActivityState?
             if let sessionId = links[idx].sessionLink?.sessionId {

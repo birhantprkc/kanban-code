@@ -120,6 +120,148 @@ public enum JsonlParser {
         public let repoPath: String?
     }
 
+    /// A pull request the session recorded itself working on.
+    public struct DiscoveredPR: Sendable, Equatable, Hashable {
+        public let number: Int
+        /// The repository as `owner/name`, which is how the record names it.
+        public let repository: String?
+        public let url: String?
+
+        public init(number: Int, repository: String?, url: String?) {
+            self.number = number
+            self.repository = repository
+            self.url = url
+        }
+    }
+
+    /// Pull requests the session recorded working on.
+    ///
+    /// A `pr-link` record is written whenever a session takes up a pull
+    /// request. It is the only trace of one whose branch the session never
+    /// pushed, which covers every pull request reviewed on someone else's
+    /// branch and every one driven from another worktree. Branch scanning
+    /// cannot see those at all.
+    public static func extractLinkedPRs(from filePath: String, startOffset: Int? = nil) async throws
+        -> [DiscoveredPR]
+    {
+        guard FileManager.default.fileExists(atPath: filePath) else { return [] }
+
+        let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: filePath))
+        defer { try? handle.close() }
+        if let offset = startOffset, offset > 0 {
+            handle.seek(toFileOffset: UInt64(offset))
+        }
+
+        var found: [DiscoveredPR] = []
+        var seen = Set<Int>()
+        for try await line in handle.blockLines {
+            guard line.contains("\"pr-link\"") else { continue }
+            guard let data = line.data(using: .utf8),
+                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let pr = self.linkedPR(from: obj), seen.insert(pr.number).inserted
+            else { continue }
+            found.append(pr)
+        }
+        return found
+    }
+
+    /// The newest pull request the session recorded working on.
+    ///
+    /// Read backwards and bounded, because this runs on a timer against files
+    /// that reach a hundred megabytes. A session at work on a pull request
+    /// writes a record every few turns, so the newest one sits near the end;
+    /// anything older than the window is left to explicit discovery.
+    public static func extractLatestLinkedPR(
+        from filePath: String,
+        within maxBytes: Int = 2 * 1024 * 1024
+    ) async throws -> DiscoveredPR? {
+        var latest: DiscoveredPR?
+        try self.scanLinesBackwards(filePath: filePath, stopAtOffset: 0, maxBytes: maxBytes) {
+            line in
+            guard line.contains("\"pr-link\""),
+                let data = line.data(using: .utf8),
+                let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let pr = self.linkedPR(from: obj)
+            else { return false }
+            latest = pr
+            return true
+        }
+        return latest
+    }
+
+    private static func linkedPR(from obj: [String: Any]) -> DiscoveredPR? {
+        guard obj["type"] as? String == "pr-link" else { return nil }
+        let number: Int?
+        switch obj["prNumber"] {
+        case let value as Int: number = value
+        case let value as String: number = Int(value)
+        default: number = nil
+        }
+        guard let number, number > 0 else { return nil }
+        return DiscoveredPR(
+            number: number,
+            repository: obj["prRepository"] as? String,
+            url: obj["prUrl"] as? String
+        )
+    }
+
+    /// Walk a file's lines newest first, in reverse chunks, stopping when
+    /// `handler` returns true or the scan runs out of range.
+    private static func scanLinesBackwards(
+        filePath: String,
+        stopAtOffset: Int,
+        maxBytes: Int? = nil,
+        handler: (String) -> Bool
+    ) throws {
+        guard FileManager.default.fileExists(atPath: filePath) else { return }
+
+        let attrs = try FileManager.default.attributesOfItem(atPath: filePath)
+        let fileSize = (attrs[.size] as? Int) ?? 0
+        let floor = maxBytes.map { max(stopAtOffset, fileSize - $0) } ?? stopAtOffset
+        guard fileSize > floor else { return }
+
+        let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: filePath))
+        defer { try? handle.close() }
+
+        let chunkSize = 256 * 1024
+        var trailingPartial = ""  // start of a line split by the chunk boundary
+        var currentEnd = fileSize
+
+        while currentEnd > floor {
+            let readStart = max(currentEnd - chunkSize, floor)
+            let readCount = currentEnd - readStart
+
+            handle.seek(toFileOffset: UInt64(readStart))
+            guard let chunkData = try? handle.read(upToCount: readCount),
+                var chunkStr = String(data: chunkData, encoding: .utf8)
+            else {
+                currentEnd = readStart
+                continue
+            }
+
+            // The trailing partial is the start of a line whose end was in the
+            // next chunk. Appending reconstructs the full line at the boundary.
+            chunkStr += trailingPartial
+
+            var lines = chunkStr.split(separator: "\n", omittingEmptySubsequences: false).map(
+                String.init)
+
+            // First element may be a partial line, unless the scan is at the
+            // start of its range.
+            if readStart > floor {
+                trailingPartial = lines.removeFirst()
+            } else {
+                trailingPartial = ""
+            }
+
+            for line in lines.reversed() where !line.isEmpty {
+                if handler(line) { return }
+            }
+
+            currentEnd = readStart
+        }
+    }
+
     /// Scan a session JSONL for branches that were pushed to a remote.
     /// Looks for git branch activity in Bash tool_use blocks:
     /// `git push`, `git checkout -b`, `git switch -c`, `git worktree add -b`, `git branch <name>`.
@@ -174,6 +316,13 @@ public enum JsonlParser {
                     let path = String(cdMatch.output.1)
                     // Resolve to git root: strip .claude/worktrees/<name> suffix
                     repoPath = resolveGitRoot(path)
+                } else if let cwd = obj["cwd"] as? String, !cwd.isEmpty {
+                    // A command with no `cd` runs where the session runs, and
+                    // the record says where that is. Without it the branch
+                    // carries no repository, and the lookup falls back to the
+                    // card's project, which is a different repository whenever
+                    // the session works outside it.
+                    repoPath = resolveGitRoot(cwd)
                 }
 
                 func addBranch(_ branch: String) {
@@ -266,6 +415,8 @@ public enum JsonlParser {
                     var repoPath: String?
                     if let cdMatch = command.firstMatch(of: cdRegex) {
                         repoPath = resolveGitRoot(String(cdMatch.output.1))
+                    } else if let cwd = obj["cwd"] as? String, !cwd.isEmpty {
+                        repoPath = resolveGitRoot(cwd)
                     }
 
                     if let match = command.firstMatch(of: pushRegex) {

@@ -436,6 +436,60 @@ public final class GhCliAdapter: PRTrackerPort, @unchecked Sendable {
         return (byBranch, byNumber)
     }
 
+    public func fetchPRs(repository: String, numbers: [Int]) async throws -> [Int: PullRequest] {
+        guard !numbers.isEmpty else { return [:] }
+        let parts = repository.split(separator: "/").map(String.init)
+        guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { return [:] }
+
+        var aliases: [String: Int] = [:]
+        var queryParts: [String] = []
+        for (i, number) in numbers.enumerated() {
+            let alias = "pr\(i)"
+            aliases[alias] = number
+            queryParts.append("""
+                \(alias): pullRequest(number: \(number)) {
+                  number title state url headRefName reviewDecision mergeStateStatus reviews(states: APPROVED) { totalCount }
+                }
+                """)
+        }
+        let query = """
+            query {
+              repository(owner: "\(parts[0])", name: "\(parts[1])") {
+                \(queryParts.joined(separator: "\n"))
+              }
+            }
+            """
+
+        let result = try await ShellCommand.run(
+            ghPath, arguments: ["api", "graphql", "-f", "query=\(query)"])
+
+        let combined = result.stderr + result.stdout
+        if combined.localizedCaseInsensitiveContains("rate limit")
+            || combined.contains("RATE_LIMITED")
+        {
+            KanbanCodeLog.warn("gh", "fetchPRs(\(repository)) hit rate limit")
+            throw GhCliError.rateLimited
+        }
+
+        guard let data = result.stdout.data(using: .utf8),
+            let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let repo = (root["data"] as? [String: Any])?["repository"] as? [String: Any]
+        else {
+            KanbanCodeLog.warn(
+                "gh", "fetchPRs(\(repository)) failed: \(result.stderr.prefix(200))")
+            return [:]
+        }
+
+        var byNumber: [Int: PullRequest] = [:]
+        for (alias, number) in aliases {
+            guard let item = repo[alias] as? [String: Any],
+                let pr = parsePRFromGraphQL(item)
+            else { continue }
+            byNumber[number] = pr
+        }
+        return byNumber
+    }
+
     private func parsePRFromGraphQL(_ item: [String: Any]) -> PullRequest? {
         guard let number = item["number"] as? Int,
               let title = item["title"] as? String,
