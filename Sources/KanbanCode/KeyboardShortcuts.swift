@@ -56,6 +56,7 @@ enum AppShortcut: CaseIterable {
 
     // Global actions
     case togglePin              // Cmd+P (pin or unpin the selected card)
+    case archiveCard            // Cmd+Shift+A (archive the open card, after a confirmation)
     case newTask                // Cmd+N
     case openSettings           // Cmd+,
 
@@ -88,7 +89,7 @@ enum AppShortcut: CaseIterable {
     case project6, project7, project8, project9
 
     static var allCases: [AppShortcut] {
-        [.openPaletteK, .openCommandMode, .togglePin,
+        [.openPaletteK, .openCommandMode, .togglePin, .archiveCard,
          .newTask, .openSettings,
          .resumeAssistant, .toggleExpanded, .toggleSidebar, .newTerminal, .navigateBack, .navigateForward, .deepSearch,
          .stopAssistant, .browserReload, .browserFocusAddress, .reopenClosedTab,
@@ -102,6 +103,7 @@ enum AppShortcut: CaseIterable {
         case .openPaletteK: return "k"
         case .openCommandMode: return "p"
         case .togglePin: return "p"
+        case .archiveCard: return "a"
         case .newTask: return "n"
         case .openSettings: return ","
         case .resumeAssistant, .toggleExpanded, .deepSearch: return .return
@@ -131,7 +133,7 @@ enum AppShortcut: CaseIterable {
     var modifiers: EventModifiers {
         switch self {
         case .openPaletteK, .togglePin: return .command
-        case .openCommandMode: return [.command, .shift]
+        case .openCommandMode, .archiveCard: return [.command, .shift]
         case .newTask, .openSettings: return .command
         case .resumeAssistant, .deepSearch: return .command
         case .toggleExpanded: return [.command, .shift]
@@ -179,6 +181,13 @@ enum AppShortcut: CaseIterable {
         // it is up.
         case .togglePin:
             return ctx.hasSelectedCard && !ctx.paletteOpen && !ctx.promptEditorFocused
+
+        // Archiving needs a card to archive. It stays live while the prompt
+        // editor holds the keyboard, because the card you want to put away is
+        // usually the one you were just typing into, and it asks before it
+        // does anything.
+        case .archiveCard:
+            return ctx.hasSelectedCard && !ctx.paletteOpen
 
         // Toggle between kanban and expanded+sidebar mode
         case .toggleExpanded:

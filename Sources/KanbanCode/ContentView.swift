@@ -1101,12 +1101,15 @@ struct ContentView: View {
             }
         case .confirmArchive(let cardId):
             Button("Cancel", role: .cancel) { dismissDialog() }
-            Button("Archive & Kill Terminals", role: .destructive) {
+            Button(archiveButtonTitle(cardId: cardId), role: .destructive) {
                 let card = store.state.cards.first(where: { $0.id == cardId })
                 store.dispatch(.archiveCard(cardId: cardId))
                 dismissDialog()
                 offerWorktreeCleanupIfNeeded(card: card)
             }
+            // Return archives, so the shortcut is a two-key action rather than
+            // a keystroke followed by a trip to the mouse.
+            .keyboardShortcut(.defaultAction)
         case .confirmFork(let cardId):
             Button("Cancel", role: .cancel) { dismissDialog() }
             if store.state.cards.first(where: { $0.id == cardId })?.link.worktreeLink != nil {
@@ -1201,7 +1204,12 @@ struct ContentView: View {
             } else {
                 Text("This will permanently delete this card and its data.")
             }
-        case .confirmArchive: Text("This card has running terminals. Archiving will kill them.")
+        case .confirmArchive(let cardId):
+            if hasRunningTerminals(cardId: cardId) {
+                Text("This card has running terminals. Archiving will kill them.")
+            } else {
+                Text("This takes the card off the board. You can find it again under all sessions.")
+            }
         case .confirmFork(let cardId):
             if store.state.cards.first(where: { $0.id == cardId })?.link.worktreeLink != nil {
                 Text("This creates a duplicate session you can resume independently. Do you want the forked session to continue from the same worktree or from the project root?")
@@ -1229,6 +1237,17 @@ struct ContentView: View {
         case .confirmDeleteChannel(let name):
             Text("This removes the channel and its membership metadata. Messages in \(name).jsonl are left on disk so you can recover them manually if needed.")
         }
+    }
+
+    /// Whether archiving this card would take terminals down with it. The
+    /// dialog is reached from the keyboard now, so it also has to speak for a
+    /// card that has nothing running.
+    private func hasRunningTerminals(cardId: String) -> Bool {
+        store.state.links[cardId]?.tmuxLink != nil
+    }
+
+    private func archiveButtonTitle(cardId: String) -> String {
+        hasRunningTerminals(cardId: cardId) ? "Archive & Kill Terminals" : "Archive"
     }
 
     /// Offer worktree cleanup after archive/delete if applicable.
@@ -1988,6 +2007,9 @@ struct ContentView: View {
         Button("") { togglePinOnSelectedCard() }
             .keyboardShortcut(AppShortcut.togglePin.key, modifiers: AppShortcut.togglePin.modifiers)
             .hidden()
+        Button("") { archiveSelectedCard() }
+            .keyboardShortcut(AppShortcut.archiveCard.key, modifiers: AppShortcut.archiveCard.modifiers)
+            .hidden()
         Button("") { if showSearch { closePalette() } else { openPalette(initialQuery: ">") } }
             .keyboardShortcut(AppShortcut.openCommandMode.key, modifiers: AppShortcut.openCommandMode.modifiers)
             .hidden()
@@ -2155,6 +2177,16 @@ struct ContentView: View {
                 presentNewTask()
             },
         ]
+
+        // Archiving is a card action, so it only appears with a card open.
+        if let cardId = store.state.selectedCardId, store.state.links[cardId] != nil {
+            cmds.append(CommandItem(
+                "Archive Card", icon: "archivebox",
+                shortcut: AppShortcut.archiveCard.displayString
+            ) { [self] in
+                presentDialog(.confirmArchive(cardId: cardId))
+            })
+        }
 
         // Project switching
         let visibleProjects = store.state.configuredProjects.filter(\.visible)
@@ -2474,6 +2506,18 @@ struct ContentView: View {
                 : "Card unpinned",
             kind: .success
         ))
+    }
+
+    /// Archive whatever card is open, after asking.
+    ///
+    /// Always asks, unlike the menu item, which goes straight through for a
+    /// card with no terminal to kill. A keystroke is easy to hit by accident,
+    /// and archiving takes the card off the board.
+    private func archiveSelectedCard() {
+        guard AppShortcut.archiveCard.isActive(in: shortcutContext),
+              let cardId = store.state.selectedCardId,
+              store.state.links[cardId] != nil else { return }
+        presentDialog(.confirmArchive(cardId: cardId))
     }
 
     private func closePalette() {
