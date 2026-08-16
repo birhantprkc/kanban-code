@@ -6,6 +6,11 @@ import MarkdownUI
 
 let chatMaxWidth: CGFloat = 720
 let userBubbleMaxWidth: CGFloat = 504
+/// Room kept above the scroll content for the pill that floats over the top
+/// of the chat, so a row a jump lands at the top sits below it with a gap.
+/// The scroll detectors have to know it too: at rest at the top, the content
+/// offset sits at minus this margin.
+let chatTopPillMargin: CGFloat = 44
 
 struct ChatView: View {
     let turns: [ConversationTurn]
@@ -365,22 +370,19 @@ private struct ChatMessageList: View {
             }
     }
 
-    /// Room kept above the content for the pill that floats over the top of
-    /// the view, so a row a jump lands at the top sits below it with a gap
-    /// instead of underneath it.
-    private static let topPillMargin: CGFloat = 44
-
     private var scrollViewWithTracking: some View {
         ScrollView {
             messageListContent
         }
-        .contentMargins(.top, Self.topPillMargin, for: .scrollContent)
+        .contentMargins(.top, chatTopPillMargin, for: .scrollContent)
         .scrollPosition($scrollPosition)
         .modifier(ScrollBottomTracker(isAtBottom: $isAtBottom, hasNewMessages: $hasNewMessages, shouldAutoScroll: $shouldAutoScroll))
         .modifier(ScrollNearTopDetector(isNearTop: $isNearTop))
         .onChange(of: isNearTop) { if isNearTop { checkLoadMore() } }
         .onScrollGeometryChange(for: Bool.self, of: { geo in
-            geo.contentOffset.y < -10  // overscroll / pull gesture
+            // Overscroll / pull gesture. Rest at the top already sits at
+            // minus the pill margin, so the pull only counts past it.
+            geo.contentOffset.y < -(chatTopPillMargin + 10)
         }, action: { wasOverscrolling, isOverscrolling in
             if !wasOverscrolling && isOverscrolling { checkLoadMore() }
         })
@@ -390,6 +392,15 @@ private struct ChatMessageList: View {
             if loadMoreTask != nil {
                 loadMoreTask?.cancel()
                 loadMoreTask = nil
+            }
+            // A short segment can leave the reader still parked at the top
+            // with nothing left to cross the trigger line, so the check
+            // runs again once the inserted rows have settled.
+            if isNearTop && hasMoreTurns {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(350))
+                    checkLoadMore()
+                }
             }
             // A chunk loaded for a search match can land between turns
             // without touching either end of the list, so the pending
@@ -564,8 +575,17 @@ private struct ChatMessageList: View {
             lastSeenCount = turns.count
             return
         }
-        let lastUnchanged = turns.last?.lineNumber == lastSeenLineNumber
-        if lastUnchanged {
+        // Still the same conversation as long as the last turn we knew is in
+        // the list. Requiring it to still be the *last* turn is not enough:
+        // older messages loading above and a live session appending below can
+        // land in the same update, and that used to read as a card switch
+        // and yank the reader to the bottom mid-history.
+        let sameConversation =
+            turns.last?.lineNumber == lastSeenLineNumber
+            || lastSeenLineNumber.map { seen in
+                turns.contains { $0.lineNumber == seen }
+            } ?? false
+        if sameConversation {
             lastSeenCount = turns.count
             if let anchor = firstVisibleLineNumber {
                 scrollPosition.scrollTo(id: anchor, anchor: .top)

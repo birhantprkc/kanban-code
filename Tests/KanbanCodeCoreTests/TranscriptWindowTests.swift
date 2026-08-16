@@ -211,6 +211,24 @@ struct TranscriptWindowTests {
         #expect(after.turns.last?.textPreview == "next message")
     }
 
+    /// The watcher fires for writes that add no displayable line, and the
+    /// splice for one must reproduce the window value for value, so nothing
+    /// downstream sees a change that did not happen.
+    @Test("a splice that changes nothing produces the very same window")
+    func spliceIsIdempotent() async throws {
+        let (path, _) = try Self.write([Self.user("go"), Self.assistant("done")])
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let before = try await TranscriptReader.readTail(from: path)
+        let lastStart = before.turns.last!.lineNumber
+
+        let appended = try #require(
+            try await TranscriptReader.readAppended(from: path, startOffset: lastStart))
+        let spliced = TranscriptWindow.splice(
+            turns: before.turns, reparsedFrom: lastStart, with: appended.turns)
+
+        #expect(spliced == before.turns)
+    }
+
     @Test("reindexing keeps order comparable across a splice")
     func spliceKeepsIndicesAscending() async throws {
         let (path, _) = try Self.write([Self.user("one"), Self.assistant("a"), Self.user("two")])

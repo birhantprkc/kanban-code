@@ -1731,8 +1731,11 @@ struct CardDetailView: View {
                 }.value
                 guard card.id == myCardId else { return }
                 if let appended {
-                    turns = TranscriptWindow.splice(
+                    let spliced = TranscriptWindow.splice(
                         turns: turns, reparsedFrom: start, with: appended.turns)
+                    // A fire that changed no content writes no state, so
+                    // nothing downstream stirs for it.
+                    if spliced != turns { turns = spliced }
                     historyFileEnd = appended.fileEnd
                     RenderDiagnostics.logIfSlow(
                         "CardDetailView.loadHistoryAppend",
@@ -1745,8 +1748,10 @@ struct CardDetailView: View {
                 // Too far behind for an append — fall through to a full read.
             } else {
                 // The file shrank: it was rewritten, and every loaded offset
-                // points into a file that no longer exists.
-                turns = []
+                // points into a file that no longer exists. The stale turns
+                // stay on screen while the fresh read runs, and are replaced
+                // in one step: blanking them first flashed the whole chat
+                // through the empty-state spinner.
                 resetHistoryWindow()
             }
         }
@@ -1760,6 +1765,10 @@ struct CardDetailView: View {
         let assistant = card.link.effectiveAssistant
         let store = sessionStore
         let isEmpty = turns.isEmpty
+        // A Claude window with turns but no consumed offset was reset because
+        // its file was rewritten: what is loaded cannot be merged with what
+        // is about to be read, only replaced by it.
+        let replaceWindow = assistant == .claude && !isEmpty && historyFileEnd == 0
         let loadStart = RenderDiagnostics.mark()
 
         do {
@@ -1787,7 +1796,7 @@ struct CardDetailView: View {
             // Always use the fresh tail — it picks up content changes from
             // mergeConsecutiveAssistantTurns (partial → full response).
             // Preserve any older turns from load-more that fall before the tail.
-            if isEmpty {
+            if isEmpty || replaceWindow {
                 turns = parsed.turns
             } else {
                 let tailStart = parsed.turns.first?.lineNumber ?? Int.max
@@ -2118,7 +2127,8 @@ struct CardDetailView: View {
                     // Re-open DispatchSource if inode changed (atomic write
                     // detection). A new inode is a new file: every loaded
                     // byte offset points into the old one, so the window
-                    // starts over before it reads.
+                    // starts over before it reads. The stale turns stay on
+                    // screen until the fresh read replaces them in one step.
                     let currentFileID = Self.fileID(at: path)
                     if let currentFileID, currentFileID != historyWatcherFileID {
                         let newFd = open(path, O_EVTONLY)
@@ -2128,7 +2138,6 @@ struct CardDetailView: View {
                             historyWatcherFileID = currentFileID
                             historyWatcherSource = Self.makeHistorySource(fd: newFd)
                         }
-                        turns = []
                         resetHistoryWindow()
                     }
 

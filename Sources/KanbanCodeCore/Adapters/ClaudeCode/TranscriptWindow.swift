@@ -32,15 +32,15 @@ public enum TranscriptWindow {
     /// `start` is the byte offset the re-parse began at, which is the start
     /// of the last loaded turn: the last turn is parsed again because lines
     /// appended since may belong to it, and a partial response becomes a full
-    /// one. Indices continue from the turn before the splice point so order
-    /// comparisons keep working, and turns above the splice keep their exact
-    /// values so their rows are not rebuilt.
+    /// one. The re-parsed turn takes over the index of the turn it replaces,
+    /// so a splice that changes nothing produces the very same values and no
+    /// row is rebuilt for it.
     public static func splice(
         turns: [ConversationTurn], reparsedFrom start: Int, with reparsed: [ConversationTurn]
     ) -> [ConversationTurn] {
+        let base = turns.first { $0.lineNumber == start }.map(\.index)
         var kept = turns.filter { $0.lineNumber < start }
-        let base = (kept.last?.index ?? -1) + 1
-        kept.append(contentsOf: reindex(reparsed, from: base))
+        kept.append(contentsOf: reindex(reparsed, from: base ?? (kept.last?.index ?? -1) + 1))
         return kept
     }
 

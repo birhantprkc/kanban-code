@@ -517,12 +517,18 @@ public enum JsonlParser {
     }
 
     /// Extract output text from `<local-command-stdout>text</local-command-stdout>`.
+    /// The output comes from a terminal, so the escape codes it styles itself
+    /// with come out: the chat renders plain text, where they read as noise.
     public static func parseLocalCommandStdout(_ text: String) -> String? {
         let regex = try! Regex("<local-command-stdout>([\\s\\S]*?)</local-command-stdout>")
         guard let match = text.firstMatch(of: regex) else { return nil }
         let output = String(match.output[1].substring!)
+            .replacing(Self.ansiEscapeRegex, with: "")
         return output.trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    private nonisolated(unsafe) static let ansiEscapeRegex =
+        try! Regex("\u{1B}\\[[0-9;?]*[A-Za-z]")
 
     private static func parseTag(_ tag: String, in text: String) -> String {
         let escaped = NSRegularExpression.escapedPattern(for: tag)

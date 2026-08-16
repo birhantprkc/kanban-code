@@ -176,6 +176,14 @@ struct JsonlParserTests {
         #expect(stdout == "hello world")
     }
 
+    @Test("parseLocalCommandStdout drops the terminal's escape codes")
+    func parseStdoutStripsAnsi() {
+        let text =
+            "<local-command-stdout>Set model to \u{1B}[1mOpus 5\u{1B}[22m and saved</local-command-stdout>"
+        let stdout = JsonlParser.parseLocalCommandStdout(text)
+        #expect(stdout == "Set model to Opus 5 and saved")
+    }
+
     @Test("isCaveatMessage detects isMeta flag")
     func caveatDetection() {
         let caveat: [String: Any] = ["type": "user", "isMeta": true, "message": ["content": "test"]]
