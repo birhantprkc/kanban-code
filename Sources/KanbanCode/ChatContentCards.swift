@@ -15,10 +15,76 @@ func firstLines(_ text: String, limit: Int) -> String {
 
 // MARK: - Tool Call Card
 
+/// One line standing in for a run of tool calls that is over.
+///
+/// A finished run is background. The conversation reads as what was said, with
+/// a marker where the work happened, instead of a page of file names between
+/// every two paragraphs. Opening it gives back the same rows, each of which
+/// still opens into its own detail.
+struct CollapsedToolRunCard: View {
+    let count: Int
+    let isExpanded: Bool
+    let onToggle: () -> Void
+
+    /// A run shorter than this is left alone. Two rows are not a wall, and a
+    /// marker in their place costs a click and says less than they do.
+    static let minimumRun = 3
+
+    /// Whether a run of tool calls stands behind one line instead of its rows.
+    ///
+    /// The newest run is the one being worked on, and watching it is the point
+    /// of having the chat open. Everything behind it is over, and a run holding
+    /// a search match has to stay open or the search lands on nothing.
+    static func collapses(callCount: Int, isNewestRun: Bool, holdsSearchMatch: Bool) -> Bool {
+        !isNewestRun && callCount >= self.minimumRun && !holdsSearchMatch
+    }
+
+    var body: some View {
+        Button(action: onToggle) {
+            HStack(spacing: 5) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10))
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .foregroundStyle(.tertiary)
+                Text("\(count) tool call\(count == 1 ? "" : "s")")
+                    .foregroundStyle(.secondary)
+            }
+            .font(.app(.callout))
+            .padding(.trailing, 8)
+            .padding(.vertical, 7)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
+    }
+}
+
+/// Tool inputs, decoded once and kept by the id of the call they belong to.
+///
+/// The id is what makes this cheap: it is short and unique, where the input it
+/// stands for can be a whole file.
+@MainActor
+enum ToolInputCache {
+    private static var cache = LRUCache<String, [String: Any]>(limit: 400)
+
+    static func decode(id: String?, data: Data) -> [String: Any] {
+        guard let id else { return Self.parse(data) }
+        if let hit = self.cache[id] { return hit }
+        let parsed = Self.parse(data)
+        self.cache[id] = parsed
+        return parsed
+    }
+
+    private static func parse(_ data: Data) -> [String: Any] {
+        (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+    }
+}
+
 struct ToolCallCard: View, Equatable {
     let name: String
     let displayText: String
     let rawInputJSON: Data?
+    var toolUseId: String?
     var resultText: String?
     var showBackground: Bool = true
     /// When true, the card starts expanded. Resets to false when user manually toggles.
@@ -78,18 +144,23 @@ struct ToolCallCard: View, Equatable {
         }
     }
 
+    /// The tool's input, decoded once per call rather than once per field.
+    ///
+    /// Every field used to decode the whole blob again, and the blob holds the
+    /// arguments of the call: a file write carries the file. That ran for every
+    /// row on every pass over the list, and the list is rebuilt each time the
+    /// transcript grows, which during a run is several times a second.
+    private var input: [String: Any] {
+        guard let data = rawInputJSON else { return [:] }
+        return ToolInputCache.decode(id: toolUseId, data: data)
+    }
+
     private func extractField(_ key: String) -> String? {
-        guard let data = rawInputJSON,
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let value = json[key] as? String else { return nil }
-        return value
+        self.input[key] as? String
     }
 
     private func extractBoolField(_ key: String) -> Bool {
-        guard let data = rawInputJSON,
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let value = json[key] as? Bool else { return false }
-        return value
+        self.input[key] as? Bool ?? false
     }
 
     var body: some View {

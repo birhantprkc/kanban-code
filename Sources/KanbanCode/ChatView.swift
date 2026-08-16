@@ -236,6 +236,11 @@ private struct ChatMessageList: View {
     @State private var lastSeenCount = 0
     @State private var lastSeenLineNumber: Int?
     @State private var expandedTextBlocks: Set<String> = []
+    /// Runs of tool calls the reader has opened again, by run.
+    @State private var expandedToolRuns: Set<String> = []
+    @State private var visibleRows = ChatVisibleRows()
+    /// A jump backwards waiting for older messages to arrive.
+    @State private var pendingPreviousUserJump = false
     /// Whether to auto-scroll on new content. Only set to false when we show
     /// the "New messages" badge (user deliberately scrolled away). Reset to true
     /// when user sends a message, clicks "New messages", or scrolls back to bottom.
@@ -336,7 +341,9 @@ private struct ChatMessageList: View {
                 await pollBusyState()
             }
             .overlay(alignment: .bottom) { newMessagesButton }
+            .overlay(alignment: .top) { previousUserMessageButton }
             .animation(.easeInOut(duration: 0.2), value: hasNewMessages)
+            .animation(.easeInOut(duration: 0.2), value: isAtBottom)
             .onReceive(NotificationCenter.default.publisher(for: .chatCardExpanded)) { _ in
                 if isAtBottom { scrollPosition.scrollTo(edge: .bottom) }
             }
@@ -382,6 +389,60 @@ private struct ChatMessageList: View {
     }
 
     @ViewBuilder
+    private var previousUserMessageButton: some View {
+        if !isAtBottom {
+            Button {
+                jumpToPreviousUserMessage()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 11, weight: .medium))
+                    Text("Previous user message")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+            }
+            .buttonStyle(.plain)
+            // The chat is a page of selectable text, so without this the
+            // pointer stays the caret it is over the words behind the pill.
+            .pointerStyle(.link)
+            .glassEffect(.regular, in: .capsule)
+            .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
+            // Below the search bar, which owns the same corner of the view.
+            .padding(.top, showSearch ? 44 : 8)
+            .transition(.move(edge: .top).combined(with: .opacity))
+        }
+    }
+
+    /// Walk back to the message before the one at the top of the view.
+    ///
+    /// What you asked for is the landmark in a conversation, so a jump goes to
+    /// the message before whatever is on screen, and puts it at the top with
+    /// the reply underneath it. Pressing again walks back another one.
+    private func jumpToPreviousUserMessage() {
+        let mounted = Set(renderedTurns.map(\.lineNumber))
+        let ceiling = visibleRows.top(among: mounted) ?? turns.last?.lineNumber ?? Int.max
+        guard let target = ChatTranscript.previousUserTurn(in: turns, above: ceiling) else {
+            // Nothing loaded that far back. Read more history and land the
+            // jump when it arrives.
+            if hasMoreTurns {
+                pendingPreviousUserJump = true
+                loadMoreNow()
+            }
+            return
+        }
+        scrollToPreviousUser(target.lineNumber)
+    }
+
+    private func scrollToPreviousUser(_ lineNumber: Int) {
+        visibleRows.pinTop(lineNumber)
+        withAnimation(.easeInOut(duration: 0.2)) {
+            scrollPosition.scrollTo(id: lineNumber, anchor: .top)
+        }
+    }
+
+    @ViewBuilder
     private var newMessagesButton: some View {
         if hasNewMessages {
             Button {
@@ -400,6 +461,9 @@ private struct ChatMessageList: View {
                 .padding(.vertical, 6)
             }
             .buttonStyle(.plain)
+            // The chat is a page of selectable text, so without this the
+            // pointer stays the caret it is over the words behind the pill.
+            .pointerStyle(.link)
             .glassEffect(.regular, in: .capsule)
             .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
             .padding(.bottom, 8)
@@ -441,6 +505,19 @@ private struct ChatMessageList: View {
     }
 
     private func handleFirstTurnChange() {
+        // A jump backwards that ran out of loaded history lands here, once the
+        // batch it asked for has arrived.
+        if pendingPreviousUserJump {
+            pendingPreviousUserJump = false
+            lastSeenCount = turns.count
+            Task { @MainActor in
+                // One turn later, so the arriving messages are laid out and the
+                // row being scrolled to has a place to be.
+                try? await Task.sleep(for: .milliseconds(80))
+                jumpToPreviousUserMessage()
+            }
+            return
+        }
         // Older turns arriving is how a jump to a match outside the window
         // completes, and it leaves the last turn alone, so the handler watching
         // the other end of the list never hears about it.
@@ -532,7 +609,31 @@ private struct ChatMessageList: View {
                         if group.count > 1 {
                             // Multiple consecutive tool-only turns — single shared bubble
                             let toolTurns = group.filter { $0.role == "assistant" }
+                            let runKey = "run:\(group.first?.lineNumber ?? 0)"
+                            let callCount = ChatTranscript.toolCallCount(in: toolTurns)
+                            let runIsOpen = expandedToolRuns.contains(runKey)
+                            // The newest run is the one being worked on, so it
+                            // stays as it is. Everything behind it is done, and
+                            // a search match inside one opens it whatever its
+                            // age, or the search would land on nothing.
+                            let collapses = CollapsedToolRunCard.collapses(
+                                callCount: callCount,
+                                isNewestRun: gi == turnGroups.count - 1,
+                                holdsSearchMatch: toolTurns.contains {
+                                    $0.lineNumber == currentMatchLineNumber
+                                }
+                            )
                             VStack(alignment: .leading, spacing: 2) {
+                                if collapses {
+                                    CollapsedToolRunCard(count: callCount, isExpanded: runIsOpen) {
+                                        if runIsOpen {
+                                            expandedToolRuns.remove(runKey)
+                                        } else {
+                                            expandedToolRuns.insert(runKey)
+                                        }
+                                    }
+                                }
+                                if !collapses || runIsOpen {
                                 ForEach(toolTurns, id: \.lineNumber) { toolTurn in
                                     ChatMessageView(
                                         turn: toolTurn,
@@ -553,13 +654,19 @@ private struct ChatMessageList: View {
                                         tmuxSessionName: tmuxSessionName,
                                         hasLastToolCall: toolTurn.lineNumber == lastToolCallLN,
                                         githubBaseURL: githubBaseURL,
-                                        expandedTextBlocks: $expandedTextBlocks
+                                        expandedTextBlocks: $expandedTextBlocks,
+                                        expandedToolRuns: $expandedToolRuns
                                     )
+                                    .equatable()
                                     // Every turn is addressable, not just the
                                     // first: search scrolls to a line number,
                                     // and a match on the third tool call in a
                                     // group would otherwise have no target.
                                     .id(toolTurn.lineNumber)
+                                    .onScrollVisibilityChange(threshold: 0.01) { visible in
+                                        visibleRows.set(toolTurn.lineNumber, visible: visible)
+                                    }
+                                }
                                 }
                             }
                             .background(
@@ -569,6 +676,13 @@ private struct ChatMessageList: View {
                             )
                             .frame(maxWidth: chatMaxWidth, alignment: .leading)
                             .padding(.vertical, 4)
+                            // The run reports for itself as well as its rows,
+                            // because a collapsed one has no rows to report.
+                            .onScrollVisibilityChange(threshold: 0.01) { visible in
+                                if let first = group.first?.lineNumber {
+                                    visibleRows.set(first, visible: visible)
+                                }
+                            }
                         } else if ChatMessageView.turnHasContent(group[0]) {
                             let turn = group[0]
                             // Collect all text from consecutive same-role turns for copy
@@ -606,10 +720,16 @@ private struct ChatMessageList: View {
                                 tmuxSessionName: tmuxSessionName,
                                 hasLastToolCall: turn.lineNumber == lastToolCallLN,
                                 githubBaseURL: githubBaseURL,
-                                expandedTextBlocks: $expandedTextBlocks
+                                toolRunIsFinished: gi != turnGroups.count - 1,
+                                expandedTextBlocks: $expandedTextBlocks,
+                                expandedToolRuns: $expandedToolRuns
                             )
+                            .equatable()
                             .id(turn.lineNumber)
                             .padding(.vertical, 4)
+                            .onScrollVisibilityChange(threshold: 0.01) { visible in
+                                visibleRows.set(turn.lineNumber, visible: visible)
+                            }
                         }
                     }
 
@@ -804,6 +924,11 @@ private struct ChatMessageList: View {
         // to, which made a conversation that was being searched the one you
         // could not scroll back through.
         guard isNearTop, hasMoreTurns else { return }
+        loadMoreNow()
+    }
+
+    /// Read one more batch of history, whatever asked for it.
+    private func loadMoreNow() {
         guard loadMoreTask == nil else { return }
         firstVisibleLineNumber = turns.first?.lineNumber
         onLoadMore?()
@@ -967,6 +1092,106 @@ private struct ScrollBottomTracker: ViewModifier {
                     shouldAutoScroll = false
                 }
             })
+    }
+}
+
+/// Rules the chat list follows, kept out of the view so they can be read and
+/// checked on their own.
+@MainActor
+enum ChatTranscript {
+    /// The last thing you asked for before `ceiling`.
+    static func previousUserTurn(in turns: [ConversationTurn], above ceiling: Int)
+        -> ConversationTurn?
+    {
+        turns.last { $0.lineNumber < ceiling && self.isTypedMessage($0) }
+    }
+
+    /// Whether a turn is something the person typed.
+    ///
+    /// The user side of a transcript carries far more than that: the result of
+    /// every tool call, an agent reporting that it finished, the note left
+    /// where a run was interrupted, the wrapper around a slash command, and
+    /// the reminders the harness injects. None of those is a landmark in a
+    /// conversation, and a jump that lands on one lands on nothing.
+    static func isTypedMessage(_ turn: ConversationTurn) -> Bool {
+        guard turn.role == "user" else { return false }
+        return turn.contentBlocks.contains { block in
+            guard case .text = block.kind else { return false }
+            return self.isTypedText(block.text)
+        }
+    }
+
+    static func isTypedText(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        // An agent reporting in, drawn as a system line rather than a message.
+        if trimmed.hasPrefix("✓ ") || trimmed.hasPrefix("⏳ ") { return false }
+        if trimmed.contains("[Request interrupted by user") { return false }
+        if trimmed.hasPrefix("Caveat: The messages below were generated by the user") {
+            return false
+        }
+        // What is left after the harness's own tags come out. A message that is
+        // only tags was written by the tooling, not by the person.
+        let remaining = JsonlParser.stripMetadataTags(trimmed)
+            .replacing(Self.systemReminderRegex, with: "")
+        return !remaining.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private nonisolated(unsafe) static let systemReminderRegex =
+        try! Regex("<system-reminder>[\\s\\S]*?</system-reminder>")
+
+    /// How many tool calls a run of tool-only turns holds. A turn can carry
+    /// more than one, so the number of rows is not the number of turns.
+    static func toolCallCount(in turns: [ConversationTurn]) -> Int {
+        turns.reduce(0) { total, turn in
+            total
+                + turn.contentBlocks.count { block in
+                    if case .toolUse = block.kind { return true }
+                    return false
+                }
+        }
+    }
+}
+
+/// Which message rows are on screen.
+///
+/// A reference type on purpose, and not observed: scrolling changes this many
+/// times a second, and a value the view watched would redraw the whole list
+/// with every row that crossed an edge. It is written while scrolling and read
+/// once, when a jump asks where the reader is.
+@MainActor
+final class ChatVisibleRows {
+    private var visible: Set<Int> = []
+    private var pinned: Int?
+    private var unpinTask: Task<Void, Never>?
+
+    func set(_ lineNumber: Int, visible isVisible: Bool) {
+        if isVisible {
+            self.visible.insert(lineNumber)
+        } else {
+            self.visible.remove(lineNumber)
+        }
+    }
+
+    /// The topmost row on screen, or the row a jump has just been aimed at.
+    ///
+    /// Rows that are no longer mounted are ignored rather than trusted: a row
+    /// the list drops as the window moves has no way to report that it left.
+    func top(among mounted: Set<Int>) -> Int? {
+        if let pinned { return pinned }
+        return self.visible.intersection(mounted).min()
+    }
+
+    /// Hold a row as the top until the scroll to it has settled, so two presses
+    /// in a row walk two messages back instead of landing on the same one.
+    func pinTop(_ lineNumber: Int) {
+        self.pinned = lineNumber
+        self.unpinTask?.cancel()
+        self.unpinTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            self?.pinned = nil
+        }
     }
 }
 

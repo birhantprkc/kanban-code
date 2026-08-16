@@ -4,7 +4,7 @@ import MarkdownUI
 
 // MARK: - Chat Message View
 
-struct ChatMessageView: View {
+struct ChatMessageView: View, Equatable {
     let turn: ConversationTurn
     let assistant: CodingAssistant
     var toolResultMap: [String: ContentBlock] = [:]
@@ -20,8 +20,37 @@ struct ChatMessageView: View {
     var tmuxSessionName: String?
     var hasLastToolCall: Bool = false
     var githubBaseURL: String?
+    /// Whether a run of tool calls in this message is behind the conversation
+    /// rather than the one being worked on.
+    var toolRunIsFinished: Bool = false
     @Binding var expandedTextBlocks: Set<String>
+    @Binding var expandedToolRuns: Set<String>
     @State private var isHovered = false
+
+    /// A row is worth building again only when what it shows has changed.
+    ///
+    /// The transcript is re-read whenever the file grows, which during a run is
+    /// several times a second, and every read hands the list a fresh array. Row
+    /// by row the content is almost always the same one as before, and without
+    /// this every one of them measures its text again to draw the same pixels.
+    /// The callbacks are left out on purpose: they are rebuilt on every pass
+    /// and never compare equal, and they close over the same turn this compares.
+    nonisolated static func == (lhs: ChatMessageView, rhs: ChatMessageView) -> Bool {
+        lhs.turn == rhs.turn
+            && lhs.assistant == rhs.assistant
+            && lhs.toolResultMap == rhs.toolResultMap
+            && lhs.isLastInGroup == rhs.isLastInGroup
+            && lhs.suppressBackground == rhs.suppressBackground
+            && lhs.highlightText == rhs.highlightText
+            && lhs.isCurrentMatch == rhs.isCurrentMatch
+            && lhs.sessionPath == rhs.sessionPath
+            && lhs.tmuxSessionName == rhs.tmuxSessionName
+            && lhs.hasLastToolCall == rhs.hasLastToolCall
+            && lhs.githubBaseURL == rhs.githubBaseURL
+            && lhs.toolRunIsFinished == rhs.toolRunIsFinished
+            && lhs.expandedTextBlocks == rhs.expandedTextBlocks
+            && lhs.expandedToolRuns == rhs.expandedToolRuns
+    }
 
     /// Max characters to render before truncating with "Show more".
     /// 4KB is enough for a long message without freezing SwiftUI layout.
@@ -186,21 +215,40 @@ struct ChatMessageView: View {
             ForEach(groups.indices, id: \.self) { gi in
                 let group = groups[gi]
                 if group.isToolGroup {
+                    let runKey = "grp:\(turn.lineNumber):\(gi)"
+                    let runIsOpen = expandedToolRuns.contains(runKey)
+                    let collapses = CollapsedToolRunCard.collapses(
+                        callCount: group.items.count,
+                        isNewestRun: !toolRunIsFinished,
+                        holdsSearchMatch: isCurrentMatch
+                    )
                     VStack(alignment: .leading, spacing: 0) {
+                        if collapses {
+                            CollapsedToolRunCard(count: group.items.count, isExpanded: runIsOpen) {
+                                if runIsOpen {
+                                    expandedToolRuns.remove(runKey)
+                                } else {
+                                    expandedToolRuns.insert(runKey)
+                                }
+                            }
+                        }
+                        if !collapses || runIsOpen {
                         ForEach(group.items.indices, id: \.self) { ti in
                             if ti > 0 { Divider().padding(.leading, 8) }
-                            if case .toolUse(let name, _, _) = group.items[ti].paired.block.kind {
+                            if case .toolUse(let name, _, let toolUseId) = group.items[ti].paired.block.kind {
                                 let isLast = hasLastToolCall && gi == groups.count - 1 && ti == group.items.count - 1
                                 ToolCallCard(
                                     name: name,
                                     displayText: group.items[ti].paired.block.text,
                                     rawInputJSON: group.items[ti].paired.block.rawInputJSON,
+                                    toolUseId: toolUseId,
                                     resultText: group.items[ti].paired.resultBlock?.text,
                                     showBackground: false,
                                     autoExpand: isLast,
                                     highlight: searchHighlight
                                 )
                             }
+                        }
                         }
                     }
                     .background {
@@ -226,11 +274,12 @@ struct ChatMessageView: View {
             if !trimmed.isEmpty {
                 truncatedTextBlock(trimmed, blockIndex: paired.index, font: .systemFont(ofSize: 13))
             }
-        case .toolUse(let name, _, _):
+        case .toolUse(let name, _, let toolUseId):
             ToolCallCard(
                 name: name,
                 displayText: paired.block.text,
                 rawInputJSON: paired.block.rawInputJSON,
+                toolUseId: toolUseId,
                 resultText: paired.resultBlock?.text,
                 showBackground: !suppressBackground,
                 autoExpand: hasLastToolCall && isLastBlock,

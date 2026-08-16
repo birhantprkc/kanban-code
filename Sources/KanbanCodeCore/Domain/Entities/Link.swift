@@ -631,7 +631,7 @@ public struct AskQuestion: Sendable, Equatable {
 }
 
 /// A single content block within a conversation turn.
-public struct ContentBlock: Sendable {
+public struct ContentBlock: Sendable, Equatable {
     public enum Kind: Sendable, Equatable {
         case text
         case toolUse(name: String, input: [String: String], id: String? = nil)
@@ -658,7 +658,7 @@ public struct ContentBlock: Sendable {
 }
 
 /// A conversation turn for history display and checkpoint operations.
-public struct ConversationTurn: Sendable {
+public struct ConversationTurn: Sendable, Equatable {
     public let index: Int
     public let lineNumber: Int
     public let role: String // "user" or "assistant"
