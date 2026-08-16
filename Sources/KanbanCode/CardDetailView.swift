@@ -465,6 +465,11 @@ struct CardDetailView: View {
                 onRename: onRename
             )
         }
+        .onReceive(NotificationCenter.default.publisher(for: .renameSelectedCard)) { _ in
+            // Cmd+R belongs to the browser while one of its tabs is showing.
+            guard selectedBrowserTabId == nil else { return }
+            showRenameSheet = true
+        }
         .sheet(item: $queuedPromptItem) { item in
             QueuedPromptDialog(
                 isPresented: Binding(

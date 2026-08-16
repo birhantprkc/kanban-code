@@ -658,6 +658,7 @@ struct RenameSessionDialog: View {
     var onRename: (String) -> Void = { _ in }
 
     @State private var name = ""
+    @FocusState private var nameFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -667,6 +668,7 @@ struct RenameSessionDialog: View {
 
             TextField("Session name", text: $name)
                 .textFieldStyle(.roundedBorder)
+                .focused($nameFocused)
 
             HStack {
                 Spacer()
@@ -691,6 +693,13 @@ struct RenameSessionDialog: View {
         .frame(width: 350)
         .onAppear {
             name = currentName
+            // Reached by keyboard, so it opens ready to type. The old name is
+            // selected rather than left behind the caret, because a rename
+            // replaces it far more often than it edits it.
+            nameFocused = true
+            DispatchQueue.main.async {
+                (NSApp.keyWindow?.firstResponder as? NSTextView)?.selectAll(nil)
+            }
         }
     }
 }

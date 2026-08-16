@@ -57,6 +57,7 @@ enum AppShortcut: CaseIterable {
     // Global actions
     case togglePin              // Cmd+P (pin or unpin the selected card)
     case archiveCard            // Cmd+Shift+A (archive the open card, after a confirmation)
+    case renameCard             // Cmd+R (rename the open card, unless a browser tab is showing)
     case newTask                // Cmd+N
     case openSettings           // Cmd+,
 
@@ -89,7 +90,7 @@ enum AppShortcut: CaseIterable {
     case project6, project7, project8, project9
 
     static var allCases: [AppShortcut] {
-        [.openPaletteK, .openCommandMode, .togglePin, .archiveCard,
+        [.openPaletteK, .openCommandMode, .togglePin, .archiveCard, .renameCard,
          .newTask, .openSettings,
          .resumeAssistant, .toggleExpanded, .toggleSidebar, .newTerminal, .navigateBack, .navigateForward, .deepSearch,
          .stopAssistant, .browserReload, .browserFocusAddress, .reopenClosedTab,
@@ -104,6 +105,7 @@ enum AppShortcut: CaseIterable {
         case .openCommandMode: return "p"
         case .togglePin: return "p"
         case .archiveCard: return "a"
+        case .renameCard: return "r"
         case .newTask: return "n"
         case .openSettings: return ","
         case .resumeAssistant, .toggleExpanded, .deepSearch: return .return
@@ -140,7 +142,7 @@ enum AppShortcut: CaseIterable {
         case .toggleSidebar: return .command
         case .newTerminal: return .command
         case .navigateBack, .navigateForward: return .command
-        case .browserReload, .browserFocusAddress: return .command
+        case .browserReload, .browserFocusAddress, .renameCard: return .command
         case .reopenClosedTab: return [.command, .shift]
         case .stopAssistant: return []
         case .deselect, .deleteCard, .deleteCardForward: return []
@@ -187,6 +189,13 @@ enum AppShortcut: CaseIterable {
         // usually the one you were just typing into, and it asks before it
         // does anything.
         case .archiveCard:
+            return ctx.hasSelectedCard && !ctx.paletteOpen
+
+        // Renaming shares Cmd+R with the browser reload, which is why both are
+        // asked here and answered by whichever surface is on screen: the
+        // browser reloads only while one of its tabs is showing, and the
+        // rename opens only while none is.
+        case .renameCard:
             return ctx.hasSelectedCard && !ctx.paletteOpen
 
         // Toggle between kanban and expanded+sidebar mode

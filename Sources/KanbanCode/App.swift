@@ -618,6 +618,7 @@ extension Notification.Name {
     static let kanbanCodeCLICommand = Notification.Name("kanbanCodeCLICommand")
     static let browserFocusAddressBar = Notification.Name("browserFocusAddressBar")
     static let browserReload = Notification.Name("browserReload")
+    static let renameSelectedCard = Notification.Name("renameSelectedCard")
     static let kanbanReopenClosedTab = Notification.Name("kanbanReopenClosedTab")
 }
 

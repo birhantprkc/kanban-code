@@ -2093,10 +2093,19 @@ struct ContentView: View {
         .keyboardShortcut(AppShortcut.stopAssistant.key, modifiers: AppShortcut.stopAssistant.modifiers)
         .hidden()
 
-        // Cmd+R — reload active browser tab
+        // Cmd+R — reload the browser tab that is showing, or rename the card.
+        // One key, two owners, so both are told and the one on screen answers:
+        // the browser reloads only while its tab is selected, and the rename
+        // opens only while none is. Which tab that is lives in the detail view,
+        // not here.
         Button("") {
-            guard AppShortcut.browserReload.isActive(in: shortcutContext) else { return }
-            NotificationCenter.default.post(name: .browserReload, object: nil)
+            let ctx = shortcutContext
+            if AppShortcut.browserReload.isActive(in: ctx) {
+                NotificationCenter.default.post(name: .browserReload, object: nil)
+            }
+            if AppShortcut.renameCard.isActive(in: ctx) {
+                NotificationCenter.default.post(name: .renameSelectedCard, object: nil)
+            }
         }
         .keyboardShortcut(AppShortcut.browserReload.key, modifiers: AppShortcut.browserReload.modifiers)
         .hidden()
@@ -2178,8 +2187,14 @@ struct ContentView: View {
             },
         ]
 
-        // Archiving is a card action, so it only appears with a card open.
+        // Card actions, so they only appear with a card open.
         if let cardId = store.state.selectedCardId, store.state.links[cardId] != nil {
+            cmds.append(CommandItem(
+                "Rename Card", icon: "pencil",
+                shortcut: AppShortcut.renameCard.displayString
+            ) {
+                NotificationCenter.default.post(name: .renameSelectedCard, object: nil)
+            })
             cmds.append(CommandItem(
                 "Archive Card", icon: "archivebox",
                 shortcut: AppShortcut.archiveCard.displayString
