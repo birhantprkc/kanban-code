@@ -117,6 +117,14 @@ struct CardDetailView: View {
     /// with many assistant/tool fragments can plateau and keep requesting the
     /// same raw tail forever.
     @State private var historyRawLoadLimit = 0
+    /// Stretches of older history the chat draws as one line with a count
+    /// instead of parsing and mounting. See CollapsedTurnRange.
+    @State private var collapsedRanges: [CollapsedTurnRange] = []
+    /// Byte offset the last read consumed the file to. A file shorter than
+    /// this was rewritten, and every loaded offset is void.
+    @State private var historyFileEnd = 0
+    /// The head of the file was scanned and holds no more typed messages.
+    @State private var historyHeadExhausted = false
     @Binding var selectedTab: DetailTab
     @Binding var pendingTerminalSession: String?
     @State private var showRenameSheet = false
@@ -308,6 +316,7 @@ struct CardDetailView: View {
             // with the previous card's turns or chat state.
             turns = []
             historyRawLoadLimit = 0
+            resetHistoryWindow()
             chatPendingMessage = nil
             checkpointMode = false
             // Set knownShellCount to current shells so onChange(of: tmuxLink)
@@ -320,6 +329,7 @@ struct CardDetailView: View {
             isLoadingMore = false
             hasMoreTurns = false
             historyRawLoadLimit = 0
+            resetHistoryWindow()
             await loadDraftForCurrentCard()
             browserTabs = hydrateBrowserTabs()
             terminalGrabFocus = false
@@ -357,6 +367,14 @@ struct CardDetailView: View {
                 }
             }
             if selectedTab == .history {
+                // The history list draws every loaded turn with no idea of the
+                // collapsed ranges the chat keeps, so a window the chat made
+                // sparse starts over as a plain tail.
+                if !collapsedRanges.isEmpty {
+                    turns = []
+                    historyRawLoadLimit = 0
+                    resetHistoryWindow()
+                }
                 Task { await loadHistory() }
                 startHistoryWatcher()
             } else {
@@ -370,6 +388,7 @@ struct CardDetailView: View {
             guard card.link.sessionLink?.sessionPath != nil else { return }
             turns = []
             historyRawLoadLimit = 0
+            resetHistoryWindow()
             startHistoryWatcher()
             Task { await loadHistory() }
         }
@@ -659,8 +678,11 @@ struct CardDetailView: View {
                 )
                 onAddQueuedPrompt(prompt)
             },
-            onLoadMore: { Task { await loadMoreHistory() } },
+            onLoadMore: { Task { _ = await loadPreviousUserSegment() } },
             onLoadAroundTurn: { turnIndex in Task { await loadAroundTurn(turnIndex) } },
+            collapsedRanges: collapsedRanges,
+            onExpandRange: { range in await expandRange(range) },
+            onJumpToPreviousUser: { await loadPreviousUserSegment() },
             sessionPath: card.link.sessionLink?.sessionPath ?? card.session?.jsonlPath,
             sessionId: card.link.sessionLink?.sessionId,
             onFork: { onFork(true) },
@@ -1693,6 +1715,42 @@ struct CardDetailView: View {
 
         guard let path = card.link.sessionLink?.sessionPath ?? card.session?.jsonlPath else { return }
 
+        // Incremental fast path: the window is live and the file only grew, so
+        // only the bytes after the last loaded turn are worth parsing. The
+        // turn itself is parsed again, because appended lines may have grown
+        // it. This is what a watcher event costs, whatever the file's size.
+        if card.link.effectiveAssistant == .claude, historyFileEnd > 0, let lastTurn = turns.last {
+            let attrs = try? FileManager.default.attributesOfItem(atPath: path)
+            let fileSize = (attrs?[.size] as? Int) ?? 0
+            if fileSize == historyFileEnd { return }
+            if fileSize > historyFileEnd {
+                let loadStart = RenderDiagnostics.mark()
+                let start = lastTurn.lineNumber
+                let appended = try? await Task.detached {
+                    try await TranscriptReader.readAppended(from: path, startOffset: start)
+                }.value
+                guard card.id == myCardId else { return }
+                if let appended {
+                    turns = TranscriptWindow.splice(
+                        turns: turns, reparsedFrom: start, with: appended.turns)
+                    historyFileEnd = appended.fileEnd
+                    RenderDiagnostics.logIfSlow(
+                        "CardDetailView.loadHistoryAppend",
+                        since: loadStart,
+                        thresholdMs: 40,
+                        metadata: "card=\(myCardId.prefix(12)) turns=\(turns.count) path=\((path as NSString).lastPathComponent)"
+                    )
+                    return
+                }
+                // Too far behind for an append — fall through to a full read.
+            } else {
+                // The file shrank: it was rewritten, and every loaded offset
+                // points into a file that no longer exists.
+                turns = []
+                resetHistoryWindow()
+            }
+        }
+
         if turns.isEmpty { isLoadingHistory = true }
         let baseSize = preferChatView ? Self.chatPageSize : Self.pageSize
         if turns.isEmpty || historyRawLoadLimit < baseSize {
@@ -1737,6 +1795,7 @@ struct CardDetailView: View {
                 turns = olderTurns + parsed.turns
             }
             hasMoreTurns = parsed.hasMore
+            historyFileEnd = parsed.fileEnd
         } catch {
             // Silently fail — empty history is fine
         }
@@ -1830,6 +1889,7 @@ struct CardDetailView: View {
             guard card.id == myCardId else { return }
             turns = result.turns
             hasMoreTurns = result.hasMore
+            historyFileEnd = result.fileEnd
         } catch {
             // Silently fail
         }
@@ -1857,17 +1917,171 @@ struct CardDetailView: View {
 
         let halfPage = Self.pageSize / 2
         do {
-            let chunk = try await TranscriptReader.readAround(
-                from: path, byteOffset: targetOffset, before: halfPage, after: halfPage)
+            let around = try await Task.detached {
+                try await TranscriptReader.readAround(
+                    from: path, byteOffset: targetOffset, before: halfPage, after: halfPage)
+            }.value
+            // A collapsed range the chunk cut through splits into the parts
+            // still hidden, each with a fresh count of what it hides.
+            let (kept, toRecount) = TranscriptWindow.subtract(
+                region: around.regionStart..<around.regionEnd, from: collapsedRanges)
+            var rebuilt = kept
+            for side in toRecount {
+                let count =
+                    (try? await Task.detached {
+                        try await TranscriptReader.countVisibleTurns(
+                            from: path, startOffset: side.startOffset, endOffset: side.endOffset)
+                    }.value) ?? 0
+                if count > 0 {
+                    rebuilt.append(
+                        CollapsedTurnRange(
+                            startOffset: side.startOffset, endOffset: side.endOffset,
+                            messageCount: count))
+                }
+            }
             // Stale-check — see loadHistory().
             guard card.id == myCardId else { return }
-            var byOffset: [Int: ConversationTurn] = [:]
-            for turn in turns { byOffset[turn.lineNumber] = turn }
-            for turn in chunk { byOffset[turn.lineNumber] = turn }
-            turns = byOffset.values.sorted { $0.lineNumber < $1.lineNumber }
-            hasMoreTurns = (turns.first?.lineNumber ?? 0) > 0
+            collapsedRanges = rebuilt.sorted { $0.startOffset < $1.startOffset }
+            turns = TranscriptWindow.merge(turns: turns, inserting: around.turns)
+            hasMoreTurns = !historyHeadExhausted && (historyTopOffset ?? 0) > 0
         } catch { }
         if card.id == myCardId { isLoadingMore = false }
+    }
+
+    /// The byte offset of the topmost content the chat holds, loaded or
+    /// collapsed. Everything above it is unread file.
+    private var historyTopOffset: Int? {
+        [turns.first?.lineNumber, collapsedRanges.first?.startOffset].compactMap { $0 }.min()
+    }
+
+    private func resetHistoryWindow() {
+        collapsedRanges = []
+        historyFileEnd = 0
+        historyHeadExhausted = false
+    }
+
+    /// A stretch this small is not worth hiding behind a count.
+    private static let inlineSegmentThreshold = 3
+    /// How many rows one click on a collapsed range reveals.
+    private static let expandPageVisible = 60
+
+    /// Load the previous typed user message and stand everything between it
+    /// and the window behind a collapsed range, so the jump mounts two rows
+    /// instead of hundreds. Returns the loaded turn's line number for the
+    /// chat to scroll to.
+    private func loadPreviousUserSegment() async -> Int? {
+        guard card.link.effectiveAssistant == .claude else {
+            await loadMoreHistory()
+            return nil
+        }
+        guard let path = card.link.sessionLink?.sessionPath ?? card.session?.jsonlPath,
+            let top = historyTopOffset, top > 0, !isLoadingMore
+        else { return nil }
+        let myCardId = card.id
+        isLoadingMore = true
+        defer { if card.id == myCardId { isLoadingMore = false } }
+        let loadStart = RenderDiagnostics.mark()
+        defer {
+            RenderDiagnostics.logIfSlow(
+                "CardDetailView.loadPreviousUserSegment",
+                since: loadStart,
+                thresholdMs: 200,
+                metadata: "card=\(myCardId.prefix(12)) top=\(top)"
+            )
+        }
+
+        do {
+            let previous = try await Task.detached {
+                try await TranscriptReader.findPreviousTypedUserTurn(in: path, before: top)
+            }.value
+            guard let found = previous else {
+                // Nothing typed above: the head of the file is only the
+                // assistant working. It still gets a range, so it can be read.
+                let count = try await Task.detached {
+                    try await TranscriptReader.countVisibleTurns(
+                        from: path, startOffset: 0, endOffset: top)
+                }.value
+                guard card.id == myCardId, historyTopOffset == top else { return nil }
+                if count > 0, count <= Self.inlineSegmentThreshold {
+                    let head = try await Task.detached {
+                        try await TranscriptReader.readRange(
+                            from: path, startOffset: 0, endOffset: top)
+                    }.value
+                    guard card.id == myCardId else { return nil }
+                    turns = TranscriptWindow.merge(turns: turns, inserting: head.turns)
+                } else if count > 0 {
+                    collapsedRanges =
+                        (collapsedRanges + [
+                            CollapsedTurnRange(startOffset: 0, endOffset: top, messageCount: count)
+                        ])
+                        .sorted { $0.startOffset < $1.startOffset }
+                }
+                historyHeadExhausted = true
+                hasMoreTurns = false
+                return nil
+            }
+
+            let gapStart = found.endOffset
+            var inline: [ConversationTurn] = []
+            var newRange: CollapsedTurnRange?
+            if gapStart < top {
+                let count = try await Task.detached {
+                    try await TranscriptReader.countVisibleTurns(
+                        from: path, startOffset: gapStart, endOffset: top)
+                }.value
+                if count > 0, count <= Self.inlineSegmentThreshold {
+                    inline = try await Task.detached {
+                        try await TranscriptReader.readRange(
+                            from: path, startOffset: gapStart, endOffset: top)
+                    }.value.turns
+                } else if count > 0 {
+                    newRange = CollapsedTurnRange(
+                        startOffset: gapStart, endOffset: top, messageCount: count)
+                }
+            }
+            guard card.id == myCardId, historyTopOffset == top else { return nil }
+            turns = TranscriptWindow.merge(turns: turns, inserting: [found.turn] + inline)
+            if let newRange {
+                collapsedRanges = (collapsedRanges + [newRange])
+                    .sorted { $0.startOffset < $1.startOffset }
+            }
+            hasMoreTurns = found.turn.lineNumber > 0
+            return found.turn.lineNumber
+        } catch {
+            return nil
+        }
+    }
+
+    /// Open one page of a collapsed range in place. Returns the first
+    /// revealed turn's line number for the chat to keep in view.
+    private func expandRange(_ range: CollapsedTurnRange) async -> Int? {
+        guard let path = card.link.sessionLink?.sessionPath ?? card.session?.jsonlPath
+        else { return nil }
+        let myCardId = card.id
+        do {
+            let read = try await Task.detached {
+                try await TranscriptReader.readRange(
+                    from: path, startOffset: range.startOffset, endOffset: range.endOffset,
+                    maxVisible: Self.expandPageVisible)
+            }.value
+            guard card.id == myCardId, collapsedRanges.contains(range) else { return nil }
+            var rebuilt = collapsedRanges.filter { $0.id != range.id }
+            if read.consumedEnd < range.endOffset {
+                let revealed = read.turns.count(where: { $0.hasVisibleChatContent })
+                let remaining = max(0, range.messageCount - revealed)
+                if remaining > 0 {
+                    rebuilt.append(
+                        CollapsedTurnRange(
+                            startOffset: read.consumedEnd, endOffset: range.endOffset,
+                            messageCount: remaining))
+                }
+            }
+            collapsedRanges = rebuilt.sorted { $0.startOffset < $1.startOffset }
+            turns = TranscriptWindow.merge(turns: turns, inserting: read.turns)
+            return read.turns.first?.lineNumber
+        } catch {
+            return nil
+        }
     }
 
     // MARK: - File watcher
@@ -1900,9 +2114,11 @@ struct CardDetailView: View {
                    let mtime = attrs[.modificationDate] as? Date,
                    mtime > lastMtime {
                     lastMtime = mtime
-                    await loadHistory()
 
-                    // Re-open DispatchSource if inode changed (atomic write detection)
+                    // Re-open DispatchSource if inode changed (atomic write
+                    // detection). A new inode is a new file: every loaded
+                    // byte offset points into the old one, so the window
+                    // starts over before it reads.
                     let currentFileID = Self.fileID(at: path)
                     if let currentFileID, currentFileID != historyWatcherFileID {
                         let newFd = open(path, O_EVTONLY)
@@ -1912,7 +2128,11 @@ struct CardDetailView: View {
                             historyWatcherFileID = currentFileID
                             historyWatcherSource = Self.makeHistorySource(fd: newFd)
                         }
+                        turns = []
+                        resetHistoryWindow()
                     }
+
+                    await loadHistory()
                 }
             }
         }
@@ -2011,6 +2231,7 @@ struct CardDetailView: View {
                 // Force clear and reload turns so the view updates
                 turns = []
                 historyRawLoadLimit = 0
+                resetHistoryWindow()
                 await loadHistory()
             } catch {
                 // Could show error toast

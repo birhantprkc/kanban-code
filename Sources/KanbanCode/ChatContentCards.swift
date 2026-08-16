@@ -59,6 +59,52 @@ struct CollapsedToolRunCard: View {
     }
 }
 
+/// One line with a count standing in for a stretch of history still on disk.
+///
+/// The stretch holds no message the person typed, so nothing in it locates
+/// the reader; drawing it would only slow the scroll down. A click reads a
+/// page of it in place, and the line spins while the read runs.
+struct CollapsedHistoryDivider: View {
+    let count: Int
+    let isLoading: Bool
+    let onExpand: () -> Void
+
+    var body: some View {
+        Button(action: onExpand) {
+            HStack(spacing: 8) {
+                line
+                HStack(spacing: 5) {
+                    if isLoading {
+                        ProgressView()
+                            .controlSize(.mini)
+                    } else {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    Text("\(count) message\(count == 1 ? "" : "s")")
+                        .foregroundStyle(.secondary)
+                }
+                .font(.app(.caption))
+                line
+            }
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
+        .disabled(isLoading)
+        .help("Show these messages")
+    }
+
+    private var line: some View {
+        Rectangle()
+            .fill(Color.primary.opacity(0.08))
+            .frame(height: 1)
+            .frame(maxWidth: .infinity)
+    }
+}
+
 /// Tool inputs, decoded once and kept by the id of the call they belong to.
 ///
 /// The id is what makes this cheap: it is short and unique, where the input it

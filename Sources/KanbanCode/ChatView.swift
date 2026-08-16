@@ -19,6 +19,12 @@ struct ChatView: View {
     var onQueuePrompt: ((String, Bool, [String]) -> Void)? // (body, sendAutomatically, imagePaths)
     var onLoadMore: (() -> Void)?
     var onLoadAroundTurn: ((Int) -> Void)?
+    /// Stretches of history kept on disk, drawn as one line with a count.
+    var collapsedRanges: [CollapsedTurnRange] = []
+    /// Opens a page of a collapsed range; returns the first revealed line number.
+    var onExpandRange: ((CollapsedTurnRange) async -> Int?)?
+    /// Loads the previous typed message from disk; returns its line number.
+    var onJumpToPreviousUser: (() async -> Int?)?
     var sessionPath: String?
     var sessionId: String?
     var onFork: (() -> Void)?
@@ -92,6 +98,9 @@ struct ChatView: View {
                     pendingMessage: pendingMessage,
                     onLoadMore: onLoadMore,
                     onLoadAroundTurn: onLoadAroundTurn,
+                    collapsedRanges: collapsedRanges,
+                    onExpandRange: onExpandRange,
+                    onJumpToPreviousUser: onJumpToPreviousUser,
                     sessionPath: sessionPath,
                     onFork: onFork,
                     onCheckpoint: onCheckpoint,
@@ -222,6 +231,9 @@ private struct ChatMessageList: View {
     var pendingMessage: String?
     var onLoadMore: (() -> Void)?
     var onLoadAroundTurn: ((Int) -> Void)?
+    var collapsedRanges: [CollapsedTurnRange] = []
+    var onExpandRange: ((CollapsedTurnRange) async -> Int?)?
+    var onJumpToPreviousUser: (() async -> Int?)?
     var sessionPath: String?
     var onFork: (() -> Void)?
     var onCheckpoint: ((ConversationTurn) -> Void)?
@@ -239,8 +251,12 @@ private struct ChatMessageList: View {
     /// Runs of tool calls the reader has opened again, by run.
     @State private var expandedToolRuns: Set<String> = []
     @State private var visibleRows = ChatVisibleRows()
-    /// A jump backwards waiting for older messages to arrive.
-    @State private var pendingPreviousUserJump = false
+    /// A jump backwards reading the previous message off disk. The pill
+    /// shows a spinner while this is true, so a click on a long file is
+    /// seen to be working rather than stuck.
+    @State private var isJumpLoading = false
+    /// Collapsed ranges being read off disk, by range id.
+    @State private var expandingRangeIds: Set<Int> = []
     /// Whether to auto-scroll on new content. Only set to false when we show
     /// the "New messages" badge (user deliberately scrolled away). Reset to true
     /// when user sends a message, clicks "New messages", or scrolls back to bottom.
@@ -369,6 +385,13 @@ private struct ChatMessageList: View {
                 loadMoreTask?.cancel()
                 loadMoreTask = nil
             }
+            // A chunk loaded for a search match can land between turns
+            // without touching either end of the list, so the pending
+            // scroll is finished from here as well.
+            if pendingMatchScroll {
+                pendingMatchScroll = false
+                scrollToCurrentMatch(delay: true)
+            }
         }
         .onChange(of: turns.last?.lineNumber) { handleNewTurns() }
         .onChange(of: pendingMessage) {
@@ -395,8 +418,13 @@ private struct ChatMessageList: View {
                 jumpToPreviousUserMessage()
             } label: {
                 HStack(spacing: 4) {
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 11, weight: .medium))
+                    if isJumpLoading {
+                        ProgressView()
+                            .controlSize(.mini)
+                    } else {
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 11, weight: .medium))
+                    }
                     Text("Previous user message")
                         .font(.system(size: 12, weight: .medium))
                 }
@@ -404,6 +432,7 @@ private struct ChatMessageList: View {
                 .padding(.vertical, 6)
             }
             .buttonStyle(.plain)
+            .disabled(isJumpLoading)
             // The chat is a page of selectable text, so without this the
             // pointer stays the caret it is over the words behind the pill.
             .pointerStyle(.link)
@@ -419,20 +448,29 @@ private struct ChatMessageList: View {
     ///
     /// What you asked for is the landmark in a conversation, so a jump goes to
     /// the message before whatever is on screen, and puts it at the top with
-    /// the reply underneath it. Pressing again walks back another one.
+    /// the reply underneath it. Pressing again walks back another one. A
+    /// message not loaded yet is read off disk on its own, everything between
+    /// it and the window stays behind a collapsed range, and the pill spins
+    /// until the scroll lands.
     private func jumpToPreviousUserMessage() {
         let mounted = Set(renderedTurns.map(\.lineNumber))
+            .union(collapsedRanges.map(\.id))
         let ceiling = visibleRows.top(among: mounted) ?? turns.last?.lineNumber ?? Int.max
-        guard let target = ChatTranscript.previousUserTurn(in: turns, above: ceiling) else {
-            // Nothing loaded that far back. Read more history and land the
-            // jump when it arrives.
-            if hasMoreTurns {
-                pendingPreviousUserJump = true
-                loadMoreNow()
-            }
+        if let target = ChatTranscript.previousUserTurn(in: turns, above: ceiling) {
+            scrollToPreviousUser(target.lineNumber)
             return
         }
-        scrollToPreviousUser(target.lineNumber)
+        guard hasMoreTurns, !isJumpLoading, let onJumpToPreviousUser else { return }
+        isJumpLoading = true
+        firstVisibleLineNumber = nil
+        Task { @MainActor in
+            defer { isJumpLoading = false }
+            guard let lineNumber = await onJumpToPreviousUser() else { return }
+            // One turn later, so the arriving row is laid out and the scroll
+            // has a place to land.
+            try? await Task.sleep(for: .milliseconds(80))
+            scrollToPreviousUser(lineNumber)
+        }
     }
 
     private func scrollToPreviousUser(_ lineNumber: Int) {
@@ -494,9 +532,15 @@ private struct ChatMessageList: View {
 
     private func handleMatchNavigation() {
         guard let offset = currentMatchOffset else { return }
+        // A match inside a collapsed range has a neighbour turn that would
+        // claim to enclose it, so the range check comes first: those bytes
+        // are on disk, not on screen, and must be loaded to be scrolled to.
+        let hidden = collapsedRanges.contains {
+            offset >= $0.startOffset && offset < $0.endOffset
+        }
         // Nothing encloses a match that sits before everything loaded, which is
         // most of them: the chat opens on the tail and a search runs the file.
-        if loadedTurn(containing: offset) != nil {
+        if !hidden, loadedTurn(containing: offset) != nil {
             scrollToCurrentMatch(delay: false)
         } else {
             pendingMatchScroll = true
@@ -505,19 +549,6 @@ private struct ChatMessageList: View {
     }
 
     private func handleFirstTurnChange() {
-        // A jump backwards that ran out of loaded history lands here, once the
-        // batch it asked for has arrived.
-        if pendingPreviousUserJump {
-            pendingPreviousUserJump = false
-            lastSeenCount = turns.count
-            Task { @MainActor in
-                // One turn later, so the arriving messages are laid out and the
-                // row being scrolled to has a place to be.
-                try? await Task.sleep(for: .milliseconds(80))
-                jumpToPreviousUserMessage()
-            }
-            return
-        }
         // Older turns arriving is how a jump to a match outside the window
         // completes, and it leaves the last turn alone, so the handler watching
         // the other end of the list never hears about it.
@@ -593,6 +624,8 @@ private struct ChatMessageList: View {
                     let groupInfo = Self.computeGroupInfo(turns: visibleTurns)
                     let toolResults = Self.computeToolResults(turns: visibleTurns)
                     let turnGroups = Self.groupConsecutiveToolTurns(turns: visibleTurns)
+                    let newestGroupId = turnGroups.last?.first?.lineNumber
+                    let rows = ChatTranscript.weaveRows(groups: turnGroups, ranges: collapsedRanges)
                     // Find the turn containing the last tool call in the conversation.
                     // This turn's last tool call will be auto-expanded.
                     let lastToolCallLN: Int? = {
@@ -605,134 +638,21 @@ private struct ChatMessageList: View {
                         return nil
                     }()
 
-                    ForEach(Array(turnGroups.enumerated()), id: \.element.first?.lineNumber) { gi, group in
-                        if group.count > 1 {
-                            // Multiple consecutive tool-only turns — single shared bubble
-                            let toolTurns = group.filter { $0.role == "assistant" }
-                            let runKey = "run:\(group.first?.lineNumber ?? 0)"
-                            let callCount = ChatTranscript.toolCallCount(in: toolTurns)
-                            let runIsOpen = expandedToolRuns.contains(runKey)
-                            // The newest run is the one being worked on, so it
-                            // stays as it is. Everything behind it is done, and
-                            // a search match inside one opens it whatever its
-                            // age, or the search would land on nothing.
-                            let collapses = CollapsedToolRunCard.collapses(
-                                callCount: callCount,
-                                isNewestRun: gi == turnGroups.count - 1,
-                                holdsSearchMatch: toolTurns.contains {
-                                    $0.lineNumber == currentMatchLineNumber
-                                }
+                    ForEach(rows) { row in
+                        switch row {
+                        case .collapsed(let range):
+                            collapsedRangeRow(range)
+                        case .group(let group):
+                            groupRow(
+                                group,
+                                isNewestGroup: group.first?.lineNumber == newestGroupId,
+                                groupInfo: groupInfo,
+                                toolResults: toolResults,
+                                lastToolCallLN: lastToolCallLN,
+                                allVisibleTurns: visibleTurns
                             )
-                            VStack(alignment: .leading, spacing: 2) {
-                                if collapses {
-                                    CollapsedToolRunCard(count: callCount, isExpanded: runIsOpen) {
-                                        if runIsOpen {
-                                            expandedToolRuns.remove(runKey)
-                                        } else {
-                                            expandedToolRuns.insert(runKey)
-                                        }
-                                    }
-                                }
-                                if !collapses || runIsOpen {
-                                ForEach(toolTurns, id: \.lineNumber) { toolTurn in
-                                    ChatMessageView(
-                                        turn: toolTurn,
-                                        assistant: assistant,
-                                        toolResultMap: toolResults[toolTurn.lineNumber] ?? [:],
-                                        isLastInGroup: false,
-                                        onCopy: { text in
-                                            NSPasteboard.general.clearContents()
-                                            NSPasteboard.general.setString(text, forType: .string)
-                                        },
-                                        onFork: onFork,
-                                        onCheckpoint: onCheckpoint,
-                                        onSendAnswer: onSendAnswer,
-                                        suppressBackground: true,
-                                        highlightText: activeQuery.isEmpty ? nil : activeQuery,
-                                        isCurrentMatch: currentMatchLineNumber == toolTurn.lineNumber,
-                                        sessionPath: sessionPath,
-                                        tmuxSessionName: tmuxSessionName,
-                                        hasLastToolCall: toolTurn.lineNumber == lastToolCallLN,
-                                        githubBaseURL: githubBaseURL,
-                                        expandedTextBlocks: $expandedTextBlocks,
-                                        expandedToolRuns: $expandedToolRuns
-                                    )
-                                    .equatable()
-                                    // Every turn is addressable, not just the
-                                    // first: search scrolls to a line number,
-                                    // and a match on the third tool call in a
-                                    // group would otherwise have no target.
-                                    .id(toolTurn.lineNumber)
-                                    .onScrollVisibilityChange(threshold: 0.01) { visible in
-                                        visibleRows.set(toolTurn.lineNumber, visible: visible)
-                                    }
-                                }
-                                }
-                            }
-                            .background(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .fill(Color.primary.opacity(0.04))
-                                    .padding(.leading, -8)
-                            )
-                            .frame(maxWidth: chatMaxWidth, alignment: .leading)
-                            .padding(.vertical, 4)
-                            // The run reports for itself as well as its rows,
-                            // because a collapsed one has no rows to report.
-                            .onScrollVisibilityChange(threshold: 0.01) { visible in
-                                if let first = group.first?.lineNumber {
-                                    visibleRows.set(first, visible: visible)
-                                }
-                            }
-                        } else if ChatMessageView.turnHasContent(group[0]) {
-                            let turn = group[0]
-                            // Collect all text from consecutive same-role turns for copy
-                            let groupText: String = {
-                                guard groupInfo[turn.lineNumber] == true else { return "" }
-                                var texts: [String] = []
-                                // Walk backwards from this turn to find all consecutive same-role turns
-                                if let turnIdx = visibleTurns.firstIndex(where: { $0.lineNumber == turn.lineNumber }) {
-                                    var i = turnIdx
-                                    while i >= 0 && visibleTurns[i].role == turn.role {
-                                        let t = visibleTurns[i].contentBlocks
-                                            .filter { if case .text = $0.kind { return true }; return false }
-                                            .map(\.text).joined(separator: "\n")
-                                        if !t.isEmpty { texts.insert(t, at: 0) }
-                                        i -= 1
-                                    }
-                                }
-                                return texts.joined(separator: "\n\n")
-                            }()
-                            ChatMessageView(
-                                turn: turn,
-                                assistant: assistant,
-                                toolResultMap: toolResults[turn.lineNumber] ?? [:],
-                                isLastInGroup: groupInfo[turn.lineNumber] ?? true,
-                                onCopy: { _ in
-                                    NSPasteboard.general.clearContents()
-                                    NSPasteboard.general.setString(groupText, forType: .string)
-                                },
-                                onFork: onFork,
-                                onCheckpoint: onCheckpoint,
-                                onSendAnswer: onSendAnswer,
-                                highlightText: activeQuery.isEmpty ? nil : activeQuery,
-                                isCurrentMatch: currentMatchLineNumber == turn.lineNumber,
-                                sessionPath: sessionPath,
-                                tmuxSessionName: tmuxSessionName,
-                                hasLastToolCall: turn.lineNumber == lastToolCallLN,
-                                githubBaseURL: githubBaseURL,
-                                toolRunIsFinished: gi != turnGroups.count - 1,
-                                expandedTextBlocks: $expandedTextBlocks,
-                                expandedToolRuns: $expandedToolRuns
-                            )
-                            .equatable()
-                            .id(turn.lineNumber)
-                            .padding(.vertical, 4)
-                            .onScrollVisibilityChange(threshold: 0.01) { visible in
-                                visibleRows.set(turn.lineNumber, visible: visible)
-                            }
                         }
                     }
-
                     // Optimistic pending message (sending...)
                     if let pending = pendingMessage {
                         HStack {
@@ -765,6 +685,201 @@ private struct ChatMessageList: View {
                 .padding(.horizontal, 16)
                 .textSelection(.enabled)
                 .environment(\.chatSelectionCoordinator, selectionCoordinator)
+    }
+
+    /// One line standing in for a stretch of history still on disk. A click
+    /// reads a page of it in place and keeps the first revealed row where
+    /// the line was.
+    @ViewBuilder
+    private func collapsedRangeRow(_ range: CollapsedTurnRange) -> some View {
+        CollapsedHistoryDivider(
+            count: range.messageCount,
+            isLoading: expandingRangeIds.contains(range.id)
+        ) {
+            expandCollapsedRange(range)
+        }
+        .frame(maxWidth: chatMaxWidth)
+        .padding(.vertical, 6)
+        .id(range.id)
+        .onScrollVisibilityChange(threshold: 0.01) { visible in
+            visibleRows.set(range.startOffset, visible: visible)
+        }
+    }
+
+    private func expandCollapsedRange(_ range: CollapsedTurnRange) {
+        guard !expandingRangeIds.contains(range.id), let onExpandRange else { return }
+        expandingRangeIds.insert(range.id)
+        firstVisibleLineNumber = nil
+        Task { @MainActor in
+            let firstRevealed = await onExpandRange(range)
+            expandingRangeIds.remove(range.id)
+            guard let firstRevealed else { return }
+            try? await Task.sleep(for: .milliseconds(80))
+            withAnimation(.easeInOut(duration: 0.2)) {
+                scrollPosition.scrollTo(id: firstRevealed, anchor: .top)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func groupRow(
+        _ group: [ConversationTurn],
+        isNewestGroup: Bool,
+        groupInfo: [Int: Bool],
+        toolResults: [Int: [String: ContentBlock]],
+        lastToolCallLN: Int?,
+        allVisibleTurns: [ConversationTurn]
+    ) -> some View {
+        if group.count > 1 {
+            toolRunRow(
+                group, isNewestGroup: isNewestGroup, toolResults: toolResults,
+                lastToolCallLN: lastToolCallLN)
+        } else if ChatMessageView.turnHasContent(group[0]) {
+            singleTurnRow(
+                group[0], isNewestGroup: isNewestGroup, groupInfo: groupInfo,
+                toolResults: toolResults, lastToolCallLN: lastToolCallLN,
+                allVisibleTurns: allVisibleTurns)
+        }
+    }
+
+    /// Multiple consecutive tool-only turns — single shared bubble.
+    @ViewBuilder
+    private func toolRunRow(
+        _ group: [ConversationTurn],
+        isNewestGroup: Bool,
+        toolResults: [Int: [String: ContentBlock]],
+        lastToolCallLN: Int?
+    ) -> some View {
+        let toolTurns = group.filter { $0.role == "assistant" }
+        let runKey = "run:\(group.first?.lineNumber ?? 0)"
+        let callCount = ChatTranscript.toolCallCount(in: toolTurns)
+        let runIsOpen = expandedToolRuns.contains(runKey)
+        // The newest run is the one being worked on, so it stays as it is.
+        // Everything behind it is done, and a search match inside one opens
+        // it whatever its age, or the search would land on nothing.
+        let collapses = CollapsedToolRunCard.collapses(
+            callCount: callCount,
+            isNewestRun: isNewestGroup,
+            holdsSearchMatch: toolTurns.contains {
+                $0.lineNumber == currentMatchLineNumber
+            }
+        )
+        VStack(alignment: .leading, spacing: 2) {
+            if collapses {
+                CollapsedToolRunCard(count: callCount, isExpanded: runIsOpen) {
+                    if runIsOpen {
+                        expandedToolRuns.remove(runKey)
+                    } else {
+                        expandedToolRuns.insert(runKey)
+                    }
+                }
+            }
+            if !collapses || runIsOpen {
+                ForEach(toolTurns, id: \.lineNumber) { toolTurn in
+                    ChatMessageView(
+                        turn: toolTurn,
+                        assistant: assistant,
+                        toolResultMap: toolResults[toolTurn.lineNumber] ?? [:],
+                        isLastInGroup: false,
+                        onCopy: { text in
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(text, forType: .string)
+                        },
+                        onFork: onFork,
+                        onCheckpoint: onCheckpoint,
+                        onSendAnswer: onSendAnswer,
+                        suppressBackground: true,
+                        highlightText: activeQuery.isEmpty ? nil : activeQuery,
+                        isCurrentMatch: currentMatchLineNumber == toolTurn.lineNumber,
+                        sessionPath: sessionPath,
+                        tmuxSessionName: tmuxSessionName,
+                        hasLastToolCall: toolTurn.lineNumber == lastToolCallLN,
+                        githubBaseURL: githubBaseURL,
+                        expandedTextBlocks: $expandedTextBlocks,
+                        expandedToolRuns: $expandedToolRuns
+                    )
+                    .equatable()
+                    // Every turn is addressable, not just the
+                    // first: search scrolls to a line number,
+                    // and a match on the third tool call in a
+                    // group would otherwise have no target.
+                    .id(toolTurn.lineNumber)
+                    .onScrollVisibilityChange(threshold: 0.01) { visible in
+                        visibleRows.set(toolTurn.lineNumber, visible: visible)
+                    }
+                }
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.primary.opacity(0.04))
+                .padding(.leading, -8)
+        )
+        .frame(maxWidth: chatMaxWidth, alignment: .leading)
+        .padding(.vertical, 4)
+        // The run reports for itself as well as its rows,
+        // because a collapsed one has no rows to report.
+        .onScrollVisibilityChange(threshold: 0.01) { visible in
+            if let first = group.first?.lineNumber {
+                visibleRows.set(first, visible: visible)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func singleTurnRow(
+        _ turn: ConversationTurn,
+        isNewestGroup: Bool,
+        groupInfo: [Int: Bool],
+        toolResults: [Int: [String: ContentBlock]],
+        lastToolCallLN: Int?,
+        allVisibleTurns: [ConversationTurn]
+    ) -> some View {
+        // Collect all text from consecutive same-role turns for copy
+        let groupText: String = {
+            guard groupInfo[turn.lineNumber] == true else { return "" }
+            var texts: [String] = []
+            // Walk backwards from this turn to find all consecutive same-role turns
+            if let turnIdx = allVisibleTurns.firstIndex(where: { $0.lineNumber == turn.lineNumber }) {
+                var i = turnIdx
+                while i >= 0 && allVisibleTurns[i].role == turn.role {
+                    let t = allVisibleTurns[i].contentBlocks
+                        .filter { if case .text = $0.kind { return true }; return false }
+                        .map(\.text).joined(separator: "\n")
+                    if !t.isEmpty { texts.insert(t, at: 0) }
+                    i -= 1
+                }
+            }
+            return texts.joined(separator: "\n\n")
+        }()
+        ChatMessageView(
+            turn: turn,
+            assistant: assistant,
+            toolResultMap: toolResults[turn.lineNumber] ?? [:],
+            isLastInGroup: groupInfo[turn.lineNumber] ?? true,
+            onCopy: { _ in
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(groupText, forType: .string)
+            },
+            onFork: onFork,
+            onCheckpoint: onCheckpoint,
+            onSendAnswer: onSendAnswer,
+            highlightText: activeQuery.isEmpty ? nil : activeQuery,
+            isCurrentMatch: currentMatchLineNumber == turn.lineNumber,
+            sessionPath: sessionPath,
+            tmuxSessionName: tmuxSessionName,
+            hasLastToolCall: turn.lineNumber == lastToolCallLN,
+            githubBaseURL: githubBaseURL,
+            toolRunIsFinished: !isNewestGroup,
+            expandedTextBlocks: $expandedTextBlocks,
+            expandedToolRuns: $expandedToolRuns
+        )
+        .equatable()
+        .id(turn.lineNumber)
+        .padding(.vertical, 4)
+        .onScrollVisibilityChange(threshold: 0.01) { visible in
+            visibleRows.set(turn.lineNumber, visible: visible)
+        }
     }
 
     // MARK: - Search Bar
@@ -944,22 +1059,7 @@ private struct ChatMessageList: View {
     /// Precompute which turns are the last in their group (O(n) once, not O(n²) per render).
     private static func computeGroupInfo(turns: [ConversationTurn]) -> [Int: Bool] {
         var result: [Int: Bool] = [:]
-        let visibleTurns = turns.filter { turn in
-            if turn.role == "user" {
-                return turn.contentBlocks.contains {
-                    if case .text = $0.kind { return !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-                    return false
-                }
-            }
-            return turn.contentBlocks.contains { block in
-                switch block.kind {
-                case .text: return !block.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                case .toolUse, .agentCall, .planModeExit, .askUserQuestion, .planModeEnter: return true
-                case .toolResult: return false
-                case .thinking: return !block.text.isEmpty
-                }
-            }
-        }
+        let visibleTurns = turns.filter(\.hasVisibleChatContent)
         for (i, turn) in visibleTurns.enumerated() {
             let isLast = (i == visibleTurns.count - 1) || visibleTurns[i + 1].role != turn.role
             result[turn.lineNumber] = isLast
@@ -1095,6 +1195,22 @@ private struct ScrollBottomTracker: ViewModifier {
     }
 }
 
+/// A row of the chat list: a group of turns, or a collapsed stretch of
+/// history still on disk.
+enum ChatRow: Identifiable {
+    case group([ConversationTurn])
+    case collapsed(CollapsedTurnRange)
+
+    var id: Int {
+        switch self {
+        case .group(let turns): return turns.first?.lineNumber ?? -1
+        case .collapsed(let range): return range.startOffset
+        }
+    }
+
+    var offset: Int { self.id }
+}
+
 /// Rules the chat list follows, kept out of the view so they can be read and
 /// checked on their own.
 @MainActor
@@ -1114,31 +1230,12 @@ enum ChatTranscript {
     /// the reminders the harness injects. None of those is a landmark in a
     /// conversation, and a jump that lands on one lands on nothing.
     static func isTypedMessage(_ turn: ConversationTurn) -> Bool {
-        guard turn.role == "user" else { return false }
-        return turn.contentBlocks.contains { block in
-            guard case .text = block.kind else { return false }
-            return self.isTypedText(block.text)
-        }
+        TranscriptClassifier.isTypedMessage(turn)
     }
 
     static func isTypedText(_ text: String) -> Bool {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return false }
-        // An agent reporting in, drawn as a system line rather than a message.
-        if trimmed.hasPrefix("✓ ") || trimmed.hasPrefix("⏳ ") { return false }
-        if trimmed.contains("[Request interrupted by user") { return false }
-        if trimmed.hasPrefix("Caveat: The messages below were generated by the user") {
-            return false
-        }
-        // What is left after the harness's own tags come out. A message that is
-        // only tags was written by the tooling, not by the person.
-        let remaining = JsonlParser.stripMetadataTags(trimmed)
-            .replacing(Self.systemReminderRegex, with: "")
-        return !remaining.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        TranscriptClassifier.isTypedText(text)
     }
-
-    private nonisolated(unsafe) static let systemReminderRegex =
-        try! Regex("<system-reminder>[\\s\\S]*?</system-reminder>")
 
     /// How many tool calls a run of tool-only turns holds. A turn can carry
     /// more than one, so the number of rows is not the number of turns.
@@ -1150,6 +1247,25 @@ enum ChatTranscript {
                     return false
                 }
         }
+    }
+
+    /// Lay turn groups and collapsed ranges into one list, in file order.
+    static func weaveRows(
+        groups: [[ConversationTurn]], ranges: [CollapsedTurnRange]
+    ) -> [ChatRow] {
+        var rows: [ChatRow] = []
+        rows.reserveCapacity(groups.count + ranges.count)
+        var remaining = ranges.sorted { $0.startOffset < $1.startOffset }[...]
+        for group in groups {
+            let groupOffset = group.first?.lineNumber ?? Int.max
+            while let range = remaining.first, range.startOffset < groupOffset {
+                rows.append(.collapsed(range))
+                remaining = remaining.dropFirst()
+            }
+            rows.append(.group(group))
+        }
+        rows.append(contentsOf: remaining.map { .collapsed($0) })
+        return rows
     }
 }
 

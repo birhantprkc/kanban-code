@@ -8,11 +8,14 @@ public enum TranscriptReader {
         public let turns: [ConversationTurn]
         public let totalLineCount: Int
         public let hasMore: Bool
+        /// Byte offset just past the last complete line, for incremental reads.
+        public let fileEnd: Int
 
-        public init(turns: [ConversationTurn], totalLineCount: Int, hasMore: Bool) {
+        public init(turns: [ConversationTurn], totalLineCount: Int, hasMore: Bool, fileEnd: Int = 0) {
             self.turns = turns
             self.totalLineCount = totalLineCount
             self.hasMore = hasMore
+            self.fileEnd = fileEnd
         }
     }
 
@@ -23,122 +26,45 @@ public enum TranscriptReader {
     }
 
     /// Read the last `maxTurns` conversation turns from a .jsonl file.
-    /// Always reads from the tail of the file — seeks to end minus estimated bytes,
-    /// drops the first partial line, and parses from there.
-    public static func readTail(from filePath: String, maxTurns: Int = 80) async throws -> ReadResult {
+    ///
+    /// Walks the file backwards in chunks and stops as soon as it holds enough
+    /// turns, so the cost follows the size of those turns rather than the size
+    /// of the file. `maxBytes` puts a hard ceiling on that cost for callers
+    /// that fire in bursts and only need the recent end. Uses byte offset in
+    /// the file as lineNumber for stable identity across reloads.
+    public static func readTail(
+        from filePath: String, maxTurns: Int = 80, maxBytes: Int? = nil
+    ) async throws -> ReadResult {
         guard FileManager.default.fileExists(atPath: filePath) else {
             return ReadResult(turns: [], totalLineCount: 0, hasMore: false)
         }
-
-        let url = URL(fileURLWithPath: filePath)
         let attrs = try FileManager.default.attributesOfItem(atPath: filePath)
-        let fileSize = (attrs[.size] as? UInt64) ?? 0
+        let fileSize = (attrs[.size] as? Int) ?? 0
 
-        guard fileSize > 0 else {
-            return ReadResult(turns: [], totalLineCount: 0, hasMore: false)
-        }
-
-        // Use a generous per-turn estimate (100KB) to avoid needing retries.
-        // Claude sessions often have large tool results with code blocks.
-        let clampedTurns = UInt64(min(maxTurns, 10_000))
-        let tailSize = min(clampedTurns * 100 * 1024, fileSize)
-
-        return try await readTailBytes(url: url, fileSize: fileSize, tailSize: tailSize, maxTurns: maxTurns)
-    }
-
-    /// Fast tail read: seek to end - tailSize, read lines from there.
-    /// Uses byte offset in the file as lineNumber for stable identity across reloads.
-    private static func readTailBytes(url: URL, fileSize: UInt64, tailSize: UInt64, maxTurns: Int) async throws -> ReadResult {
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-
-        let seekPos = fileSize - tailSize
-        try handle.seek(toOffset: seekPos)
-        let tailData = handle.readDataToEndOfFile()
-
-        guard let tailString = String(data: tailData, encoding: .utf8) else {
-            return ReadResult(turns: [], totalLineCount: 0, hasMore: false)
-        }
-
-        // Split into lines, tracking byte offsets for stable IDs
-        var turnLineInfos: [(byteOffset: Int, line: String)] = []
-        var bytePos = Int(seekPos)
-
-        // First line is likely partial (we seeked mid-line), skip it
-        var lines = tailString.components(separatedBy: "\n")
-        if seekPos > 0 && !lines.isEmpty {
-            bytePos += lines[0].utf8.count + 1 // +1 for \n
-            lines.removeFirst()
-        }
-
-        for line in lines {
-            let lineByteOffset = bytePos
-            bytePos += line.utf8.count + 1 // +1 for \n
-
-            guard !line.isEmpty, line.contains("\"type\"") else { continue }
-            guard let data = line.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let type = obj["type"] as? String,
-                  type == "user" || type == "assistant" || type == "queue-operation" else { continue }
-            if type == "user" && JsonlParser.isCaveatMessage(obj) { continue }
-            // queue-operation enqueue: user sent a prompt via the queue — treat as user turn
-            if type == "queue-operation" {
-                guard let op = obj["operation"] as? String, op == "enqueue",
-                      let content = obj["content"] as? String, !content.isEmpty else { continue }
+        var newestFirst: [(offset: Int, obj: [String: Any])] = []
+        var hasMore = false
+        try scanRecordsBackwards(filePath: filePath) { offset, line in
+            if let maxBytes, fileSize - offset > maxBytes {
+                hasMore = true
+                return true
             }
-            turnLineInfos.append((lineByteOffset, line))
+            guard line.contains("\"type\""), let obj = candidateRecord(from: line) else {
+                return false
+            }
+            if newestFirst.count >= maxTurns {
+                hasMore = true
+                return true
+            }
+            newestFirst.append((offset, obj))
+            return false
         }
 
-        // Keep only last maxTurns
-        let kept = turnLineInfos.suffix(maxTurns)
         var turns: [ConversationTurn] = []
-        turns.reserveCapacity(kept.count)
-
-        for (i, info) in kept.enumerated() {
-            guard let data = info.line.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let type = obj["type"] as? String else { continue }
-
-            let role: String
-            let blocks: [ContentBlock]
-            let textPreview: String
-            if type == "queue-operation" {
-                // Queued prompt or task notification — render as user/system message
-                role = "user"
-                let content = obj["content"] as? String ?? ""
-                if content.contains("<task-notification>") {
-                    if let summary = Self.parseTaskNotification(content) {
-                        blocks = [ContentBlock(kind: .text, text: summary)]
-                        textPreview = summary
-                    } else {
-                        continue // Hide malformed task notifications
-                    }
-                } else {
-                    blocks = [ContentBlock(kind: .text, text: content)]
-                    textPreview = content
-                }
-            } else if type == "user" {
-                role = JsonlParser.isLocalCommandStdout(obj) ? "assistant" : type
-                blocks = extractUserBlocks(from: obj)
-                textPreview = Self.buildTextPreview(blocks: blocks, role: role)
-            } else {
-                role = type
-                blocks = extractAssistantBlocks(from: obj)
-                textPreview = Self.buildTextPreview(blocks: blocks, role: role)
-            }
-            let timestamp = obj["timestamp"] as? String
-            let imgCount = (type == "user") ? Self.countImages(in: obj) : 0
-            let modelName = (obj["message"] as? [String: Any])?["model"] as? String
-            turns.append(ConversationTurn(
-                index: i,
-                lineNumber: info.byteOffset, // stable: byte offset in original file
-                role: role,
-                textPreview: textPreview,
-                timestamp: timestamp,
-                contentBlocks: blocks,
-                imageCount: imgCount,
-                modelName: modelName
-            ))
+        turns.reserveCapacity(newestFirst.count)
+        for (i, record) in newestFirst.reversed().enumerated() {
+            guard let turn = buildTurn(from: record.obj, index: i, byteOffset: record.offset)
+            else { continue }
+            turns.append(turn)
         }
 
         // Merge consecutive assistant entries — Claude Code splits thinking + response
@@ -148,8 +74,357 @@ public enum TranscriptReader {
         return ReadResult(
             turns: merged,
             totalLineCount: -1, // unknown without full scan
-            hasMore: turnLineInfos.count > maxTurns || seekPos > 0
+            hasMore: hasMore,
+            fileEnd: try offsetAfterLastNewline(filePath: filePath)
         )
+    }
+
+    /// Turns parsed from the bytes appended after a known point.
+    public struct Appended: Sendable {
+        public let turns: [ConversationTurn]
+        public let fileEnd: Int
+    }
+
+    /// Parse only the bytes at and after `startOffset`, which must be an
+    /// offset a line starts at.
+    ///
+    /// This is the read a file watcher event pays for: the last loaded turn's
+    /// start is passed in, so lines appended since — including ones that grow
+    /// that turn — come back as fresh turns to splice over it. Returns nil
+    /// when the region is larger than `maxBytes`, which means the window is
+    /// too far behind and a full tail read is the cheaper way back.
+    public static func readAppended(
+        from filePath: String, startOffset: Int, maxBytes: Int = 32 * 1024 * 1024
+    ) async throws -> Appended? {
+        guard FileManager.default.fileExists(atPath: filePath) else { return nil }
+        let attrs = try FileManager.default.attributesOfItem(atPath: filePath)
+        let fileSize = (attrs[.size] as? Int) ?? 0
+        guard startOffset >= 0, startOffset <= fileSize, fileSize - startOffset <= maxBytes
+        else { return nil }
+
+        var records: [(offset: Int, obj: [String: Any])] = []
+        try scanRecordsForward(filePath: filePath, from: startOffset) { offset, line in
+            guard line.contains("\"type\""), let obj = candidateRecord(from: line) else {
+                return false
+            }
+            records.append((offset, obj))
+            return false
+        }
+
+        var turns: [ConversationTurn] = []
+        turns.reserveCapacity(records.count)
+        for (i, record) in records.enumerated() {
+            guard let turn = buildTurn(from: record.obj, index: i, byteOffset: record.offset)
+            else { continue }
+            turns.append(turn)
+        }
+        return Appended(
+            turns: mergeConsecutiveAssistantTurns(turns),
+            fileEnd: try offsetAfterLastNewline(filePath: filePath)
+        )
+    }
+
+    /// Turns parsed from a byte range, and where the parse stopped.
+    public struct RangeRead: Sendable {
+        public let turns: [ConversationTurn]
+        /// Line-start offset of the first byte not parsed. Equal to the
+        /// requested end when the whole range was read; earlier when
+        /// `maxVisible` stopped the read at a turn boundary.
+        public let consumedEnd: Int
+    }
+
+    /// Parse the turns whose lines start inside `[startOffset, endOffset)`.
+    ///
+    /// With `maxVisible`, the read stops at the first turn that would begin
+    /// once that many rows are already in hand, and reports where it stopped,
+    /// so a large collapsed stretch opens a page at a time. The stop lands on
+    /// a merge boundary, never inside a merged assistant turn.
+    public static func readRange(
+        from filePath: String, startOffset: Int, endOffset: Int, maxVisible: Int? = nil
+    ) async throws -> RangeRead {
+        var turns: [ConversationTurn] = []
+        var consumedEnd = endOffset
+        var visibleCount = 0
+        var prevIsAssistant = false
+        var runCounted = false
+
+        try scanRecordsForward(filePath: filePath, from: startOffset, to: endOffset) {
+            offset, line in
+            guard line.contains("\"type\""), let obj = candidateRecord(from: line),
+                let turn = buildTurn(from: obj, index: turns.count, byteOffset: offset)
+            else { return false }
+
+            let isAssistant = turn.role == "assistant"
+            let startsNewTurn = !(isAssistant && prevIsAssistant)
+            if let cap = maxVisible, startsNewTurn, visibleCount >= cap {
+                consumedEnd = offset
+                return true
+            }
+            if startsNewTurn { runCounted = false }
+            if turn.hasVisibleChatContent {
+                if isAssistant {
+                    if !runCounted {
+                        visibleCount += 1
+                        runCounted = true
+                    }
+                } else {
+                    visibleCount += 1
+                }
+            }
+            prevIsAssistant = isAssistant
+            turns.append(turn)
+            return false
+        }
+
+        return RangeRead(turns: mergeConsecutiveAssistantTurns(turns), consumedEnd: consumedEnd)
+    }
+
+    /// Count the rows the chat would draw for the lines starting inside
+    /// `[startOffset, endOffset)`, without keeping any of them.
+    ///
+    /// Tool result lines — the bulk of a transcript's bytes — are recognised
+    /// by their top-level `toolUseResult` key and skipped without JSON
+    /// parsing. The key can only appear unescaped at the top level, because
+    /// inside a JSON string its quotes would be escaped.
+    public static func countVisibleTurns(
+        from filePath: String, startOffset: Int, endOffset: Int
+    ) async throws -> Int {
+        var visibleCount = 0
+        var prevIsAssistant = false
+        var runCounted = false
+
+        try scanRecordsForward(filePath: filePath, from: startOffset, to: endOffset) { _, line in
+            guard line.contains("\"type\"") else { return false }
+            if line.contains("\"type\":\"user\""), line.contains("\"toolUseResult\"") {
+                // A tool result turn: never visible, but it does end a merged
+                // assistant run, the same way it does when parsed.
+                prevIsAssistant = false
+                return false
+            }
+            guard let obj = candidateRecord(from: line),
+                let turn = buildTurn(from: obj, index: 0, byteOffset: 0)
+            else { return false }
+
+            let isAssistant = turn.role == "assistant"
+            if !(isAssistant && prevIsAssistant) { runCounted = false }
+            if turn.hasVisibleChatContent {
+                if isAssistant {
+                    if !runCounted {
+                        visibleCount += 1
+                        runCounted = true
+                    }
+                } else {
+                    visibleCount += 1
+                }
+            }
+            prevIsAssistant = isAssistant
+            return false
+        }
+        return visibleCount
+    }
+
+    /// A typed user message found by scanning backwards, and where its line ends.
+    public struct PreviousUserTurn: Sendable {
+        public let turn: ConversationTurn
+        public let endOffset: Int
+    }
+
+    /// The nearest message the person typed strictly above `offset`, which
+    /// must be an offset a line starts at.
+    ///
+    /// Walks the file backwards. Tool result lines are skipped by their
+    /// top-level `toolUseResult` key without JSON parsing, so the scan moves
+    /// through a wall of tool output at read speed.
+    public static func findPreviousTypedUserTurn(
+        in filePath: String, before offset: Int
+    ) async throws -> PreviousUserTurn? {
+        var found: PreviousUserTurn?
+        try scanRecordsBackwards(filePath: filePath, from: offset) { lineOffset, line in
+            guard line.contains("\"type\":\"user\"") || line.contains("\"type\":\"queue-operation\"")
+            else { return false }
+            if line.contains("\"toolUseResult\"") { return false }
+            guard let obj = candidateRecord(from: line),
+                let turn = buildTurn(from: obj, index: 0, byteOffset: lineOffset),
+                turn.role == "user",
+                TranscriptClassifier.isTypedMessage(turn)
+            else { return false }
+            found = PreviousUserTurn(turn: turn, endOffset: lineOffset + line.utf8.count + 1)
+            return true
+        }
+        return found
+    }
+
+    // MARK: - Line scanning
+
+    /// Whether a parsed record is one the history displays. Applies the same
+    /// filter everywhere a line becomes a turn: user and assistant records,
+    /// queued prompts, and nothing marked as harness metadata.
+    private static func candidateRecord(from line: String) -> [String: Any]? {
+        guard let data = line.data(using: .utf8),
+            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let type = obj["type"] as? String
+        else { return nil }
+        switch type {
+        case "user":
+            return JsonlParser.isCaveatMessage(obj) ? nil : obj
+        case "assistant":
+            return obj
+        case "queue-operation":
+            guard let op = obj["operation"] as? String, op == "enqueue",
+                let content = obj["content"] as? String, !content.isEmpty
+            else { return nil }
+            return obj
+        default:
+            return nil
+        }
+    }
+
+    /// Walk a file's lines newest first, in chunks, carrying the byte offset
+    /// each line starts at. The handler returns true to stop. `endOffset`
+    /// bounds the scan: only lines starting before it are visited.
+    static func scanRecordsBackwards(
+        filePath: String,
+        from endOffset: Int? = nil,
+        handler: (_ byteOffset: Int, _ line: String) -> Bool
+    ) throws {
+        guard FileManager.default.fileExists(atPath: filePath) else { return }
+        let attrs = try FileManager.default.attributesOfItem(atPath: filePath)
+        let fileSize = (attrs[.size] as? Int) ?? 0
+        var end = min(endOffset ?? fileSize, fileSize)
+        guard end > 0 else { return }
+
+        let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: filePath))
+        defer { try? handle.close() }
+
+        let chunkSize = 1 << 20
+        let newline = UInt8(ascii: "\n")
+        // Bytes of a line whose end was seen but whose start lies in a chunk
+        // not read yet. Never contains a newline.
+        var carry: [UInt8] = []
+
+        while end > 0 {
+            let start = max(0, end - chunkSize)
+            try handle.seek(toOffset: UInt64(start))
+            let chunkData = try handle.read(upToCount: end - start) ?? Data()
+            var bytes = [UInt8](chunkData)
+            let chunkCount = bytes.count
+            bytes.append(contentsOf: carry)
+
+            var starts: [Int] = []
+            for i in 0..<chunkCount where bytes[i] == newline { starts.append(i + 1) }
+
+            if starts.isEmpty && start > 0 {
+                carry = bytes
+                end = start
+                continue
+            }
+
+            // Complete lines, newest first. Each start pairs with the next
+            // newline; the last runs into the carry, which holds the rest of
+            // the line the later chunk cut through.
+            for (k, lineStart) in starts.enumerated().reversed() {
+                let lineEnd = k + 1 < starts.count ? starts[k + 1] - 1 : bytes.count
+                guard lineEnd > lineStart,
+                    let line = String(bytes: bytes[lineStart..<lineEnd], encoding: .utf8)
+                else { continue }
+                if handler(start + lineStart, line) { return }
+            }
+
+            if start == 0 {
+                let lineEnd = starts.first.map { $0 - 1 } ?? bytes.count
+                if lineEnd > 0, let line = String(bytes: bytes[0..<lineEnd], encoding: .utf8),
+                    handler(0, line) {
+                    return
+                }
+            } else {
+                carry = Array(bytes[0..<(starts[0] - 1)])
+            }
+            end = start
+        }
+    }
+
+    /// Walk a file's complete lines oldest first from `startOffset`, in
+    /// chunks, carrying the byte offset each line starts at. Only lines
+    /// starting before `stopOffset` are visited. A final line without a
+    /// newline is delivered too. The handler returns true to stop.
+    static func scanRecordsForward(
+        filePath: String,
+        from startOffset: Int,
+        to stopOffset: Int? = nil,
+        handler: (_ byteOffset: Int, _ line: String) -> Bool
+    ) throws {
+        guard FileManager.default.fileExists(atPath: filePath) else { return }
+        let attrs = try FileManager.default.attributesOfItem(atPath: filePath)
+        let fileSize = (attrs[.size] as? Int) ?? 0
+        let stop = min(stopOffset ?? fileSize, fileSize)
+        guard startOffset >= 0, startOffset < stop else { return }
+
+        let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: filePath))
+        defer { try? handle.close() }
+        try handle.seek(toOffset: UInt64(startOffset))
+
+        let chunkSize = 1 << 20
+        let newline = UInt8(ascii: "\n")
+        var carry: [UInt8] = []
+        var carryOffset = startOffset
+        var pos = startOffset
+
+        while pos < fileSize {
+            let readCount = min(chunkSize, fileSize - pos)
+            let chunkData = try handle.read(upToCount: readCount) ?? Data()
+            guard !chunkData.isEmpty else { break }
+            pos += chunkData.count
+
+            var bytes = carry
+            bytes.append(contentsOf: chunkData)
+            var lineStart = 0
+            var i = carry.count
+            while i < bytes.count {
+                if bytes[i] == newline {
+                    let offset = carryOffset + lineStart
+                    if offset >= stop { return }
+                    if i > lineStart,
+                        let line = String(bytes: bytes[lineStart..<i], encoding: .utf8),
+                        handler(offset, line) {
+                        return
+                    }
+                    lineStart = i + 1
+                    // The next line starts past the bound: done, without
+                    // reading on just to find where that line ends.
+                    if carryOffset + lineStart >= stop { return }
+                }
+                i += 1
+            }
+            carry = Array(bytes[lineStart...])
+            carryOffset += lineStart
+        }
+
+        if !carry.isEmpty, carryOffset < stop,
+            let line = String(bytes: carry, encoding: .utf8) {
+            _ = handler(carryOffset, line)
+        }
+    }
+
+    /// Byte offset just past the file's last newline: everything before it is
+    /// complete lines, everything after is a line still being written.
+    static func offsetAfterLastNewline(filePath: String) throws -> Int {
+        let attrs = try FileManager.default.attributesOfItem(atPath: filePath)
+        let fileSize = (attrs[.size] as? Int) ?? 0
+        guard fileSize > 0 else { return 0 }
+
+        let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: filePath))
+        defer { try? handle.close() }
+
+        let chunkSize = 1 << 16
+        var end = fileSize
+        while end > 0 {
+            let start = max(0, end - chunkSize)
+            try handle.seek(toOffset: UInt64(start))
+            let bytes = [UInt8](try handle.read(upToCount: end - start) ?? Data())
+            if let i = bytes.lastIndex(of: UInt8(ascii: "\n")) { return start + i + 1 }
+            end = start
+        }
+        return 0
     }
 
     /// Stream all conversation turns from a .jsonl file, yielding each turn as it's parsed.
@@ -325,79 +600,81 @@ public enum TranscriptReader {
         }
     }
 
+    /// Turns loaded around a byte offset, and the byte region they came from.
+    public struct AroundRead: Sendable {
+        public let turns: [ConversationTurn]
+        /// Line-start offset of the first line the read consumed.
+        public let regionStart: Int
+        /// Offset just past the last line the read consumed.
+        public let regionEnd: Int
+    }
+
     /// Load the turns surrounding a byte offset, for jumping to a search match
     /// that sits outside the window currently loaded.
     ///
     /// Turns carry the byte offset they start at as their identity, which is
     /// what makes a chunk from here line up with one from ``readTail(from:maxTurns:)``.
+    /// Seeks straight to the offset: the context above comes from a backward
+    /// scan, so the cost follows the window, not the file.
     public static func readAround(
         from filePath: String,
         byteOffset: Int,
         before: Int = 40,
         after: Int = 40
-    ) async throws -> [ConversationTurn] {
-        guard FileManager.default.fileExists(atPath: filePath) else { return [] }
+    ) async throws -> AroundRead {
+        guard FileManager.default.fileExists(atPath: filePath) else {
+            return AroundRead(turns: [], regionStart: byteOffset, regionEnd: byteOffset)
+        }
+        let attrs = try FileManager.default.attributesOfItem(atPath: filePath)
+        let fileSize = (attrs[.size] as? Int) ?? 0
 
-        let url = URL(fileURLWithPath: filePath)
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-
-        // Only the last `before` turn lines are kept while walking towards the
-        // target, so a hundred megabyte transcript costs a window rather than a
-        // copy of itself.
-        var leading: [FileLines.Record] = []
-        var trailing: [FileLines.Record] = []
-        var reachedTarget = false
-
-        for try await record in handle.blockLineRecords {
-            let line = record.text
-            guard !line.isEmpty, line.contains("\"type\"") else { continue }
-            guard let data = line.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let type = obj["type"] as? String,
-                  type == "user" || type == "assistant" || type == "queue-operation" else { continue }
-            if type == "user" && JsonlParser.isCaveatMessage(obj) { continue }
-
-            if reachedTarget {
-                trailing.append(record)
-                if trailing.count >= after { break }
-                continue
+        var leadingNewestFirst: [(offset: Int, obj: [String: Any])] = []
+        try scanRecordsBackwards(filePath: filePath, from: byteOffset) { offset, line in
+            guard line.contains("\"type\""), let obj = candidateRecord(from: line) else {
+                return false
             }
-            if record.byteOffset >= byteOffset {
-                reachedTarget = true
-                trailing.append(record)
-                continue
-            }
-            leading.append(record)
-            if leading.count > before { leading.removeFirst() }
+            leadingNewestFirst.append((offset, obj))
+            return leadingNewestFirst.count >= before
         }
 
-        let kept = leading + trailing
+        var trailing: [(offset: Int, obj: [String: Any])] = []
+        var regionEnd = byteOffset
+        try scanRecordsForward(filePath: filePath, from: byteOffset) { offset, line in
+            regionEnd = min(offset + line.utf8.count + 1, fileSize)
+            guard line.contains("\"type\""), let obj = candidateRecord(from: line) else {
+                return false
+            }
+            trailing.append((offset, obj))
+            return trailing.count >= after
+        }
+
+        let kept = leadingNewestFirst.reversed() + trailing
         var turns: [ConversationTurn] = []
         turns.reserveCapacity(kept.count)
-        for (offset, record) in kept.enumerated() {
-            guard let turn = self.parseTurn(line: record.text, index: offset, byteOffset: record.byteOffset)
+        for (i, record) in kept.enumerated() {
+            guard let turn = buildTurn(from: record.obj, index: i, byteOffset: record.offset)
             else { continue }
             turns.append(turn)
         }
-        return mergeConsecutiveAssistantTurns(turns)
+        return AroundRead(
+            turns: mergeConsecutiveAssistantTurns(turns),
+            regionStart: leadingNewestFirst.last?.offset ?? byteOffset,
+            regionEnd: max(regionEnd, byteOffset)
+        )
     }
 
-    /// Builds one turn from one transcript line, or nothing when the line does
-    /// not display as a turn.
-    private static func parseTurn(
-        line: String, index: Int, byteOffset: Int
+    /// Builds one turn from one parsed record, or nothing when the record does
+    /// not display as a turn. The record must have passed ``candidateRecord(from:)``.
+    private static func buildTurn(
+        from obj: [String: Any], index: Int, byteOffset: Int
     ) -> ConversationTurn? {
-        guard let data = line.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let type = obj["type"] as? String else { return nil }
+        guard let type = obj["type"] as? String else { return nil }
 
         let role: String
         let blocks: [ContentBlock]
         let textPreview: String
         if type == "queue-operation" {
-            guard let operation = obj["operation"] as? String, operation == "enqueue",
-                  let content = obj["content"] as? String, !content.isEmpty else { return nil }
+            guard let content = obj["content"] as? String, !content.isEmpty else { return nil }
             role = "user"
             if content.contains("<task-notification>") {
                 guard let summary = Self.parseTaskNotification(content) else { return nil }

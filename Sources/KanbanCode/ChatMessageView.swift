@@ -70,22 +70,11 @@ struct ChatMessageView: View, Equatable {
         }
     }
 
-    /// Whether this turn has visible content (used by ChatView to skip empty turns in ForEach).
+    /// Whether this turn has visible content (used by ChatView to skip empty
+    /// turns in ForEach). The rule lives in Core so the count on a collapsed
+    /// range is the count of rows expanding it draws.
     static func turnHasContent(_ turn: ConversationTurn) -> Bool {
-        if turn.role == "user" {
-            return turn.contentBlocks.contains {
-                if case .text = $0.kind { return !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-                return false
-            }
-        }
-        return turn.contentBlocks.contains { block in
-            switch block.kind {
-            case .text: return !block.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            case .toolUse, .agentCall, .planModeExit, .askUserQuestion, .planModeEnter: return true
-            case .toolResult: return false
-            case .thinking: return !block.text.isEmpty
-            }
-        }
+        turn.hasVisibleChatContent
     }
 
     var body: some View {

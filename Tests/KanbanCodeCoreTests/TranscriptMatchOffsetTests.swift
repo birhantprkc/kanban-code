@@ -89,7 +89,7 @@ struct TranscriptMatchOffsetTests {
         defer { try? FileManager.default.removeItem(atPath: path) }
 
         let match = try #require(await Self.collect(path, query: "needle").first)
-        let around = try await TranscriptReader.readAround(from: path, byteOffset: match)
+        let around = try await TranscriptReader.readAround(from: path, byteOffset: match).turns
         let tail = try await TranscriptReader.readTail(from: path, maxTurns: 200)
 
         let fromWindow = try #require(around.first { $0.lineNumber == match })
@@ -112,7 +112,8 @@ struct TranscriptMatchOffsetTests {
 
         let match = try #require(await Self.collect(path, query: "needle").first)
         let around = try await TranscriptReader.readAround(
-            from: path, byteOffset: match, before: 10, after: 10)
+            from: path, byteOffset: match, before: 10, after: 10
+        ).turns
 
         #expect(around.count <= 20)
         #expect(around.contains { $0.lineNumber == match })

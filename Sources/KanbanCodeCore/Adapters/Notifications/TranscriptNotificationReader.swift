@@ -18,7 +18,10 @@ public enum TranscriptNotificationReader {
         let turns: [ConversationTurn]
         switch assistant {
         case .claude:
-            guard let result = try? await TranscriptReader.readTail(from: transcriptPath, maxTurns: 20) else {
+            guard
+                let result = try? await TranscriptReader.readTail(
+                    from: transcriptPath, maxTurns: 20, maxBytes: 2 * 1024 * 1024)
+            else {
                 return nil
             }
             turns = result.turns
