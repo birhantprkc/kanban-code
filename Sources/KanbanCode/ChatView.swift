@@ -250,8 +250,11 @@ private struct ChatMessageList: View {
     @State private var firstVisibleLineNumber: Int?
     @State private var loadMoreTask: Task<Void, Never>?
     @State private var hasNewMessages = false
-    @State private var lastSeenCount = 0
     @State private var lastSeenLineNumber: Int?
+    /// Set by the first scroll gesture on the current conversation. Until
+    /// then the geometry only moves because rows load and measure, and none
+    /// of that means the reader asked for older history.
+    @State private var userHasScrolled = false
     @State private var expandedTextBlocks: Set<String> = []
     /// Runs of tool calls the reader has opened again, by run.
     @State private var expandedToolRuns: Set<String> = []
@@ -386,6 +389,11 @@ private struct ChatMessageList: View {
         }, action: { wasOverscrolling, isOverscrolling in
             if !wasOverscrolling && isOverscrolling { checkLoadMore() }
         })
+        .onScrollPhaseChange { _, newPhase in
+            // Only a real gesture arms history loading. Layout settling and
+            // programmatic jumps also move the geometry, and they must not.
+            if newPhase != .idle && newPhase != .animating { userHasScrolled = true }
+        }
         .onChange(of: turns.count) {
             // Load completed — clear the loading marker so the spinner
             // hides immediately and a new load can be triggered.
@@ -410,7 +418,10 @@ private struct ChatMessageList: View {
                 scrollToCurrentMatch(delay: true)
             }
         }
-        .onChange(of: turns.last?.lineNumber) { handleNewTurns() }
+        .onChange(of: TurnsEdges(first: turns.first?.lineNumber, last: turns.last?.lineNumber)) {
+            old, new in
+            handleTurnsEdgeChange(old: old, new: new)
+        }
         .onChange(of: pendingMessage) {
             if pendingMessage != nil {
                 shouldAutoScroll = true
@@ -420,12 +431,11 @@ private struct ChatMessageList: View {
             }
         }
         .onAppear {
-            lastSeenCount = turns.count
             lastSeenLineNumber = turns.last?.lineNumber
             isAtBottom = true
             shouldAutoScroll = true
+            userHasScrolled = false
         }
-        .onChange(of: turns.first?.lineNumber) { handleFirstTurnChange() }
     }
 
     @ViewBuilder
@@ -526,16 +536,49 @@ private struct ChatMessageList: View {
         }
     }
 
-    private func handleNewTurns() {
-        guard let newLast = turns.last?.lineNumber else { return }
-        let isInitial = lastSeenLineNumber == nil
-        if !activeQuery.isEmpty {
-            if pendingMatchScroll {
-                pendingMatchScroll = false
-                scrollToCurrentMatch(delay: true)
-            }
-        } else {
-            let isNewAtBottom = newLast != lastSeenLineNumber
+    /// One handler for both ends of the list. A card switch changes both
+    /// ends in the same update, so the decision cannot be split across two
+    /// observers: whichever ran first changed the state the other read, and
+    /// the reset-to-bottom branch was skipped.
+    private func handleTurnsEdgeChange(old: TurnsEdges, new: TurnsEdges) {
+        let transition = ChatTranscript.edgeTransition(
+            oldFirst: old.first, oldLast: old.last,
+            newFirst: new.first, newLast: new.last,
+            lastSeen: lastSeenLineNumber, turns: turns
+        )
+
+        guard !transition.switched else {
+            // A different transcript: start over, following the bottom.
+            lastSeenLineNumber = new.last
+            isAtBottom = true
+            hasNewMessages = false
+            shouldAutoScroll = true
+            loadMoreTask?.cancel()
+            loadMoreTask = nil
+            firstVisibleLineNumber = nil
+            userHasScrolled = false
+            pendingMatchScroll = false
+            visibleRows = ChatVisibleRows()
+            scrollPosition = ScrollPosition(edge: .bottom)
+            return
+        }
+
+        // A chunk loaded for a search match can land at either end of the
+        // list without being new conversation content.
+        if pendingMatchScroll {
+            pendingMatchScroll = false
+            scrollToCurrentMatch(delay: true)
+            lastSeenLineNumber = new.last
+            return
+        }
+
+        if transition.prepended, let anchor = firstVisibleLineNumber {
+            // Older turns arrived above: keep the row the reader was on in
+            // place, even when a live session appended in the same update.
+            scrollPosition.scrollTo(id: anchor, anchor: .top)
+        } else if transition.appended, activeQuery.isEmpty {
+            let isInitial = lastSeenLineNumber == nil
+            let isNewAtBottom = new.last != lastSeenLineNumber
             if isInitial || (isNewAtBottom && shouldAutoScroll) {
                 scrollPosition.scrollTo(edge: .bottom)
             } else if isNewAtBottom {
@@ -543,8 +586,8 @@ private struct ChatMessageList: View {
                 shouldAutoScroll = false
             }
         }
-        lastSeenLineNumber = newLast
-        lastSeenCount = turns.count
+
+        lastSeenLineNumber = new.last
     }
 
     private func handleMatchNavigation() {
@@ -562,42 +605,6 @@ private struct ChatMessageList: View {
         } else {
             pendingMatchScroll = true
             onLoadAroundTurn?(offset)
-        }
-    }
-
-    private func handleFirstTurnChange() {
-        // Older turns arriving is how a jump to a match outside the window
-        // completes, and it leaves the last turn alone, so the handler watching
-        // the other end of the list never hears about it.
-        if pendingMatchScroll {
-            pendingMatchScroll = false
-            scrollToCurrentMatch(delay: true)
-            lastSeenCount = turns.count
-            return
-        }
-        // Still the same conversation as long as the last turn we knew is in
-        // the list. Requiring it to still be the *last* turn is not enough:
-        // older messages loading above and a live session appending below can
-        // land in the same update, and that used to read as a card switch
-        // and yank the reader to the bottom mid-history.
-        let sameConversation =
-            turns.last?.lineNumber == lastSeenLineNumber
-            || lastSeenLineNumber.map { seen in
-                turns.contains { $0.lineNumber == seen }
-            } ?? false
-        if sameConversation {
-            lastSeenCount = turns.count
-            if let anchor = firstVisibleLineNumber {
-                scrollPosition.scrollTo(id: anchor, anchor: .top)
-            }
-        } else {
-            lastSeenLineNumber = nil
-            lastSeenCount = 0
-            isAtBottom = true
-            hasNewMessages = false
-            loadMoreTask?.cancel()
-            loadMoreTask = nil
-            scrollPosition = ScrollPosition(edge: .bottom)
         }
     }
 
@@ -1061,6 +1068,10 @@ private struct ChatMessageList: View {
     /// Uses a task guard to prevent overlapping calls and a 500ms cooldown
     /// between loads so re-renders can settle before the next batch.
     private func checkLoadMore() {
+        // Armed only after the reader scrolls this conversation. A card
+        // switch parks the geometry near the top on its own while rows
+        // measure, and that must not read as a request for older history.
+        guard userHasScrolled else { return }
         // A search does not stop the history from being read backwards. It used
         // to, which made a conversation that was being searched the one you
         // could not scroll back through.
@@ -1240,7 +1251,46 @@ enum ChatRow: Identifiable {
 /// Rules the chat list follows, kept out of the view so they can be read and
 /// checked on their own.
 @MainActor
+/// The two ends of the loaded window, watched as one value so a change to
+/// both arrives as one update.
+struct TurnsEdges: Equatable {
+    var first: Int?
+    var last: Int?
+}
+
 enum ChatTranscript {
+    /// How the ends of the loaded window moved in one update.
+    struct EdgeTransition: Equatable {
+        /// The turns belong to a different conversation.
+        var switched: Bool
+        /// New content at the bottom.
+        var appended: Bool
+        /// Older content above the top.
+        var prepended: Bool
+    }
+
+    /// Decide what a change at the ends of the loaded turns means.
+    ///
+    /// Still the same conversation as long as the last turn we knew is in the
+    /// list. Requiring it to still be the last turn is not enough: older
+    /// messages loading above and a live session appending below can land in
+    /// the same update.
+    static func edgeTransition(
+        oldFirst: Int?, oldLast: Int?,
+        newFirst: Int?, newLast: Int?,
+        lastSeen: Int?, turns: [ConversationTurn]
+    ) -> EdgeTransition {
+        let sameConversation =
+            lastSeen == nil
+            || newLast == lastSeen
+            || turns.contains { $0.lineNumber == lastSeen }
+        return EdgeTransition(
+            switched: !sameConversation,
+            appended: newLast != oldLast,
+            prepended: newFirst != oldFirst
+        )
+    }
+
     /// The last thing you asked for before `ceiling`.
     static func previousUserTurn(in turns: [ConversationTurn], above ceiling: Int)
         -> ConversationTurn?
