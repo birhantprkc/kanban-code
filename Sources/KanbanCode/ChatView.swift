@@ -365,10 +365,16 @@ private struct ChatMessageList: View {
             }
     }
 
+    /// Room kept above the content for the pill that floats over the top of
+    /// the view, so a row a jump lands at the top sits below it with a gap
+    /// instead of underneath it.
+    private static let topPillMargin: CGFloat = 44
+
     private var scrollViewWithTracking: some View {
         ScrollView {
             messageListContent
         }
+        .contentMargins(.top, Self.topPillMargin, for: .scrollContent)
         .scrollPosition($scrollPosition)
         .modifier(ScrollBottomTracker(isAtBottom: $isAtBottom, hasNewMessages: $hasNewMessages, shouldAutoScroll: $shouldAutoScroll))
         .modifier(ScrollNearTopDetector(isNearTop: $isNearTop))
