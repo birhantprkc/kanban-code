@@ -251,10 +251,10 @@ private struct ChatMessageList: View {
     @State private var loadMoreTask: Task<Void, Never>?
     @State private var hasNewMessages = false
     @State private var lastSeenLineNumber: Int?
-    /// Set by the first scroll gesture on the current conversation. Until
-    /// then the geometry only moves because rows load and measure, and none
-    /// of that means the reader asked for older history.
-    @State private var userHasScrolled = false
+    /// What is moving the scroll right now. Only the reader's own gesture
+    /// may load history: rows measuring, segments landing, and programmatic
+    /// jumps all move the geometry too, and none of that is a request.
+    @State private var scrollPhase: ScrollPhase = .idle
     @State private var expandedTextBlocks: Set<String> = []
     /// Runs of tool calls the reader has opened again, by run.
     @State private var expandedToolRuns: Set<String> = []
@@ -381,34 +381,23 @@ private struct ChatMessageList: View {
         .scrollPosition($scrollPosition)
         .modifier(ScrollBottomTracker(isAtBottom: $isAtBottom, hasNewMessages: $hasNewMessages, shouldAutoScroll: $shouldAutoScroll))
         .modifier(ScrollNearTopDetector(isNearTop: $isNearTop))
-        .onChange(of: isNearTop) { if isNearTop { checkLoadMore() } }
-        .onScrollGeometryChange(for: Bool.self, of: { geo in
-            // Overscroll / pull gesture. Rest at the top already sits at
-            // minus the pill margin, so the pull only counts past it.
-            geo.contentOffset.y < -(chatTopPillMargin + 10)
-        }, action: { wasOverscrolling, isOverscrolling in
-            if !wasOverscrolling && isOverscrolling { checkLoadMore() }
-        })
-        .onScrollPhaseChange { _, newPhase in
-            // Only a real gesture arms history loading. Layout settling and
-            // programmatic jumps also move the geometry, and they must not.
-            if newPhase != .idle && newPhase != .animating { userHasScrolled = true }
+        .onScrollPhaseChange { _, newPhase in scrollPhase = newPhase }
+        .onScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.y }) { oldY, newY in
+            // The reader's own upward scroll near the top asks for older
+            // history. Each segment is paid for by real movement: a load
+            // never chains off the previous one, so sitting parked at the
+            // top loads nothing until the reader scrolls again.
+            let isReaderScroll =
+                scrollPhase == .tracking || scrollPhase == .interacting
+                || scrollPhase == .decelerating
+            if isReaderScroll, newY < oldY, newY < 50 { loadMoreNow() }
         }
         .onChange(of: turns.count) {
-            // Load completed — clear the loading marker so the spinner
+            // Load completed: clear the loading marker so the spinner
             // hides immediately and a new load can be triggered.
             if loadMoreTask != nil {
                 loadMoreTask?.cancel()
                 loadMoreTask = nil
-            }
-            // A short segment can leave the reader still parked at the top
-            // with nothing left to cross the trigger line, so the check
-            // runs again once the inserted rows have settled.
-            if isNearTop && hasMoreTurns {
-                Task { @MainActor in
-                    try? await Task.sleep(for: .milliseconds(350))
-                    checkLoadMore()
-                }
             }
             // A chunk loaded for a search match can land between turns
             // without touching either end of the list, so the pending
@@ -434,7 +423,6 @@ private struct ChatMessageList: View {
             lastSeenLineNumber = turns.last?.lineNumber
             isAtBottom = true
             shouldAutoScroll = true
-            userHasScrolled = false
         }
     }
 
@@ -556,7 +544,6 @@ private struct ChatMessageList: View {
             loadMoreTask?.cancel()
             loadMoreTask = nil
             firstVisibleLineNumber = nil
-            userHasScrolled = false
             pendingMatchScroll = false
             visibleRows = ChatVisibleRows()
             scrollPosition = ScrollPosition(edge: .bottom)
@@ -1064,24 +1051,13 @@ private struct ChatMessageList: View {
         }
     }
 
-    /// Continuously loads more history while the user is near the top.
-    /// Uses a task guard to prevent overlapping calls and a 500ms cooldown
-    /// between loads so re-renders can settle before the next batch.
-    private func checkLoadMore() {
-        // Armed only after the reader scrolls this conversation. A card
-        // switch parks the geometry near the top on its own while rows
-        // measure, and that must not read as a request for older history.
-        guard userHasScrolled else { return }
-        // A search does not stop the history from being read backwards. It used
-        // to, which made a conversation that was being searched the one you
-        // could not scroll back through.
-        guard isNearTop, hasMoreTurns else { return }
-        loadMoreNow()
-    }
-
-    /// Read one more batch of history, whatever asked for it.
+    /// Read one more batch of history.
+    ///
+    /// A search does not stop the history from being read backwards. It used
+    /// to, which made a conversation that was being searched the one you
+    /// could not scroll back through.
     private func loadMoreNow() {
-        guard loadMoreTask == nil else { return }
+        guard loadMoreTask == nil, hasMoreTurns else { return }
         firstVisibleLineNumber = turns.first?.lineNumber
         onLoadMore?()
         // Marker to prevent re-entry while loading. Cleared immediately

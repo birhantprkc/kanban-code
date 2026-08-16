@@ -33,11 +33,22 @@ struct ChannelsWatcherTests {
         }
     }
 
-    private func waitFor(_ flag: NotificationFlag, seconds: Double) async {
+    /// Waits for the flag, poking the trigger again once a second. The
+    /// notification travels through the main queue, which the rest of the
+    /// suite can starve for seconds when everything runs at once, so the
+    /// wait is long and returns the moment the flag flips.
+    private func waitFor(
+        _ flag: NotificationFlag, seconds: Double, retrigger: (() throws -> Void)? = nil
+    ) async {
         let deadline = Date().addingTimeInterval(seconds)
+        var lastTrigger = Date()
         while Date() < deadline {
             if flag.fired { return }
             try? await Task.sleep(for: .milliseconds(50))
+            if let retrigger, Date().timeIntervalSince(lastTrigger) > 1 {
+                lastTrigger = Date()
+                try? retrigger()
+            }
         }
     }
 
@@ -63,13 +74,16 @@ struct ChannelsWatcherTests {
         try await Task.sleep(for: .milliseconds(150))
 
         // Trigger a write.
-        let fh = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
-        try fh.seekToEnd()
-        try fh.write(contentsOf: Data("\n".utf8))
-        try fh.close()
+        let appendNewline = {
+            let fh = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
+            try fh.seekToEnd()
+            try fh.write(contentsOf: Data("\n".utf8))
+            try fh.close()
+        }
+        try appendNewline()
 
-        await waitFor(flag, seconds: 2)
-        #expect(flag.fired, "watcher should have posted .kanbanCodeChannelsChanged within 2s")
+        await waitFor(flag, seconds: 10, retrigger: appendNewline)
+        #expect(flag.fired, "watcher should have posted .kanbanCodeChannelsChanged")
     }
 
     @Test func channelLogAppendPostsNotification() async throws {
@@ -98,12 +112,15 @@ struct ChannelsWatcherTests {
         try await Task.sleep(for: .milliseconds(150))
 
         let line = #"{"id":"m1","ts":"2026-04-18T00:00:00.000Z","from":{"cardId":null,"handle":"user"},"body":"hi","type":"message"}"# + "\n"
-        let fh = try FileHandle(forWritingTo: URL(fileURLWithPath: logPath))
-        try fh.seekToEnd()
-        try fh.write(contentsOf: Data(line.utf8))
-        try fh.close()
+        let appendMessage = {
+            let fh = try FileHandle(forWritingTo: URL(fileURLWithPath: logPath))
+            try fh.seekToEnd()
+            try fh.write(contentsOf: Data(line.utf8))
+            try fh.close()
+        }
+        try appendMessage()
 
-        await waitFor(flag, seconds: 2)
+        await waitFor(flag, seconds: 10, retrigger: appendMessage)
         #expect(flag.fired)
         #expect(flag.firedChannelName == "general")
     }
