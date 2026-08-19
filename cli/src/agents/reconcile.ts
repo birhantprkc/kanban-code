@@ -12,6 +12,8 @@ export interface ReconcileOptions {
   bin?: string;
   /// Tear down agent-managed sessions/cards/worktrees no longer in config.
   prune?: boolean;
+  /// Override the stagger between real launches (tests: 0).
+  launchGapMs?: number;
 }
 
 export interface RepoReconcileResult {
@@ -70,11 +72,48 @@ export function reconcileAgent(
   return { slug: agent.slug, workspace, repos, launch };
 }
 
+/// How long the first launched agent gets to refresh a shared credential
+/// before the next one starts. Twelve claude agents resuming in the same
+/// second all saw an expired OAuth access token, all raced the refresh, and
+/// the provider's refresh-token rotation let one win: the other eleven came
+/// up "Login expired" and sat dead until relaunched by hand. The leader
+/// refreshes and writes the new token pair inside this window; everyone
+/// after reads a fresh token and never refreshes at all.
+const LEADER_CREDENTIAL_WINDOW_MS = 20_000;
+/// The gap between the remaining launches, so a boot is not a stampede.
+const FOLLOWER_LAUNCH_GAP_MS = 3_000;
+
+/// Synchronous sleep: the reconcile path is synchronous end to end, and a
+/// boot-time pause must actually hold the next launch back.
+function sleepMs(ms: number): void {
+  if (ms <= 0) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 /// Reconcile every agent in the config, optionally pruning de-configured ones.
+/// Launches are staggered: agents whose tmux session is already alive cost no
+/// wait, so a routine reconcile over a healthy fleet stays instant and the
+/// gaps only spend time when processes actually start (boot, or a recovery).
 export function reconcileAll(file: AgentsFile, opts: ReconcileOptions = {}): ReconcileResult {
   mkdirSync(file.workspacesDir, { recursive: true });
 
-  const agents = file.agents.map((a) => reconcileAgent(a, file, opts));
+  const agents: AgentReconcileResult[] = [];
+  let launched = 0;
+  let pendingGapMs = 0;
+  for (const a of file.agents) {
+    // The gap trails a real launch, so a fleet whose sessions are all alive
+    // reconciles with no waiting at all.
+    sleepMs(pendingGapMs);
+    pendingGapMs = 0;
+    const result = reconcileAgent(a, file, opts);
+    agents.push(result);
+    if (result.launch.action !== "noop-running") {
+      launched += 1;
+      pendingGapMs =
+        opts.launchGapMs ??
+        (launched === 1 ? LEADER_CREDENTIAL_WINDOW_MS : FOLLOWER_LAUNCH_GAP_MS);
+    }
+  }
   const pruned = opts.prune ? pruneStale(file) : [];
   return { agents, pruned };
 }

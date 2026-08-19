@@ -102,10 +102,16 @@ export function ensureAgentSession(
     if (opts.extraArgs?.length) args.push(...opts.extraArgs);
     command = [bin, ...args].join(" ");
 
-    // Both runtimes' hooks correlate events to this agent via this env var, so
-    // the daemon/bridge key on our stable session id regardless of the id the
-    // runtime mints internally.
-    const env = { ...(opts.env ?? {}), KANBAN_SESSION_ID: launchIdentity.sessionId, KANBAN_SLUG: launchIdentity.slug };
+    // Both runtimes' hooks correlate events to this agent via these env vars,
+    // so the daemon/bridge key on our stable session id regardless of the id
+    // the runtime mints internally. The session's display name is NOT an env
+    // var: claude is named through its own --name flag (see buildArgs), which
+    // is what its UI, /resume picker and any observer of the session read.
+    const env = {
+      ...(opts.env ?? {}),
+      KANBAN_SESSION_ID: launchIdentity.sessionId,
+      KANBAN_SLUG: launchIdentity.slug,
+    };
     const res = createTmuxSession(launchIdentity.tmuxName, opts.cwd, command, env);
     if (!res.ok) {
       throw new Error(`Failed to create tmux session "${identity.tmuxName}": ${res.error}`);
