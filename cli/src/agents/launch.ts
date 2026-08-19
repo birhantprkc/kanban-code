@@ -104,8 +104,16 @@ export function ensureAgentSession(
 
     // Both runtimes' hooks correlate events to this agent via this env var, so
     // the daemon/bridge key on our stable session id regardless of the id the
-    // runtime mints internally.
-    const env = { ...(opts.env ?? {}), KANBAN_SESSION_ID: launchIdentity.sessionId, KANBAN_SLUG: launchIdentity.slug };
+    // runtime mints internally. LANGWATCH_SESSION_TITLE names the session in
+    // LangWatch: the capture seams post it as the explicit session title, so
+    // the sessions screen shows "pr-reviewer" instead of the first line of a
+    // scripted greeting. A caller-provided title wins over the slug.
+    const env = {
+      LANGWATCH_SESSION_TITLE: launchIdentity.slug,
+      ...(opts.env ?? {}),
+      KANBAN_SESSION_ID: launchIdentity.sessionId,
+      KANBAN_SLUG: launchIdentity.slug,
+    };
     const res = createTmuxSession(launchIdentity.tmuxName, opts.cwd, command, env);
     if (!res.ok) {
       throw new Error(`Failed to create tmux session "${identity.tmuxName}": ${res.error}`);
