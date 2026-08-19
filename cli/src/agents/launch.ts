@@ -102,14 +102,12 @@ export function ensureAgentSession(
     if (opts.extraArgs?.length) args.push(...opts.extraArgs);
     command = [bin, ...args].join(" ");
 
-    // Both runtimes' hooks correlate events to this agent via this env var, so
-    // the daemon/bridge key on our stable session id regardless of the id the
-    // runtime mints internally. LANGWATCH_SESSION_TITLE names the session in
-    // LangWatch: the capture seams post it as the explicit session title, so
-    // the sessions screen shows "pr-reviewer" instead of the first line of a
-    // scripted greeting. A caller-provided title wins over the slug.
+    // Both runtimes' hooks correlate events to this agent via these env vars,
+    // so the daemon/bridge key on our stable session id regardless of the id
+    // the runtime mints internally. The session's display name is NOT an env
+    // var: claude is named through its own --name flag (see buildArgs), which
+    // is what its UI, /resume picker and any observer of the session read.
     const env = {
-      LANGWATCH_SESSION_TITLE: launchIdentity.slug,
       ...(opts.env ?? {}),
       KANBAN_SESSION_ID: launchIdentity.sessionId,
       KANBAN_SLUG: launchIdentity.slug,

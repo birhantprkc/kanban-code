@@ -31,7 +31,7 @@ describe("runtime descriptor", () => {
     );
     assert.deepEqual(
       c.buildArgs({ sessionId: "sid", slug: "agent", resume: true, skipPermissions: true }),
-      ["--resume", "sid", "--dangerously-skip-permissions"]
+      ["--resume", "sid", "--name", "agent", "--dangerously-skip-permissions"]
     );
   });
 

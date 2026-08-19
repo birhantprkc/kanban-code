@@ -49,7 +49,10 @@ const claude: RuntimeSpec = {
   configDirName: ".claude",
   buildArgs({ sessionId, slug, resume, skipPermissions, model }) {
     const args: string[] = [];
-    if (resume) args.push("--resume", sessionId);
+    // --name on both paths: a fresh session is born named, and a resume
+    // re-asserts the slug so sessions created before naming existed pick
+    // their name up on the next boot.
+    if (resume) args.push("--resume", sessionId, "--name", slug);
     else args.push("--session-id", sessionId, "--name", slug);
     if (skipPermissions) args.push("--dangerously-skip-permissions");
     if (model) args.push("--model", model);
