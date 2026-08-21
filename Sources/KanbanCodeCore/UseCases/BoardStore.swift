@@ -706,6 +706,7 @@ public enum Reducer {
             link.column = .inProgress
             link.manualOverrides.column = false // Let automatic assignment take over
             link.isLaunching = true
+            link.launchedAt = .now
             link.updatedAt = .now
             state.links[cardId] = link
             state.selectedCardId = cardId
@@ -725,6 +726,7 @@ public enum Reducer {
             link.column = .inProgress
             link.manualOverrides.column = false // Let automatic assignment take over
             link.isLaunching = true
+            link.launchedAt = .now
             link.updatedAt = .now
             state.links[cardId] = link
             state.selectedCardId = cardId
@@ -1657,6 +1659,7 @@ public enum Reducer {
         case .beginMigration(let cardId):
             guard var link = state.links[cardId] else { return [] }
             link.isLaunching = true
+            link.launchedAt = .now
             link.updatedAt = .now
             state.links[cardId] = link
             state.busyCards.insert(cardId)

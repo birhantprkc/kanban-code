@@ -103,6 +103,25 @@ Feature: Card Lifecycle and Automation
       | 4    | The card moves to "In Progress"                     |
       | 5    | SessionStart hook adds sessionLink to the same card |
 
+  # A card that waits for its session accepts one by project path. Every
+  # idle session of a busy project matched that test, so a card could take
+  # a session written days earlier, and the session the launch really
+  # started got a duplicate card of its own.
+  Scenario: A launch takes only the session it started
+    Given a card is launching in project "/dev/project"
+    And the project has a session last written 2 days ago
+    When the reconciler offers that session to the card
+    Then the card should stay without a session
+    And the old session should get its own card
+    When the session the launch started is written
+    Then that session should go to the launching card
+
+  Scenario: Two launches in one project do not swap sessions
+    Given two cards are launching in project "/dev/project"
+    When a new session appears
+    Then the card launched most recently should take it
+    And the other card should keep waiting for its own
+
   Scenario: Starting a GitHub issue from backlog
     Given a GitHub issue "#123: Fix login bug" is in the Backlog
     When I click "Start" on the card

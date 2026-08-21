@@ -235,6 +235,19 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
     /// Prevents background reconciliation from overriding card state mid-launch.
     public var isLaunching: Bool?
 
+    /// When the last launch or resume of this card started.
+    ///
+    /// A card waiting for its session accepts one by project path, and the
+    /// session a launch starts is always written after the launch. Without
+    /// this stamp any old session of the same project could take the place,
+    /// which left the card on a session the user never opened.
+    public var launchedAt: Date?
+
+    /// The moment a session must be at or after to belong to this card's
+    /// launch. Cards launched before this field existed fall back to
+    /// `updatedAt`, which a launch also stamps.
+    public var launchAnchor: Date { launchedAt ?? updatedAt }
+
     // MARK: - Display
 
     /// Best display title from link data alone: name → promptBody → branch → PR title → session ID.
@@ -342,6 +355,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         assistant: CodingAssistant? = nil,
         isRemote: Bool = false,
         isLaunching: Bool? = nil,
+        launchedAt: Date? = nil,
         sortOrder: Int? = nil,
         pinnedAt: Date? = nil,
         pinnedSortOrder: Int? = nil,
@@ -374,6 +388,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         self.assistant = assistant
         self.isRemote = isRemote
         self.isLaunching = isLaunching
+        self.launchedAt = launchedAt
         self.sortOrder = sortOrder
         self.pinnedAt = pinnedAt
         self.pinnedSortOrder = pinnedSortOrder
@@ -388,7 +403,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         case id, name, projectPath, column, createdAt, updatedAt, lastActivity, lastOpenedAt
         case manualOverrides, manuallyArchived, source, promptBody, promptImagePaths, parentCardId, modelOverride
         case selfCompactContextThresholdTokens
-        case isRemote, isLaunching, sortOrder, pinnedAt, pinnedSortOrder
+        case isRemote, isLaunching, launchedAt, sortOrder, pinnedAt, pinnedSortOrder
         case discoveredBranches, discoveredRepos, assistant, apiServiceId
         // Typed links (new nested format)
         case sessionLink, tmuxLink, worktreeLink, prLinks, issueLink, queuedPrompts, browserTabs
@@ -419,6 +434,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         selfCompactContextThresholdTokens = try c.decodeIfPresent(Int.self, forKey: .selfCompactContextThresholdTokens)
         isRemote = try c.decodeIfPresent(Bool.self, forKey: .isRemote) ?? false
         isLaunching = try c.decodeIfPresent(Bool.self, forKey: .isLaunching)
+        launchedAt = try c.decodeIfPresent(Date.self, forKey: .launchedAt)
         sortOrder = try c.decodeIfPresent(Int.self, forKey: .sortOrder)
         pinnedAt = try c.decodeIfPresent(Date.self, forKey: .pinnedAt)
         pinnedSortOrder = try c.decodeIfPresent(Int.self, forKey: .pinnedSortOrder)
@@ -511,6 +527,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         try c.encodeIfPresent(selfCompactContextThresholdTokens, forKey: .selfCompactContextThresholdTokens)
         try c.encode(isRemote, forKey: .isRemote)
         try c.encodeIfPresent(isLaunching, forKey: .isLaunching)
+        try c.encodeIfPresent(launchedAt, forKey: .launchedAt)
         try c.encodeIfPresent(sortOrder, forKey: .sortOrder)
         try c.encodeIfPresent(pinnedAt, forKey: .pinnedAt)
         try c.encodeIfPresent(pinnedSortOrder, forKey: .pinnedSortOrder)

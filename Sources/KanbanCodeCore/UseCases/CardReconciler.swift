@@ -524,13 +524,16 @@ public enum CardReconciler {
         //    Also matches when session is in a worktree under the card's project
         //    (e.g., session in <project>/.claude/worktrees/<name> matches card with projectPath=<project>)
         if let projectPath = session.projectPath {
-            for (_, link) in linksById {
-                if link.tmuxLink != nil,
-                   link.sessionLink == nil,
-                   (link.projectPath == projectPath || isWorktreeUnder(sessionPath: projectPath, projectRoot: link.projectPath)) {
-                    KanbanCodeLog.debug("reconciler", "findCard: session=\(session.id.prefix(8)) matched by projectPath+tmux → card=\(link.id.prefix(12)) (tmux=\(link.tmuxLink?.sessionName ?? "?"))")
-                    return link.id
-                }
+            let candidates = linksById.values.filter { link in
+                link.tmuxLink != nil
+                    && link.sessionLink == nil
+                    && (link.projectPath == projectPath
+                        || isWorktreeUnder(sessionPath: projectPath, projectRoot: link.projectPath))
+                    && startedAfterLaunch(session: session, link: link)
+            }
+            if let link = newestLaunch(candidates) {
+                KanbanCodeLog.debug("reconciler", "findCard: session=\(session.id.prefix(8)) matched by projectPath+tmux → card=\(link.id.prefix(12)) (tmux=\(link.tmuxLink?.sessionName ?? "?"))")
+                return link.id
             }
             // Log when no match found for debugging
             let tmuxCards = linksById.values.filter { $0.tmuxLink != nil && $0.sessionLink == nil }
@@ -551,11 +554,13 @@ public enum CardReconciler {
             if let worktreeRange = dirName.range(of: "--claude-worktrees-") {
                 let rootEncodedName = String(dirName[dirName.startIndex..<worktreeRange.lowerBound])
                 let projectRoot = JsonlParser.decodeDirectoryName(rootEncodedName)
-                for (_, link) in linksById {
-                    guard link.tmuxLink != nil,
-                          link.sessionLink == nil,
-                          link.projectPath == projectRoot
-                    else { continue }
+                let candidates = linksById.values.filter { link in
+                    link.tmuxLink != nil
+                        && link.sessionLink == nil
+                        && link.projectPath == projectRoot
+                        && startedAfterLaunch(session: session, link: link)
+                }
+                if let link = newestLaunch(candidates) {
                     KanbanCodeLog.debug("reconciler", "findCard: session=\(session.id.prefix(8)) matched by worktree dir name → card=\(link.id.prefix(12))")
                     return link.id
                 }
@@ -567,11 +572,13 @@ public enum CardReconciler {
         //    match it to the existing card to prevent duplicates.
         //    The card keeps its original sessionLink — we just suppress a new card.
         if let projectPath = session.projectPath {
-            for (_, link) in linksById {
-                guard link.tmuxLink != nil,
-                      link.sessionLink != nil,
-                      (link.projectPath == projectPath || isWorktreeUnder(sessionPath: projectPath, projectRoot: link.projectPath))
-                else { continue }
+            let candidates = linksById.values.filter { link in
+                link.tmuxLink != nil
+                    && link.sessionLink != nil
+                    && (link.projectPath == projectPath
+                        || isWorktreeUnder(sessionPath: projectPath, projectRoot: link.projectPath))
+            }
+            if let link = newestLaunch(candidates) {
                 KanbanCodeLog.debug("reconciler", "findCard: session=\(session.id.prefix(8)) matched by projectPath+tmux (existing session) → card=\(link.id.prefix(12))")
                 return link.id
             }
@@ -579,6 +586,34 @@ public enum CardReconciler {
 
         KanbanCodeLog.debug("reconciler", "findCard: session=\(session.id.prefix(8)) projectPath=\(session.projectPath ?? "nil") → NO MATCH")
         return nil
+    }
+
+    /// How far before a card's launch a session may have been written and
+    /// still count as that launch's session. Covers a card whose `updatedAt`
+    /// stands in for a launch it does not record, and clock jitter between
+    /// the app and the file system.
+    private static let launchMatchTolerance: TimeInterval = 120
+
+    /// Whether this session can be the one the card's launch started.
+    ///
+    /// Project path alone puts every session of a busy project in reach of a
+    /// card that waits for one, including sessions last written days before
+    /// the card existed. The session a launch starts is always written after
+    /// the launch, so anything older belongs to somebody else.
+    private static func startedAfterLaunch(session: Session, link: Link) -> Bool {
+        session.modifiedTime >= link.launchAnchor.addingTimeInterval(-launchMatchTolerance)
+    }
+
+    /// The most recently launched of several candidate cards.
+    ///
+    /// Two cards launched in the same project both accept a session by
+    /// project path, and dictionary order decides nothing useful. The newer
+    /// launch is the one a session appearing now most likely came from.
+    private static func newestLaunch(_ candidates: some Collection<Link>) -> Link? {
+        candidates.max { lhs, rhs in
+            if lhs.launchAnchor != rhs.launchAnchor { return lhs.launchAnchor < rhs.launchAnchor }
+            return lhs.id < rhs.id
+        }
     }
 
     /// Check if sessionPath is a worktree directory under a project root.
