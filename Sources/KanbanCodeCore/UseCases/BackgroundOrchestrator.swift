@@ -210,9 +210,32 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
 
     // MARK: - Event-driven notification path (called from file watcher)
 
+    private let passLock = NSLock()
+    private var lastPass: Task<Void, Never>?
+
     /// Process new hook events and send notifications. Called directly by file watcher
     /// for instant response — mirrors claude-pushover's hook-driven approach.
+    ///
+    /// Calls arrive from the main actor and from the background tick, and a
+    /// pass suspends at every await, so two of them can interleave: both took
+    /// the initial-load branch, and a replayed old event could land in the
+    /// detector after a newer one for the same session. Chaining each call
+    /// behind the previous keeps the detector fed in file order, and a caller
+    /// returns only after its own events are in.
     public func processHookEvents() async {
+        let current = passLock.withLock {
+            let previous = lastPass
+            let chained = Task { [weak self] in
+                await previous?.value
+                await self?.runHookEventsPass()
+            }
+            lastPass = chained
+            return chained
+        }
+        await current.value
+    }
+
+    private func runHookEventsPass() async {
         do {
             let events = try await hookEventStore.readNewEvents()
 
