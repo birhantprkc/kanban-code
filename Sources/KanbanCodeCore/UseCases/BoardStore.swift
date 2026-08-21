@@ -2271,6 +2271,12 @@ public final class BoardStore: @unchecked Sendable {
     /// B1.5 never picks up Claude's renamed branch — leaving cards unlinked
     /// from PRs whose branch differs from the worktree dir name.
     private var worktreeCache: [String: (fingerprint: WorktreeCacheFingerprint, worktrees: [Worktree])] = [:]
+    /// The background GitHub fetch in flight, if any. Reconcile passes never
+    /// wait on it: they apply `cachedPRsByBranch`/`cachedPRsByRepoAndNumber`
+    /// from the last completed fetch and move on.
+    private var prFetchTask: Task<Void, Never>?
+    private var cachedPRsByBranch: [String: PullRequest] = [:]
+    private var cachedPRsByRepoAndNumber: [String: [Int: PullRequest]] = [:]
     private let discovery: SessionDiscovery
     private let coordinationStore: CoordinationStore
     private let activityDetector: (any ActivityDetector)?
@@ -2378,11 +2384,27 @@ public final class BoardStore: @unchecked Sendable {
     /// no worktree scan, no PR fetch. Runs in <1ms.
     public func refreshActivity() async {
         guard let activityDetector else { return }
+        if state.sessions.isEmpty {
+            // Session discovery has not delivered yet (first reconcile still
+            // running); there is nothing to map hook events onto.
+            KanbanCodeLog.info("activity", "hook refresh skipped: no sessions yet")
+            return
+        }
         let activityMap = await currentActivityMap(
             sessions: Array(state.sessions.values),
             detector: activityDetector
         )
         if state.activityMap != activityMap {
+            let started = activityMap.filter {
+                $0.value == .activelyWorking && state.activityMap[$0.key] != .activelyWorking
+            }.keys.map { $0.prefix(8) }.joined(separator: ",")
+            let stopped = state.activityMap.filter {
+                $0.value == .activelyWorking && activityMap[$0.key] != .activelyWorking
+            }.keys.map { $0.prefix(8) }.joined(separator: ",")
+            var transitions = ""
+            if !started.isEmpty { transitions += " started=[\(started)]" }
+            if !stopped.isEmpty { transitions += " stopped=[\(stopped)]" }
+            KanbanCodeLog.info("activity", "hook refresh: \(activitySummary(activityMap))\(transitions)")
             dispatch(.activityChanged(activityMap))
         }
     }
@@ -2602,108 +2624,39 @@ public final class BoardStore: @unchecked Sendable {
                 activityMap: earlyActivityMap
             )
 
-            // Collect branches + PR numbers from active cards only (inProgress..done).
-            // We skip backlog (no PRs yet) and allSessions (archived, don't need refresh).
-            let activeColumns: Set<KanbanCodeColumn> = [.inProgress, .waiting, .inReview, .done]
-            var branchesByRepo: [String: Set<String>] = [:]
-            var prNumbersByRepo: [String: Set<Int>] = [:]
-            for link in existingLinks {
-                guard activeColumns.contains(link.column) || !link.prLinks.isEmpty else { continue }
-                guard let repoRoot = link.projectPath, !repoRoot.isEmpty else { continue }
-                // Collect branches to discover PRs for
-                if let branch = link.worktreeLink?.branch {
-                    branchesByRepo[repoRoot, default: []].insert(branch)
-                }
-                if let discovered = link.discoveredBranches {
-                    for branch in discovered {
-                        // Use discoveredRepos for correct repo routing (branch may be in a different repo)
-                        let effectiveRepo = link.discoveredRepos?[branch] ?? repoRoot
-                        branchesByRepo[effectiveRepo, default: []].insert(branch)
-                    }
-                }
-                // Collect existing PR numbers to refresh status
-                for pr in link.prLinks {
-                    prNumbersByRepo[repoRoot, default: []].insert(pr.number)
-                }
-            }
+            // Collect branches + PR numbers that can still change. Finished
+            // cards' merged PRs never move again, and looking them all up made
+            // one pass take minutes across a hundred repos.
+            let refreshScope = PRRefreshScope.collect(links: existingLinks)
+            let branchesByRepo = refreshScope.branchesByRepo
+            let prNumbersByRepo = refreshScope.prNumbersByRepo
 
-            // Fetch PR data via targeted GraphQL — concurrent across repos (max 5)
+            // PR data comes from the last completed background fetch. The
+            // fetch can take minutes on a cold gh cache, and running it inline
+            // held `isReconciling` for that long: no discovery, no activity
+            // map, no column moves, and no spinner for a session that had
+            // already started working.
             // Throttle: 30s when active, 5min when backgrounded/hidden, 5min after rate limit.
             let ghInterval: Duration = ghRateLimitedUntil > .now ? .seconds(300)
                 : appIsActive ? .seconds(30) : .seconds(300)
             let shouldFetchPRs = ContinuousClock.now - lastGHLookup >= ghInterval
-            var pullRequests: [String: PullRequest] = [:]  // branch → PR for reconciler
-            var prsByRepoAndNumber: [String: [Int: PullRequest]] = [:]  // repo → number → PR
-            if let ghAdapter, shouldFetchPRs {
-                let t = ContinuousClock.now
-                let allRepos = Set(branchesByRepo.keys).union(prNumbersByRepo.keys)
-
-                // Worktrees of one repository are one GitHub repo: group the
-                // lookups by remote slug so N worktrees cost one batched query
-                // instead of N. Slug resolution is local git plus a cache, so
-                // the grouping itself spends no API points.
-                let groups = await PRLookupGrouping.group(
-                    branchesByRepo: branchesByRepo,
-                    prNumbersByRepo: prNumbersByRepo,
-                    slugForRoot: { await ghAdapter.resolveRepoSlug(repoRoot: $0) }
-                )
-
-                typealias PRResult = (String, [String: PullRequest], [Int: PullRequest], Bool)
-                let results: [PRResult] = await withTaskGroup(of: PRResult.self) { group in
-                    var pending = 0
-                    var collected: [PRResult] = []
-                    for (key, repoRoot) in groups.representativeRoot.sorted(by: { $0.key < $1.key }) {
-                        let branches = Array(groups.branches[key] ?? [])
-                        let numbers = Array(groups.numbers[key] ?? [])
-
-                        // Concurrency limit: drain one before adding more
-                        if pending >= 5, let result = await group.next() {
-                            collected.append(result)
-                            pending -= 1
-                        }
-
-                        group.addTask {
-                            let tBatch = ContinuousClock.now
-                            do {
-                                let (byBranch, byNumber) = try await ghAdapter.batchPRLookup(
-                                    repoRoot: repoRoot, branches: branches, prNumbers: numbers
-                                )
-                                KanbanCodeLog.info("reconcile", "  batchPRLookup(\(key)): \(tBatch.duration(to: .now)) (\(branches.count) branches, \(numbers.count) PRs)")
-                                return (key, byBranch, byNumber, false)
-                            } catch is GhCliError {
-                                return (key, [:], [:], true)
-                            } catch {
-                                return (key, [:], [:], false)
-                            }
-                        }
-                        pending += 1
-                    }
-                    for await result in group { collected.append(result) }
-                    return collected
-                }
-
-                var rateLimitedRepos: Set<String> = []
-                for (key, byBranch, byNumber, rateLimited) in results {
-                    let members = groups.members[key] ?? []
-                    if rateLimited { rateLimitedRepos.formUnion(members) }
-                    for (branch, pr) in byBranch {
-                        pullRequests[branch] = pr
-                    }
-                    PRLookupGrouping.distribute(
-                        byNumber: byNumber,
-                        toMembers: members,
-                        requestedNumbers: prNumbersByRepo,
-                        into: &prsByRepoAndNumber
-                    )
-                }
-                if !rateLimitedRepos.isEmpty {
-                    ghRateLimitedUntil = .now + .seconds(300)
-                    dispatch(.setError("GitHub API rate limit exceeded — pausing PR lookups for 5 minutes"))
-                }
-                dispatch(.setRateLimitedRepos(rateLimitedRepos))
-                let totalByNumber = prsByRepoAndNumber.values.reduce(0) { $0 + $1.count }
-                KanbanCodeLog.info("reconcile", "PR lookup: \(t.duration(to: .now)) (\(pullRequests.count) by branch, \(totalByNumber) by number, \(allRepos.count) repos)")
+            let pullRequests = cachedPRsByBranch  // branch → PR for reconciler
+            let prsByRepoAndNumber = cachedPRsByRepoAndNumber  // repo → number → PR
+            if let ghAdapter, shouldFetchPRs, prFetchTask == nil {
                 lastGHLookup = .now
+                prFetchTask = Task { [weak self] in
+                    await self?.fetchPRData(
+                        ghAdapter: ghAdapter,
+                        branchesByRepo: branchesByRepo,
+                        prNumbersByRepo: prNumbersByRepo
+                    )
+                    guard let self else { return }
+                    self.prFetchTask = nil
+                    // Apply the fresh data right away. If a pass is already
+                    // running, its guard skips this call and the refresh
+                    // timer applies the cache moments later.
+                    await self.reconcile()
+                }
             }
 
             // Scan tmux sessions
@@ -2741,9 +2694,16 @@ public final class BoardStore: @unchecked Sendable {
                 }
             }
 
-            // Build activity map
+            // Build activity map — computed here, at the end of the pass, so
+            // the dispatched map reflects sessions as they are now. Reusing
+            // `earlyActivityMap` shipped a snapshot as old as the pass was
+            // long, and a slow pass then turned off the spinner of a session
+            // that had started working while the pass ran.
             let t4 = ContinuousClock.now
-            let activityMap = earlyActivityMap
+            var activityMap = earlyActivityMap
+            if let activityDetector {
+                activityMap = await currentActivityMap(sessions: sessions, detector: activityDetector)
+            }
             KanbanCodeLog.info("reconcile", "activityMap: \(t4.duration(to: .now)) (\(activitySummary(activityMap)))")
 
             // Compute discovered project paths
@@ -2779,6 +2739,88 @@ public final class BoardStore: @unchecked Sendable {
             dispatch(.setError(error.localizedDescription))
             dispatch(.setLoading(false))
         }
+    }
+
+    /// Fetch PR data via targeted GraphQL — concurrent across repos (max 5).
+    /// Runs as a background task kicked off by reconcile; the results land in
+    /// `cachedPRsByBranch`/`cachedPRsByRepoAndNumber` for the next pass.
+    private func fetchPRData(
+        ghAdapter: GhCliAdapter,
+        branchesByRepo: [String: Set<String>],
+        prNumbersByRepo: [String: Set<Int>]
+    ) async {
+        let t = ContinuousClock.now
+        let allRepos = Set(branchesByRepo.keys).union(prNumbersByRepo.keys)
+
+        // Worktrees of one repository are one GitHub repo: group the
+        // lookups by remote slug so N worktrees cost one batched query
+        // instead of N. Slug resolution is local git plus a cache, so
+        // the grouping itself spends no API points.
+        let groups = await PRLookupGrouping.group(
+            branchesByRepo: branchesByRepo,
+            prNumbersByRepo: prNumbersByRepo,
+            slugForRoot: { await ghAdapter.resolveRepoSlug(repoRoot: $0) }
+        )
+
+        typealias PRResult = (String, [String: PullRequest], [Int: PullRequest], Bool)
+        let results: [PRResult] = await withTaskGroup(of: PRResult.self) { group in
+            var pending = 0
+            var collected: [PRResult] = []
+            for (key, repoRoot) in groups.representativeRoot.sorted(by: { $0.key < $1.key }) {
+                let branches = Array(groups.branches[key] ?? [])
+                let numbers = Array(groups.numbers[key] ?? [])
+
+                // Concurrency limit: drain one before adding more
+                if pending >= 5, let result = await group.next() {
+                    collected.append(result)
+                    pending -= 1
+                }
+
+                group.addTask {
+                    let tBatch = ContinuousClock.now
+                    do {
+                        let (byBranch, byNumber) = try await ghAdapter.batchPRLookup(
+                            repoRoot: repoRoot, branches: branches, prNumbers: numbers
+                        )
+                        KanbanCodeLog.info("reconcile", "  batchPRLookup(\(key)): \(tBatch.duration(to: .now)) (\(branches.count) branches, \(numbers.count) PRs)")
+                        return (key, byBranch, byNumber, false)
+                    } catch is GhCliError {
+                        return (key, [:], [:], true)
+                    } catch {
+                        return (key, [:], [:], false)
+                    }
+                }
+                pending += 1
+            }
+            for await result in group { collected.append(result) }
+            return collected
+        }
+
+        var pullRequests: [String: PullRequest] = [:]
+        var prsByRepoAndNumber: [String: [Int: PullRequest]] = [:]
+        var rateLimitedRepos: Set<String> = []
+        for (key, byBranch, byNumber, rateLimited) in results {
+            let members = groups.members[key] ?? []
+            if rateLimited { rateLimitedRepos.formUnion(members) }
+            for (branch, pr) in byBranch {
+                pullRequests[branch] = pr
+            }
+            PRLookupGrouping.distribute(
+                byNumber: byNumber,
+                toMembers: members,
+                requestedNumbers: prNumbersByRepo,
+                into: &prsByRepoAndNumber
+            )
+        }
+        if !rateLimitedRepos.isEmpty {
+            ghRateLimitedUntil = .now + .seconds(300)
+            dispatch(.setError("GitHub API rate limit exceeded — pausing PR lookups for 5 minutes"))
+        }
+        dispatch(.setRateLimitedRepos(rateLimitedRepos))
+        cachedPRsByBranch = pullRequests
+        cachedPRsByRepoAndNumber = prsByRepoAndNumber
+        let totalByNumber = prsByRepoAndNumber.values.reduce(0) { $0 + $1.count }
+        KanbanCodeLog.info("reconcile", "PR lookup: \(t.duration(to: .now)) (\(pullRequests.count) by branch, \(totalByNumber) by number, \(allRepos.count) repos, background)")
     }
 
     private func autoDiscoverBranchesForRecentlyActiveCards(

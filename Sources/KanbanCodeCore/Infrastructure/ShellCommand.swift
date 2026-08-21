@@ -145,7 +145,19 @@ public enum ShellCommand {
                 for (pipe, buffer) in [(stdoutPipe, stdoutBuffer), (stderrPipe, stderrBuffer)] {
                     drained.enter()
                     drainQueue.async {
-                        buffer.store(pipe.fileHandleForReading.readDataToEndOfFile())
+                        // The timeout path closes these handles while this
+                        // reader can still be blocked on them: a timed-out
+                        // child's own children keep the write end open past
+                        // the grace wait. read(upToCount:) reports that close
+                        // as a thrown error; readDataToEndOfFile raises an
+                        // ObjC exception no Swift catch can stop, which
+                        // aborts the whole app.
+                        let handle = pipe.fileHandleForReading
+                        var collected = Data()
+                        while let chunk = try? handle.read(upToCount: 65536), !chunk.isEmpty {
+                            collected.append(chunk)
+                        }
+                        buffer.store(collected)
                         drained.leave()
                     }
                 }

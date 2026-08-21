@@ -46,6 +46,24 @@ Feature: Activity Detection
     When 2 hours pass
     Then the subagent should stop counting as work
 
+  # A reconcile pass takes a snapshot of the board and works on it for a
+  # while. The activity map must not be part of that snapshot: a session that
+  # started working mid-pass would get its spinner turned off when the pass
+  # lands its result.
+  Scenario: A slow reconcile pass cannot ship a stale activity picture
+    Given a reconcile pass started 4 minutes ago
+    And a UserPromptSubmit hook fired 1 minute ago for session "abc-123"
+    When the pass completes and dispatches its result
+    Then the dispatched activity map shows "abc-123" as "actively_working"
+    Because the map is computed at the end of the pass, not the start
+
+  Scenario: GitHub PR lookups never block activity detection
+    Given the PR refresh needs minutes on a cold gh cache
+    When a reconcile pass runs
+    Then the pass applies the last completed fetch's data and finishes in seconds
+    And the fetch itself runs in the background for a later pass
+    And hook events keep moving cards while the fetch runs
+
   Scenario: Stop followed by new prompt (anti-duplicate notification)
     Given the Stop hook fired for session "abc-123"
     And a UserPromptSubmit fires for the same session within the dedup window
