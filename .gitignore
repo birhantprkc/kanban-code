@@ -14,3 +14,6 @@ web/dist/
 # Ralph-loop local iteration log (not part of the feature)
 .claude/ralph-loop.local.md
 web/tsconfig.tsbuildinfo
+
+# Scratch files for in-flight work
+.claude/tmp/
