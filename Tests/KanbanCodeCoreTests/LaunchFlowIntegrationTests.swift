@@ -141,7 +141,9 @@ struct LaunchFlowIntegrationTests {
     @Test("Full launch lifecycle: launchCard → launchTmuxReady → launchCompleted")
     func fullLaunchLifecycle() async throws {
         let sessionName = uniqueName()
-        defer { Task { await cleanupTmux([sessionName]) } }
+        // The session this test really creates is named after the card, which
+        // the reducer picks, so both names have to be cleaned up.
+        defer { Task { await cleanupTmux([sessionName, "tmp-card_lifecycle"]) } }
 
         let card = makeLink(id: "card_lifecycle", column: .backlog)
         var state = stateWith([card])
