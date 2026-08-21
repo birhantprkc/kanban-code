@@ -129,6 +129,49 @@ struct SubagentActivityTests {
         #expect(await detector.activityState(for: "s1") == .idleWaiting)
     }
 
+    @Test("a real fresh start clears subagents whatever its source says")
+    func explicitStartupClearsSubagents() async {
+        let detector = detector()
+
+        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "SubagentStart"))
+        await detector.handleHookEvent(
+            HookEvent(sessionId: "s1", eventName: "SessionStart", source: "startup"))
+
+        #expect(await detector.activityState(for: "s1") == .idleWaiting)
+    }
+
+    /// A compaction fires SessionStart, but the process lives on and its
+    /// background subagents keep running. One compaction mid-task turned
+    /// off the spinner of a session with two subagents still at work.
+    @Test("a compaction does not clear running subagents")
+    func compactionKeepsSubagents() async {
+        let detector = detector()
+
+        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "SubagentStart"))
+        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "SubagentStart"))
+        await detector.handleHookEvent(
+            HookEvent(sessionId: "s1", eventName: "SessionStart", source: "compact"))
+        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "SubagentStop"))
+        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "Stop"))
+
+        #expect(await detector.activityState(for: "s1") == .activelyWorking)
+
+        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "SubagentStop"))
+
+        #expect(await detector.activityState(for: "s1") == .needsAttention)
+    }
+
+    @Test("a compaction does not interrupt the turn it lands in")
+    func compactionKeepsTheTurn() async {
+        let detector = detector()
+
+        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "UserPromptSubmit"))
+        await detector.handleHookEvent(
+            HookEvent(sessionId: "s1", eventName: "SessionStart", source: "compact"))
+
+        #expect(await detector.activityState(for: "s1") == .activelyWorking)
+    }
+
     /// Subagent events say what runs under the session, not what the session
     /// is doing, so they must not take the place of its own last event.
     @Test("a subagent event does not overwrite what the session last did")

@@ -52,6 +52,7 @@ public actor HookEventStore {
                 sessionId: sessionId,
                 eventName: eventName,
                 transcriptPath: transcriptPath,
+                source: obj["source"] as? String,
                 timestamp: timestamp
             ))
         }

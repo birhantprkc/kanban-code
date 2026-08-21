@@ -81,6 +81,24 @@ public enum HookManager {
         return isInstalled(for: assistant, settingsPath: settingsPath)
     }
 
+    /// Rewrite the deployed hook script when a release changed its content.
+    ///
+    /// Only for a script that is already on disk: a machine that never
+    /// installed hooks is left to the Settings flow.
+    @discardableResult
+    public static func refreshHookScript(at path: String? = nil) -> Bool {
+        let scriptPath = path ?? defaultHookScriptPath()
+        guard let current = try? String(contentsOfFile: scriptPath, encoding: .utf8),
+            current != hookScriptContent
+        else { return false }
+        do {
+            try deployHookScript(to: scriptPath)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     /// How many of the events this release needs already call the hook script.
     private static func registeredHooks(for assistant: CodingAssistant, settingsPath: String?) -> Int
     {
@@ -276,9 +294,21 @@ public enum HookManager {
     # Get current timestamp
     timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
+    # SessionStart carries a source (startup, resume, clear, compact) that
+    # tells a real fresh start apart from a compaction of a live session.
+    # Gated on the event name: other payloads can carry a "source" key
+    # inside user text or tool input, and that must not leak in here.
+    extra=""
+    if [ "$hook_event" = "SessionStart" ]; then
+        start_source=$(echo "$input" | grep -o '"source":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+        if [ -n "$start_source" ]; then
+            extra=",\\"source\\":\\"$start_source\\""
+        fi
+    fi
+
     # Append event line
-    printf '{"sessionId":"%s","event":"%s","timestamp":"%s","transcriptPath":"%s"}\\n' \\
-        "$session_id" "$hook_event" "$timestamp" "$transcript" >> "$EVENTS_FILE"
+    printf '{"sessionId":"%s","event":"%s","timestamp":"%s","transcriptPath":"%s"%s}\\n' \\
+        "$session_id" "$hook_event" "$timestamp" "$transcript" "$extra" >> "$EVENTS_FILE"
     """
 
     // MARK: - Statusline

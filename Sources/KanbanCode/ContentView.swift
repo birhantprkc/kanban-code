@@ -1346,6 +1346,10 @@ struct ContentView: View {
                         KanbanCodeLog.info("hooks", "added missing \(assistant.displayName) hooks")
                     }
                 }
+                // The deployed script can lag the release the same way.
+                if HookManager.refreshHookScript() {
+                    KanbanCodeLog.info("hooks", "hook script refreshed to current release")
+                }
                 systemTray.setup(store: store)
                 await store.loadSettingsAndCache()
                 await store.reconcile()

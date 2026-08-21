@@ -46,6 +46,16 @@ Feature: Activity Detection
     When 2 hours pass
     Then the subagent should stop counting as work
 
+  # A compaction fires SessionStart with source "compact", but the process
+  # lives on: its turn and its background subagents carry on through it.
+  # Only a real fresh start (startup, resume, clear) resets the session.
+  Scenario: Compaction does not reset the session
+    Given two SubagentStart hooks fired for session "abc-123"
+    And a SessionStart hook fires with source "compact"
+    When the Stop hook fires for session "abc-123"
+    Then the session should stay "actively_working"
+    And both SubagentStop hooks are still expected before it goes idle
+
   # A reconcile pass takes a snapshot of the board and works on it for a
   # while. The activity map must not be part of that snapshot: a session that
   # started working mid-pass would get its spinner turned off when the pass

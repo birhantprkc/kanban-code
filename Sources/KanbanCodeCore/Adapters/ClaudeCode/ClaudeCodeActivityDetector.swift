@@ -66,6 +66,13 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
             return
         }
 
+        // A compaction fires SessionStart inside the same living process:
+        // the turn, its pending stop, and its background subagents all carry
+        // on through it, so it must not touch any of the session's state.
+        if event.eventName == "SessionStart", event.source == "compact" {
+            return
+        }
+
         lastEvents[event.sessionId] = event
 
         if event.eventName == "Stop" {

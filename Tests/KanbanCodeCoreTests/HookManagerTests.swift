@@ -177,6 +177,101 @@ struct HookManagerTests {
         #expect(next[0].eventName == "Notification")
     }
 
+    @Test("HookEventStore parses the SessionStart source")
+    func hookEventStoreParsesSource() async throws {
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+
+        let eventsPath = (dir as NSString).appendingPathComponent("hook-events.jsonl")
+        let lines = """
+            {"sessionId":"s1","event":"SessionStart","timestamp":"2026-06-03T16:12:47Z","transcriptPath":"/tmp/a.jsonl","source":"compact"}
+            {"sessionId":"s1","event":"Stop","timestamp":"2026-06-03T16:12:48Z","transcriptPath":"/tmp/a.jsonl"}
+            """
+        try lines.write(toFile: eventsPath, atomically: true, encoding: .utf8)
+
+        let events = try await HookEventStore(basePath: dir).readNewEvents()
+        #expect(events.count == 2)
+        #expect(events[0].source == "compact")
+        #expect(events[1].source == nil)
+    }
+
+    /// Runs the deployed bash script the way the CLIs do: payload on stdin,
+    /// HOME pointed at the temp dir it writes its event file under.
+    private func runHookScript(_ scriptPath: String, home: String, payload: String) throws {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/bash")
+        proc.arguments = [scriptPath]
+        proc.environment = ["HOME": home, "PATH": "/usr/bin:/bin"]
+        let stdin = Pipe()
+        proc.standardInput = stdin
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        stdin.fileHandleForWriting.write(Data(payload.utf8))
+        try stdin.fileHandleForWriting.close()
+        proc.waitUntilExit()
+    }
+
+    @Test("deployed script records the SessionStart source, and only there")
+    func scriptRecordsSessionStartSource() throws {
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+
+        let scriptPath = (dir as NSString).appendingPathComponent(".kanban-code/hook.sh")
+        let settingsPath = (dir as NSString).appendingPathComponent("settings.json")
+        try HookManager.install(claudeSettingsPath: settingsPath, hookScriptPath: scriptPath)
+
+        try runHookScript(
+            scriptPath, home: dir,
+            payload:
+                #"{"session_id":"s1","hook_event_name":"SessionStart","transcript_path":"/tmp/a.jsonl","source":"compact"}"#
+        )
+        // A prompt whose text mentions a source must not grow the field.
+        try runHookScript(
+            scriptPath, home: dir,
+            payload:
+                #"{"session_id":"s1","hook_event_name":"UserPromptSubmit","transcript_path":"/tmp/a.jsonl","prompt":"set \"source\":\"sneaky\" please"}"#
+        )
+        // A SessionStart without a source still writes its line.
+        try runHookScript(
+            scriptPath, home: dir,
+            payload:
+                #"{"session_id":"s1","hook_event_name":"SessionStart","transcript_path":"/tmp/a.jsonl"}"#
+        )
+
+        let eventsPath = (dir as NSString).appendingPathComponent(".kanban-code/hook-events.jsonl")
+        let content = try String(contentsOfFile: eventsPath, encoding: .utf8)
+        let lines = content.split(separator: "\n")
+        #expect(lines.count == 3)
+        #expect(lines[0].contains(#""source":"compact""#))
+        #expect(!lines[1].contains(#""source""#))
+        #expect(!lines[2].contains(#""source""#))
+    }
+
+    @Test("refreshHookScript rewrites a stale script and skips a missing one")
+    func refreshHookScriptRewritesStale() throws {
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+
+        let scriptPath = (dir as NSString).appendingPathComponent(".kanban-code/hook.sh")
+        #expect(!HookManager.refreshHookScript(at: scriptPath))
+        #expect(!FileManager.default.fileExists(atPath: scriptPath))
+
+        try FileManager.default.createDirectory(
+            atPath: (scriptPath as NSString).deletingLastPathComponent,
+            withIntermediateDirectories: true)
+        try "#!/usr/bin/env bash\n# old release".write(
+            toFile: scriptPath, atomically: true, encoding: .utf8)
+
+        #expect(HookManager.refreshHookScript(at: scriptPath))
+        let content = try String(contentsOfFile: scriptPath, encoding: .utf8)
+        #expect(content.contains("hook-events.jsonl"))
+        #expect(FileManager.default.isExecutableFile(atPath: scriptPath))
+
+        // Already current: nothing to do.
+        #expect(!HookManager.refreshHookScript(at: scriptPath))
+    }
+
     @Test("Install creates settings file if missing")
     func installCreatesFile() throws {
         let dir = try makeTempDir()
