@@ -17,10 +17,27 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
     private var lastUserPromptTimes: [String: Date] = [:]
     /// Delay before treating a Stop as final (seconds).
     private let stopDelay: TimeInterval
+    /// When each subagent still running under a session was started.
+    ///
+    /// A subagent sent to the background outlives the turn that started it:
+    /// the main agent goes back to the prompt, Stop fires, and the work
+    /// carries on. Nothing else reports it, because the transcript gets no
+    /// lines while a subagent works.
+    private var runningSubagents: [String: [Date]] = [:]
+    /// How long a subagent counts as running without its stop event.
+    ///
+    /// A session killed while its subagents work never sends them, and the
+    /// card would show work that nothing is doing.
+    private let subagentTimeout: TimeInterval
 
-    public init(stopDelay: TimeInterval = 3.0, activeTimeout: TimeInterval = 300) {
+    public init(
+        stopDelay: TimeInterval = 3.0,
+        activeTimeout: TimeInterval = 300,
+        subagentTimeout: TimeInterval = 2 * 60 * 60
+    ) {
         self.stopDelay = stopDelay
         self.activeTimeout = activeTimeout
+        self.subagentTimeout = subagentTimeout
     }
 
     public func handleHookEvent(_ event: HookEvent) async {
@@ -36,6 +53,19 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
             return
         }
 
+        // Subagent events say what runs under the session, not what the
+        // session itself is doing, so they must not become its last event.
+        if event.eventName == "SubagentStart" {
+            runningSubagents[event.sessionId, default: []].append(event.timestamp)
+            return
+        }
+        if event.eventName == "SubagentStop" {
+            var running = runningSubagents[event.sessionId] ?? []
+            if !running.isEmpty { running.removeFirst() }
+            runningSubagents[event.sessionId] = running.isEmpty ? nil : running
+            return
+        }
+
         lastEvents[event.sessionId] = event
 
         if event.eventName == "Stop" {
@@ -47,7 +77,21 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
             lastUserPromptTimes[event.sessionId] = event.timestamp
         } else if event.eventName == "SessionStart" {
             pendingStops.removeValue(forKey: event.sessionId)
+            runningSubagents.removeValue(forKey: event.sessionId)
+        } else if event.eventName == "SessionEnd" {
+            runningSubagents.removeValue(forKey: event.sessionId)
         }
+    }
+
+    /// Whether the session still has subagents working under it.
+    private func hasRunningSubagents(_ sessionId: String) -> Bool {
+        guard let started = runningSubagents[sessionId], !started.isEmpty else { return false }
+        let cutoff = Date.now.addingTimeInterval(-subagentTimeout)
+        let live = started.filter { $0 > cutoff }
+        if live.count != started.count {
+            runningSubagents[sessionId] = live.isEmpty ? nil : live
+        }
+        return !live.isEmpty
     }
 
     /// Timeout (seconds) before treating a hook-active session as timed out.
@@ -103,6 +147,13 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
     }
 
     public func activityState(for sessionId: String) async -> ActivityState {
+        // Subagents still running keep the session at work, whatever its own
+        // last event says. The main agent can be back at the prompt with the
+        // Stop hook already fired while they carry on.
+        if hasRunningSubagents(sessionId), lastEvents[sessionId]?.eventName != "SessionEnd" {
+            return .activelyWorking
+        }
+
         // Check hook-based detection first
         guard let lastEvent = lastEvents[sessionId] else {
             // No hook events — use polled state if available.

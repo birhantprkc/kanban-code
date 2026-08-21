@@ -18,6 +18,8 @@ Feature: Hook Onboarding
       | Notification      | Detect permission/question/idle  |
       | SessionStart      | Track new session starts         |
       | SessionEnd        | Track session endings            |
+      | SubagentStart     | Track subagents a session starts  |
+      | SubagentStop      | Track subagents that finish       |
 
   Scenario: All hooks present
     Given all required hooks are already configured

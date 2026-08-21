@@ -5,9 +5,18 @@ import { kanbanHome, claudeSettingsPath } from "./paths.js";
 import { sortedStringify } from "./cards.js";
 
 /// Claude Code hook events the runtime relies on. Stop drives auto-send;
-/// UserPromptSubmit lets the daemon detect a human/relay prompt; the rest feed
-/// activity tracking. Mirrors the Swift HookManager.
-export const HOOK_EVENTS = ["Stop", "Notification", "SessionStart", "SessionEnd", "UserPromptSubmit"];
+/// UserPromptSubmit lets the daemon detect a human/relay prompt; SubagentStart
+/// and SubagentStop say what still runs under a session after its own turn
+/// ended; the rest feed activity tracking. Mirrors the Swift HookManager.
+export const HOOK_EVENTS = [
+  "Stop",
+  "Notification",
+  "SessionStart",
+  "SessionEnd",
+  "UserPromptSubmit",
+  "SubagentStart",
+  "SubagentStop",
+];
 
 /// Codex hook events we register (Codex exposes the same names; we only need the
 /// subset that drives the daemon: Stop for auto-send, UserPromptSubmit for the

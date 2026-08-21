@@ -14,7 +14,10 @@ public enum HookManager {
     public static func requiredHooks(for assistant: CodingAssistant) -> [String] {
         switch assistant {
         case .claude:
-            ["Stop", "Notification", "SessionStart", "SessionEnd", "UserPromptSubmit"]
+            [
+                "Stop", "Notification", "SessionStart", "SessionEnd", "UserPromptSubmit",
+                "SubagentStart", "SubagentStop",
+            ]
         case .gemini:
             ["AfterAgent", "Notification", "SessionStart", "SessionEnd", "BeforeAgent"]
         case .codex:
@@ -61,6 +64,41 @@ public enum HookManager {
     /// Backward-compatible: check Claude hooks only.
     public static func isInstalled(claudeSettingsPath: String? = nil) -> Bool {
         isInstalled(for: .claude, settingsPath: claudeSettingsPath)
+    }
+
+    /// Add hook events a release needs that an earlier install did not have.
+    ///
+    /// Only for settings that already call the hook script: an assistant that
+    /// never had hooks is left to the user to set up in Settings.
+    @discardableResult
+    public static func addMissingHooks(for assistant: CodingAssistant, settingsPath: String? = nil)
+        -> Bool
+    {
+        guard assistant.supportsHooks, !isInstalled(for: assistant, settingsPath: settingsPath),
+            registeredHooks(for: assistant, settingsPath: settingsPath) > 0
+        else { return false }
+        try? install(for: assistant, settingsPath: settingsPath)
+        return isInstalled(for: assistant, settingsPath: settingsPath)
+    }
+
+    /// How many of the events this release needs already call the hook script.
+    private static func registeredHooks(for assistant: CodingAssistant, settingsPath: String?) -> Int
+    {
+        let path = settingsPath ?? defaultSettingsPath(for: assistant)
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+            let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let hooks = root["hooks"] as? [String: Any]
+        else { return 0 }
+
+        return requiredHooks(for: assistant).count { eventName in
+            guard let groups = hooks[eventName] as? [[String: Any]] else { return false }
+            return groups.contains { group in
+                guard let entries = group["hooks"] as? [[String: Any]] else { return false }
+                return entries.contains {
+                    ($0["command"] as? String)?.contains(".kanban-code/hook.sh") == true
+                }
+            }
+        }
     }
 
     // MARK: - Install

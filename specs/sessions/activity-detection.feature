@@ -24,6 +24,28 @@ Feature: Activity Detection
     Then the session should be flagged as "needs_attention"
     And a push notification should be sent (deduplicated within 62 seconds)
 
+  # A subagent sent to the background outlives the turn that started it. The
+  # main agent goes back to the prompt and Stop fires, but the work carries on
+  # and the transcript gets no lines for it.
+  Scenario: Session stops while its subagents keep working
+    Given a SubagentStart hook fired for session "abc-123"
+    When the Stop hook fires for session "abc-123"
+    Then the session should stay "actively_working"
+    And the card should stay in "In Progress"
+    And the Mac should stay awake
+
+  Scenario: Last subagent finishes
+    Given two SubagentStart hooks fired for session "abc-123"
+    And the Stop hook fired for session "abc-123"
+    When both SubagentStop hooks fire
+    Then the session should be flagged as "needs_attention"
+
+  Scenario: Session killed while a subagent runs
+    Given a SubagentStart hook fired for session "abc-123"
+    And its SubagentStop never fires because the session was killed
+    When 2 hours pass
+    Then the subagent should stop counting as work
+
   Scenario: Stop followed by new prompt (anti-duplicate notification)
     Given the Stop hook fired for session "abc-123"
     And a UserPromptSubmit fires for the same session within the dedup window

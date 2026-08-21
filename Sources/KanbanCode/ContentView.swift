@@ -1338,6 +1338,14 @@ struct ContentView: View {
                     BrowserTabCache.shared.removeAllForCard(cardId)
                 }
                 registerMemoryDiagnosticsProviders()
+                // A release can need a hook event the installed settings do
+                // not call yet, and without it the board reads the session
+                // wrong until the user opens Settings.
+                for assistant in CodingAssistant.allCases where assistant.supportsHooks {
+                    if HookManager.addMissingHooks(for: assistant) {
+                        KanbanCodeLog.info("hooks", "added missing \(assistant.displayName) hooks")
+                    }
+                }
                 systemTray.setup(store: store)
                 await store.loadSettingsAndCache()
                 await store.reconcile()

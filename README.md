@@ -217,6 +217,7 @@ Kanban Code uses [Claude Code hooks](https://docs.anthropic.com/en/docs/claude-c
 - **UserPromptSubmit** — User sent a message
 - **Notification** — Claude raised a notification
 - **SessionStart/End** — Session lifecycle
+- **SubagentStart/Stop** — Subagents that keep working after the turn ends
 
 ### 4. Start a Task
 
