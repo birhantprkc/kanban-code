@@ -123,6 +123,9 @@ export function ensureAgentSession(
       KANBAN_SESSION_ID: launchIdentity.sessionId,
       KANBAN_SLUG: launchIdentity.slug,
     };
+    // Before the process starts, not after: a question the runtime asks on
+    // its way up is one nothing here can answer.
+    spec.prepareWorkspace?.(opts.cwd);
     const res = createTmuxSession(launchIdentity.tmuxName, opts.cwd, command, env);
     if (!res.ok) {
       throw new Error(`Failed to create tmux session "${identity.tmuxName}": ${res.error}`);

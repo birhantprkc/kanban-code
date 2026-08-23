@@ -3,6 +3,8 @@
 /// (currently Codex) without branching all over launch/daemon/bridge. It mirrors
 /// the macOS app's CodingAssistant entity, scoped to what the headless path needs.
 
+import { trustCodexDirectory } from "./codex-trust.js";
+
 export type Runtime = "claude" | "codex";
 
 export const RUNTIMES: readonly Runtime[] = ["claude", "codex"] as const;
@@ -46,6 +48,9 @@ export interface RuntimeSpec {
   /// What the pane shows once the runtime will accept that command. Nothing
   /// is typed into a session that has not shown it.
   readyMarker?: string;
+  /// Settle whatever a runtime would stop to ask about the workspace before
+  /// it will start. Claude asks nothing, so it has none.
+  prepareWorkspace?(cwd: string): void;
 }
 
 const claude: RuntimeSpec = {
@@ -75,6 +80,12 @@ const codex: RuntimeSpec = {
   // which is what `codex resume <name>` and the LangWatch session harvest both
   // read, so the agent's slug is what labels the session in either.
   nameCommand: (slug) => `/rename ${slug}`,
+  // Codex stops to ask about a directory the first time it starts in one, and
+  // a headless agent has nobody to answer. Recorded up front so the very
+  // first launch in a fresh workspace draws its composer instead.
+  prepareWorkspace: (cwd) => {
+    trustCodexDirectory(cwd);
+  },
   // The separator codex draws in the status line under its composer, and only
   // once it will accept a command: before that the pane holds its banner, or
   // the directory-trust question, and a command typed into either is lost or

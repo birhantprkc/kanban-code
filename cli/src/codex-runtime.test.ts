@@ -6,11 +6,12 @@
 import { test, describe, beforeEach, afterEach } from "node:test";
 import { strict as assert } from "node:assert";
 import { execSync } from "node:child_process";
-import { mkdtempSync, rmSync, mkdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { runtimeSpec, isRuntime } from "./agents/runtime.js";
+import { trustCodexDirectory } from "./agents/codex-trust.js";
 import { formatCodexRolloutLines } from "./slack/format.js";
 import { writeThreadRoot, readThreadRoot } from "./slack/thread-root.js";
 import { parseAgentsConfig } from "./agents/config.js";
@@ -236,6 +237,59 @@ describe("installCodexHooks", () => {
 function hasTmux(): boolean {
   try { execSync("tmux -V", { stdio: "ignore" }); return true; } catch { return false; }
 }
+
+describe("trusting the workspace before the runtime asks about it", () => {
+  let home: string;
+  let configPath: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "kanban-codex-trust-"));
+    configPath = join(home, "config.toml");
+  });
+  afterEach(() => rmSync(home, { recursive: true, force: true }));
+
+  test("records the workspace as trusted, in the table codex writes itself", () => {
+    assert.equal(trustCodexDirectory("/home/ubuntu/agent-workspaces/pr-reviewer", configPath), true);
+    assert.equal(
+      readFileSync(configPath, "utf-8"),
+      '\n[projects."/home/ubuntu/agent-workspaces/pr-reviewer"]\ntrust_level = "trusted"\n'
+    );
+  });
+
+  test("keeps what the config already held, and starts its own table", () => {
+    writeFileSync(configPath, '[otel]\nenabled = true\n');
+    trustCodexDirectory("/w/pr-reviewer", configPath);
+    const written = readFileSync(configPath, "utf-8");
+    assert.match(written, /^\[otel\]\nenabled = true\n/);
+    // A table of its own, so nothing above it is read as part of this one.
+    assert.match(written, /\n\[projects\."\/w\/pr-reviewer"\]\ntrust_level = "trusted"\n$/);
+  });
+
+  test("leaves an answer the operator already gave", () => {
+    writeFileSync(configPath, '[projects."/w/pr-reviewer"]\ntrust_level = "untrusted"\n');
+    assert.equal(trustCodexDirectory("/w/pr-reviewer", configPath), false);
+    // Overwriting it would undo a deliberate choice.
+    assert.match(readFileSync(configPath, "utf-8"), /trust_level = "untrusted"/);
+    assert.doesNotMatch(readFileSync(configPath, "utf-8"), /trust_level = "trusted"/);
+  });
+
+  test("writes one entry however many times a workspace is launched", () => {
+    assert.equal(trustCodexDirectory("/w/pr-reviewer", configPath), true);
+    assert.equal(trustCodexDirectory("/w/pr-reviewer", configPath), false);
+    const headers = readFileSync(configPath, "utf-8").match(/\[projects\./g) ?? [];
+    assert.equal(headers.length, 1);
+  });
+
+  test("quotes a path that would otherwise break the table header", () => {
+    trustCodexDirectory('/w/od"d\\one', configPath);
+    assert.match(readFileSync(configPath, "utf-8"), /\[projects\."\/w\/od\\"d\\\\one"\]/);
+  });
+
+  test("codex settles its workspace, claude has nothing to settle", () => {
+    assert.equal(typeof runtimeSpec("codex").prepareWorkspace, "function");
+    assert.equal(runtimeSpec("claude").prepareWorkspace, undefined);
+  });
+});
 
 describe("naming a session the runtime takes no launch flag for", () => {
   const BANNER = "  >_ OpenAI Codex (v0.149.0)\n  Tip: Try the Desktop app.";
