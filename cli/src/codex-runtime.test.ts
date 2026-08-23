@@ -299,23 +299,35 @@ describe("naming a session the runtime takes no launch flag for", () => {
 
   /// A pane driven by a script of frames: one read per call, the last frame
   /// repeating, which is how a runtime stuck on one screen is expressed.
-  /// Typed text lands in the composer and stays there until an Enter is what
-  /// the runtime accepted, which is what the real TUI does.
+  /// Typed text takes `drawAfter` reads to appear, the way a real TUI renders
+  /// its own keystrokes a beat late, and stays in the composer until an Enter
+  /// the runtime actually accepted. `dropEnters` is a runtime still loading a
+  /// resumed session, which swallows that many before it listens.
   function fakeIo(
     frames: string[],
-    opts: { alive?: boolean; submits?: boolean; after?: string } = {}
+    opts: {
+      alive?: boolean;
+      submits?: boolean;
+      after?: string;
+      drawAfter?: number;
+      dropEnters?: number;
+    } = {}
   ) {
     const typed: string[] = [];
     const enters: number[] = [];
     let clock = 0;
     let read = 0;
     let composer: string | null = null;
+    let readsSinceTyped = 0;
+    let dropped = 0;
     let submitted = false;
     const pane = () => {
       const frame = submitted
         ? (opts.after ?? RENAMED)
         : frames[Math.min(read++, frames.length - 1)];
-      return composer === null ? frame : `${frame}\n› ${composer}`;
+      if (composer === null) return frame;
+      const drawn = readsSinceTyped++ >= (opts.drawAfter ?? 0);
+      return drawn ? `${frame}\n› ${composer}` : frame;
     };
     return {
       typed,
@@ -326,10 +338,12 @@ describe("naming a session the runtime takes no launch flag for", () => {
         type: (_tmuxName: string, text: string) => {
           typed.push(text);
           composer = text;
+          readsSinceTyped = 0;
           return { ok: true };
         },
         enter: (_tmuxName: string) => {
           enters.push(clock);
+          if (dropped++ < (opts.dropEnters ?? 0)) return { ok: true };
           if (opts.submits ?? true) {
             composer = null;
             submitted = true;
@@ -364,7 +378,7 @@ describe("naming a session the runtime takes no launch flag for", () => {
       { tmuxName: "pr-reviewer", slug: "pr-reviewer", spec: runtimeSpec("codex") },
       io
     );
-    assert.deepEqual(enters, [100]);
+    assert.equal(enters.length, 1);
   });
 
   test("reports a command that stayed in the composer as unnamed", () => {
@@ -377,6 +391,44 @@ describe("naming a session the runtime takes no launch flag for", () => {
     // and saying otherwise would send an operator looking in the wrong place.
     assert.deepEqual(typed, ["/rename pr-reviewer"]);
     assert.equal(named, false);
+  });
+
+  test("waits for its own keystrokes to be drawn before reading the answer", () => {
+    // A pane that has not drawn the command yet looks exactly like one that
+    // has already run it. Reading too early called an unnamed session named,
+    // which is what happened on a box: the command sat in the composer of a
+    // live agent while the launch reported success.
+    const { io, typed } = fakeIo([COMPOSER], { drawAfter: 3, submits: false });
+    const named = nameStartedSession(
+      { tmuxName: "pr-reviewer", slug: "pr-reviewer", spec: runtimeSpec("codex") },
+      io
+    );
+    assert.deepEqual(typed, ["/rename pr-reviewer"]);
+    assert.equal(named, false);
+  });
+
+  test("presses Enter again for a runtime that dropped the first one", () => {
+    // A codex still loading a resumed session swallows the first Enter with
+    // no sign of it.
+    const { io, enters, typed } = fakeIo([COMPOSER], { dropEnters: 2 });
+    const named = nameStartedSession(
+      { tmuxName: "pr-reviewer", slug: "pr-reviewer", spec: runtimeSpec("codex") },
+      io
+    );
+    assert.equal(named, true);
+    assert.equal(enters.length, 3);
+    // Retrying must never type the command a second time.
+    assert.deepEqual(typed, ["/rename pr-reviewer"]);
+  });
+
+  test("gives up rather than pressing Enter forever", () => {
+    const { io, enters } = fakeIo([COMPOSER], { submits: false });
+    const named = nameStartedSession(
+      { tmuxName: "pr-reviewer", slug: "pr-reviewer", spec: runtimeSpec("codex") },
+      io
+    );
+    assert.equal(named, false);
+    assert.equal(enters.length, 4);
   });
 
   test("types nothing into the directory-trust question", () => {
