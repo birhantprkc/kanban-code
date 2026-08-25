@@ -546,7 +546,10 @@ struct ContentView: View {
     private var sidebarContent: some View {
         sidebarListView
             .toolbar {
-                if showBoardInExpanded {
+                // The live visibility, not the persisted flag: the flag can
+                // still say "open" from a past session while the sidebar is
+                // hidden, and its items would then double the detail's.
+                if sidebarVisibility != .detailOnly {
                     ToolbarItemGroup(placement: .automatic) {
                         Button { presentNewTask() } label: {
                             Image(systemName: "square.and.pencil")
