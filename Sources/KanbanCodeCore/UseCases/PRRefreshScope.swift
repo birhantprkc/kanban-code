@@ -10,14 +10,27 @@ import Foundation
 public enum PRRefreshScope {
     public struct Scope: Equatable, Sendable {
         public var branchesByRepo: [String: Set<String>]
+        /// Pull requests with no URL to say where they live. The card's own
+        /// repository is the only guess available for those.
         public var prNumbersByRepo: [String: Set<Int>]
+        /// Pull requests routed by the repository their URL names, keyed
+        /// "host/owner/name". Keeps a card's pull request in a sibling
+        /// repository out of a lookup against the card's own repository.
+        public var prNumbersByRepoKey: [String: Set<Int>]
+        /// Repository key → a local checkout to run `gh` from. Any checkout
+        /// works: the query names the repository itself.
+        public var lookupDirForRepoKey: [String: String]
 
         public init(
             branchesByRepo: [String: Set<String>] = [:],
-            prNumbersByRepo: [String: Set<Int>] = [:]
+            prNumbersByRepo: [String: Set<Int>] = [:],
+            prNumbersByRepoKey: [String: Set<Int>] = [:],
+            lookupDirForRepoKey: [String: String] = [:]
         ) {
             self.branchesByRepo = branchesByRepo
             self.prNumbersByRepo = prNumbersByRepo
+            self.prNumbersByRepoKey = prNumbersByRepoKey
+            self.lookupDirForRepoKey = lookupDirForRepoKey
         }
     }
 
@@ -51,7 +64,14 @@ public enum PRRefreshScope {
                 // a card already off the board.
                 if pr.status == .merged { continue }
                 if !isActive && pr.status == .closed { continue }
-                scope.prNumbersByRepo[repoRoot, default: []].insert(pr.number)
+                if let repoKey = pr.repoKey {
+                    scope.prNumbersByRepoKey[repoKey, default: []].insert(pr.number)
+                    if scope.lookupDirForRepoKey[repoKey] == nil {
+                        scope.lookupDirForRepoKey[repoKey] = repoRoot
+                    }
+                } else {
+                    scope.prNumbersByRepo[repoRoot, default: []].insert(pr.number)
+                }
             }
         }
         return scope

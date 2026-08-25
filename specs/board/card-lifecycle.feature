@@ -236,6 +236,29 @@ Feature: Card Lifecycle and Automation
     Then the card should move to "Done"
     And the card should show "Closed" status
 
+  # Work in one project often ships a change to a sibling repository too,
+  # and the card carries both pull requests. The refresh asked the card's
+  # own repository for every number on it, so the sibling's pull request
+  # was looked up in a repository it does not live in. It kept the status
+  # it had when the link was made, for good.
+  Scenario: A pull request in another repository still refreshes
+    Given a card in project "langwatch" carries PR #925 of repository "scenario"
+    And PR #925 is merged on GitHub
+    When the background refresh runs
+    Then #925 should be looked up in "scenario", not in "langwatch"
+    And the card should show #925 as merged
+
+  Scenario: One query per repository, however many cards point at it
+    Given several cards carry pull requests of the same repository
+    When the background refresh runs
+    Then those numbers should join one batched query for that repository
+
+  Scenario: A pull request with no URL uses the card's own repository
+    Given a card carries PR #42 with no URL yet
+    When the background refresh runs
+    Then #42 should be looked up in the card's own repository
+    Because nothing else says where it lives
+
   # ── Done → Cleanup ──
 
   Scenario: Cleaning up a worktree from Done

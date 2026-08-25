@@ -300,19 +300,31 @@ public final class GhCliAdapter: PRTrackerPort, @unchecked Sendable {
 
     /// Batch lookup: find PRs by branch name + refresh existing PRs by number.
     /// Single GraphQL call per repo instead of N individual `gh pr` calls.
+    /// `repoOwner`/`repoName` name the repository to query when it is not the
+    /// one `repoRoot` checks out. A card can carry a pull request from a
+    /// sibling repository, which has no checkout here to resolve from; the
+    /// root then only supplies a directory to run `gh` in.
     public func batchPRLookup(
         repoRoot: String,
         branches: [String],
-        prNumbers: [Int]
+        prNumbers: [Int],
+        repoOwner: String? = nil,
+        repoName repoNameOverride: String? = nil
     ) async throws -> (byBranch: [String: PullRequest], byNumber: [Int: PullRequest]) {
         guard !branches.isEmpty || !prNumbers.isEmpty else { return ([:], [:]) }
 
         // Repo identity from the cached local-git resolution, not an API call
-        guard let slug = await resolveRepoSlug(repoRoot: repoRoot) else {
+        let ownerLogin: String
+        let repoName: String
+        if let repoOwner, let repoNameOverride {
+            ownerLogin = repoOwner
+            repoName = repoNameOverride
+        } else if let slug = await resolveRepoSlug(repoRoot: repoRoot) {
+            ownerLogin = slug.owner
+            repoName = slug.name
+        } else {
             return ([:], [:])
         }
-        let ownerLogin = slug.owner
-        let repoName = slug.name
 
         var queryParts: [String] = []
         var branchAliases: [String: String] = [:] // alias → branch

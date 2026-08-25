@@ -2280,6 +2280,9 @@ public final class BoardStore: @unchecked Sendable {
     private var prFetchTask: Task<Void, Never>?
     private var cachedPRsByBranch: [String: PullRequest] = [:]
     private var cachedPRsByRepoAndNumber: [String: [Int: PullRequest]] = [:]
+    /// "host/owner/name" → number → PR, for pull requests routed by the
+    /// repository their own URL names rather than by the card's project.
+    private var cachedPRsByRepoKeyAndNumber: [String: [Int: PullRequest]] = [:]
     private let discovery: SessionDiscovery
     private let coordinationStore: CoordinationStore
     private let activityDetector: (any ActivityDetector)?
@@ -2633,6 +2636,8 @@ public final class BoardStore: @unchecked Sendable {
             let refreshScope = PRRefreshScope.collect(links: existingLinks)
             let branchesByRepo = refreshScope.branchesByRepo
             let prNumbersByRepo = refreshScope.prNumbersByRepo
+            let prNumbersByRepoKey = refreshScope.prNumbersByRepoKey
+            let lookupDirForRepoKey = refreshScope.lookupDirForRepoKey
 
             // PR data comes from the last completed background fetch. The
             // fetch can take minutes on a cold gh cache, and running it inline
@@ -2645,13 +2650,16 @@ public final class BoardStore: @unchecked Sendable {
             let shouldFetchPRs = ContinuousClock.now - lastGHLookup >= ghInterval
             let pullRequests = cachedPRsByBranch  // branch → PR for reconciler
             let prsByRepoAndNumber = cachedPRsByRepoAndNumber  // repo → number → PR
+            let prsByRepoKeyAndNumber = cachedPRsByRepoKeyAndNumber  // "host/owner/name" → number → PR
             if let ghAdapter, shouldFetchPRs, prFetchTask == nil {
                 lastGHLookup = .now
                 prFetchTask = Task { [weak self] in
                     await self?.fetchPRData(
                         ghAdapter: ghAdapter,
                         branchesByRepo: branchesByRepo,
-                        prNumbersByRepo: prNumbersByRepo
+                        prNumbersByRepo: prNumbersByRepo,
+                        prNumbersByRepoKey: prNumbersByRepoKey,
+                        lookupDirForRepoKey: lookupDirForRepoKey
                     )
                     guard let self else { return }
                     self.prFetchTask = nil
@@ -2679,20 +2687,24 @@ public final class BoardStore: @unchecked Sendable {
             var mergedLinks = CardReconciler.reconcile(existing: existingLinks, snapshot: snapshot)
             KanbanCodeLog.info("reconcile", "reconciler: \(t3.duration(to: .now)) (\(existingLinks.count) existing → \(mergedLinks.count) merged)")
 
-            // Update existing PR statuses from the by-number results (scoped by repo
-            // to avoid cross-repo collisions — e.g., PR #1 in repo A vs PR #1 in repo B)
-            if !prsByRepoAndNumber.isEmpty {
+            // Update existing PR statuses from the by-number results. A pull
+            // request is matched by the repository its own URL names, so a
+            // card carrying a sibling repository's pull request refreshes it
+            // instead of asking its own repository for that number. Cards
+            // whose pull request has no URL yet fall back to their project.
+            if !prsByRepoKeyAndNumber.isEmpty || !prsByRepoAndNumber.isEmpty {
                 for i in mergedLinks.indices {
-                    guard let repoRoot = mergedLinks[i].projectPath,
-                          let repoPRs = prsByRepoAndNumber[repoRoot] else { continue }
+                    let repoRoot = mergedLinks[i].projectPath
                     for j in mergedLinks[i].prLinks.indices {
                         let number = mergedLinks[i].prLinks[j].number
-                        if let pr = repoPRs[number] {
-                            mergedLinks[i].prLinks[j].status = pr.status
-                            mergedLinks[i].prLinks[j].title = pr.title
-                            mergedLinks[i].prLinks[j].url = pr.url
-                            mergedLinks[i].prLinks[j].mergeStateStatus = pr.mergeStateStatus
-                        }
+                        let fromRepoKey = mergedLinks[i].prLinks[j].repoKey
+                            .flatMap { prsByRepoKeyAndNumber[$0]?[number] }
+                        let fromRoot = repoRoot.flatMap { prsByRepoAndNumber[$0]?[number] }
+                        guard let pr = fromRepoKey ?? fromRoot else { continue }
+                        mergedLinks[i].prLinks[j].status = pr.status
+                        mergedLinks[i].prLinks[j].title = pr.title
+                        mergedLinks[i].prLinks[j].url = pr.url
+                        mergedLinks[i].prLinks[j].mergeStateStatus = pr.mergeStateStatus
                     }
                 }
             }
@@ -2750,7 +2762,9 @@ public final class BoardStore: @unchecked Sendable {
     private func fetchPRData(
         ghAdapter: GhCliAdapter,
         branchesByRepo: [String: Set<String>],
-        prNumbersByRepo: [String: Set<Int>]
+        prNumbersByRepo: [String: Set<Int>],
+        prNumbersByRepoKey: [String: Set<Int>],
+        lookupDirForRepoKey: [String: String]
     ) async {
         let t = ContinuousClock.now
         let allRepos = Set(branchesByRepo.keys).union(prNumbersByRepo.keys)
@@ -2762,6 +2776,8 @@ public final class BoardStore: @unchecked Sendable {
         let groups = await PRLookupGrouping.group(
             branchesByRepo: branchesByRepo,
             prNumbersByRepo: prNumbersByRepo,
+            prNumbersByRepoKey: prNumbersByRepoKey,
+            lookupDirForRepoKey: lookupDirForRepoKey,
             slugForRoot: { await ghAdapter.resolveRepoSlug(repoRoot: $0) }
         )
 
@@ -2772,6 +2788,7 @@ public final class BoardStore: @unchecked Sendable {
             for (key, repoRoot) in groups.representativeRoot.sorted(by: { $0.key < $1.key }) {
                 let branches = Array(groups.branches[key] ?? [])
                 let numbers = Array(groups.numbers[key] ?? [])
+                let explicitRepo = groups.explicitRepo[key]
 
                 // Concurrency limit: drain one before adding more
                 if pending >= 5, let result = await group.next() {
@@ -2783,7 +2800,8 @@ public final class BoardStore: @unchecked Sendable {
                     let tBatch = ContinuousClock.now
                     do {
                         let (byBranch, byNumber) = try await ghAdapter.batchPRLookup(
-                            repoRoot: repoRoot, branches: branches, prNumbers: numbers
+                            repoRoot: repoRoot, branches: branches, prNumbers: numbers,
+                            repoOwner: explicitRepo?.owner, repoName: explicitRepo?.name
                         )
                         KanbanCodeLog.info("reconcile", "  batchPRLookup(\(key)): \(tBatch.duration(to: .now)) (\(branches.count) branches, \(numbers.count) PRs)")
                         return (key, byBranch, byNumber, false)
@@ -2801,6 +2819,7 @@ public final class BoardStore: @unchecked Sendable {
 
         var pullRequests: [String: PullRequest] = [:]
         var prsByRepoAndNumber: [String: [Int: PullRequest]] = [:]
+        var prsByRepoKeyAndNumber: [String: [Int: PullRequest]] = [:]
         var rateLimitedRepos: Set<String> = []
         for (key, byBranch, byNumber, rateLimited) in results {
             let members = groups.members[key] ?? []
@@ -2808,6 +2827,7 @@ public final class BoardStore: @unchecked Sendable {
             for (branch, pr) in byBranch {
                 pullRequests[branch] = pr
             }
+            if !byNumber.isEmpty { prsByRepoKeyAndNumber[key] = byNumber }
             PRLookupGrouping.distribute(
                 byNumber: byNumber,
                 toMembers: members,
@@ -2822,7 +2842,8 @@ public final class BoardStore: @unchecked Sendable {
         dispatch(.setRateLimitedRepos(rateLimitedRepos))
         cachedPRsByBranch = pullRequests
         cachedPRsByRepoAndNumber = prsByRepoAndNumber
-        let totalByNumber = prsByRepoAndNumber.values.reduce(0) { $0 + $1.count }
+        cachedPRsByRepoKeyAndNumber = prsByRepoKeyAndNumber
+        let totalByNumber = prsByRepoKeyAndNumber.values.reduce(0) { $0 + $1.count }
         KanbanCodeLog.info("reconcile", "PR lookup: \(t.duration(to: .now)) (\(pullRequests.count) by branch, \(totalByNumber) by number, \(allRepos.count) repos, background)")
     }
 

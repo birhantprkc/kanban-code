@@ -88,6 +88,24 @@ public struct PRLink: Codable, Sendable, Equatable {
         self.firstUnresolvedThreadURL = firstUnresolvedThreadURL
         self.mergeStateStatus = mergeStateStatus
     }
+
+    /// The repository this pull request lives in, as "host/owner/name".
+    ///
+    /// A card carries pull requests from more than one repository: work in
+    /// one project often ships a change to a sibling repository too. The
+    /// card's own project says nothing about where such a pull request
+    /// lives, and only the URL does, so a status refresh has to read it
+    /// from here. nil when the card has no URL yet, which leaves the
+    /// card's own repository as the only guess available.
+    public var repoKey: String? {
+        guard let url, let parsed = URL(string: url), let host = parsed.host else { return nil }
+        // https://<host>/<owner>/<name>/pull/<number>
+        let parts = parsed.path.split(separator: "/").map(String.init)
+        guard parts.count >= 4, parts[2] == "pull", !parts[0].isEmpty, !parts[1].isEmpty else {
+            return nil
+        }
+        return "\(host)/\(parts[0])/\(parts[1])"
+    }
 }
 
 /// Link to a GitHub issue.
