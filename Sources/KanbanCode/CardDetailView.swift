@@ -286,10 +286,7 @@ struct CardDetailView: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .sheet(isPresented: Binding(
-            get: { showAddLink && isExpanded },
-            set: { if !$0 { showAddLink = false } }
-        )) {
+        .sheet(isPresented: $showAddLink) {
             AddLinkPopover(
                 onAddBranch: { onAddBranch($0); showAddLink = false },
                 onAddIssue: { onAddIssue($0); showAddLink = false },
@@ -1556,47 +1553,6 @@ struct CardDetailView: View {
                         .foregroundStyle(.teal)
                 }
             }
-
-            VStack(alignment: .leading, spacing: 2) {
-                if let branch = card.link.worktreeLink?.branch, !branch.isEmpty {
-                    linkPropertyRow(icon: "arrow.triangle.branch", label: "Branch", value: branch, onUnlink: { onUnlink(.worktree) })
-                } else if let discovered = card.link.discoveredBranches?.first {
-                    linkPropertyRow(icon: "arrow.triangle.branch", label: "Branch", value: discovered, onUnlink: { onUnlink(.worktree) })
-                }
-                if let worktreePath = card.link.worktreeLink?.path, !worktreePath.isEmpty {
-                    copyableRow(icon: "folder", text: worktreePath)
-                }
-                ForEach(card.link.prLinks.sortedByPRNumber, id: \.number) { pr in
-                    let detail = pr.status.map { " · \($0.rawValue)" } ?? ""
-                    let prURL = pr.url ?? githubBaseURL.map { GitRemoteResolver.prURL(base: $0, number: pr.number) }
-                    linkPropertyRow(icon: "arrow.triangle.pull", label: "PR", value: "#\(String(pr.number))\(detail)", url: prURL, onUnlink: { onUnlink(.pr(number: pr.number)) })
-                }
-                if let issue = card.link.issueLink {
-                    let issueURL = issue.url ?? githubBaseURL.map { GitRemoteResolver.issueURL(base: $0, number: issue.number) }
-                    linkPropertyRow(icon: "circle.circle", label: "Issue", value: "#\(String(issue.number))", url: issueURL, onUnlink: { onUnlink(.issue) })
-                }
-                if let projectPath = card.link.projectPath {
-                    copyableRow(icon: "folder.badge.gearshape", text: projectPath)
-                }
-                if let sessionId = card.link.sessionLink?.sessionId {
-                    SessionIdRow(sessionId: sessionId, assistant: card.link.effectiveAssistant)
-                }
-                Button { showAddLink = true } label: {
-                    HStack(spacing: 3) {
-                        Image(systemName: "plus").font(.app(.caption2))
-                        Text("Add link").font(.app(.caption))
-                    }
-                    .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .popover(isPresented: $showAddLink) {
-                    AddLinkPopover(
-                        onAddBranch: { onAddBranch($0); showAddLink = false },
-                        onAddIssue: { onAddIssue($0); showAddLink = false },
-                        onAddPR: { onAddPR($0); showAddLink = false }
-                    )
-                }
-            }
         }
         .padding(16)
 
@@ -1660,7 +1616,7 @@ struct CardDetailView: View {
                         selectedTab = .history
                     },
                     onAddLink: { showAddLink = true },
-                    onUnlink: isExpanded ? onUnlink : nil,
+                    onUnlink: onUnlink,
                     onDiscover: onDiscover,
                     onCleanupWorktree: onCleanupWorktree,
                     canCleanupWorktree: canCleanupWorktree,
@@ -1671,7 +1627,7 @@ struct CardDetailView: View {
                     onMigrateAssistant: onMigrateAssistant,
                     onShowPromptHistory: { showPromptHistory = true }
                 ),
-                showBranchInfo: isExpanded,
+                showBranchInfo: true,
                 githubBaseURL: githubBaseURL,
                 availableProjects: availableProjects,
                 enabledAssistants: enabledAssistants
@@ -2265,61 +2221,6 @@ struct CardDetailView: View {
         copyToClipboard(cmd)
     }
 
-    /// Property row: icon + "Label: value", all secondary color, with optional link and × buttons.
-    private func linkPropertyRow(
-        icon: String, label: String, value: String,
-        color: Color = .secondary,
-        url: String? = nil,
-        onUnlink: (() -> Void)? = nil
-    ) -> some View {
-        HStack(spacing: 4) {
-            Label {
-                Text("\(label): \(value)")
-            } icon: {
-                Image(systemName: icon)
-            }
-            .font(.app(.caption))
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .truncationMode(.middle)
-
-            if let url, let parsed = URL(string: url) {
-                Button {
-                    NSWorkspace.shared.open(parsed)
-                } label: {
-                    Image(systemName: "arrow.up.forward.app")
-                        .font(.app(.caption2))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.borderless)
-                .help("Open in browser")
-
-                Button {
-                    copyToClipboard(url)
-                    showCopyToast("\(label) link copied to clipboard")
-                } label: {
-                    Image(systemName: "link")
-                        .font(.app(.caption2))
-                        .foregroundStyle(.tertiary)
-                }
-                .buttonStyle(.borderless)
-                .help("Copy link")
-            }
-
-            if let onUnlink {
-                Button {
-                    onUnlink()
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.app(size: 8, weight: .bold))
-                        .foregroundStyle(.tertiary)
-                }
-                .buttonStyle(.borderless)
-                .help("Remove link")
-            }
-        }
-    }
-
     private func copyToClipboard(_ text: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
@@ -2380,9 +2281,5 @@ struct CardDetailView: View {
             try? await Task.sleep(for: .seconds(2))
             if copyToast == message { copyToast = nil }
         }
-    }
-
-    private func copyableRow(icon: String, text: String) -> some View {
-        CopyableRow(icon: icon, text: text)
     }
 }
