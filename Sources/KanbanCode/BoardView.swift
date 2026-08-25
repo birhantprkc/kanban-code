@@ -73,7 +73,24 @@ struct BoardView: View {
         let pinnedCards = store.state.pinnedCards
         let descendantCounts = SubagentHierarchy.descendantCounts(in: store.state.links)
         if !channels.isEmpty || !pinnedCards.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
+            // The rail scrolls on its own. Bare, its height grows with the
+            // pinned count, and a rail taller than the window vertically
+            // centers the whole horizontal board: every column header and
+            // the first cards of every column end up above the screen.
+            ScrollView {
+                railContent(channels: channels, pinnedCards: pinnedCards, descendantCounts: descendantCounts)
+                    .padding(.horizontal, 6)
+            }
+            .frame(width: 240, alignment: .top)
+        }
+    }
+
+    private func railContent(
+        channels: [Channel],
+        pinnedCards: [KanbanCodeCard],
+        descendantCounts: [String: Int]
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
                 if !channels.isEmpty {
                     // Subtle header so the column reads as "Channels" without competing with real columns.
                     HStack(spacing: 6) {
@@ -160,9 +177,6 @@ struct BoardView: View {
                     }
                 }
             }
-            .padding(.horizontal, 6)
-            .frame(width: 240, alignment: .top)
-        }
     }
 
     private func reorderChannel(_ channelId: String, _ targetChannelId: String?, _ above: Bool) {
