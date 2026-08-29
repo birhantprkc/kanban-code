@@ -76,6 +76,25 @@ exit 0
   return { binDir, logPath };
 }
 
+/**
+ * The detached self-compact shell sleeps before it drives tmux, so the log
+ * fills in after the CLI already exited. Poll it until the last expected line
+ * arrives instead of guessing a wall-clock wait.
+ */
+function waitForLog(logPath: string, pattern: RegExp, timeoutSeconds = 20): string {
+  const deadline = Date.now() + timeoutSeconds * 1000;
+  let log = "";
+  for (;;) {
+    try {
+      log = readFileSync(logPath, "utf-8");
+    } catch {
+      log = "";
+    }
+    if (pattern.test(log) || Date.now() >= deadline) return log;
+    execFileSync("sleep", ["0.1"]);
+  }
+}
+
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "kanban-remote-identity-"));
 });
@@ -190,8 +209,7 @@ describe("self-compact identity outside tmux", () => {
     assert.equal(r.code, 0, r.stderr);
     assert.match(r.stdout, /Sent \/compact to sess-remote/);
 
-    execFileSync("sleep", ["2.8"]);
-    const log = readFileSync(logPath, "utf-8");
+    const log = waitForLog(logPath, /set-buffer -b kc-\d+-\d+ -- Continue later\./);
     assert.match(log, /send-keys -t sess-remote Escape/);
     assert.match(log, /set-buffer -b kc-\d+-\d+ -- \/compact/);
     assert.match(log, /set-buffer -b kc-\d+-\d+ -- Continue later\./);
