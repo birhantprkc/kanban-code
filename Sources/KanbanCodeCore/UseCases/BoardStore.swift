@@ -1968,7 +1968,7 @@ public enum Reducer {
                       !link.manualOverrides.tmuxSession else { continue }
                 // A remote card whose machine is paused or unreachable is not
                 // in the scan; its tmux session is still there.
-                if let remote = link.remote,
+                if let remote = link.remote, link.isRemote,
                    state.remoteMachineStates[remote.machineName]?.isConnected != true { continue }
                 let before = link.tmuxLink?.allSessionNames ?? []
                 guard CardReconciler.applyTmuxLiveness(to: &link, liveTmuxNames: live) else { continue }

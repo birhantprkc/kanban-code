@@ -327,6 +327,11 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         }
     }
 
+    /// Forgets the machine of these tmux names, so they route locally again.
+    public func releaseSessions(_ sessionNames: [String]) {
+        for name in sessionNames { registry.unassign(sessionName: name) }
+    }
+
     /// Whether the tmux session of a card is still alive on its machine.
     public func hasSession(machineName: String, sessionName: String) async -> Bool {
         guard let bridge = machines[machineName]?.bridge else { return false }

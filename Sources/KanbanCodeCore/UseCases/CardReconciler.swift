@@ -435,7 +435,8 @@ public enum CardReconciler {
             // Only clear if we actually scanned tmux (avoid clearing when snapshot has no tmux data)
             // Skip cards mid-launch — the tmux session may not be visible yet
             // A remote card is only judged when its machine was in the scan.
-            let remoteMachineScanned = link.remote.map { snapshot.connectedRemoteMachines.contains($0.machineName) } ?? true
+            let remoteMachineScanned = !link.isRemote
+                || (link.remote.map { snapshot.connectedRemoteMachines.contains($0.machineName) } ?? true)
             if link.tmuxLink != nil, link.isLaunching != true, !link.manualOverrides.tmuxSession, didScanTmux, remoteMachineScanned {
                 changed = applyTmuxLiveness(to: &link, liveTmuxNames: liveTmuxNames) || changed
             }
@@ -445,7 +446,7 @@ public enum CardReconciler {
             // local path says nothing about it.
             if let wtPath = link.worktreeLink?.path,
                !wtPath.isEmpty,
-               link.remote == nil,
+               !(link.isRemote && link.remote != nil),
                !link.manualOverrides.isBranchDiscoveryBlocked,
                didScanWorktrees, // only clear if we actually scanned worktrees
                !liveWorktreePaths.contains(wtPath) {

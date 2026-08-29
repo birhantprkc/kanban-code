@@ -139,7 +139,7 @@ public final class RemoteSessionRegistry: @unchecked Sendable {
     public func seed(from links: some Sequence<Link>) {
         lock.lock(); defer { lock.unlock() }
         for link in links {
-            guard let remote = link.remote, let tmux = link.tmuxLink else { continue }
+            guard let remote = link.remote, link.isRemote, let tmux = link.tmuxLink else { continue }
             if machines[remote.machineName] == nil {
                 let state: RemoteMachineState = remote.pausedReason.map { .paused($0) } ?? .unreachable
                 machines[remote.machineName] = MachineEntry(state: state)

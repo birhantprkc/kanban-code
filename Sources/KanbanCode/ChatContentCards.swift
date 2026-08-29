@@ -549,7 +549,7 @@ struct PlanModeExitCard: View {
                 return
             }
             // Poll the pane until we find options (they may appear with a slight delay)
-            let tmux = TmuxAdapter()
+            let tmux = AppServices.tmux
             for attempt in 0..<10 {
                 if let output = try? await tmux.capturePane(sessionName: session) {
                     let opts = PaneOutputParser.parsePlanOptions(from: output)

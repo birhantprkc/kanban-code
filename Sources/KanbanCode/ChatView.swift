@@ -128,7 +128,7 @@ struct ChatView: View {
                                 dismissedBusy = true
                                 if let session = tmuxSessionName {
                                     Task {
-                                        try? await TmuxAdapter().sendInterrupt(sessionName: session)
+                                        try? await AppServices.tmux.sendInterrupt(sessionName: session)
                                     }
                                 }
                             } label: {
@@ -600,7 +600,7 @@ private struct ChatMessageList: View {
             isBusyFromPane = false
             return
         }
-        let tmux = TmuxAdapter()
+        let tmux = AppServices.tmux
         while !Task.isCancelled {
             let newBusy: Bool
             do {

@@ -689,7 +689,7 @@ struct CardDetailView: View {
             },
             onEscape: {
                 if let session = card.link.tmuxLink?.sessionName {
-                    Task { try? await TmuxAdapter().sendEscape(sessionName: session) }
+                    Task { try? await AppServices.tmux.sendEscape(sessionName: session) }
                 }
             },
             githubBaseURL: githubBaseURL,
@@ -1103,7 +1103,7 @@ struct CardDetailView: View {
     private var chatModeResumeOverlay: some View {
         let assistant = card.link.effectiveAssistant
         HStack(spacing: 8) {
-            Text("\(assistant.displayName) session ended")
+            Text(sessionEndedText(assistant: assistant))
                 .font(.app(.callout))
                 .foregroundStyle(.secondary)
             Button(action: onResume) {
@@ -1120,6 +1120,39 @@ struct CardDetailView: View {
         .frame(maxWidth: .infinity)
         .background(.ultraThinMaterial)
         .frame(maxHeight: .infinity, alignment: .bottom)
+    }
+
+    /// "Session ended", or why the boxd machine of the card was paused.
+    private func sessionEndedText(assistant: CodingAssistant) -> String {
+        guard let remote = card.link.remote, remote.mode == .boxd, let reason = remote.pausedReason else {
+            return "\(assistant.displayName) session ended"
+        }
+        switch reason {
+        case .inactivity:
+            // How long the machine sat idle: from the last activity of the
+            // card to the moment it was paused.
+            var minutes = 60
+            if let pausedAt = remote.pausedAt, let lastActivity = card.link.lastActivity, pausedAt > lastActivity {
+                minutes = max(1, Int(pausedAt.timeIntervalSince(lastActivity) / 60))
+            }
+            return "Machine \(remote.machineName) was paused due to inactivity for over \(Self.durationText(minutes: minutes))"
+        case .sessionStopped:
+            return "Machine \(remote.machineName) paused after the session stopped"
+        case .appQuit:
+            return "Machine \(remote.machineName) paused when the app quit"
+        case .systemSleep:
+            return "Machine \(remote.machineName) paused when the Mac went to sleep"
+        case .manual:
+            return "Machine \(remote.machineName) paused"
+        }
+    }
+
+    private static func durationText(minutes: Int) -> String {
+        if minutes % 60 == 0 {
+            let hours = minutes / 60
+            return hours == 1 ? "1h" : "\(hours)h"
+        }
+        return "\(minutes) min"
     }
 
     @ViewBuilder
@@ -1144,9 +1177,14 @@ struct CardDetailView: View {
                 AssistantIcon(assistant: assistant)
                     .frame(width: CGFloat(32).scaled, height: CGFloat(32).scaled)
                     .foregroundStyle(Color.primary.opacity(0.3))
-                Text("\(assistant.displayName) session ended")
+                Text(sessionEndedText(assistant: assistant))
                     .font(.app(.body))
                     .foregroundStyle(.secondary)
+                if let remote = card.link.remote, remote.mode == .boxd, remote.pausedReason == nil {
+                    Text("Machine \(remote.machineName) is kept. Resume attaches to it.")
+                        .font(.app(.caption))
+                        .foregroundStyle(.tertiary)
+                }
                 Button(action: onResume) {
                     HStack(spacing: 8) {
                         Label("Resume \(assistant.displayName)", systemImage: "play.fill")

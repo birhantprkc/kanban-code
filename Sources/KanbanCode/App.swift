@@ -251,7 +251,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         guard !terminationReplyPending else { return .terminateLater }
         let managedSessions = Self.listManagedTmuxSessionsSync()
         KanbanCodeLog.info("quit", "Resolved \(managedSessions.count) live managed tmux session(s)")
-        guard !managedSessions.isEmpty else { return .terminateNow }
+        guard !managedSessions.isEmpty else {
+            // Boxd machines bill per minute, so they are paused before the
+            // process goes away, within a short bound.
+            if AppServices.hasConnectedMachines, let supervisor = AppServices.boxdSupervisor {
+                terminationReplyPending = true
+                KanbanCodeLog.info("quit", "Pausing boxd machines before termination")
+                Task { @MainActor [weak self] in
+                    await supervisor.pauseAll(reason: .appQuit)
+                    self?.replyToTermination(true)
+                }
+                return .terminateLater
+            }
+            return .terminateNow
+        }
 
         terminationReplyPending = true
         KanbanCodeLog.info("quit", "Termination requested; deferring for managed-session confirmation")
@@ -344,6 +357,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                 Self.killTmuxSessionSync(name: sessionName)
             }
             CoordinationStore.clearTmuxSessionsSnapshot(sessionNames)
+        }
+        if AppServices.hasConnectedMachines, let supervisor = AppServices.boxdSupervisor {
+            KanbanCodeLog.info("quit", "Pausing boxd machines before termination")
+            Task { @MainActor [weak self] in
+                await supervisor.pauseAll(reason: .appQuit)
+                self?.replyToTermination(true)
+            }
+            return
         }
         replyToTermination(true)
     }

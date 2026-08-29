@@ -702,13 +702,28 @@ final class TerminalCache {
         startedSessions.insert(sessionName)
 
         let userShell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        let script: String
+        if let machine = AppServices.machine(forSession: sessionName) {
+            script = Self.remoteAttachScript(boxd: AppServices.boxdPath, machine: machine, session: sessionName)
+        } else {
+            script = Self.attachScript(tmux: Self.tmuxPath, session: sessionName)
+        }
         terminal.startProcess(
             executable: userShell,
-            args: ["-l", "-c", Self.attachScript(tmux: Self.tmuxPath, session: sessionName)],
+            args: ["-l", "-c", script],
             environment: nil,
             execName: nil,
             currentDirectory: nil
         )
+    }
+
+    /// Attaches to a tmux session on a boxd machine through a pty of
+    /// `boxd machine exec --tty`. The machine may still be resuming when the
+    /// terminal opens, so the attach is retried for a while.
+    static func remoteAttachScript(boxd: String, machine: String, session: String) -> String {
+        let quote = { (value: String) in "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+        let attach = "\(quote(boxd)) machine exec --tty \(quote(machine)) -- tmux attach-session -t \(quote(session))"
+        return "for i in $(seq 1 30); do \(attach) && break; sleep 2; done; echo 'Session ended.'"
     }
 
     /// The shell command a terminal runs to reach its tmux session.

@@ -152,7 +152,8 @@ struct ContentView: View {
     let settingsStore: SettingsStore
     let assistantRegistry: CodingAssistantRegistry
     let launcher: LaunchSession
-    let tmuxAdapter: TmuxAdapter
+    let tmuxAdapter: RoutingTmuxAdapter
+    let boxdSupervisor: BoxdMachineSupervisor
     let subagentCommandStore = SubagentCommandStore()
     let systemTray = SystemTray()
     let mutagenAdapter = MutagenAdapter()
@@ -160,6 +161,11 @@ struct ContentView: View {
     let settingsFilePath: String
 
     @State var pendingWorktreeCleanup: WorktreeCleanupInfo?
+    /// Machine picked in the last launch dialog, consumed by the launch.
+    @State var pendingMachineChoice: BoxdMachineChoice?
+    /// Machines in the boxd org, refreshed when a launch dialog opens.
+    @State var boxdMachineNames: [String] = []
+    @State var boxdAvailable = true
     @State var shouldFocusTerminal = false
     @State var keyMonitor: Any?
 
@@ -232,7 +238,18 @@ struct ContentView: View {
 
         let coordination = CoordinationStore()
         let settings = SettingsStore()
-        let tmux = TmuxAdapter()
+        let remoteRegistry = RemoteSessionRegistry()
+        let tmux = RoutingTmuxAdapter(local: TmuxAdapter(), registry: remoteRegistry)
+        let supervisor = BoxdMachineSupervisor(
+            boxd: BoxdCliAdapter(),
+            registry: remoteRegistry,
+            settingsProvider: { (try? await settings.read())?.boxd ?? BoxdSettings() },
+            cliBundlePath: AppServices.cliBundlePath,
+            appVersion: AppServices.appVersion
+        )
+        AppServices.tmux = tmux
+        AppServices.remoteRegistry = remoteRegistry
+        AppServices.boxdSupervisor = supervisor
 
         let effectHandler = EffectHandler(
             coordinationStore: coordination,
@@ -241,7 +258,8 @@ struct ContentView: View {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setData(data, forType: .png)
             },
-            notifier: MacOSNotificationClient()
+            notifier: MacOSNotificationClient(),
+            remoteMachines: supervisor
         )
 
         let boardStore = BoardStore(
@@ -274,6 +292,30 @@ struct ContentView: View {
         orch.setDispatch { [weak boardStore] action in
             boardStore?.dispatch(action)
         }
+        AppServices.pauseMachine = { [weak boardStore] cardId in
+            boardStore?.dispatch(.pauseRemoteMachine(cardId: cardId, reason: .manual))
+        }
+        AppServices.destroyMachine = { [weak boardStore] cardId in
+            boardStore?.dispatch(.showDialog(.confirmDestroyMachine(cardId: cardId)))
+        }
+        Task { [weak boardStore] in
+            await supervisor.setDispatch { action in
+                boardStore?.dispatch(action)
+            }
+            await supervisor.setProxyRunner { invocation in
+                await AppServices.runProxiedCommand(invocation)
+            }
+            await supervisor.setBusyCheck { machineName in
+                await MainActor.run {
+                    guard let boardStore else { return false }
+                    let state = boardStore.state
+                    return state.cardIds(onMachine: machineName).contains { cardId in
+                        guard let sessionId = state.links[cardId]?.sessionLink?.sessionId else { return false }
+                        return state.activityMap[sessionId] == .activelyWorking
+                    }
+                }
+            }
+        }
 
         // Restore persisted detail expansion and card selection before first render
         // to avoid flicker. @AppStorage values are available synchronously.
@@ -292,6 +334,7 @@ struct ContentView: View {
         self.assistantRegistry = registry
         self.launcher = launch
         self.tmuxAdapter = tmux
+        self.boxdSupervisor = supervisor
         self.hookEventsPath = (NSHomeDirectory() as NSString)
             .appendingPathComponent(".kanban-code/hook-events.jsonl")
         self.settingsFilePath = (NSHomeDirectory() as NSString)
@@ -926,14 +969,17 @@ struct ContentView: View {
                     projects: store.state.configuredProjects,
                     defaultProjectPath: store.state.selectedProjectPath,
                     globalRemoteSettings: store.state.globalRemoteSettings,
+                    remoteOptions: remoteLaunchOptions(cardId: nil),
                     enabledAssistants: assistantRegistry.available,
                     onCreate: { prompt, projectPath, title, startImmediately, images in
                         createManualTask(prompt: prompt, projectPath: projectPath, title: title, startImmediately: startImmediately, images: images)
                     },
                     onCreateAndLaunch: { prompt, projectPath, title, createWorktree, runRemotely, skipPermissions, commandOverride, images, assistant, apiServiceId in
                         createManualTaskAndLaunch(prompt: prompt, projectPath: projectPath, title: title, createWorktree: createWorktree, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride, images: images, assistant: assistant, apiServiceId: apiServiceId)
-                    }
+                    },
+                    onMachineChoice: { pendingMachineChoice = $0 }
                 )
+                .task { await refreshBoxdMachines() }
             }
             .sheet(isPresented: $showAddFromPath) {
                 addFromPathSheet
@@ -967,6 +1013,7 @@ struct ContentView: View {
                     isGitRepo: config.isGitRepo,
                     hasRemoteConfig: config.hasRemoteConfig,
                     remoteHost: config.remoteHost,
+                    remoteOptions: remoteLaunchOptions(cardId: config.cardId),
                     isResume: config.isResume,
                     sessionId: config.sessionId,
                     promptImagePaths: config.promptImagePaths,
@@ -976,15 +1023,24 @@ struct ContentView: View {
                     isPresented: Binding(
                         get: { launchConfig != nil },
                         set: { if !$0 { launchConfig = nil } }
-                    )
-                ) { editedPrompt, createWorktree, worktreeBranch, runRemotely, skipPermissions, commandOverride, images, selectedServiceId in
-                    if config.isResume {
-                        executeResume(cardId: config.cardId, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride, assistant: config.assistant, serviceIdOverride: selectedServiceId, modelOverride: config.modelOverride)
-                    } else {
-                        let wtName: String? = createWorktree ? (worktreeBranch ?? config.worktreeName ?? "") : nil
-                        executeLaunch(cardId: config.cardId, prompt: editedPrompt, projectPath: config.projectPath, worktreeName: wtName, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride, images: images, assistant: config.assistant, serviceIdOverride: selectedServiceId, modelOverride: config.modelOverride)
+                    ),
+                    onLaunch: { editedPrompt, createWorktree, worktreeBranch, runRemotely, skipPermissions, commandOverride, images, selectedServiceId in
+                        let machineChoice = pendingMachineChoice
+                        pendingMachineChoice = nil
+                        if config.isResume {
+                            executeResume(cardId: config.cardId, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride, assistant: config.assistant, serviceIdOverride: selectedServiceId, modelOverride: config.modelOverride, machineChoice: machineChoice)
+                        } else {
+                            let wtName: String? = createWorktree ? (worktreeBranch ?? config.worktreeName ?? "") : nil
+                            executeLaunch(cardId: config.cardId, prompt: editedPrompt, projectPath: config.projectPath, worktreeName: wtName, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride, images: images, assistant: config.assistant, serviceIdOverride: selectedServiceId, modelOverride: config.modelOverride, machineChoice: machineChoice)
+                        }
+                    },
+                    onMachineChoice: { pendingMachineChoice = $0 },
+                    onRemoveMachine: {
+                        launchConfig = nil
+                        presentDialog(.confirmDestroyMachine(cardId: config.cardId))
                     }
-                }
+                )
+                .task { await refreshBoxdMachines() }
             }
             .sheet(isPresented: $showOnboarding) {
                 OnboardingWizard(
@@ -1305,6 +1361,36 @@ struct ContentView: View {
         activeDialog = dialog
     }
 
+    /// What the launch dialogs need for the remote row, in the active mode.
+    func remoteLaunchOptions(cardId: String?) -> RemoteLaunchOptions {
+        let link = cardId.flatMap { store.state.links[$0] }
+        let machine = link?.remote?.mode == .boxd ? link?.remote?.machineName : nil
+        return RemoteLaunchOptions(
+            mode: store.state.remoteMode,
+            mutagen: store.state.globalRemoteSettings,
+            boxd: store.state.remoteMode == .boxd ? (store.state.boxdSettings ?? BoxdSettings()) : nil,
+            cardMachine: machine,
+            cardMachineState: machine.flatMap { store.state.remoteMachineStates[$0] }
+                ?? link?.remote?.pausedReason.map { RemoteMachineState.paused($0) },
+            availableMachines: boxdMachineNames,
+            boxdAvailable: boxdAvailable
+        )
+    }
+
+    /// Refreshes the machine list shown in the launch dialogs.
+    func refreshBoxdMachines() async {
+        guard store.state.remoteMode == .boxd else { return }
+        let adapter = BoxdCliAdapter()
+        boxdAvailable = await adapter.isAvailable()
+        guard boxdAvailable else { return }
+        if let machines = try? await adapter.listMachines() {
+            boxdMachineNames = machines
+                .filter { $0.status != .destroyed }
+                .map(\.name)
+                .sorted()
+        }
+    }
+
     func dismissDialog() {
         activeDialog = .none
     }
@@ -1392,6 +1478,13 @@ struct ContentView: View {
                 }
                 systemTray.setup(store: store)
                 await store.loadSettingsAndCache()
+                // Remote cards route their tmux names to their machines before
+                // the first reconcile, so the liveness scan does not clear them.
+                let remoteLinks = store.state.links.values.filter { $0.remote != nil && $0.isRemote }
+                if !remoteLinks.isEmpty {
+                    let supervisor = boxdSupervisor
+                    Task.detached { await supervisor.restore(links: Array(remoteLinks)) }
+                }
                 await store.reconcile()
                 systemTray.update()
                 orchestrator.start()
@@ -1538,13 +1631,17 @@ struct ContentView: View {
                 // Stop periodic work for the night: dark wakes fire the refresh
                 // timer every few minutes and each pass spawns gh subprocesses.
                 store.isSystemSleeping = true
+                let supervisor = boxdSupervisor
+                Task.detached { await supervisor.pauseAll(reason: .systemSleep) }
             }
             .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification).receive(on: RunLoop.main)) { _ in
                 store.isSystemSleeping = false
+                let supervisor = boxdSupervisor
                 Task {
                     // Let the network come back before the first pass — the
                     // reconcile clears dead tmux links and refreshes activity.
                     try? await Task.sleep(for: .seconds(2))
+                    await supervisor.resumeAfterSleep()
                     await store.reconcile()
                     systemTray.update()
                 }
@@ -2139,7 +2236,7 @@ struct ContentView: View {
             guard AppShortcut.stopAssistant.isActive(in: shortcutContext) else { return }
             if let card = store.state.selectedCard,
                let session = card.link.tmuxLink?.sessionName {
-                Task { try? await TmuxAdapter().sendEscape(sessionName: session) }
+                Task { try? await AppServices.tmux.sendEscape(sessionName: session) }
             }
         }
         .keyboardShortcut(AppShortcut.stopAssistant.key, modifiers: AppShortcut.stopAssistant.modifiers)
@@ -2189,7 +2286,7 @@ struct ContentView: View {
                let session = card.link.tmuxLink?.sessionName,
                card.activityState == .activelyWorking || card.activityState == .idleWaiting {
                 if UserDefaults.standard.bool(forKey: "preferChatView") {
-                    Task { try? await TmuxAdapter().sendInterrupt(sessionName: session) }
+                    Task { try? await AppServices.tmux.sendInterrupt(sessionName: session) }
                     return
                 }
             }
@@ -2834,7 +2931,9 @@ struct ContentView: View {
             let builtPrompt = PromptBuilder.buildPrompt(card: link, project: project, settings: settings)
 
             let wtName: String? = (createWorktree && assistant.supportsWorktree) ? "" : nil
-            executeLaunch(cardId: link.id, prompt: builtPrompt, projectPath: effectivePath, worktreeName: wtName, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride, images: images, assistant: assistant)
+            let machineChoice = pendingMachineChoice
+            pendingMachineChoice = nil
+            executeLaunch(cardId: link.id, prompt: builtPrompt, projectPath: effectivePath, worktreeName: wtName, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride, images: images, assistant: assistant, machineChoice: machineChoice)
         }
     }
 

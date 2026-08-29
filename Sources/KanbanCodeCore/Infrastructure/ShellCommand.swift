@@ -9,6 +9,12 @@ public enum ShellCommand {
         public let stderr: String
 
         public var succeeded: Bool { exitCode == 0 }
+
+        public init(exitCode: Int32, stdout: String, stderr: String) {
+            self.exitCode = exitCode
+            self.stdout = stdout
+            self.stderr = stderr
+        }
     }
 
     /// Cached user login-shell environment, resolved once on first use.
@@ -81,9 +87,10 @@ public enum ShellCommand {
         arguments: [String] = [],
         currentDirectory: String? = nil,
         stdin: String? = nil,
+        environment: [String: String]? = nil,
         timeout: TimeInterval = 300
     ) async throws -> Result {
-        let env = userEnvironment
+        let env = environment ?? userEnvironment
         return try await withCheckedThrowingContinuation { continuation in
             processQueue.async {
                 let process = Process()
