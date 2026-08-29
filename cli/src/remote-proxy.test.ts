@@ -6,7 +6,7 @@
 import { strict as assert } from "node:assert";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import {
@@ -204,7 +204,8 @@ describe("the gate in the real CLI", () => {
     assert.equal(r.code, 0, r.stderr);
     const hello = JSON.parse(r.stdout.trim().split("\n")[0]);
     assert.equal(hello.type, "hello");
-    assert.equal(hello.home, process.env.KANBAN_CODE_HOME);
+    assert.equal(hello.kanbanHome, process.env.KANBAN_CODE_HOME);
+    assert.equal(hello.home, homedir());
   });
 });
 

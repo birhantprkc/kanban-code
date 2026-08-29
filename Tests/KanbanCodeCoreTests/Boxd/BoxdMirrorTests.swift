@@ -102,18 +102,39 @@ struct BoxdMirrorTests {
         #expect(written.hasSuffix("\n"))
     }
 
-    @Test("A transcript chunk with no cwd is buffered and nothing is written")
+    /// A project directory outside every mapping: only its transcript's cwd
+    /// can tell the mirror where it goes.
+    private static let unmappedRemoteDirectory = "/home/boxd/.claude/projects/-opt-elsewhere-app"
+
+    @Test("A transcript chunk with no cwd under an unmapped directory is buffered and nothing is written")
     func transcriptWithoutCwdIsBuffered() async throws {
+        let fixture = Fixture()
+        defer { fixture.cleanUp() }
+        let mirror = fixture.makeMirror()
+        let remotePath = "\(Self.unmappedRemoteDirectory)/s1.jsonl"
+
+        let outcome = await mirror.apply(.file(path: remotePath, cwd: nil, offset: 0, data: Data("x\n".utf8), eof: true))
+
+        #expect(outcome == .buffered(path: remotePath))
+        #expect(FileManager.default.fileExists(atPath: "\(fixture.localHome)/.claude/projects/-opt-elsewhere-app/s1.jsonl") == false)
+        #expect(await mirror.offsets[remotePath] == nil)
+    }
+
+    @Test("A transcript with no cwd under a mapped directory goes to the mapped project directory")
+    func transcriptWithoutCwdUnderMappedDirectoryIsDerived() async throws {
         let fixture = Fixture()
         defer { fixture.cleanUp() }
         let mirror = fixture.makeMirror()
         let remotePath = "\(fixture.remoteProjectDirectory)/s1.jsonl"
 
-        let outcome = await mirror.apply(.file(path: remotePath, cwd: nil, offset: 0, data: Data("x\n".utf8), eof: true))
+        let outcome = await mirror.apply(.file(path: remotePath, cwd: nil, offset: 0, data: Data((plainLine("one") + "\n").utf8), eof: true))
 
-        #expect(outcome == .buffered(path: remotePath))
-        #expect(FileManager.default.fileExists(atPath: "\(fixture.localProjectDirectory)/s1.jsonl") == false)
-        #expect(await mirror.offsets[remotePath] == nil)
+        #expect(outcome == .transcript(sessionId: "s1", localPath: "\(fixture.localProjectDirectory)/s1.jsonl"))
+
+        // A worktree of the project keeps the encoded tail after the project.
+        let worktreeRemote = "\(fixture.remoteProjectDirectory)--claude-worktrees-feat/s2.jsonl"
+        let worktreeOutcome = await mirror.apply(.file(path: worktreeRemote, cwd: nil, offset: 0, data: Data("{}\n".utf8), eof: true))
+        #expect(worktreeOutcome == .transcript(sessionId: "s2", localPath: "\(fixture.localProjectDirectory)--claude-worktrees-feat/s2.jsonl"))
     }
 
     @Test("Buffered bytes are replayed when the path is resumed")
@@ -145,14 +166,14 @@ struct BoxdMirrorTests {
         let fixture = Fixture()
         defer { fixture.cleanUp() }
         let mirror = fixture.makeMirror()
-        let remotePath = "\(fixture.remoteProjectDirectory)/s1.jsonl"
+        let remotePath = "\(Self.unmappedRemoteDirectory)/s1.jsonl"
         let first = Data((transcriptLine("one") + "\n").utf8)
         let second = Data((transcriptLine("two") + "\n").utf8)
 
         #expect(await mirror.apply(.file(path: remotePath, cwd: nil, offset: 0, data: first, eof: true)) == .buffered(path: remotePath))
-        _ = await mirror.apply(.file(path: remotePath, cwd: fixture.remoteProject, offset: first.count, data: second, eof: true))
+        _ = await mirror.apply(.file(path: remotePath, cwd: "/opt/elsewhere/app", offset: first.count, data: second, eof: true))
 
-        let written = try #require(read("\(fixture.localProjectDirectory)/s1.jsonl"))
+        let written = try #require(read("\(fixture.localHome)/.claude/projects/-opt-elsewhere-app/s1.jsonl"))
         #expect(written.contains("one"))
         #expect(written.contains("two"))
     }
@@ -266,7 +287,7 @@ struct BoxdMirrorTests {
         let fixture = Fixture()
         defer { fixture.cleanUp() }
         let mirror = fixture.makeMirror()
-        let sidecar = "\(fixture.remoteProjectDirectory)/s1/tool-results/x.txt"
+        let sidecar = "\(Self.unmappedRemoteDirectory)/s1/tool-results/x.txt"
 
         let outcome = await mirror.apply(.file(path: sidecar, cwd: nil, offset: 0, data: Data("x".utf8), eof: true))
 

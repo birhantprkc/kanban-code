@@ -145,11 +145,31 @@ public actor BoxdMirror {
         if let known = projectDirectories[remoteDirectory] {
             return "\(known)/\(rest)"
         }
-        guard let cwd else { return nil }
-        let localDirectory = "\(localClaudeProjects)/\(TranscriptPathRewriter.encodeProjectPath(rewriter.mapPath(cwd)))"
+        let localDirectory: String
+        if let cwd {
+            localDirectory = "\(localClaudeProjects)/\(TranscriptPathRewriter.encodeProjectPath(rewriter.mapPath(cwd)))"
+        } else if let derived = localProjectDirectory(forRemoteDirectory: remoteDirectory) {
+            localDirectory = derived
+        } else {
+            return nil
+        }
         projectDirectories[remoteDirectory] = localDirectory
         saveState()
         return "\(localDirectory)/\(rest)"
+    }
+
+    /// Local project directory for an encoded remote one, from the path
+    /// mappings. Both sides encode a path the same way, so when the remote
+    /// name starts with the encoded `from` of a mapping, the rest of the name
+    /// is the same on the Mac after the encoded `to`.
+    private func localProjectDirectory(forRemoteDirectory remoteDirectory: String) -> String? {
+        for mapping in rewriter.pathMappings {
+            let encodedFrom = Self.encodeRemoteProjectPath(mapping.from)
+            guard remoteDirectory == encodedFrom || remoteDirectory.hasPrefix(encodedFrom + "-") else { continue }
+            let tail = remoteDirectory.dropFirst(encodedFrom.count)
+            return "\(localClaudeProjects)/\(TranscriptPathRewriter.encodeProjectPath(mapping.to))\(tail)"
+        }
+        return nil
     }
 
     /// Where a local transcript goes on the machine. `remoteCwd` is the
@@ -311,7 +331,7 @@ public actor BoxdMirror {
             }
             object["timestamp"] = formatter.string(from: now())
             object["machine"] = machineName
-            guard let out = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+            guard let out = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes]),
                   let outLine = String(data: out, encoding: .utf8) else { continue }
             relayed.append(outLine)
         }

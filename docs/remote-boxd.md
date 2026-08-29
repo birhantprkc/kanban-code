@@ -53,7 +53,7 @@ Every `.jsonl` line under `~/.claude/projects/` and `~/.codex/sessions/` is rewr
 
 | Type | Fields | Meaning |
 |---|---|---|
-| `hello` | `agentVersion`, `home`, `vm` | First line after start. |
+| `hello` | `agentVersion`, `home`, `kanbanHome`, `vm` | First line after start. `home` is the user's home directory on the machine. |
 | `file` | `path`, `cwd?`, `offset`, `data`, `eof` | `data` is base64 of the bytes appended at `offset`. For `.jsonl` files the chunk ends on a line boundary. `cwd` is the transcript's own working directory, read from the file or derived from its directory name. |
 | `removed` | `path` | The file was deleted. |
 | `proxy` | `id`, `argv`, `cwd`, `stdin`, `env`, `images` | A `kanban` command to run on the Mac. `images` is a list of `{name, base64}`. |

@@ -5,7 +5,7 @@
 
 import { strict as assert } from "node:assert";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, test } from "node:test";
@@ -87,7 +87,8 @@ describe("remote agent protocol", () => {
   test("greets the Mac and answers a ping", async () => {
     const harness = startAgent();
     const hello = await harness.waitFor((m) => m.type === "hello", "hello");
-    assert.equal(hello.home, process.env.KANBAN_CODE_HOME);
+    assert.equal(hello.kanbanHome, process.env.KANBAN_CODE_HOME);
+    assert.equal(hello.home, homedir());
     assert.ok(typeof hello.agentVersion === "string");
     harness.send({ type: "ping" });
     await harness.waitFor((m) => m.type === "pong", "pong");

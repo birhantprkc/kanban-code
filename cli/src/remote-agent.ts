@@ -25,7 +25,7 @@ import {
 } from "node:fs";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
-import { hostname } from "node:os";
+import { homedir, hostname } from "node:os";
 import { dirname, join, relative, matchesGlob } from "node:path";
 import {
   claudeProjectsDir,
@@ -163,7 +163,8 @@ export class RemoteAgent {
     this.send({
       type: "hello",
       agentVersion: agentVersion(),
-      home: kanbanHome(),
+      home: homedir(),
+      kanbanHome: kanbanHome(),
       vm: process.env.BOXD_MACHINE_NAME ?? hostname(),
     });
     this.watchProxyRequests();

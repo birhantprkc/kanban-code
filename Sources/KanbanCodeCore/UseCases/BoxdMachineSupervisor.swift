@@ -325,9 +325,11 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         }
     }
 
-    /// Node script that sets `hasTrustDialogAccepted` for each folder and
-    /// accepts the bypass permissions mode, keeping everything else in the
-    /// file. Both questions block the first prompt on a fresh machine.
+    /// Node script that sets `hasTrustDialogAccepted` for each folder in
+    /// `~/.claude.json`, skips the renderer question, and sets
+    /// `skipDangerousModePermissionPrompt` in `~/.claude/settings.json`, which
+    /// is what silences the bypass permissions question. Each of these
+    /// questions blocks the first prompt on a fresh machine.
     nonisolated static func trustFoldersScript(folders: [String], claudeConfigPath: String) -> String {
         let foldersJSON = (try? JSONSerialization.data(withJSONObject: folders)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
         let pathJSON = (try? JSONSerialization.data(withJSONObject: [claudeConfigPath])).flatMap { String(data: $0, encoding: .utf8) } ?? "[\"\"]"
@@ -345,6 +347,12 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
           config.projects[folder] = entry;
         }
         fs.writeFileSync(file, JSON.stringify(config, null, 2));
+        const settingsFile = require('path').join(require('path').dirname(file), '.claude', 'settings.json');
+        let settings = {};
+        try { settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8')); } catch (e) {}
+        settings.skipDangerousModePermissionPrompt = true;
+        fs.mkdirSync(require('path').dirname(settingsFile), { recursive: true });
+        fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
         """
     }
 
@@ -643,7 +651,7 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         runtime.bridge = bridge
         runtime.lastActivity = now()
         runtime.reconnectAttempts = 0
-        if let home = await bridge.remoteHome, home != runtime.remoteHome {
+        if let home = await bridge.remoteHome, !home.isEmpty, !home.hasSuffix("/.kanban-code"), home != runtime.remoteHome {
             runtime = makeRuntime(machineName: machineName, localProjectPath: localProjectPath, remoteProjectPath: remoteProjectPath, remoteHome: home)
             runtime.bridge = bridge
         }
@@ -703,9 +711,14 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         log("Installing the kanban CLI \(appVersion) on \(machineName)")
         let archive = (NSTemporaryDirectory() as NSString).appendingPathComponent("kanban-cli-\(UUID().uuidString).tgz")
         defer { try? FileManager.default.removeItem(atPath: archive) }
+        // COPYFILE_DISABLE keeps macOS extended attributes out of the archive;
+        // GNU tar on the machine would print a warning for every file.
+        var tarEnvironment = ShellCommand.loginEnvironment
+        tarEnvironment["COPYFILE_DISABLE"] = "1"
         let tar = try await ShellCommand.run(
             "/usr/bin/tar",
-            arguments: ["-czf", archive, "-C", (cliBundlePath as NSString).deletingLastPathComponent, (cliBundlePath as NSString).lastPathComponent],
+            arguments: ["--no-xattrs", "-czf", archive, "-C", (cliBundlePath as NSString).deletingLastPathComponent, (cliBundlePath as NSString).lastPathComponent],
+            environment: tarEnvironment,
             timeout: 300
         )
         guard tar.succeeded, let data = FileManager.default.contents(atPath: archive) else {

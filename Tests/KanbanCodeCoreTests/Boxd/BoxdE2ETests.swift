@@ -188,9 +188,14 @@ struct BoxdE2ETests {
             if let bridge = await supervisor.bridge(for: machineName) {
                 let pane = try? await bridge.exec(["tmux", "capture-pane", "-p", "-t", sessionName])
                 print("[e2e] pane:\n" + (pane?.stdout ?? "<none>") + "\n[e2e] pane stderr: " + (pane?.stderr ?? ""))
-                let flags = try? await bridge.exec(["bash", "-c", "grep -o '\"[a-zA-Z]*\\(ypass\\|ullscreen\\|rust\\)[A-Za-z]*\": *[a-z0-9]*' /home/boxd/.claude.json | sort -u"])
-                print("[e2e] claude.json flags:\n" + (flags?.stdout ?? ""))
+                let remoteFiles = try? await bridge.exec(["bash", "-c", "find /home/boxd/.claude/projects /home/boxd/.kanban-code -name '*.jsonl' -newer /home/boxd/.kanban-code/cli/VERSION -exec ls -la {} \\; 2>/dev/null; tail -c 600 /home/boxd/.kanban-code/hook-events.jsonl 2>/dev/null"])
+                print("[e2e] remote transcripts and hook events:\n" + (remoteFiles?.stdout ?? ""))
             }
+            if let mirror = await supervisor.mirror(for: machineName) {
+                print("[e2e] mirror offsets: \(await mirror.offsets.filter { !$0.key.contains("/langwatch") })")
+            }
+            let localTree = (try? await ShellCommand.run("/usr/bin/find", arguments: [home, "-type", "f"]))?.stdout ?? ""
+            print("[e2e] local home files:\n" + localTree)
             try? await supervisor.destroy(machineName: machineName)
             throw error
         }
