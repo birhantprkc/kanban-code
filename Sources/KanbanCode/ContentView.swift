@@ -120,6 +120,7 @@ struct ContentView: View {
     @State var syncStatuses: [String: SyncStatus] = [:]
     @State var isSyncRefreshing = false
     @State var showSyncPopover = false
+    @State var showBoxdPopover = false
     @State var rawSyncOutput = ""
     @State var editingQueuedPromptId: String?
     @State var channelGithubBaseURLByCardId: [String: String] = [:]
@@ -1708,7 +1709,11 @@ struct ContentView: View {
                 }
 
                 ToolbarItem(placement: .navigation) {
-                    if currentProjectHasRemote {
+                    if store.state.remoteMode == .boxd {
+                        if !store.state.remoteMachineStates.isEmpty {
+                            boxdStatusView
+                        }
+                    } else if currentProjectHasRemote {
                         syncStatusView
                     }
                 }

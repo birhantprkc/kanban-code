@@ -8,12 +8,12 @@ private let failed = ShellCommand.Result(exitCode: 1, stdout: "", stderr: "no su
 private func sessionList(_ sessions: [(String, String)]) -> ShellCommand.Result {
     ShellCommand.Result(
         exitCode: 0,
-        stdout: sessions.map { "\($0.0)\t\($0.1)\t0" }.joined(separator: "\n"),
+        stdout: sessions.map { "\($0.0)\(TmuxAdapter.listSeparator)\($0.1)\(TmuxAdapter.listSeparator)0" }.joined(separator: "\n"),
         stderr: ""
     )
 }
 
-private let listArgs = ["list-sessions", "-F", "#{session_name}\t#{session_path}\t#{session_attached}"]
+private let listArgs = ["list-sessions", "-F", "#{session_name}\(TmuxAdapter.listSeparator)#{session_path}\(TmuxAdapter.listSeparator)#{session_attached}"]
 
 @Suite("BridgeTmuxTransport")
 struct BridgeTmuxTransportTests {
@@ -258,6 +258,7 @@ struct RemoteSessionRegistryTests {
             projectPath: "/repo",
             column: .inProgress,
             tmuxLink: TmuxLink(sessionName: sessionName),
+            isRemote: true,
             remote: RemoteLink(
                 machineName: machine,
                 remoteCwd: remoteCwd,
@@ -302,12 +303,25 @@ struct RemoteSessionRegistryTests {
             id: "card_1",
             projectPath: "/repo",
             column: .inProgress,
+            isRemote: true,
             remote: RemoteLink(machineName: "kc-repo-1")
         )
 
         registry.seed(from: [link])
 
         #expect(registry.machineNames.isEmpty)
+    }
+
+    @Test("seed skips a card that no longer runs remotely")
+    func seedSkipsCardThatIsNotRemote() {
+        let registry = RemoteSessionRegistry()
+        var link = remoteLink(id: "card_1", machine: "kc-repo-1", sessionName: "primary")
+        link.isRemote = false
+
+        registry.seed(from: [link])
+
+        #expect(registry.machineNames.isEmpty)
+        #expect(registry.machine(forSession: "primary") == nil)
     }
 
     @Test("A destroyed machine loses its adapter and its known sessions")

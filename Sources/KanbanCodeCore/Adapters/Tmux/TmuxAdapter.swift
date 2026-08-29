@@ -23,14 +23,20 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
         try await transport.run(arguments, timeout: timeout)
     }
 
+    /// Field separator of the session list. A printable sequence, because
+    /// tmux on Linux replaces control characters such as a tab in its
+    /// format output with `_`.
+    static let listSeparator = "<|>"
+
     public func listSessions() async throws -> [TmuxSession] {
-        let result = try await runTmux(["list-sessions", "-F", "#{session_name}\t#{session_path}\t#{session_attached}"])
+        let separator = Self.listSeparator
+        let result = try await runTmux(["list-sessions", "-F", "#{session_name}\(separator)#{session_path}\(separator)#{session_attached}"])
 
         // tmux returns exit code 1 with "no server running" when there are no sessions
         guard result.succeeded, !result.stdout.isEmpty else { return [] }
 
         return result.stdout.components(separatedBy: "\n").compactMap { line -> TmuxSession? in
-            let parts = line.components(separatedBy: "\t")
+            let parts = line.components(separatedBy: separator)
             guard parts.count >= 3 else { return nil }
             return TmuxSession(
                 name: parts[0],

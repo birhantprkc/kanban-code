@@ -275,6 +275,12 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
             remoteCwd = remoteWorktree
         }
 
+        // Claude asks whether a folder is trusted the first time it starts
+        // there, and that question would swallow the first prompt. The user
+        // trusts the repository they configured, so the answer is recorded
+        // before the assistant starts.
+        try await trustClaudeFolders([remoteProjectPath, remoteCwd], bridge: bridge, remoteHome: remoteHome)
+
         // Files that never reach git, like .env, go over the bridge.
         let matches = BoxdLaunchPlanner.copyMatches(globs: settings.copyGlobs, projectRoot: repoRoot)
         if !matches.isEmpty { log("Copying \(matches.count) file(s)") }
@@ -307,6 +313,39 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
             extraEnv: Self.sessionEnvironment(cardId: cardId, remoteHome: remoteHome),
             remoteLink: remoteLink
         )
+    }
+
+    /// Marks folders as trusted in the machine's `~/.claude.json`.
+    private func trustClaudeFolders(_ folders: [String], bridge: BoxdBridge, remoteHome: String) async throws {
+        let unique = Array(Set(folders)).sorted()
+        let script = Self.trustFoldersScript(folders: unique, claudeConfigPath: "\(remoteHome)/.claude.json")
+        let result = try await bridge.exec(["/usr/local/bin/node", "-e", script], stdin: nil, cwd: remoteHome, timeout: 30)
+        if !result.succeeded {
+            KanbanCodeLog.warn(Self.subsystem, "could not mark folders trusted: \(result.stderr)")
+        }
+    }
+
+    /// Node script that sets `hasTrustDialogAccepted` for each folder and
+    /// accepts the bypass permissions mode, keeping everything else in the
+    /// file. Both questions block the first prompt on a fresh machine.
+    nonisolated static func trustFoldersScript(folders: [String], claudeConfigPath: String) -> String {
+        let foldersJSON = (try? JSONSerialization.data(withJSONObject: folders)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        let pathJSON = (try? JSONSerialization.data(withJSONObject: [claudeConfigPath])).flatMap { String(data: $0, encoding: .utf8) } ?? "[\"\"]"
+        return """
+        const fs = require('fs');
+        const file = \(pathJSON)[0];
+        let config = {};
+        try { config = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) {}
+        config.projects = config.projects || {};
+        config.bypassPermissionsModeAccepted = true;
+        config.fullscreenUpsellSeenCount = Math.max(config.fullscreenUpsellSeenCount || 0, 3);
+        for (const folder of \(foldersJSON)) {
+          const entry = config.projects[folder] || {};
+          entry.hasTrustDialogAccepted = true;
+          config.projects[folder] = entry;
+        }
+        fs.writeFileSync(file, JSON.stringify(config, null, 2));
+        """
     }
 
     /// Environment every assistant process gets on the machine.

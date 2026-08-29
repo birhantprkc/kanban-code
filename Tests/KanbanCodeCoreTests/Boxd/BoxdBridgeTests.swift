@@ -20,11 +20,15 @@ struct BoxdBridgeTests {
         return (bridge, channel)
     }
 
-    /// Reads the next event of a bridge, or nil after `limit`.
+    /// Reads the next event of a bridge after the `hello` the helper above
+    /// already fed, or nil after `limit`.
     private func nextEvent(_ bridge: BoxdBridge, limit: Duration = .seconds(2)) async -> BridgeEvent? {
         await withTaskGroup(of: BridgeEvent?.self) { group in
             group.addTask {
-                for await event in await bridge.events { return event }
+                for await event in await bridge.events {
+                    if case .hello = event { continue }
+                    return event
+                }
                 return nil
             }
             group.addTask {

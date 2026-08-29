@@ -207,7 +207,7 @@ public actor BoxdMirror {
         }
         if path.hasPrefix(remoteContextDirectory + "/") {
             let local = "\(localContextDirectory)/\((path as NSString).lastPathComponent)"
-            write(data: rewriteAll(data), to: local, offset: offset, remotePath: path)
+            write(data: rewriteAll(data), to: local, offset: offset, remoteBytes: data.count, remotePath: path)
             return .context(localPath: local)
         }
         let isTranscript = path.hasSuffix(".jsonl")
@@ -216,8 +216,15 @@ public actor BoxdMirror {
             pending[path, default: []].append(.file(path: path, cwd: cwd, offset: offset, data: data, eof: true))
             return .buffered(path: path)
         }
+        // Chunks that arrived before the working directory was known come
+        // first: they hold the opening lines of the transcript.
+        if let held = pending.removeValue(forKey: path) {
+            for case .file(_, _, let heldOffset, let heldData, _) in held {
+                write(data: isTranscript ? rewriteAll(heldData) : heldData, to: local, offset: heldOffset, remoteBytes: heldData.count, remotePath: path)
+            }
+        }
         let bytes = isTranscript ? rewriteAll(data) : data
-        write(data: bytes, to: local, offset: offset, remotePath: path)
+        write(data: bytes, to: local, offset: offset, remoteBytes: data.count, remotePath: path)
         if isSidecar(path) {
             return .sidecar(localPath: local)
         }
@@ -260,7 +267,7 @@ public actor BoxdMirror {
     /// holds bytes means the remote file was rewritten: the local copy starts
     /// over. Offsets are tracked in remote bytes, so a rewritten chunk that
     /// grows or shrinks does not shift them.
-    private func write(data: Data, to localPath: String, offset: Int, remotePath: String) {
+    private func write(data: Data, to localPath: String, offset: Int, remoteBytes: Int, remotePath: String) {
         let manager = FileManager.default
         try? manager.createDirectory(atPath: (localPath as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
         let known = offsets[remotePath] ?? 0
@@ -275,7 +282,7 @@ public actor BoxdMirror {
         if offset != known {
             KanbanCodeLog.debug("boxd", "\(machineName): \(remotePath) came at offset \(offset), expected \(known)")
         }
-        offsets[remotePath] = offset + data.count
+        offsets[remotePath] = offset + remoteBytes
         saveState()
     }
 
