@@ -2,10 +2,15 @@ import Foundation
 
 /// Manages tmux sessions via the tmux CLI.
 public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
-    private let tmuxPath: String
+    private let transport: any TmuxTransport
 
     public init(tmuxPath: String? = nil) {
-        self.tmuxPath = tmuxPath ?? ShellCommand.findExecutable("tmux") ?? "tmux"
+        self.transport = LocalTmuxTransport(tmuxPath: tmuxPath)
+    }
+
+    /// Drives tmux through `transport`, on this Mac or on a remote machine.
+    public init(transport: any TmuxTransport) {
+        self.transport = transport
     }
 
     /// tmux commands are sub-second in practice, so a long stall means a wedged
@@ -15,7 +20,7 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
         _ arguments: [String],
         timeout: TimeInterval = 20
     ) async throws -> ShellCommand.Result {
-        try await ShellCommand.run(tmuxPath, arguments: arguments, timeout: timeout)
+        try await transport.run(arguments, timeout: timeout)
     }
 
     public func listSessions() async throws -> [TmuxSession] {
@@ -59,8 +64,7 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
                 // Multi-line commands break tmux send-keys (newlines become Enter
                 // presses, splitting the command). Write to a temp file and source
                 // it — the shell parser handles newlines inside quoted strings correctly.
-                let tempFile = "/tmp/kanban-code-launch-\(name).sh"
-                try command.write(toFile: tempFile, atomically: true, encoding: .utf8)
+                let tempFile = try await transport.writeTempFile(name: "launch-\(name).sh", contents: command)
                 let sendResult = try await runTmux(["send-keys", "-t", name, ". '\(tempFile)' ; rm -f '\(tempFile)'", "Enter"])
                 if !sendResult.succeeded {
                     KanbanCodeLog.error("tmux", "send-keys (source) failed for \(name): \(sendResult.stderr)")
@@ -102,9 +106,9 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
         try await exitScrollMode(sessionName: sessionName)
         // Use bracketed paste for reliability — send-keys -l can fail with long text
         // because Claude Code shows "[Pasted text #N +M lines]" and needs Enter.
-        let tempFile = "/tmp/kanban-code-send-\(ProcessInfo.processInfo.processIdentifier).txt"
-        try text.write(toFile: tempFile, atomically: true, encoding: .utf8)
-        defer { try? FileManager.default.removeItem(atPath: tempFile) }
+        let tempFile = try await transport.writeTempFile(
+            name: "send-\(ProcessInfo.processInfo.processIdentifier).txt", contents: text)
+        defer { Task { [transport] in await transport.removeTempFile(tempFile) } }
 
         let _ = try await runTmux(["load-buffer", tempFile])
         let _ = try await runTmux(["paste-buffer", "-p", "-t", sessionName])
@@ -176,9 +180,9 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
         // The -p flag wraps the paste in bracketed paste codes (\e[200~ … \e[201~),
         // telling the application (Gemini CLI) to treat the text literally and not
         // interpret special characters like ? (help) or ! (shell escape).
-        let tempFile = "/tmp/kanban-code-paste-\(ProcessInfo.processInfo.processIdentifier).txt"
-        try text.write(toFile: tempFile, atomically: true, encoding: .utf8)
-        defer { try? FileManager.default.removeItem(atPath: tempFile) }
+        let tempFile = try await transport.writeTempFile(
+            name: "paste-\(ProcessInfo.processInfo.processIdentifier).txt", contents: text)
+        defer { Task { [transport] in await transport.removeTempFile(tempFile) } }
 
         let _ = try await runTmux(["load-buffer", tempFile])
         let _ = try await runTmux(["paste-buffer", "-p", "-t", sessionName])
@@ -238,7 +242,7 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
     }
 
     public func isAvailable() async -> Bool {
-        ShellCommand.findExecutable("tmux") != nil
+        await transport.isAvailable()
     }
 }
 

@@ -46,6 +46,9 @@ public enum ShellCommand {
         }
     }()
 
+    /// The login-shell environment every subprocess of the app gets.
+    public static var loginEnvironment: [String: String] { userEnvironment }
+
     /// Background queue for blocking process I/O — never touches the main thread.
     private static let processQueue = DispatchQueue(label: "kanban.shell", qos: .userInitiated, attributes: .concurrent)
 

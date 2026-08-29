@@ -1085,6 +1085,22 @@ struct ContentView: View {
         case .confirmTrimSession: return "Trim Session History?"
         case .remoteWorktreeCleanup: return "Remote Worktree"
         case .confirmDeleteChannel(let name): return "Delete #\(name)?"
+        case .confirmArchiveWithMachine: return "Archive and destroy machine?"
+        case .confirmDestroyMachine: return "Destroy machine?"
+        }
+    }
+
+    private func remoteMachineName(cardId: String) -> String {
+        store.state.links[cardId]?.remote?.machineName ?? "the boxd machine"
+    }
+
+    /// Archiving a card with a boxd machine destroys the machine, so the
+    /// dialog says so.
+    private func presentArchiveDialog(cardId: String) {
+        if store.state.links[cardId]?.remote?.mode == .boxd {
+            presentDialog(.confirmArchiveWithMachine(cardId: cardId))
+        } else {
+            presentDialog(.confirmArchive(cardId: cardId))
         }
     }
 
@@ -1113,6 +1129,20 @@ struct ContentView: View {
             // Return archives, so the shortcut is a two-key action rather than
             // a keystroke followed by a trip to the mouse.
             .keyboardShortcut(.defaultAction)
+        case .confirmArchiveWithMachine(let cardId):
+            Button("Cancel", role: .cancel) { dismissDialog() }
+            Button("Archive & Destroy Machine", role: .destructive) {
+                let card = store.state.cards.first(where: { $0.id == cardId })
+                store.dispatch(.archiveCard(cardId: cardId))
+                dismissDialog()
+                offerWorktreeCleanupIfNeeded(card: card)
+            }
+        case .confirmDestroyMachine(let cardId):
+            Button("Cancel", role: .cancel) { dismissDialog() }
+            Button("Destroy Machine", role: .destructive) {
+                store.dispatch(.destroyRemoteMachine(cardId: cardId))
+                dismissDialog()
+            }
         case .confirmFork(let cardId):
             Button("Cancel", role: .cancel) { dismissDialog() }
             if store.state.cards.first(where: { $0.id == cardId })?.link.worktreeLink != nil {
@@ -1202,10 +1232,13 @@ struct ContentView: View {
         case .none: EmptyView()
         case .confirmDelete(let cardId):
             let descendantCount = subagentCount(for: cardId)
+            let machineNote = store.state.links[cardId]?.remote?.mode == .boxd
+                ? " The boxd machine \(remoteMachineName(cardId: cardId)) is destroyed too."
+                : ""
             if descendantCount > 0 {
-                Text("This will permanently delete this card, its data, and \(descendantCount) subagent\(descendantCount == 1 ? "" : "s").")
+                Text("This will permanently delete this card, its data, and \(descendantCount) subagent\(descendantCount == 1 ? "" : "s").\(machineNote)")
             } else {
-                Text("This will permanently delete this card and its data.")
+                Text("This will permanently delete this card and its data.\(machineNote)")
             }
         case .confirmArchive(let cardId):
             if hasRunningTerminals(cardId: cardId) {
@@ -1239,6 +1272,10 @@ struct ContentView: View {
         case .remoteWorktreeCleanup(_, _, _, let errorMessage): Text(errorMessage)
         case .confirmDeleteChannel(let name):
             Text("This removes the channel and its membership metadata. Messages in \(name).jsonl are left on disk so you can recover them manually if needed.")
+        case .confirmArchiveWithMachine(let cardId):
+            Text("Are you sure? This destroys the boxd machine \(remoteMachineName(cardId: cardId)) and everything on it that was not pushed. The conversation stays on this Mac.")
+        case .confirmDestroyMachine(let cardId):
+            Text("Destroy the boxd machine \(remoteMachineName(cardId: cardId))? Files on the machine that were not pushed are lost. The conversation stays on this Mac and can continue locally.")
         }
     }
 
@@ -2214,7 +2251,7 @@ struct ContentView: View {
                 "Archive Card", icon: "archivebox",
                 shortcut: AppShortcut.archiveCard.displayString
             ) { [self] in
-                presentDialog(.confirmArchive(cardId: cardId))
+                presentArchiveDialog(cardId: cardId)
             })
         }
 
@@ -2547,7 +2584,7 @@ struct ContentView: View {
         guard AppShortcut.archiveCard.isActive(in: shortcutContext),
               let cardId = store.state.selectedCardId,
               store.state.links[cardId] != nil else { return }
-        presentDialog(.confirmArchive(cardId: cardId))
+        presentArchiveDialog(cardId: cardId)
     }
 
     private func closePalette() {
@@ -2807,7 +2844,7 @@ struct ContentView: View {
     private func archiveCard(cardId: String) {
         guard let card = store.state.cards.first(where: { $0.id == cardId }) else { return }
         if card.link.tmuxLink != nil {
-            presentDialog(.confirmArchive(cardId: cardId))
+            presentArchiveDialog(cardId: cardId)
         } else {
             store.dispatch(.archiveCard(cardId: cardId))
             offerWorktreeCleanupIfNeeded(card: card)

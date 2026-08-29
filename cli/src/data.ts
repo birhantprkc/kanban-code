@@ -70,6 +70,118 @@ function findTmux(): string {
   }
 }
 
+// ── Remote tmux routing ──────────────────────────────────────────────
+
+/// The boxd machine that owns a tmux session, when the session belongs to a
+/// remote card. Extra terminals of the card live on the same machine.
+export function remoteMachineForSession(sessionName: string): string | undefined {
+  let links: Link[];
+  try {
+    links = readLinks();
+  } catch {
+    return undefined;
+  }
+  for (const link of links) {
+    if (link.remote?.mode !== "boxd") continue;
+    if (!link.remote.machineName) continue;
+    if (
+      link.tmuxLink?.sessionName === sessionName ||
+      link.tmuxLink?.extraSessions?.includes(sessionName)
+    ) {
+      return link.remote.machineName;
+    }
+  }
+  return undefined;
+}
+
+/// Every tmux session name that lives on a boxd machine. Those sessions never
+/// show up in a local `tmux list-sessions`, so callers that decide whether a
+/// card's terminal is alive have to add them separately.
+export function remoteTmuxSessionNames(): string[] {
+  let links: Link[];
+  try {
+    links = readLinks();
+  } catch {
+    return [];
+  }
+  const names: string[] = [];
+  for (const link of links) {
+    if (link.remote?.mode !== "boxd") continue;
+    if (link.tmuxLink?.sessionName) names.push(link.tmuxLink.sessionName);
+    for (const extra of link.tmuxLink?.extraSessions ?? []) names.push(extra);
+  }
+  return names;
+}
+
+/// One step of a tmux command chain: the arguments of a single tmux call, or a
+/// pause between two of them.
+export type TmuxStep = string[] | { sleep: number | string };
+
+export interface TmuxRunOptions {
+  /// Run detached and return immediately, for chains that sleep first.
+  detached?: boolean;
+  /// Drop stderr, for probes whose failure is the answer.
+  quiet?: boolean;
+}
+
+export type TmuxCommandRunner = (
+  command: string,
+  options: { detached: boolean }
+) => string;
+
+let tmuxCommandRunner: TmuxCommandRunner | undefined;
+
+/// Test seam: replace the shell so a test can capture the tmux command stream.
+/// Pass undefined to restore the real one.
+export function setTmuxCommandRunner(runner?: TmuxCommandRunner): void {
+  tmuxCommandRunner = runner;
+}
+
+/// Build the shell command for a chain of tmux calls. A local session runs
+/// tmux directly; a boxd session hands the whole chain to one
+/// `boxd machine exec`, which runs it in a shell on the machine, so a paste
+/// costs one round trip and needs no temporary file on the Mac.
+export function buildTmuxCommand(
+  sessionName: string,
+  steps: TmuxStep[],
+  options: TmuxRunOptions = {}
+): string {
+  const machine = remoteMachineForSession(sessionName);
+  const tmux = machine ? "tmux" : findTmux();
+  const script = steps
+    .map((step) =>
+      Array.isArray(step)
+        ? `${tmux} ${step.map(shellToken).join(" ")}`
+        : `sleep ${shellToken(String(step.sleep))}`
+    )
+    .join(" && ");
+  const command = machine
+    ? `boxd machine exec ${shellToken(machine)} -- ${shellEscape(script)}`
+    : script;
+  return options.quiet ? `${command} 2>/dev/null` : command;
+}
+
+/// Run a chain of tmux calls against a session, local or remote.
+export function runTmux(
+  sessionName: string,
+  steps: TmuxStep[],
+  options: TmuxRunOptions = {}
+): string {
+  const command = buildTmuxCommand(sessionName, steps, options);
+  const detached = options.detached === true;
+  if (tmuxCommandRunner) return tmuxCommandRunner(command, { detached });
+  if (detached) {
+    const child = spawn("sh", ["-c", command], {
+      detached: true,
+      stdio: "ignore",
+      env: process.env,
+    });
+    child.unref();
+    return "";
+  }
+  return execSync(command, { encoding: "utf-8" });
+}
+
 export function listTmuxSessions(): TmuxSession[] {
   const tmux = findTmux();
   try {
@@ -97,17 +209,17 @@ export function captureTmuxPane(
   sessionName: string,
   scrollback: number | "all" = 0
 ): string {
-  const tmux = findTmux();
-  const startFlag =
+  const start =
     scrollback === "all"
-      ? "-S -"
+      ? ["-S", "-"]
       : scrollback > 0
-        ? `-S -${scrollback}`
-        : "";
+        ? ["-S", `-${scrollback}`]
+        : [];
   try {
-    return execSync(
-      `${tmux} capture-pane -t ${shellEscape(sessionName)} -p ${startFlag} 2>/dev/null`,
-      { encoding: "utf-8" }
+    return runTmux(
+      sessionName,
+      [["capture-pane", "-t", sessionName, "-p", ...start]],
+      { quiet: true }
     );
   } catch {
     return "";
@@ -122,12 +234,12 @@ export function peekTmuxPane(
   sessionName: string,
   contentLines: number = 15
 ): string {
-  const tmux = findTmux();
   try {
     // Capture enough to skip chrome and have content left
-    const raw = execSync(
-      `${tmux} capture-pane -t ${shellEscape(sessionName)} -p -S -${contentLines + 20} 2>/dev/null`,
-      { encoding: "utf-8" }
+    const raw = runTmux(
+      sessionName,
+      [["capture-pane", "-t", sessionName, "-p", "-S", `-${contentLines + 20}`]],
+      { quiet: true }
     );
     const lines = raw.split("\n");
 
@@ -169,12 +281,8 @@ export function sendTmuxKeys(
   sessionName: string,
   keys: string
 ): { ok: boolean; error?: string } {
-  const tmux = findTmux();
   try {
-    execSync(
-      `${tmux} send-keys -t ${shellEscape(sessionName)} ${shellEscape(keys)} Enter`,
-      { encoding: "utf-8" }
-    );
+    runTmux(sessionName, [["send-keys", "-t", sessionName, keys, "Enter"]]);
     return { ok: true };
   } catch (e) {
     return { ok: false, error: String(e) };
@@ -184,12 +292,8 @@ export function sendTmuxKeys(
 export function sendTmuxEnter(
   sessionName: string
 ): { ok: boolean; error?: string } {
-  const tmux = findTmux();
   try {
-    execSync(
-      `${tmux} send-keys -t ${shellEscape(sessionName)} Enter`,
-      { encoding: "utf-8" }
-    );
+    runTmux(sessionName, [["send-keys", "-t", sessionName, "Enter"]]);
     return { ok: true };
   } catch (e) {
     return { ok: false, error: String(e) };
@@ -200,27 +304,31 @@ export function pasteTmuxPrompt(
   sessionName: string,
   text: string
 ): { ok: boolean; error?: string } {
-  const tmux = findTmux();
-  const buf = nextTmuxBufferName();
   try {
     // Use tmux paste-buffer with bracketed paste for reliable multi-line input.
     // A named buffer (-b <buf>) plus `paste-buffer -d` keeps each call
     // self-contained so concurrent pastes from sibling processes can't clobber
-    // each other's text on the shared anonymous buffer.
-    execSync(
-      `${tmux} set-buffer -b ${shellEscape(buf)} ${shellEscape(text)} && ${tmux} paste-buffer -p -d -b ${shellEscape(buf)} -t ${shellEscape(sessionName)}`,
-      { encoding: "utf-8" }
-    );
-    // Small delay before sending Enter, matching Swift implementation
-    execSync("sleep 0.1");
-    execSync(
-      `${tmux} send-keys -t ${shellEscape(sessionName)} Enter`,
-      { encoding: "utf-8" }
-    );
+    // each other's text on the shared anonymous buffer. The 0.1s pause before
+    // Enter matches the Swift implementation.
+    runTmux(sessionName, [
+      ...pasteSteps(sessionName, text),
+      { sleep: 0.1 },
+      ["send-keys", "-t", sessionName, "Enter"],
+    ]);
     return { ok: true };
   } catch (e) {
     return { ok: false, error: String(e) };
   }
+}
+
+/// `set-buffer` + `paste-buffer` for one prompt. `--` keeps text that starts
+/// with a dash out of tmux's own option parsing.
+function pasteSteps(sessionName: string, text: string): TmuxStep[] {
+  const buf = nextTmuxBufferName();
+  return [
+    ["set-buffer", "-b", buf, "--", text],
+    ["paste-buffer", "-p", "-d", "-b", buf, "-t", sessionName],
+  ];
 }
 
 /// Send a single keystroke (e.g. the digit "1") to a tmux session WITHOUT a
@@ -229,9 +337,8 @@ export function pasteTmuxPrompt(
 /// button clicks. The bare-digit-no-Enter behavior is why we cannot reuse
 /// sendTmuxKeys (which always appends Enter).
 export function sendTmuxKey(sessionName: string, key: string): { ok: boolean; error?: string } {
-  const tmux = findTmux();
   try {
-    execSync(`${tmux} send-keys -t ${shellEscape(sessionName)} ${shellEscape(key)}`, { encoding: "utf-8" });
+    runTmux(sessionName, [["send-keys", "-t", sessionName, key]]);
     return { ok: true };
   } catch (e) {
     return { ok: false, error: String(e) };
@@ -243,24 +350,18 @@ export function scheduleTmuxPrompt(
   text: string,
   delaySeconds: number
 ): { ok: boolean; error?: string } {
-  const tmux = findTmux();
   const delay = Math.max(0, Number.isFinite(delaySeconds) ? delaySeconds : 1);
-  const buf = nextTmuxBufferName();
-  const cmd = [
-    `sleep ${shellEscape(String(delay))}`,
-    `${tmux} set-buffer -b ${shellEscape(buf)} ${shellEscape(text)}`,
-    `${tmux} paste-buffer -p -d -b ${shellEscape(buf)} -t ${shellEscape(sessionName)}`,
-    "sleep 0.1",
-    `${tmux} send-keys -t ${shellEscape(sessionName)} Enter`,
-  ].join(" && ");
-
   try {
-    const child = spawn("sh", ["-c", cmd], {
-      detached: true,
-      stdio: "ignore",
-      env: process.env,
-    });
-    child.unref();
+    runTmux(
+      sessionName,
+      [
+        { sleep: delay },
+        ...pasteSteps(sessionName, text),
+        { sleep: 0.1 },
+        ["send-keys", "-t", sessionName, "Enter"],
+      ],
+      { detached: true }
+    );
     return { ok: true };
   } catch (e) {
     return { ok: false, error: String(e) };
@@ -272,10 +373,8 @@ export function scheduleTmuxSelfCompact(
   followUp: string,
   followUpDelaySeconds: number
 ): { ok: boolean; error?: string } {
-  const tmux = findTmux();
   const delay = Math.max(0, Number.isFinite(followUpDelaySeconds) ? followUpDelaySeconds : 1);
-  const compactBuf = nextTmuxBufferName();
-  const compactSteps = [
+  const compactSteps: TmuxStep[] = [
     // Give the CLI time to finish printing its output and return control to
     // Claude Code before we start sending keys to the same pane. The shell
     // is detached so it survives Claude interrupting the Bash tool that
@@ -283,32 +382,24 @@ export function scheduleTmuxSelfCompact(
     // interrupt races with Claude still processing the tool result and
     // sometimes leaves the session in a state where `/compact` is not
     // recognised as a slash command. 2s gives a comfortable buffer.
-    "sleep 2",
-    `${tmux} send-keys -t ${shellEscape(sessionName)} Escape`,
-    `${tmux} set-buffer -b ${shellEscape(compactBuf)} ${shellEscape("/compact")}`,
-    `${tmux} paste-buffer -p -d -b ${shellEscape(compactBuf)} -t ${shellEscape(sessionName)}`,
-    "sleep 0.15",
-    `${tmux} send-keys -t ${shellEscape(sessionName)} Enter`,
+    { sleep: 2 },
+    ["send-keys", "-t", sessionName, "Escape"],
+    ...pasteSteps(sessionName, "/compact"),
+    { sleep: 0.15 },
+    ["send-keys", "-t", sessionName, "Enter"],
   ];
 
-  const followUpBuf = nextTmuxBufferName();
-  const followUpSteps = followUp.trim().length === 0
+  const followUpSteps: TmuxStep[] = followUp.trim().length === 0
     ? []
     : [
-        `sleep ${shellEscape(String(delay))}`,
-        `${tmux} set-buffer -b ${shellEscape(followUpBuf)} ${shellEscape(followUp)}`,
-        `${tmux} paste-buffer -p -d -b ${shellEscape(followUpBuf)} -t ${shellEscape(sessionName)}`,
-        "sleep 0.1",
-        `${tmux} send-keys -t ${shellEscape(sessionName)} Enter`,
+        { sleep: delay },
+        ...pasteSteps(sessionName, followUp),
+        { sleep: 0.1 },
+        ["send-keys", "-t", sessionName, "Enter"],
       ];
 
   try {
-    const child = spawn("sh", ["-c", [...compactSteps, ...followUpSteps].join(" && ")], {
-      detached: true,
-      stdio: "ignore",
-      env: process.env,
-    });
-    child.unref();
+    runTmux(sessionName, [...compactSteps, ...followUpSteps], { detached: true });
     return { ok: true };
   } catch (e) {
     return { ok: false, error: String(e) };
@@ -319,13 +410,8 @@ export function pasteTmuxText(
   sessionName: string,
   text: string
 ): { ok: boolean; error?: string } {
-  const tmux = findTmux();
-  const buf = nextTmuxBufferName();
   try {
-    execSync(
-      `${tmux} set-buffer -b ${shellEscape(buf)} ${shellEscape(text)} && ${tmux} paste-buffer -p -d -b ${shellEscape(buf)} -t ${shellEscape(sessionName)}`,
-      { encoding: "utf-8" }
-    );
+    runTmux(sessionName, pasteSteps(sessionName, text));
     return { ok: true };
   } catch (e) {
     return { ok: false, error: String(e) };
@@ -355,12 +441,8 @@ export function interruptTmuxPrompt(
 export function sendTmuxEscape(
   sessionName: string
 ): { ok: boolean; error?: string } {
-  const tmux = findTmux();
   try {
-    execSync(
-      `${tmux} send-keys -t ${shellEscape(sessionName)} Escape`,
-      { encoding: "utf-8" }
-    );
+    runTmux(sessionName, [["send-keys", "-t", sessionName, "Escape"]]);
     return { ok: true };
   } catch (e) {
     return { ok: false, error: String(e) };
@@ -370,11 +452,8 @@ export function sendTmuxEscape(
 // ── Tmux session lifecycle (headless agent launch/resume) ────────────
 
 export function hasTmuxSession(name: string): boolean {
-  const tmux = findTmux();
   try {
-    execSync(`${tmux} has-session -t ${shellEscape(name)} 2>/dev/null`, {
-      encoding: "utf-8",
-    });
+    runTmux(name, [["has-session", "-t", name]], { quiet: true });
     return true;
   } catch {
     return false;
@@ -412,11 +491,8 @@ export function createTmuxSession(
 }
 
 export function killTmuxSession(name: string): { ok: boolean; error?: string } {
-  const tmux = findTmux();
   try {
-    execSync(`${tmux} kill-session -t ${shellEscape(name)} 2>/dev/null`, {
-      encoding: "utf-8",
-    });
+    runTmux(name, [["kill-session", "-t", name]], { quiet: true });
     return { ok: true };
   } catch (e) {
     return { ok: false, error: String(e) };
@@ -762,4 +838,10 @@ export function findCard(links: Link[], idOrPrefix: string): Link | undefined {
 
 function shellEscape(s: string): string {
   return "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
+/// Quotes only what the shell would otherwise reinterpret. Flags and session
+/// names stay readable, which matters because a remote command is quoted twice.
+function shellToken(s: string): string {
+  return /^[A-Za-z0-9_.,:/=+-]+$/.test(s) ? s : shellEscape(s);
 }

@@ -1,0 +1,362 @@
+/**
+ * The machine side of the boxd bridge, driven in-process with a fake stdin and
+ * a collected stdout so the tests never need a real machine.
+ */
+
+import { strict as assert } from "node:assert";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { PassThrough } from "node:stream";
+import { afterEach, beforeEach, describe, test } from "node:test";
+import { RemoteAgent, deriveCwdFromProjectDirName, readCwdFromTranscript } from "./remote-agent.js";
+
+interface Harness {
+  agent: RemoteAgent;
+  messages: Record<string, unknown>[];
+  send: (message: Record<string, unknown>) => void;
+  finished: Promise<void>;
+  end: () => Promise<void>;
+  waitFor: (
+    predicate: (message: Record<string, unknown>) => boolean,
+    label?: string
+  ) => Promise<Record<string, unknown>>;
+}
+
+let home: string;
+let previousEnv: Record<string, string | undefined>;
+
+function startAgent(): Harness {
+  const input = new PassThrough();
+  const messages: Record<string, unknown>[] = [];
+  const agent = new RemoteAgent({
+    input,
+    send: (message) => {
+      messages.push(message);
+    },
+    log: () => undefined,
+  });
+  const finished = agent.run();
+  const waitFor = async (
+    predicate: (message: Record<string, unknown>) => boolean,
+    label = "message"
+  ): Promise<Record<string, unknown>> => {
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      const found = messages.find(predicate);
+      if (found) return found;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error(`timed out waiting for ${label}; saw ${JSON.stringify(messages)}`);
+  };
+  return {
+    agent,
+    messages,
+    send: (message) => input.write(`${JSON.stringify(message)}\n`),
+    finished,
+    end: async () => {
+      input.end();
+      await finished;
+    },
+    waitFor,
+  };
+}
+
+beforeEach(() => {
+  home = mkdtempSync(join(tmpdir(), "kanban-remote-agent-"));
+  previousEnv = {
+    KANBAN_CODE_HOME: process.env.KANBAN_CODE_HOME,
+    CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
+    CODEX_HOME: process.env.CODEX_HOME,
+  };
+  process.env.KANBAN_CODE_HOME = join(home, ".kanban-code");
+  process.env.CLAUDE_CONFIG_DIR = join(home, ".claude");
+  process.env.CODEX_HOME = join(home, ".codex");
+  mkdirSync(process.env.KANBAN_CODE_HOME, { recursive: true });
+});
+
+afterEach(() => {
+  for (const [key, value] of Object.entries(previousEnv)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  rmSync(home, { recursive: true, force: true });
+});
+
+describe("remote agent protocol", () => {
+  test("greets the Mac and answers a ping", async () => {
+    const harness = startAgent();
+    const hello = await harness.waitFor((m) => m.type === "hello", "hello");
+    assert.equal(hello.home, process.env.KANBAN_CODE_HOME);
+    assert.ok(typeof hello.agentVersion === "string");
+    harness.send({ type: "ping" });
+    await harness.waitFor((m) => m.type === "pong", "pong");
+    await harness.end();
+  });
+
+  test("exits cleanly when stdin ends", async () => {
+    const harness = startAgent();
+    await harness.waitFor((m) => m.type === "hello", "hello");
+    await harness.end();
+    assert.equal(harness.messages[0].type, "hello");
+  });
+
+  test("streams only the bytes after the offset the Mac already has", async () => {
+    const events = join(process.env.KANBAN_CODE_HOME!, "hook-events.jsonl");
+    writeFileSync(events, '{"event":"one"}\n{"event":"two"}\n');
+    const seen = Buffer.byteLength('{"event":"one"}\n');
+    const harness = startAgent();
+    harness.send({ type: "watch", roots: [{ path: events }], offsets: { [events]: seen } });
+    const chunk = await harness.waitFor((m) => m.type === "file", "file chunk");
+    assert.equal(chunk.offset, seen);
+    assert.equal(Buffer.from(String(chunk.data), "base64").toString("utf-8"), '{"event":"two"}\n');
+    assert.equal(chunk.eof, true);
+    await harness.waitFor((m) => m.type === "activity" && m.kind === "hook", "hook activity");
+    await harness.end();
+  });
+
+  test("holds a partial jsonl line until its newline arrives", async () => {
+    const events = join(process.env.KANBAN_CODE_HOME!, "hook-events.jsonl");
+    writeFileSync(events, "");
+    const harness = startAgent();
+    harness.send({ type: "watch", roots: [{ path: events }], offsets: {} });
+    await harness.waitFor((m) => m.type === "hello", "hello");
+
+    appendFileSync(events, '{"event":"one"}\n{"event":"par');
+    const first = await harness.waitFor((m) => m.type === "file", "first chunk");
+    assert.equal(Buffer.from(String(first.data), "base64").toString("utf-8"), '{"event":"one"}\n');
+    assert.equal(first.eof, false);
+
+    appendFileSync(events, 'tial"}\n');
+    const second = await harness.waitFor(
+      (m) => m.type === "file" && m.offset === 16,
+      "second chunk"
+    );
+    assert.equal(
+      Buffer.from(String(second.data), "base64").toString("utf-8"),
+      '{"event":"partial"}\n'
+    );
+    assert.equal(second.eof, true);
+    await harness.end();
+  });
+
+  test("reports a transcript's own working directory", async () => {
+    const projects = join(process.env.CLAUDE_CONFIG_DIR!, "projects", "-home-boxd-app");
+    mkdirSync(projects, { recursive: true });
+    const transcript = join(projects, "session.jsonl");
+    writeFileSync(
+      transcript,
+      `${JSON.stringify({ type: "user", cwd: "/home/boxd/app", message: { content: "hi" } })}\n`
+    );
+    const harness = startAgent();
+    harness.send({
+      type: "watch",
+      roots: [{ path: join(process.env.CLAUDE_CONFIG_DIR!, "projects"), globs: ["**/*.jsonl"] }],
+      offsets: {},
+    });
+    const chunk = await harness.waitFor((m) => m.type === "file", "transcript chunk");
+    assert.equal(chunk.cwd, "/home/boxd/app");
+    await harness.waitFor((m) => m.type === "activity" && m.kind === "transcript", "activity");
+    await harness.end();
+  });
+
+  test("derives the working directory from the project directory name", async () => {
+    const projects = join(process.env.CLAUDE_CONFIG_DIR!, "projects", "-home-boxd-app");
+    mkdirSync(projects, { recursive: true });
+    writeFileSync(join(projects, "session.jsonl"), `${JSON.stringify({ type: "summary" })}\n`);
+    const harness = startAgent();
+    harness.send({
+      type: "watch",
+      roots: [{ path: join(process.env.CLAUDE_CONFIG_DIR!, "projects"), globs: ["**/*.jsonl"] }],
+      offsets: {},
+    });
+    const chunk = await harness.waitFor((m) => m.type === "file", "transcript chunk");
+    assert.equal(chunk.cwd, "/home/boxd/app");
+    await harness.end();
+  });
+
+  test("reads a codex rollout's working directory from session_meta", async () => {
+    const sessions = join(process.env.CODEX_HOME!, "sessions", "2026", "08");
+    mkdirSync(sessions, { recursive: true });
+    const rollout = join(sessions, "rollout-2026-08-29.jsonl");
+    writeFileSync(
+      rollout,
+      `${JSON.stringify({ type: "session_meta", payload: { cwd: "/home/boxd/app", id: "x" } })}\n`
+    );
+    const harness = startAgent();
+    harness.send({
+      type: "watch",
+      roots: [{ path: join(process.env.CODEX_HOME!, "sessions"), globs: ["**/*.jsonl"] }],
+      offsets: {},
+    });
+    const chunk = await harness.waitFor((m) => m.type === "file", "rollout chunk");
+    assert.equal(chunk.cwd, "/home/boxd/app");
+    await harness.end();
+  });
+
+  test("reports a deleted file", async () => {
+    const contextDir = join(process.env.KANBAN_CODE_HOME!, "context");
+    mkdirSync(contextDir, { recursive: true });
+    const file = join(contextDir, "abc.json");
+    writeFileSync(file, "{}");
+    const harness = startAgent();
+    harness.send({
+      type: "watch",
+      roots: [{ path: contextDir, globs: ["*.json"] }],
+      offsets: {},
+    });
+    await harness.waitFor((m) => m.type === "file", "context chunk");
+    rmSync(file, { force: true });
+    const removed = await harness.waitFor((m) => m.type === "removed", "removed");
+    assert.equal(removed.path, file);
+    await harness.end();
+  });
+
+  test("writes a put, creating parent directories", async () => {
+    const harness = startAgent();
+    const target = join(home, "deep", "nested", "prompt.txt");
+    harness.send({
+      type: "put",
+      path: target,
+      data: Buffer.from("hello prompt").toString("base64"),
+      mode: 0o755,
+    });
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline && !safeExists(target)) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(readFileSync(target, "utf-8"), "hello prompt");
+    assert.equal(statSync(target).mode & 0o777, 0o755);
+    await harness.end();
+  });
+
+  test("runs an exec and reports a non-zero exit instead of throwing", async () => {
+    const harness = startAgent();
+    harness.send({
+      type: "exec",
+      id: "e1",
+      argv: ["/bin/sh", "-c", "printf out; printf err 1>&2; exit 3"],
+    });
+    const result = await harness.waitFor((m) => m.type === "exec-result", "exec-result");
+    assert.equal(result.id, "e1");
+    assert.equal(result.stdout, "out");
+    assert.equal(result.stderr, "err");
+    assert.equal(result.code, 3);
+    await harness.end();
+  });
+
+  test("passes stdin to an exec", async () => {
+    const harness = startAgent();
+    harness.send({ type: "exec", id: "e2", argv: ["/bin/cat"], stdin: "piped body" });
+    const result = await harness.waitFor((m) => m.type === "exec-result", "exec-result");
+    assert.equal(result.stdout, "piped body");
+    assert.equal(result.code, 0);
+    await harness.end();
+  });
+
+  test("forwards a proxy request and writes back its result", async () => {
+    const proxyDir = join(process.env.KANBAN_CODE_HOME!, "commands", "proxy");
+    mkdirSync(proxyDir, { recursive: true });
+    const harness = startAgent();
+    await harness.waitFor((m) => m.type === "hello", "hello");
+
+    const request = {
+      id: "req-1",
+      argv: ["channel", "send", "team", "hello"],
+      cwd: "/home/boxd/app",
+      env: { KANBAN_CARD_ID: "card-1" },
+      images: [],
+    };
+    writeFileSync(join(proxyDir, "req-1.json"), JSON.stringify(request));
+    const forwarded = await harness.waitFor((m) => m.type === "proxy", "proxy");
+    assert.deepEqual(forwarded.argv, request.argv);
+    assert.equal(forwarded.id, "req-1");
+
+    harness.send({ type: "proxy-result", id: "req-1", stdout: "sent\n", stderr: "", code: 0 });
+    const responsePath = join(
+      process.env.KANBAN_CODE_HOME!,
+      "commands",
+      "proxy-responses",
+      "req-1.json"
+    );
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline && !safeExists(responsePath)) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.deepEqual(JSON.parse(readFileSync(responsePath, "utf-8")), {
+      id: "req-1",
+      stdout: "sent\n",
+      stderr: "",
+      code: 0,
+    });
+    assert.equal(safeExists(join(proxyDir, "req-1.json")), false);
+    await harness.end();
+  });
+});
+
+describe("transcript working directory", () => {
+  test("reads the first line that carries a cwd", () => {
+    const path = join(home, "transcript.jsonl");
+    writeFileSync(
+      path,
+      [
+        JSON.stringify({ type: "summary" }),
+        JSON.stringify({ type: "user", cwd: "/work/app" }),
+        JSON.stringify({ type: "assistant", cwd: "/other" }),
+      ].join("\n") + "\n"
+    );
+    assert.equal(readCwdFromTranscript(path), "/work/app");
+  });
+
+  test("scans an oversized first line that no JSON parse can reach", () => {
+    const path = join(home, "huge.jsonl");
+    const padding = "x".repeat(70_000);
+    writeFileSync(
+      path,
+      `${JSON.stringify({ type: "session_meta", payload: { cwd: "/work/app", instructions: padding } })}\n`
+    );
+    assert.equal(readCwdFromTranscript(path), "/work/app");
+  });
+
+  test("gives up when no cwd appears in the first 64 KB", () => {
+    const path = join(home, "late.jsonl");
+    const padding = "x".repeat(70_000);
+    writeFileSync(
+      path,
+      `${JSON.stringify({ type: "session_meta", payload: { instructions: padding, cwd: "/work/app" } })}\n`
+    );
+    assert.equal(readCwdFromTranscript(path), undefined);
+  });
+
+  test("prefers the directory reading that exists, dash as a separator", () => {
+    const present = new Set(["/home", "/home/boxd", "/home/boxd/my", "/home/boxd/my/app"]);
+    assert.equal(
+      deriveCwdFromProjectDirName("-home-boxd-my-app", (p) => present.has(p)),
+      "/home/boxd/my/app"
+    );
+  });
+
+  test("prefers the directory reading that exists, dash inside a name", () => {
+    const present = new Set(["/home", "/home/boxd", "/home/boxd/my-app"]);
+    assert.equal(
+      deriveCwdFromProjectDirName("-home-boxd-my-app", (p) => present.has(p)),
+      "/home/boxd/my-app"
+    );
+  });
+
+  test("falls back to the plain reading when nothing matches", () => {
+    assert.equal(
+      deriveCwdFromProjectDirName("-home-boxd-x", () => false),
+      "/home/boxd/x"
+    );
+  });
+});
+
+function safeExists(path: string): boolean {
+  try {
+    statSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}

@@ -241,6 +241,22 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
         }
     }
 
+    /// Wraps a built assistant command with the user's launch command template.
+    ///
+    /// `langwatch ${cli_command}` gives `langwatch claude --resume abc`, and a
+    /// template with no placeholder is treated as a prefix, so a user who types
+    /// only `langwatch` gets the same result. A missing, blank or
+    /// bare-placeholder template returns the command unchanged.
+    public static func applyCommandTemplate(_ command: String, template: String?) -> String {
+        guard let template else { return command }
+        let trimmed = template.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != AssistantCommandTemplate.placeholder else { return command }
+        guard trimmed.contains(AssistantCommandTemplate.placeholder) else {
+            return trimmed + " " + command
+        }
+        return trimmed.replacingOccurrences(of: AssistantCommandTemplate.placeholder, with: command)
+    }
+
     private func shellEscapeCommandArgument(_ value: String) -> String {
         let safeCharacters = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._:/@+-"))
         guard !value.isEmpty,

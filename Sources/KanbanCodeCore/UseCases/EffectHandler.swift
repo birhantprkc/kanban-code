@@ -12,6 +12,7 @@ public actor EffectHandler {
     private let channelsStore: ChannelsStore
     private let notifier: NotifierPort?
     private let queuedPromptJournal: QueuedPromptJournal
+    private let remoteMachines: (any RemoteMachineControl)?
 
     // MARK: - Chat notification burst throttler
     //
@@ -37,7 +38,8 @@ public actor EffectHandler {
         setClipboardImage: (@Sendable (Data) -> Void)? = nil,
         channelsStore: ChannelsStore? = nil,
         notifier: NotifierPort? = nil,
-        queuedPromptJournal: QueuedPromptJournal? = nil
+        queuedPromptJournal: QueuedPromptJournal? = nil,
+        remoteMachines: (any RemoteMachineControl)? = nil
     ) {
         self.coordinationStore = coordinationStore
         self.tmuxAdapter = tmuxAdapter
@@ -45,6 +47,7 @@ public actor EffectHandler {
         self.channelsStore = channelsStore ?? ChannelsStore()
         self.notifier = notifier
         self.queuedPromptJournal = queuedPromptJournal ?? QueuedPromptJournal()
+        self.remoteMachines = remoteMachines
     }
 
     public func execute(_ effect: Effect, dispatch: @MainActor @Sendable (Action) -> Void) async {
@@ -84,6 +87,18 @@ public actor EffectHandler {
         case .killTmuxSessions(let names):
             for name in names {
                 try? await tmuxAdapter?.killSession(name: name)
+            }
+
+        case .pauseRemoteMachine(let machineName, let reason):
+            await remoteMachines?.pause(machineName: machineName, reason: reason)
+
+        case .destroyRemoteMachine(let machineName):
+            do {
+                try await remoteMachines?.destroy(machineName: machineName)
+                await dispatch(.remoteMachineDestroyed(machineName: machineName))
+            } catch {
+                KanbanCodeLog.warn("effect", "destroyRemoteMachine \(machineName) failed: \(error)")
+                await dispatch(.setError("Could not destroy machine \(machineName): \(error.localizedDescription)"))
             }
 
         case .deleteSessionFile(let path):

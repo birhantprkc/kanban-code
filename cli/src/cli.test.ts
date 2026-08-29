@@ -323,10 +323,10 @@ describe("kanban channel (CLI e2e)", () => {
     assert.match(log, /display-message -p #S/);
     assert.match(log, /send-keys -t sess-self Enter/);
     assert.match(log, /send-keys -t sess-self Escape/);
-    assert.match(log, /set-buffer -b kc-\d+-\d+ \/compact/);
+    assert.match(log, /set-buffer -b kc-\d+-\d+ -- \/compact/);
     assert.match(log, /paste-buffer -p -d -b kc-\d+-\d+ -t sess-self/);
     assert.match(log, /send-keys -t sess-self Enter/);
-    assert.match(log, /set-buffer -b kc-\d+-\d+ Continue after compact\./);
+    assert.match(log, /set-buffer -b kc-\d+-\d+ -- Continue after compact\./);
     assert.match(log, /paste-buffer -p -d -b kc-\d+-\d+ -t sess-self/);
   });
 
@@ -363,7 +363,7 @@ describe("kanban channel (CLI e2e)", () => {
     execFileSync("sleep", ["2.8"]);
 
     const log = readFileSync(logPath, "utf-8");
-    assert.match(log, /set-buffer -b kc-\d+-\d+ Continue after compact/);
+    assert.match(log, /set-buffer -b kc-\d+-\d+ -- Continue after compact/);
     assert.match(log, /1\. Recheck CI/);
     assert.match(log, /2\. Report back\./);
   });
@@ -435,7 +435,7 @@ describe("kanban channel (CLI e2e)", () => {
     execFileSync("sleep", ["2.4"]);
 
     const log = readFileSync(logPath, "utf-8");
-    assert.match(log, /set-buffer -b kc-\d+-\d+ \/compact/);
+    assert.match(log, /set-buffer -b kc-\d+-\d+ -- \/compact/);
     assert.match(log, /paste-buffer -p -d -b kc-\d+-\d+ -t sess-self-no-follow-up/);
     assert.match(log, /send-keys -t sess-self-no-follow-up Enter/);
   });

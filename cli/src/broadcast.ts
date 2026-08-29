@@ -91,6 +91,21 @@ export function cardForTmuxSession(links: Link[], sessionName: string): Link | u
   return matches[0]?.link;
 }
 
+/**
+ * The card named by `KANBAN_CARD_ID`. A remote card exports it into its tmux
+ * session because the machine has no board to look the session up in, and the
+ * Mac exports it again when it runs a proxied command on the card's behalf.
+ * It wins over the tmux lookup: it is the caller the card itself declared.
+ */
+export function cardFromEnvironment(
+  links: Link[],
+  env: NodeJS.ProcessEnv = process.env
+): Link | undefined {
+  const id = env.KANBAN_CARD_ID?.trim();
+  if (!id) return undefined;
+  return links.find((link) => link.id === id);
+}
+
 // ── Formatting ────────────────────────────────────────────────────────
 
 function renderImageRefs(imagePaths?: string[]): string {

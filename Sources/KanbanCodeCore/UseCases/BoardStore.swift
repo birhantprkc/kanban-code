@@ -20,6 +20,10 @@ public enum DialogState: Equatable, Sendable {
     case confirmTrimSession(cardId: String)
     case remoteWorktreeCleanup(cardId: String, remotePath: String, localPath: String, errorMessage: String)
     case confirmDeleteChannel(name: String)
+    /// Archive a card that has a boxd machine: the machine is destroyed too.
+    case confirmArchiveWithMachine(cardId: String)
+    /// Destroy the boxd machine of a card and keep the card.
+    case confirmDestroyMachine(cardId: String)
 }
 
 // MARK: - AppState
@@ -123,6 +127,24 @@ public final class AppState: @unchecked Sendable {
 
     /// Global remote execution settings (from Settings.remote).
     public var globalRemoteSettings: RemoteSettings?
+
+    /// Which remote backend a "Run remotely" launch uses.
+    public var remoteMode: RemoteMode = .boxd
+
+    /// Settings of the boxd remote mode (from Settings.boxd).
+    public var boxdSettings: BoxdSettings?
+
+    /// Live state of every boxd machine the app knows, by machine name.
+    /// Transient: the supervisor reports it, nothing persists it.
+    public var remoteMachineStates: [String: RemoteMachineState] = [:]
+
+    /// Cards that keep their tmux session on `machineName`.
+    public func cardIds(onMachine machineName: String) -> [String] {
+        links.values
+            .filter { $0.remote?.machineName == machineName }
+            .map(\.id)
+            .sorted()
+    }
 
     /// Active confirmation dialog — global so it survives view recreation.
     public var activeDialog: DialogState = .none
@@ -451,8 +473,20 @@ public enum Action: Sendable {
     // Busy state (transient spinners)
     case setBusy(cardId: String, busy: Bool)
 
+    // Remote machines (boxd)
+    /// A card got a machine, or its machine record changed (new cwd, new status).
+    case remoteMachineAssigned(cardId: String, remote: RemoteLink)
+    /// The supervisor reports the state of a machine.
+    case remoteMachineStateChanged(machineName: String, state: RemoteMachineState)
+    /// The user or a policy asks to pause the machine of a card.
+    case pauseRemoteMachine(cardId: String, reason: RemotePausedReason)
+    /// The user confirmed the destruction of the machine of a card.
+    case destroyRemoteMachine(cardId: String)
+    /// The machine no longer exists; every card that used it forgets it.
+    case remoteMachineDestroyed(machineName: String)
+
     // Settings / misc
-    case settingsLoaded(projects: [Project], excludedPaths: [String], remote: RemoteSettings?)
+    case settingsLoaded(projects: [Project], excludedPaths: [String], remote: RemoteSettings?, remoteMode: RemoteMode = .boxd, boxd: BoxdSettings? = nil)
     case setError(String?)
     /// Same banner as `setError`, but says what kind of news it is.
     case setNotice(String?, kind: NoticeKind)
@@ -562,6 +596,10 @@ public enum Effect: Sendable {
     case journalQueuedPrompt(cardId: String, prompt: QueuedPrompt, reason: QueuedPromptJournalReason)
     case deleteFiles([String])
 
+    // Remote machines (boxd)
+    case pauseRemoteMachine(machineName: String, reason: RemotePausedReason)
+    case destroyRemoteMachine(machineName: String)
+
     // Channels
     case loadChannels
     case loadChannelMessages(channelName: String)
@@ -647,6 +685,25 @@ public enum Reducer {
                 )
             }
         }
+    }
+
+    /// True when a card still keeps a tmux session on `machineName`.
+    static func machineHasLiveSessions(_ machineName: String, in state: AppState) -> Bool {
+        state.links.values.contains { $0.remote?.machineName == machineName && $0.tmuxLink != nil }
+    }
+
+    /// Drops the machine record of `link`. When no other card uses the
+    /// machine it is destroyed (`destroy`) or paused; a shared machine, for
+    /// example one a subagent still runs on, is left alone.
+    static func releaseRemoteMachine(of link: inout Link, in state: AppState, destroy: Bool) -> [Effect] {
+        guard let remote = link.remote else { return [] }
+        link.remote = nil
+        link.isRemote = false
+        let others = state.cardIds(onMachine: remote.machineName).filter { $0 != link.id }
+        guard others.isEmpty else { return [] }
+        return destroy
+            ? [.destroyRemoteMachine(machineName: remote.machineName)]
+            : [.pauseRemoteMachine(machineName: remote.machineName, reason: .sessionStopped)]
     }
 
     public static func reduce(state: inout AppState, action: Action) -> [Effect] {
@@ -913,6 +970,12 @@ public enum Reducer {
                 effects.append(.cleanupBrowserCache(cardId: cardId))
                 link.browserTabs = nil
             }
+            // An archived card no longer needs its boxd machine. The machine
+            // is only destroyed when no other card (a subagent, for example)
+            // still runs on it.
+            if let remote = link.remote, remote.mode == .boxd {
+                effects.append(contentsOf: releaseRemoteMachine(of: &link, in: state, destroy: true))
+            }
             state.links[cardId] = link
             effects.insert(.upsertLink(link), at: 0)
             return effects
@@ -941,6 +1004,10 @@ public enum Reducer {
                 }
                 if let sessionPath = link.sessionLink?.sessionPath {
                     effects.append(.deleteSessionFile(sessionPath))
+                }
+                if let remote = link.remote, remote.mode == .boxd,
+                   state.cardIds(onMachine: remote.machineName).isEmpty {
+                    effects.append(.destroyRemoteMachine(machineName: remote.machineName))
                 }
                 var imagesToDelete = link.promptImagePaths ?? []
                 imagesToDelete += (link.queuedPrompts ?? []).flatMap { $0.imagePaths ?? [] }
@@ -1402,18 +1469,24 @@ public enum Reducer {
                     // Extras exist — keep tmuxLink, mark primary dead
                     link.tmuxLink?.isPrimaryDead = true
                     link.isLaunching = nil
-                    link.isRemote = false
+                    if link.remote == nil { link.isRemote = false }
                     link.updatedAt = .now
                     state.links[cardId] = link
                     return [.killTmuxSession(sessionName), .upsertLink(link), .cleanupTerminalCache(sessionNames: [sessionName])]
                 } else {
-                    // No extras — full teardown
+                    // No extras — full teardown. A boxd card keeps its machine
+                    // record so a later resume finds it; the machine itself
+                    // is paused when no other card runs on it.
                     link.tmuxLink = nil
                     link.isLaunching = nil
-                    link.isRemote = false
+                    if link.remote == nil { link.isRemote = false }
                     link.updatedAt = .now
                     state.links[cardId] = link
-                    return [.killTmuxSession(sessionName), .upsertLink(link), .cleanupTerminalCache(sessionNames: [sessionName])]
+                    var effects: [Effect] = [.killTmuxSession(sessionName), .upsertLink(link), .cleanupTerminalCache(sessionNames: [sessionName])]
+                    if let remote = link.remote, remote.mode == .boxd, !machineHasLiveSessions(remote.machineName, in: state) {
+                        effects.append(.pauseRemoteMachine(machineName: remote.machineName, reason: .sessionStopped))
+                    }
+                    return effects
                 }
             } else {
                 // Killing extra session
@@ -1893,6 +1966,10 @@ public enum Reducer {
             for (id, var link) in state.links {
                 guard link.tmuxLink != nil, link.isLaunching != true,
                       !link.manualOverrides.tmuxSession else { continue }
+                // A remote card whose machine is paused or unreachable is not
+                // in the scan; its tmux session is still there.
+                if let remote = link.remote,
+                   state.remoteMachineStates[remote.machineName]?.isConnected != true { continue }
                 let before = link.tmuxLink?.allSessionNames ?? []
                 guard CardReconciler.applyTmuxLiveness(to: &link, liveTmuxNames: live) else { continue }
                 let after = link.tmuxLink?.allSessionNames ?? []
@@ -2176,11 +2253,95 @@ public enum Reducer {
 
         // MARK: Settings / Misc
 
-        case .settingsLoaded(let projects, let excludedPaths, let remote):
+        case .settingsLoaded(let projects, let excludedPaths, let remote, let remoteMode, let boxd):
             state.configuredProjects = projects
             state.excludedPaths = excludedPaths
             state.globalRemoteSettings = remote
+            state.remoteMode = remoteMode
+            state.boxdSettings = boxd
             return []
+
+        // MARK: Remote machines
+
+        case .remoteMachineAssigned(let cardId, let remote):
+            guard var link = state.links[cardId] else { return [] }
+            link.remote = remote
+            link.isRemote = true
+            link.updatedAt = .now
+            state.links[cardId] = link
+            return [.upsertLink(link)]
+
+        case .remoteMachineStateChanged(let machineName, let machineState):
+            if case .destroyed = machineState {
+                state.remoteMachineStates[machineName] = nil
+            } else {
+                state.remoteMachineStates[machineName] = machineState
+            }
+            var effects: [Effect] = []
+            for id in state.cardIds(onMachine: machineName) {
+                guard var link = state.links[id], var remote = link.remote else { continue }
+                switch machineState {
+                case .paused(let reason):
+                    remote.pausedReason = reason
+                    remote.pausedAt = .now
+                    remote.lastStatus = "standby"
+                case .connected, .connecting:
+                    remote.pausedReason = nil
+                    remote.pausedAt = nil
+                    remote.lastStatus = "running"
+                case .unreachable:
+                    break
+                case .destroyed:
+                    link.remote = nil
+                    link.isRemote = false
+                    link.updatedAt = .now
+                    state.links[id] = link
+                    effects.append(.upsertLink(link))
+                    continue
+                }
+                guard remote != link.remote else { continue }
+                link.remote = remote
+                link.updatedAt = .now
+                state.links[id] = link
+                effects.append(.upsertLink(link))
+            }
+            return effects
+
+        case .pauseRemoteMachine(let cardId, let reason):
+            guard let remote = state.links[cardId]?.remote, remote.mode == .boxd else { return [] }
+            return [.pauseRemoteMachine(machineName: remote.machineName, reason: reason)]
+
+        case .destroyRemoteMachine(let cardId):
+            guard var link = state.links[cardId], let remote = link.remote, remote.mode == .boxd else { return [] }
+            var effects: [Effect] = []
+            if let tmux = link.tmuxLink {
+                effects.append(.killTmuxSessions(tmux.allSessionNames))
+                effects.append(.cleanupTerminalCache(sessionNames: tmux.allSessionNames))
+                link.tmuxLink = nil
+                link.isLaunching = nil
+            }
+            effects.append(contentsOf: releaseRemoteMachine(of: &link, in: state, destroy: true))
+            state.links[cardId] = link
+            effects.insert(.upsertLink(link), at: 0)
+            return effects
+
+        case .remoteMachineDestroyed(let machineName):
+            state.remoteMachineStates[machineName] = nil
+            var effects: [Effect] = []
+            for id in state.cardIds(onMachine: machineName) {
+                guard var link = state.links[id] else { continue }
+                link.remote = nil
+                link.isRemote = false
+                if link.tmuxLink != nil {
+                    effects.append(.cleanupTerminalCache(sessionNames: link.tmuxLink?.allSessionNames ?? []))
+                    link.tmuxLink = nil
+                    link.isLaunching = nil
+                }
+                link.updatedAt = .now
+                state.links[id] = link
+                effects.append(.upsertLink(link))
+            }
+            return effects
 
         case .setError(let message):
             state.notice = message.map { Notice($0) }
@@ -2459,7 +2620,9 @@ public final class BoardStore: @unchecked Sendable {
                 dispatch(.settingsLoaded(
                     projects: settings.projects,
                     excludedPaths: settings.globalView.excludedPaths,
-                    remote: settings.remote
+                    remote: settings.remote,
+                    remoteMode: settings.remoteMode,
+                    boxd: settings.boxd
                 ))
             }
         }
@@ -2503,7 +2666,13 @@ public final class BoardStore: @unchecked Sendable {
                     configuredProjects = settings.projects
                     excludedPaths = settings.globalView.excludedPaths
                     globalRemoteSettings = settings.remote
-                    dispatch(.settingsLoaded(projects: configuredProjects, excludedPaths: excludedPaths, remote: globalRemoteSettings))
+                    dispatch(.settingsLoaded(
+                        projects: configuredProjects,
+                        excludedPaths: excludedPaths,
+                        remote: globalRemoteSettings,
+                        remoteMode: settings.remoteMode,
+                        boxd: settings.boxd
+                    ))
                 }
             }
 
@@ -2677,12 +2846,14 @@ public final class BoardStore: @unchecked Sendable {
 
             // Reconcile — pullRequests map feeds branch→PR matching in the reconciler
             let t3 = ContinuousClock.now
+            let connectedMachines = Set(state.remoteMachineStates.filter { $0.value.isConnected }.keys)
             let snapshot = CardReconciler.DiscoverySnapshot(
                 sessions: sessions,
                 tmuxSessions: tmuxSessions,
                 didScanTmux: tmuxAdapter != nil,
                 worktrees: worktreesByRepo,
-                pullRequests: pullRequests
+                pullRequests: pullRequests,
+                connectedRemoteMachines: connectedMachines
             )
             var mergedLinks = CardReconciler.reconcile(existing: existingLinks, snapshot: snapshot)
             KanbanCodeLog.info("reconcile", "reconciler: \(t3.duration(to: .now)) (\(existingLinks.count) existing → \(mergedLinks.count) merged)")

@@ -21,19 +21,24 @@ public enum CardReconciler {
         public let didScanTmux: Bool                    // true if tmux was queried (even if 0 results)
         public let worktrees: [String: [Worktree]]     // repoRoot → worktrees
         public let pullRequests: [String: PullRequest]  // branch → PR
+        /// Remote machines whose tmux sessions are in `tmuxSessions`. A remote
+        /// card on any other machine keeps its tmux link.
+        public let connectedRemoteMachines: Set<String>
 
         public init(
             sessions: [Session] = [],
             tmuxSessions: [TmuxSession] = [],
             didScanTmux: Bool = false,
             worktrees: [String: [Worktree]] = [:],
-            pullRequests: [String: PullRequest] = [:]
+            pullRequests: [String: PullRequest] = [:],
+            connectedRemoteMachines: Set<String> = []
         ) {
             self.sessions = sessions
             self.tmuxSessions = tmuxSessions
             self.didScanTmux = didScanTmux
             self.worktrees = worktrees
             self.pullRequests = pullRequests
+            self.connectedRemoteMachines = connectedRemoteMachines
         }
     }
 
@@ -429,13 +434,18 @@ public enum CardReconciler {
             // Clear dead tmux links (tmux session no longer exists)
             // Only clear if we actually scanned tmux (avoid clearing when snapshot has no tmux data)
             // Skip cards mid-launch — the tmux session may not be visible yet
-            if link.tmuxLink != nil, link.isLaunching != true, !link.manualOverrides.tmuxSession, didScanTmux {
+            // A remote card is only judged when its machine was in the scan.
+            let remoteMachineScanned = link.remote.map { snapshot.connectedRemoteMachines.contains($0.machineName) } ?? true
+            if link.tmuxLink != nil, link.isLaunching != true, !link.manualOverrides.tmuxSession, didScanTmux, remoteMachineScanned {
                 changed = applyTmuxLiveness(to: &link, liveTmuxNames: liveTmuxNames) || changed
             }
 
-            // Clear dead worktree links (path no longer exists on disk)
+            // Clear dead worktree links (path no longer exists on disk).
+            // A remote card's worktree lives on its machine, so a missing
+            // local path says nothing about it.
             if let wtPath = link.worktreeLink?.path,
                !wtPath.isEmpty,
+               link.remote == nil,
                !link.manualOverrides.isBranchDiscoveryBlocked,
                didScanWorktrees, // only clear if we actually scanned worktrees
                !liveWorktreePaths.contains(wtPath) {

@@ -17,6 +17,7 @@ public final class LaunchSession: SessionLauncher, @unchecked Sendable {
         shellOverride: String?,
         extraEnv: [String: String] = [:],
         commandOverride: String? = nil,
+        commandTemplate: String? = nil,
         skipPermissions: Bool = false,
         preamble: String? = nil,
         assistant: CodingAssistant = .claude,
@@ -36,6 +37,10 @@ public final class LaunchSession: SessionLauncher, @unchecked Sendable {
                 service: service,
                 modelOverride: modelOverride
             )
+
+            // The user's template wraps the assistant command, and the env
+            // prefix goes in front of the result.
+            built = CodingAssistant.applyCommandTemplate(built, template: commandTemplate)
 
             // Prepend environment variables (SHELL override + KANBAN_CODE_* vars)
             let envPrefix = buildEnvPrefix(shellOverride: shellOverride, extraEnv: extraEnv)
@@ -66,6 +71,7 @@ public final class LaunchSession: SessionLauncher, @unchecked Sendable {
         shellOverride: String?,
         extraEnv: [String: String] = [:],
         commandOverride: String? = nil,
+        commandTemplate: String? = nil,
         skipPermissions: Bool = false,
         preamble: String? = nil,
         assistant: CodingAssistant = .claude,
@@ -90,6 +96,7 @@ public final class LaunchSession: SessionLauncher, @unchecked Sendable {
                 service: service,
                 modelOverride: modelOverride
             )
+            built = CodingAssistant.applyCommandTemplate(built, template: commandTemplate)
             let envPrefix = buildEnvPrefix(shellOverride: shellOverride, extraEnv: extraEnv)
             if !envPrefix.isEmpty {
                 built = envPrefix + " " + built
