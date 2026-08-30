@@ -200,11 +200,14 @@ Feature: Boxd Remote Mode
     And its ~/.claude.json carries the Mac's oauthAccount
     When I switch accounts on the Mac
     Then every connected machine gets the new login within a minute
+    And a notice says "Claude login changed to <email> at <time>, sent to <machine>"
+    And a token rotation shows no notice
 
   Scenario: A refresh on a machine comes back to the Mac
     Given a machine that refreshed its Claude token
     When the next sync tick runs
     Then the Mac's Keychain holds the refreshed token
+    And a notice says "Claude login refreshed on <machine> at <time>, this Mac updated"
     And the other machines get it on their next tick
 
   Scenario: A long-lived token replaces the synced login

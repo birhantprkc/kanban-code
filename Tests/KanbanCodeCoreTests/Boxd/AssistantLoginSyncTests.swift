@@ -93,6 +93,61 @@ struct AssistantLoginTests {
     }
 }
 
+@Suite("Login notices")
+struct LoginNoticeTests {
+    private let account: [String: Any] = ["accountUuid": "acc-2", "emailAddress": "me@example.com"]
+
+    @Test("A token rotation stays quiet")
+    func rotationIsQuiet() {
+        let outcome = BoxdMachineSupervisor.loginNotices(
+            previousAccountId: "acc-2", account: account, pushedClaudeTo: ["kanban-repo-1"], pulled: [], time: "17:53")
+        #expect(outcome.notices.isEmpty)
+        #expect(outcome.accountId == "acc-2")
+    }
+
+    @Test("An account switch on the Mac is told with the machines it reached")
+    func accountSwitch() {
+        let one = BoxdMachineSupervisor.loginNotices(
+            previousAccountId: "acc-1", account: account, pushedClaudeTo: ["kanban-repo-1"], pulled: [], time: "17:53")
+        #expect(one.notices == ["Claude login changed to me@example.com at 17:53, sent to kanban-repo-1"])
+        #expect(one.accountId == "acc-2")
+        let many = BoxdMachineSupervisor.loginNotices(
+            previousAccountId: "acc-1", account: account, pushedClaudeTo: ["a", "b"], pulled: [], time: "17:53")
+        #expect(many.notices == ["Claude login changed to me@example.com at 17:53, sent to 2 machines"])
+        let none = BoxdMachineSupervisor.loginNotices(
+            previousAccountId: "acc-1", account: ["accountUuid": "acc-2"], pushedClaudeTo: [], pulled: [], time: "17:53")
+        #expect(none.notices == ["Claude login changed at 17:53"])
+    }
+
+    @Test("The first account seen is not a switch")
+    func firstObservation() {
+        let outcome = BoxdMachineSupervisor.loginNotices(
+            previousAccountId: nil, account: account, pushedClaudeTo: ["kanban-repo-1"], pulled: [], time: "17:53")
+        #expect(outcome.notices.isEmpty)
+        #expect(outcome.accountId == "acc-2")
+        let unknown = BoxdMachineSupervisor.loginNotices(
+            previousAccountId: "acc-2", account: nil, pushedClaudeTo: [], pulled: [], time: "17:53")
+        #expect(unknown.notices.isEmpty)
+        #expect(unknown.accountId == "acc-2")
+    }
+
+    @Test("A login taken from a machine is told")
+    func pullIsTold() {
+        let outcome = BoxdMachineSupervisor.loginNotices(
+            previousAccountId: "acc-2", account: account, pushedClaudeTo: [],
+            pulled: [BoxdMachineSupervisor.LoginPull(kind: .claude, machineName: "kanban-repo-1")], time: "17:53")
+        #expect(outcome.notices == ["Claude login refreshed on kanban-repo-1 at 17:53, this Mac updated"])
+    }
+
+    @Test("The clock text is hours and minutes")
+    func clockText() {
+        var components = DateComponents()
+        components.year = 2026; components.month = 8; components.day = 30; components.hour = 17; components.minute = 53
+        let date = Calendar.current.date(from: components)!
+        #expect(BoxdMachineSupervisor.clockText(date) == "17:53")
+    }
+}
+
 @Suite("Assistant login sync")
 struct AssistantLoginSyncTests {
     private let home = "/home/boxd"

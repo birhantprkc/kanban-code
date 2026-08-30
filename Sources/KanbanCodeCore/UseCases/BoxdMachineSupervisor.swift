@@ -97,6 +97,9 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     private var machines: [String: MachineRuntime] = [:]
     private var inactivityTask: Task<Void, Never>?
     private var timerTicks = 0
+    /// `accountUuid` of the Claude login seen on the last tick. A token
+    /// rotation keeps it; an account switch changes it.
+    private var lastClaudeAccountId: String?
     /// Minutes between two sweeps of the machine list.
     public static let sweepIntervalMinutes = 10
     private let now: @Sendable () -> Date
@@ -813,7 +816,10 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         // The machine starts with the login of the snapshot. The session
         // must not: it gets the login of this Mac before it starts.
         log("Syncing logins")
-        await syncLogins(machineName: machineName, bridge: bridge, remoteHome: runtime.remoteHome)
+        if lastClaudeAccountId == nil {
+            lastClaudeAccountId = await loginStore.claudeAccount()?["accountUuid"] as? String
+        }
+        _ = await syncLogins(machineName: machineName, bridge: bridge, remoteHome: runtime.remoteHome)
 
         let transport = BridgeTmuxTransport(runner: bridge, remoteHome: runtime.remoteHome)
         registry.setMachine(machineName, state: .connected, tmux: TmuxAdapter(transport: transport))
@@ -1028,15 +1034,35 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     /// Every connected machine gets the login of this Mac, and a login a
     /// machine refreshed comes back to the Mac and on to the other machines.
     public func syncAllLogins() async {
-        for (name, runtime) in machines {
+        var pushedClaudeTo: [String] = []
+        var pulled: [LoginPull] = []
+        for (name, runtime) in machines.sorted(by: { $0.key < $1.key }) {
             guard let bridge = runtime.bridge else { continue }
-            await syncLogins(machineName: name, bridge: bridge, remoteHome: runtime.remoteHome)
+            for change in await syncLogins(machineName: name, bridge: bridge, remoteHome: runtime.remoteHome) {
+                switch change.decision {
+                case .push where change.kind == .claude: pushedClaudeTo.append(name)
+                case .pull: pulled.append(LoginPull(kind: change.kind, machineName: name))
+                default: break
+                }
+            }
+        }
+        let account = await loginStore.claudeAccount()
+        let outcome = Self.loginNotices(
+            previousAccountId: lastClaudeAccountId,
+            account: account,
+            pushedClaudeTo: pushedClaudeTo,
+            pulled: pulled,
+            time: Self.clockText(now()))
+        lastClaudeAccountId = outcome.accountId
+        for notice in outcome.notices {
+            await dispatch?(.setNotice(notice, kind: .success))
         }
     }
 
-    private func syncLogins(machineName: String, bridge: BoxdBridge, remoteHome: String) async {
+    private func syncLogins(machineName: String, bridge: BoxdBridge, remoteHome: String) async -> [AssistantLoginSync.Change] {
         let sync = AssistantLoginSync(runner: bridge, store: loginStore, remoteHome: remoteHome)
-        for change in await sync.run() {
+        let changes = await sync.run()
+        for change in changes {
             switch change.decision {
             case .push:
                 KanbanCodeLog.info(Self.subsystem, "\(machineName): \(change.kind.displayName) login sent to the machine")
@@ -1046,6 +1072,56 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
                 break
             }
         }
+        return changes
+    }
+
+    public struct LoginPull: Equatable, Sendable {
+        public let kind: AssistantLoginKind
+        public let machineName: String
+        public init(kind: AssistantLoginKind, machineName: String) {
+            self.kind = kind
+            self.machineName = machineName
+        }
+    }
+
+    public struct LoginNoticeOutcome: Equatable, Sendable {
+        public let notices: [String]
+        public let accountId: String?
+    }
+
+    /// The notices of one tick. A token rotation is routine and stays quiet;
+    /// an account switch on the Mac and a login taken from a machine are
+    /// told, with the time. The first observation of an account is not a
+    /// switch.
+    public nonisolated static func loginNotices(
+        previousAccountId: String?,
+        account: [String: Any]?,
+        pushedClaudeTo: [String],
+        pulled: [LoginPull],
+        time: String
+    ) -> LoginNoticeOutcome {
+        var notices: [String] = []
+        let accountId = account?["accountUuid"] as? String
+        if let previousAccountId, let accountId, accountId != previousAccountId {
+            let who = (account?["emailAddress"] as? String).map { " to \($0)" } ?? ""
+            let sent: String
+            switch pushedClaudeTo.count {
+            case 0: sent = ""
+            case 1: sent = ", sent to \(pushedClaudeTo[0])"
+            default: sent = ", sent to \(pushedClaudeTo.count) machines"
+            }
+            notices.append("Claude login changed\(who) at \(time)\(sent)")
+        }
+        for pull in pulled {
+            notices.append("\(pull.kind.displayName) login refreshed on \(pull.machineName) at \(time), this Mac updated")
+        }
+        return LoginNoticeOutcome(notices: notices, accountId: accountId ?? previousAccountId)
+    }
+
+    nonisolated static func clockText(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
     }
 
     /// Pauses machines that had no activity for the configured timeout.
