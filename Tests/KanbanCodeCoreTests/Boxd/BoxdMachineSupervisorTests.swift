@@ -70,11 +70,11 @@ struct BoxdMachineSupervisorTests {
     func attachCommandQuotes() {
         let command = BoxdMachineSupervisor.attachCommand(
             boxdPath: "/usr/local/bin/boxd",
-            machineName: "kc-repo-1",
+            machineName: "kanban-repo-1",
             sessionName: "repo-card_1"
         )
 
-        #expect(command == "'/usr/local/bin/boxd' machine exec --tty 'kc-repo-1' -- tmux attach -t 'repo-card_1'")
+        #expect(command == "'/usr/local/bin/boxd' machine exec --tty 'kanban-repo-1' -- tmux attach -t 'repo-card_1'")
     }
 
     @Test("attachCommand survives a single quote in a name")
@@ -156,13 +156,13 @@ struct BoxdMachineSupervisorTests {
         let recorder = ActionRecorder()
         await supervisor.setDispatch { @MainActor action in recorder.append(action) }
 
-        await supervisor.pause(machineName: "kc-repo-1", reason: .manual)
+        await supervisor.pause(machineName: "kanban-repo-1", reason: .manual)
 
-        #expect(boxd.callNames("pause") == ["kc-repo-1"])
-        #expect(registry.state(of: "kc-repo-1") == .paused(.manual))
+        #expect(boxd.callNames("pause") == ["kanban-repo-1"])
+        #expect(registry.state(of: "kanban-repo-1") == .paused(.manual))
         let reported = recorder.machineStates
         #expect(reported.count == 1)
-        #expect(reported[0].machine == "kc-repo-1")
+        #expect(reported[0].machine == "kanban-repo-1")
         #expect(reported[0].state == .paused(.manual))
     }
 
@@ -175,9 +175,9 @@ struct BoxdMachineSupervisorTests {
         let recorder = ActionRecorder()
         await supervisor.setDispatch { @MainActor action in recorder.append(action) }
 
-        await supervisor.pause(machineName: "kc-repo-1", reason: .systemSleep)
+        await supervisor.pause(machineName: "kanban-repo-1", reason: .systemSleep)
 
-        #expect(boxd.callNames("pause") == ["kc-repo-1"])
+        #expect(boxd.callNames("pause") == ["kanban-repo-1"])
         #expect(recorder.machineStates.map(\.state) == [.paused(.systemSleep)])
     }
 
@@ -187,14 +187,14 @@ struct BoxdMachineSupervisorTests {
     func destroyRemovesTheMachine() async throws {
         let boxd = FakeBoxdPort()
         let registry = RemoteSessionRegistry()
-        registry.assign(sessionName: "repo-card_1", to: "kc-repo-1")
-        registry.setMachine("kc-repo-1", state: .connected)
+        registry.assign(sessionName: "repo-card_1", to: "kanban-repo-1")
+        registry.setMachine("kanban-repo-1", state: .connected)
         let supervisor = makeSupervisor(boxd: boxd, registry: registry)
 
-        try await supervisor.destroy(machineName: "kc-repo-1")
+        try await supervisor.destroy(machineName: "kanban-repo-1")
 
-        #expect(boxd.callNames("remove") == ["kc-repo-1"])
-        #expect(registry.state(of: "kc-repo-1") == nil)
+        #expect(boxd.callNames("remove") == ["kanban-repo-1"])
+        #expect(registry.state(of: "kanban-repo-1") == nil)
         #expect(registry.machine(forSession: "repo-card_1") == nil)
     }
 
@@ -204,9 +204,9 @@ struct BoxdMachineSupervisorTests {
         boxd.fail("remove", with: .commandFailed(command: "boxd machine rm", exitCode: 1, message: "Machine Not Found"))
         let supervisor = makeSupervisor(boxd: boxd)
 
-        try await supervisor.destroy(machineName: "kc-repo-1")
+        try await supervisor.destroy(machineName: "kanban-repo-1")
 
-        #expect(boxd.callNames("remove") == ["kc-repo-1"])
+        #expect(boxd.callNames("remove") == ["kanban-repo-1"])
     }
 
     @Test("Any other destroy failure is passed on")
@@ -217,7 +217,7 @@ struct BoxdMachineSupervisorTests {
         let supervisor = makeSupervisor(boxd: boxd)
 
         await #expect(throws: failure) {
-            try await supervisor.destroy(machineName: "kc-repo-1")
+            try await supervisor.destroy(machineName: "kanban-repo-1")
         }
     }
 
@@ -228,20 +228,20 @@ struct BoxdMachineSupervisorTests {
         let registry = RemoteSessionRegistry()
         let supervisor = makeSupervisor(boxd: FakeBoxdPort(), registry: registry)
 
-        #expect(await supervisor.isConnected("kc-repo-1") == false)
-        registry.setMachine("kc-repo-1", state: .connected)
-        #expect(await supervisor.isConnected("kc-repo-1") == true)
-        registry.disconnectMachine("kc-repo-1", state: .paused(.manual))
-        #expect(await supervisor.isConnected("kc-repo-1") == false)
+        #expect(await supervisor.isConnected("kanban-repo-1") == false)
+        registry.setMachine("kanban-repo-1", state: .connected)
+        #expect(await supervisor.isConnected("kanban-repo-1") == true)
+        registry.disconnectMachine("kanban-repo-1", state: .paused(.manual))
+        #expect(await supervisor.isConnected("kanban-repo-1") == false)
     }
 
     @Test("A machine with no bridge has no mirror and no last activity")
     func unknownMachineHasNoRuntime() async {
         let supervisor = makeSupervisor(boxd: FakeBoxdPort())
 
-        #expect(await supervisor.bridge(for: "kc-repo-1") == nil)
-        #expect(await supervisor.mirror(for: "kc-repo-1") == nil)
-        #expect(await supervisor.lastActivity(of: "kc-repo-1") == nil)
+        #expect(await supervisor.bridge(for: "kanban-repo-1") == nil)
+        #expect(await supervisor.mirror(for: "kanban-repo-1") == nil)
+        #expect(await supervisor.lastActivity(of: "kanban-repo-1") == nil)
     }
 
 
@@ -265,39 +265,39 @@ struct BoxdMachineSupervisorTests {
     @Test("sweep destroys idle orphans, pauses running ones and leaves used machines alone")
     func sweepCleansOrphans() async {
         let boxd = FakeBoxdPort()
-        boxd.setMachine(BoxdMachine(name: "kc-repo-orphan", status: .standby))
-        boxd.setMachine(BoxdMachine(name: "kc-repo-orphan-run", status: .running))
-        boxd.setMachine(BoxdMachine(name: "kc-repo-archived", status: .hibernated))
-        boxd.setMachine(BoxdMachine(name: "kc-repo-idle", status: .running))
-        boxd.setMachine(BoxdMachine(name: "kc-repo-live", status: .running))
-        boxd.setMachine(BoxdMachine(name: "kc-repo-paused", status: .standby))
+        boxd.setMachine(BoxdMachine(name: "kanban-repo-orphan", status: .standby))
+        boxd.setMachine(BoxdMachine(name: "kanban-repo-orphan-run", status: .running))
+        boxd.setMachine(BoxdMachine(name: "kanban-repo-archived", status: .hibernated))
+        boxd.setMachine(BoxdMachine(name: "kanban-repo-idle", status: .running))
+        boxd.setMachine(BoxdMachine(name: "kanban-repo-live", status: .running))
+        boxd.setMachine(BoxdMachine(name: "kanban-repo-paused", status: .standby))
         boxd.setMachine(BoxdMachine(name: "good-wolf", status: .running))
         boxd.setMachine(BoxdMachine(name: "my-own-box", status: .standby))
         let supervisor = makeSupervisor(boxd: boxd)
 
         let report = await supervisor.sweep(links: [
-            link(id: "card_archived", machine: "kc-repo-archived", archived: true),
-            link(id: "card_idle", machine: "kc-repo-idle"),
-            link(id: "card_live", machine: "kc-repo-live", session: "repo-card_live"),
-            link(id: "card_paused", machine: "kc-repo-paused"),
+            link(id: "card_archived", machine: "kanban-repo-archived", archived: true),
+            link(id: "card_idle", machine: "kanban-repo-idle"),
+            link(id: "card_live", machine: "kanban-repo-live", session: "repo-card_live"),
+            link(id: "card_paused", machine: "kanban-repo-paused"),
             link(id: "card_local", machine: nil, session: "repo-card_local"),
         ])
 
-        #expect(Set(report.destroyed) == ["kc-repo-orphan", "kc-repo-archived"])
-        #expect(Set(report.paused) == ["kc-repo-orphan-run", "kc-repo-idle"])
-        #expect(Set(boxd.callNames("remove")) == ["kc-repo-orphan", "kc-repo-archived"])
-        #expect(Set(boxd.callNames("pause")) == ["kc-repo-orphan-run", "kc-repo-idle"])
+        #expect(Set(report.destroyed) == ["kanban-repo-orphan", "kanban-repo-archived"])
+        #expect(Set(report.paused) == ["kanban-repo-orphan-run", "kanban-repo-idle"])
+        #expect(Set(boxd.callNames("remove")) == ["kanban-repo-orphan", "kanban-repo-archived"])
+        #expect(Set(boxd.callNames("pause")) == ["kanban-repo-orphan-run", "kanban-repo-idle"])
     }
 
     @Test("sweep never touches the source machine even when it matches the pattern")
     func sweepSkipsSourceMachine() async {
         let boxd = FakeBoxdPort()
-        boxd.setMachine(BoxdMachine(name: "kc-base", status: .standby))
+        boxd.setMachine(BoxdMachine(name: "kanban-base", status: .standby))
         let home = NSTemporaryDirectory() + "boxd-supervisor-\(UUID().uuidString)"
         let supervisor = BoxdMachineSupervisor(
             boxd: boxd,
             registry: RemoteSessionRegistry(),
-            settingsProvider: { BoxdSettings(sourceMachine: "kc-base") },
+            settingsProvider: { BoxdSettings(sourceMachine: "kanban-base") },
             cliBundlePath: nil,
             appVersion: "1.0.0-test",
             localHome: home,
@@ -313,7 +313,7 @@ struct BoxdMachineSupervisorTests {
     @Test("sweep without a links provider does nothing")
     func sweepNeedsLinks() async {
         let boxd = FakeBoxdPort()
-        boxd.setMachine(BoxdMachine(name: "kc-repo-orphan", status: .standby))
+        boxd.setMachine(BoxdMachine(name: "kanban-repo-orphan", status: .standby))
         let supervisor = makeSupervisor(boxd: boxd)
 
         let report = await supervisor.sweepIfPossible()

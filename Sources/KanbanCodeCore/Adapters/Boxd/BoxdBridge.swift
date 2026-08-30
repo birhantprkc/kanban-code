@@ -246,7 +246,7 @@ public actor BoxdBridge: RemoteCommandRunner {
         guard readerTask == nil else { return }
         readerTask = Task { [weak self] in
             guard let self else { return }
-            for await line in await self.channel.lines {
+            for await line in self.channel.lines {
                 await self.handle(line: line)
             }
             let reason = await self.channel.terminationReason()

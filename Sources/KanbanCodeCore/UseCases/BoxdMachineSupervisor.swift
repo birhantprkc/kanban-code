@@ -598,7 +598,7 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         }
     }
 
-    /// Cleans up machines this app created (`kc-*`) that no card needs:
+    /// Cleans up machines this app created (`kanban-*`) that no card needs:
     /// - a machine no card references, or only archived cards reference, is
     ///   destroyed once it is not running (a running one is paused first, so
     ///   a machine in use by another process gets a grace period);

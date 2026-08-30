@@ -37,7 +37,7 @@ struct BoxdReducerTests {
 
     private func remoteCard(
         id: String,
-        machine: String = "kc-repo-1",
+        machine: String = "kanban-repo-1",
         sessionName: String? = nil,
         pausedReason: RemotePausedReason? = nil,
         column: KanbanCodeColumn = .inProgress
@@ -84,15 +84,15 @@ struct BoxdReducerTests {
     @Test("cardIds(onMachine:) lists only the cards of that machine, sorted")
     func cardIdsOnMachine() {
         let state = stateWith([
-            remoteCard(id: "card_b", machine: "kc-repo-1"),
-            remoteCard(id: "card_a", machine: "kc-repo-1"),
-            remoteCard(id: "card_c", machine: "kc-other"),
+            remoteCard(id: "card_b", machine: "kanban-repo-1"),
+            remoteCard(id: "card_a", machine: "kanban-repo-1"),
+            remoteCard(id: "card_c", machine: "kanban-other"),
             localCard(id: "card_d"),
         ])
 
-        #expect(state.cardIds(onMachine: "kc-repo-1") == ["card_a", "card_b"])
-        #expect(state.cardIds(onMachine: "kc-other") == ["card_c"])
-        #expect(state.cardIds(onMachine: "kc-none").isEmpty)
+        #expect(state.cardIds(onMachine: "kanban-repo-1") == ["card_a", "card_b"])
+        #expect(state.cardIds(onMachine: "kanban-other") == ["card_c"])
+        #expect(state.cardIds(onMachine: "kanban-none").isEmpty)
     }
 
     // MARK: - killTerminal
@@ -105,10 +105,10 @@ struct BoxdReducerTests {
 
         let link = try #require(state.links["card_1"])
         #expect(link.tmuxLink == nil)
-        #expect(link.remote?.machineName == "kc-repo-1")
+        #expect(link.remote?.machineName == "kanban-repo-1")
         #expect(link.isRemote == true)
         #expect(effects.pausedMachines.count == 1)
-        #expect(effects.pausedMachines[0].machine == "kc-repo-1")
+        #expect(effects.pausedMachines[0].machine == "kanban-repo-1")
         #expect(effects.pausedMachines[0].reason == .sessionStopped)
         #expect(effects.destroyedMachines.isEmpty)
     }
@@ -145,7 +145,7 @@ struct BoxdReducerTests {
 
         _ = Reducer.reduce(state: &state, action: .launchFailed(cardId: "card_1", error: "boom"))
 
-        #expect(state.links["card_1"]?.remote?.machineName == "kc-repo-1")
+        #expect(state.links["card_1"]?.remote?.machineName == "kanban-repo-1")
         #expect(state.links["card_1"]?.tmuxLink == nil)
         #expect(state.notice != nil)
     }
@@ -156,7 +156,7 @@ struct BoxdReducerTests {
 
         _ = Reducer.reduce(state: &state, action: .resumeFailed(cardId: "card_1", error: "boom"))
 
-        #expect(state.links["card_1"]?.remote?.machineName == "kc-repo-1")
+        #expect(state.links["card_1"]?.remote?.machineName == "kanban-repo-1")
         #expect(state.links["card_1"]?.tmuxLink == nil)
     }
 
@@ -172,7 +172,7 @@ struct BoxdReducerTests {
         #expect(link.remote == nil)
         #expect(link.isRemote == false)
         #expect(link.manuallyArchived == true)
-        #expect(effects.destroyedMachines == ["kc-repo-1"])
+        #expect(effects.destroyedMachines == ["kanban-repo-1"])
         #expect(effects.killedSessions == ["repo-card_1"])
     }
 
@@ -188,7 +188,7 @@ struct BoxdReducerTests {
         #expect(effects.destroyedMachines.isEmpty)
         // The archived card still gives its machine record up.
         #expect(state.links["card_1"]?.remote == nil)
-        #expect(state.links["card_2"]?.remote?.machineName == "kc-repo-1")
+        #expect(state.links["card_2"]?.remote?.machineName == "kanban-repo-1")
     }
 
     // MARK: - deleteCard
@@ -200,7 +200,7 @@ struct BoxdReducerTests {
         let effects = Reducer.reduce(state: &state, action: .deleteCard(cardId: "card_1"))
 
         #expect(state.links["card_1"] == nil)
-        #expect(effects.destroyedMachines == ["kc-repo-1"])
+        #expect(effects.destroyedMachines == ["kanban-repo-1"])
     }
 
     @Test("deleteCard leaves a machine a second card still uses")
@@ -228,7 +228,7 @@ struct BoxdReducerTests {
         #expect(link.isRemote == false)
         #expect(link.tmuxLink == nil)
         #expect(link.isLaunching == nil)
-        #expect(effects.destroyedMachines == ["kc-repo-1"])
+        #expect(effects.destroyedMachines == ["kanban-repo-1"])
         #expect(effects.killedSessions == ["repo-card_1"])
     }
 
@@ -250,20 +250,20 @@ struct BoxdReducerTests {
             [
                 remoteCard(id: "card_1", sessionName: "repo-card_1"),
                 remoteCard(id: "card_2", sessionName: "repo-card_2"),
-                remoteCard(id: "card_3", machine: "kc-other", sessionName: "repo-card_3"),
+                remoteCard(id: "card_3", machine: "kanban-other", sessionName: "repo-card_3"),
             ],
-            machineStates: ["kc-repo-1": .connected, "kc-other": .connected]
+            machineStates: ["kanban-repo-1": .connected, "kanban-other": .connected]
         )
 
-        _ = Reducer.reduce(state: &state, action: .remoteMachineDestroyed(machineName: "kc-repo-1"))
+        _ = Reducer.reduce(state: &state, action: .remoteMachineDestroyed(machineName: "kanban-repo-1"))
 
         #expect(state.links["card_1"]?.remote == nil)
         #expect(state.links["card_1"]?.isRemote == false)
         #expect(state.links["card_1"]?.tmuxLink == nil)
         #expect(state.links["card_2"]?.remote == nil)
-        #expect(state.links["card_3"]?.remote?.machineName == "kc-other")
-        #expect(state.remoteMachineStates["kc-repo-1"] == nil)
-        #expect(state.remoteMachineStates["kc-other"] == .connected)
+        #expect(state.links["card_3"]?.remote?.machineName == "kanban-other")
+        #expect(state.remoteMachineStates["kanban-repo-1"] == nil)
+        #expect(state.remoteMachineStates["kanban-other"] == .connected)
     }
 
     // MARK: - remoteMachineStateChanged
@@ -272,9 +272,9 @@ struct BoxdReducerTests {
     func pausedStateMarksTheCards() throws {
         var state = stateWith([remoteCard(id: "card_1", sessionName: "repo-card_1")])
 
-        _ = Reducer.reduce(state: &state, action: .remoteMachineStateChanged(machineName: "kc-repo-1", state: .paused(.inactivity)))
+        _ = Reducer.reduce(state: &state, action: .remoteMachineStateChanged(machineName: "kanban-repo-1", state: .paused(.inactivity)))
 
-        #expect(state.remoteMachineStates["kc-repo-1"] == .paused(.inactivity))
+        #expect(state.remoteMachineStates["kanban-repo-1"] == .paused(.inactivity))
         let remote = try #require(state.links["card_1"]?.remote)
         #expect(remote.pausedReason == .inactivity)
         #expect(remote.pausedAt != nil)
@@ -285,12 +285,12 @@ struct BoxdReducerTests {
     func connectedStateClearsThePause() throws {
         var state = stateWith(
             [remoteCard(id: "card_1", sessionName: "repo-card_1", pausedReason: .appQuit)],
-            machineStates: ["kc-repo-1": .paused(.appQuit)]
+            machineStates: ["kanban-repo-1": .paused(.appQuit)]
         )
 
-        _ = Reducer.reduce(state: &state, action: .remoteMachineStateChanged(machineName: "kc-repo-1", state: .connected))
+        _ = Reducer.reduce(state: &state, action: .remoteMachineStateChanged(machineName: "kanban-repo-1", state: .connected))
 
-        #expect(state.remoteMachineStates["kc-repo-1"] == .connected)
+        #expect(state.remoteMachineStates["kanban-repo-1"] == .connected)
         let remote = try #require(state.links["card_1"]?.remote)
         #expect(remote.pausedReason == nil)
         #expect(remote.pausedAt == nil)
@@ -301,12 +301,12 @@ struct BoxdReducerTests {
     func destroyedStateClearsTheCards() {
         var state = stateWith(
             [remoteCard(id: "card_1", sessionName: "repo-card_1")],
-            machineStates: ["kc-repo-1": .connected]
+            machineStates: ["kanban-repo-1": .connected]
         )
 
-        _ = Reducer.reduce(state: &state, action: .remoteMachineStateChanged(machineName: "kc-repo-1", state: .destroyed))
+        _ = Reducer.reduce(state: &state, action: .remoteMachineStateChanged(machineName: "kanban-repo-1", state: .destroyed))
 
-        #expect(state.remoteMachineStates["kc-repo-1"] == nil)
+        #expect(state.remoteMachineStates["kanban-repo-1"] == nil)
         #expect(state.links["card_1"]?.remote == nil)
         #expect(state.links["card_1"]?.isRemote == false)
     }
@@ -315,9 +315,9 @@ struct BoxdReducerTests {
     func unreachableStateLeavesTheCards() {
         var state = stateWith([remoteCard(id: "card_1", sessionName: "repo-card_1", pausedReason: .systemSleep)])
 
-        _ = Reducer.reduce(state: &state, action: .remoteMachineStateChanged(machineName: "kc-repo-1", state: .unreachable))
+        _ = Reducer.reduce(state: &state, action: .remoteMachineStateChanged(machineName: "kanban-repo-1", state: .unreachable))
 
-        #expect(state.remoteMachineStates["kc-repo-1"] == .unreachable)
+        #expect(state.remoteMachineStates["kanban-repo-1"] == .unreachable)
         #expect(state.links["card_1"]?.remote?.pausedReason == .systemSleep)
     }
 
@@ -327,7 +327,7 @@ struct BoxdReducerTests {
     func remoteMachineAssigned() {
         var state = stateWith([localCard(id: "card_1")])
         let remote = RemoteLink(
-            machineName: "kc-repo-1",
+            machineName: "kanban-repo-1",
             remoteProjectPath: "/home/boxd/repo",
             remoteCwd: "/home/boxd/repo",
             remoteHome: "/home/boxd"
@@ -349,7 +349,7 @@ struct BoxdReducerTests {
         let effects = Reducer.reduce(state: &state, action: .pauseRemoteMachine(cardId: "card_1", reason: .manual))
 
         #expect(effects.pausedMachines.count == 1)
-        #expect(effects.pausedMachines[0].machine == "kc-repo-1")
+        #expect(effects.pausedMachines[0].machine == "kanban-repo-1")
         #expect(effects.pausedMachines[0].reason == .manual)
     }
 
@@ -359,7 +359,7 @@ struct BoxdReducerTests {
     func livenessSkipsPausedMachines() {
         var state = stateWith(
             [remoteCard(id: "card_1", sessionName: "repo-card_1")],
-            machineStates: ["kc-repo-1": .paused(.inactivity)]
+            machineStates: ["kanban-repo-1": .paused(.inactivity)]
         )
 
         _ = Reducer.reduce(state: &state, action: .tmuxLivenessScanned(live: []))
@@ -380,7 +380,7 @@ struct BoxdReducerTests {
     func livenessClearsConnectedMachines() {
         var state = stateWith(
             [remoteCard(id: "card_1", sessionName: "repo-card_1")],
-            machineStates: ["kc-repo-1": .connected]
+            machineStates: ["kanban-repo-1": .connected]
         )
 
         _ = Reducer.reduce(state: &state, action: .tmuxLivenessScanned(live: []))
@@ -392,7 +392,7 @@ struct BoxdReducerTests {
     func livenessKeepsLiveSession() {
         var state = stateWith(
             [remoteCard(id: "card_1", sessionName: "repo-card_1")],
-            machineStates: ["kc-repo-1": .connected]
+            machineStates: ["kanban-repo-1": .connected]
         )
 
         _ = Reducer.reduce(state: &state, action: .tmuxLivenessScanned(live: ["repo-card_1"]))
@@ -405,7 +405,7 @@ struct BoxdReducerTests {
     @Test("settingsLoaded carries the remote mode and the boxd settings into the state")
     func settingsLoadedCarriesBoxd() {
         var state = AppState()
-        let boxd = BoxdSettings(snapshotName: "kc-base", sourceMachine: "good-wolf", inactivityTimeoutSeconds: 900)
+        let boxd = BoxdSettings(snapshotName: "kanban-base", sourceMachine: "good-wolf", inactivityTimeoutSeconds: 900)
 
         _ = Reducer.reduce(state: &state, action: .settingsLoaded(
             projects: [], excludedPaths: [], remote: nil, remoteMode: .boxd, boxd: boxd
@@ -486,7 +486,7 @@ struct BoxdReducerTests {
             links: [snapshot], sessions: [], activityMap: [:], tmuxSessions: ["repo-card_1"])))
 
         let merged = try #require(state.links["card_1"])
-        #expect(merged.remote?.machineName == "kc-repo-1")
+        #expect(merged.remote?.machineName == "kanban-repo-1")
         #expect(merged.isRemote == true)
     }
 
@@ -506,7 +506,7 @@ struct BoxdReducerTests {
 
         let merged = try #require(state.links["card_1"])
         #expect(merged.isLaunching == nil)
-        #expect(merged.remote?.machineName == "kc-repo-1")
+        #expect(merged.remote?.machineName == "kanban-repo-1")
         #expect(merged.worktreeLink?.branch == "x")
     }
 }

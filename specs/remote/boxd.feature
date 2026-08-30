@@ -38,7 +38,7 @@ Feature: Boxd Remote Mode
   Scenario: Launching a card on a new machine
     Given a project whose origin is "git@github.com:acme/app.git"
     When I start a card with "Run on boxd" checked and "New machine from snapshot" selected
-    Then a machine named "kc-app-<card id prefix>" is created from the snapshot
+    Then a machine named "kanban-app-<card id prefix>" is created from the snapshot
     And the kanban CLI is installed on the machine and its hooks are registered
     And the initialization command runs with ${repo_dir}, ${repo_url}, ${repo_name} and ${branch} substituted
     And the files matching "Files to copy" are copied into the checkout
@@ -148,7 +148,7 @@ Feature: Boxd Remote Mode
     And a retry resumes the same machine
 
   Scenario: Orphan machines are cleaned up
-    Given a machine named kc-<repo>-<card> that no card references
+    Given a machine named kanban-<repo>-<card> that no card references
     When the app starts or ten minutes pass
     Then a paused machine is destroyed
     And a running machine is paused first and destroyed on the next sweep

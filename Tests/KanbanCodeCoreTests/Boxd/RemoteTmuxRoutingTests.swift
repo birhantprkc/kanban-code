@@ -148,8 +148,8 @@ struct RoutingTmuxAdapterTests {
     func assignedNameGoesToTheMachine() async throws {
         let (router, localTransport, registry) = makeRouter()
         let remoteTransport = FakeTmuxTransport(label: "remote")
-        registry.assign(sessionName: "remote-card", to: "kc-repo-1")
-        registry.setMachine("kc-repo-1", state: .connected, tmux: TmuxAdapter(transport: remoteTransport))
+        registry.assign(sessionName: "remote-card", to: "kanban-repo-1")
+        registry.setMachine("kanban-repo-1", state: .connected, tmux: TmuxAdapter(transport: remoteTransport))
 
         _ = try await router.capturePane(sessionName: "remote-card")
 
@@ -162,14 +162,14 @@ struct RoutingTmuxAdapterTests {
     func pausedMachineThrows() async throws {
         let (router, localTransport, registry) = makeRouter()
         let remoteTransport = FakeTmuxTransport(label: "remote")
-        registry.assign(sessionName: "remote-card", to: "kc-repo-1")
-        registry.setMachine("kc-repo-1", state: .connected, tmux: TmuxAdapter(transport: remoteTransport))
-        registry.disconnectMachine("kc-repo-1", state: .paused(.inactivity))
+        registry.assign(sessionName: "remote-card", to: "kanban-repo-1")
+        registry.setMachine("kanban-repo-1", state: .connected, tmux: TmuxAdapter(transport: remoteTransport))
+        registry.disconnectMachine("kanban-repo-1", state: .paused(.inactivity))
 
-        #expect(throws: RemoteMachineUnavailable(machineName: "kc-repo-1", state: .paused(.inactivity))) {
+        #expect(throws: RemoteMachineUnavailable(machineName: "kanban-repo-1", state: .paused(.inactivity))) {
             _ = try router.adapter(for: "remote-card")
         }
-        await #expect(throws: RemoteMachineUnavailable(machineName: "kc-repo-1", state: .paused(.inactivity))) {
+        await #expect(throws: RemoteMachineUnavailable(machineName: "kanban-repo-1", state: .paused(.inactivity))) {
             _ = try await router.capturePane(sessionName: "remote-card")
         }
         // The command must never fall through to the local tmux server.
@@ -180,10 +180,10 @@ struct RoutingTmuxAdapterTests {
     @Test("A name on a machine that was never connected reports unreachable")
     func neverConnectedMachineThrowsUnreachable() throws {
         let (router, _, registry) = makeRouter()
-        registry.assign(sessionName: "remote-card", to: "kc-repo-1")
-        registry.setMachine("kc-repo-1", state: .unreachable)
+        registry.assign(sessionName: "remote-card", to: "kanban-repo-1")
+        registry.setMachine("kanban-repo-1", state: .unreachable)
 
-        #expect(throws: RemoteMachineUnavailable(machineName: "kc-repo-1", state: .unreachable)) {
+        #expect(throws: RemoteMachineUnavailable(machineName: "kanban-repo-1", state: .unreachable)) {
             _ = try router.adapter(for: "remote-card")
         }
     }
@@ -194,24 +194,24 @@ struct RoutingTmuxAdapterTests {
         localTransport.script(listArgs, sessionList([("local-card", "/repo")]))
         let remoteTransport = FakeTmuxTransport(label: "remote")
         remoteTransport.script(listArgs, sessionList([("remote-card", "/home/boxd/repo")]))
-        registry.assign(sessionName: "remote-card", to: "kc-repo-1")
-        registry.setMachine("kc-repo-1", state: .connected, tmux: TmuxAdapter(transport: remoteTransport))
+        registry.assign(sessionName: "remote-card", to: "kanban-repo-1")
+        registry.setMachine("kanban-repo-1", state: .connected, tmux: TmuxAdapter(transport: remoteTransport))
 
         let sessions = try await router.listSessions()
 
         #expect(sessions.map(\.name).sorted() == ["local-card", "remote-card"])
         // The live list is recorded, so a later pause still reports it.
-        #expect(registry.knownSessions(on: "kc-repo-1").map(\.name) == ["remote-card"])
+        #expect(registry.knownSessions(on: "kanban-repo-1").map(\.name) == ["remote-card"])
     }
 
     @Test("listSessions reports the last known names of a paused machine")
     func listSessionsKeepsPausedNames() async throws {
         let (router, localTransport, registry) = makeRouter()
         localTransport.script(listArgs, sessionList([("local-card", "/repo")]))
-        registry.assign(sessionName: "remote-card", to: "kc-repo-1")
-        registry.setMachine("kc-repo-1", state: .connected)
-        registry.recordSessions([TmuxSession(name: "remote-card", path: "/home/boxd/repo")], on: "kc-repo-1")
-        registry.disconnectMachine("kc-repo-1", state: .paused(.appQuit))
+        registry.assign(sessionName: "remote-card", to: "kanban-repo-1")
+        registry.setMachine("kanban-repo-1", state: .connected)
+        registry.recordSessions([TmuxSession(name: "remote-card", path: "/home/boxd/repo")], on: "kanban-repo-1")
+        registry.disconnectMachine("kanban-repo-1", state: .paused(.appQuit))
 
         let sessions = try await router.listSessions()
 
@@ -222,15 +222,15 @@ struct RoutingTmuxAdapterTests {
     func killSessionUnassigns() async throws {
         let (router, _, registry) = makeRouter()
         let remoteTransport = FakeTmuxTransport(label: "remote")
-        registry.assign(sessionName: "remote-card", to: "kc-repo-1")
-        registry.setMachine("kc-repo-1", state: .connected, tmux: TmuxAdapter(transport: remoteTransport))
-        registry.recordSessions([TmuxSession(name: "remote-card", path: "/home/boxd/repo")], on: "kc-repo-1")
+        registry.assign(sessionName: "remote-card", to: "kanban-repo-1")
+        registry.setMachine("kanban-repo-1", state: .connected, tmux: TmuxAdapter(transport: remoteTransport))
+        registry.recordSessions([TmuxSession(name: "remote-card", path: "/home/boxd/repo")], on: "kanban-repo-1")
 
         try await router.killSession(name: "remote-card")
 
         #expect(remoteTransport.calls == [["kill-session", "-t", "remote-card"]])
         #expect(registry.machine(forSession: "remote-card") == nil)
-        #expect(registry.knownSessions(on: "kc-repo-1").isEmpty)
+        #expect(registry.knownSessions(on: "kanban-repo-1").isEmpty)
         #expect(router.isRemote("remote-card") == false)
     }
 
@@ -270,30 +270,30 @@ struct RemoteSessionRegistryTests {
     @Test("seed maps every tmux name of a remote link to its machine")
     func seedMapsNames() {
         let registry = RemoteSessionRegistry()
-        var link = remoteLink(id: "card_1", machine: "kc-repo-1", sessionName: "primary")
+        var link = remoteLink(id: "card_1", machine: "kanban-repo-1", sessionName: "primary")
         link.tmuxLink?.extraSessions = ["extra"]
         let plain = Link(id: "card_2", projectPath: "/repo", column: .inProgress, tmuxLink: TmuxLink(sessionName: "local"))
 
         registry.seed(from: [link, plain])
 
-        #expect(registry.machine(forSession: "primary") == "kc-repo-1")
-        #expect(registry.machine(forSession: "extra") == "kc-repo-1")
+        #expect(registry.machine(forSession: "primary") == "kanban-repo-1")
+        #expect(registry.machine(forSession: "extra") == "kanban-repo-1")
         #expect(registry.machine(forSession: "local") == nil)
-        #expect(registry.sessionNames(on: "kc-repo-1") == ["primary", "extra"])
-        #expect(registry.knownSessions(on: "kc-repo-1").first(where: { $0.name == "primary" })?.path == "/home/boxd/repo")
+        #expect(registry.sessionNames(on: "kanban-repo-1") == ["primary", "extra"])
+        #expect(registry.knownSessions(on: "kanban-repo-1").first(where: { $0.name == "primary" })?.path == "/home/boxd/repo")
     }
 
     @Test("seed sets paused when the link carries a paused reason, else unreachable")
     func seedSetsState() {
         let registry = RemoteSessionRegistry()
         registry.seed(from: [
-            remoteLink(id: "card_1", machine: "kc-paused", sessionName: "a", pausedReason: .systemSleep),
-            remoteLink(id: "card_2", machine: "kc-cold", sessionName: "b"),
+            remoteLink(id: "card_1", machine: "kanban-paused", sessionName: "a", pausedReason: .systemSleep),
+            remoteLink(id: "card_2", machine: "kanban-cold", sessionName: "b"),
         ])
 
-        #expect(registry.state(of: "kc-paused") == .paused(.systemSleep))
-        #expect(registry.state(of: "kc-cold") == .unreachable)
-        #expect(registry.machineNames == ["kc-cold", "kc-paused"])
+        #expect(registry.state(of: "kanban-paused") == .paused(.systemSleep))
+        #expect(registry.state(of: "kanban-cold") == .unreachable)
+        #expect(registry.machineNames == ["kanban-cold", "kanban-paused"])
     }
 
     @Test("seed skips a link with no tmux session")
@@ -304,7 +304,7 @@ struct RemoteSessionRegistryTests {
             projectPath: "/repo",
             column: .inProgress,
             isRemote: true,
-            remote: RemoteLink(machineName: "kc-repo-1")
+            remote: RemoteLink(machineName: "kanban-repo-1")
         )
 
         registry.seed(from: [link])
@@ -315,7 +315,7 @@ struct RemoteSessionRegistryTests {
     @Test("seed skips a card that no longer runs remotely")
     func seedSkipsCardThatIsNotRemote() {
         let registry = RemoteSessionRegistry()
-        var link = remoteLink(id: "card_1", machine: "kc-repo-1", sessionName: "primary")
+        var link = remoteLink(id: "card_1", machine: "kanban-repo-1", sessionName: "primary")
         link.isRemote = false
 
         registry.seed(from: [link])
@@ -327,50 +327,50 @@ struct RemoteSessionRegistryTests {
     @Test("A destroyed machine loses its adapter and its known sessions")
     func destroyedMachineIsCleared() {
         let registry = RemoteSessionRegistry()
-        registry.assign(sessionName: "a", to: "kc-repo-1")
-        registry.setMachine("kc-repo-1", state: .connected, tmux: TmuxAdapter(transport: FakeTmuxTransport()))
-        registry.recordSessions([TmuxSession(name: "a", path: "/home/boxd/repo")], on: "kc-repo-1")
+        registry.assign(sessionName: "a", to: "kanban-repo-1")
+        registry.setMachine("kanban-repo-1", state: .connected, tmux: TmuxAdapter(transport: FakeTmuxTransport()))
+        registry.recordSessions([TmuxSession(name: "a", path: "/home/boxd/repo")], on: "kanban-repo-1")
 
-        registry.setMachine("kc-repo-1", state: .destroyed)
+        registry.setMachine("kanban-repo-1", state: .destroyed)
 
-        #expect(registry.tmux(for: "kc-repo-1") == nil)
-        #expect(registry.knownSessions(on: "kc-repo-1").isEmpty)
+        #expect(registry.tmux(for: "kanban-repo-1") == nil)
+        #expect(registry.knownSessions(on: "kanban-repo-1").isEmpty)
     }
 
     @Test("assign registers an unknown machine as connecting")
     func assignRegistersMachine() {
         let registry = RemoteSessionRegistry()
 
-        registry.assign(sessionName: "a", to: "kc-new")
+        registry.assign(sessionName: "a", to: "kanban-new")
 
-        #expect(registry.state(of: "kc-new") == .connecting)
-        #expect(registry.states["kc-new"] == .connecting)
+        #expect(registry.state(of: "kanban-new") == .connecting)
+        #expect(registry.states["kanban-new"] == .connecting)
     }
 
     @Test("recordSessions also maps names the app did not assign")
     func recordSessionsMapsNewNames() {
         let registry = RemoteSessionRegistry()
-        registry.setMachine("kc-repo-1", state: .connected)
+        registry.setMachine("kanban-repo-1", state: .connected)
 
-        registry.recordSessions([TmuxSession(name: "found", path: "/home/boxd/repo")], on: "kc-repo-1")
+        registry.recordSessions([TmuxSession(name: "found", path: "/home/boxd/repo")], on: "kanban-repo-1")
 
-        #expect(registry.machine(forSession: "found") == "kc-repo-1")
+        #expect(registry.machine(forSession: "found") == "kanban-repo-1")
     }
 
     @Test("forgetSession drops one name, removeMachine drops them all")
     func forgetAndRemove() {
         let registry = RemoteSessionRegistry()
-        registry.setMachine("kc-repo-1", state: .connected)
+        registry.setMachine("kanban-repo-1", state: .connected)
         registry.recordSessions([
             TmuxSession(name: "a", path: "/x"),
             TmuxSession(name: "b", path: "/x"),
-        ], on: "kc-repo-1")
+        ], on: "kanban-repo-1")
 
-        registry.forgetSession("a", on: "kc-repo-1")
-        #expect(registry.knownSessions(on: "kc-repo-1").map(\.name) == ["b"])
+        registry.forgetSession("a", on: "kanban-repo-1")
+        #expect(registry.knownSessions(on: "kanban-repo-1").map(\.name) == ["b"])
 
-        registry.removeMachine("kc-repo-1")
-        #expect(registry.state(of: "kc-repo-1") == nil)
+        registry.removeMachine("kanban-repo-1")
+        #expect(registry.state(of: "kanban-repo-1") == nil)
         #expect(registry.machine(forSession: "b") == nil)
     }
 }

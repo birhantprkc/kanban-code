@@ -41,7 +41,7 @@ struct BoxdCliAdapterTests {
         let json = """
         [
           {"name": "good-wolf", "status": "running", "url": "good-wolf.boxd.sh", "source": "standalone", "sharing": "private"},
-          {"name": "kc-langwatch-01ab", "status": "standby", "url": "kc-langwatch-01ab.boxd.sh", "source": "snapshot/kanban-code-base:v1", "sharing": "private"}
+          {"name": "kanban-langwatch-01ab", "status": "standby", "url": "kanban-langwatch-01ab.boxd.sh", "source": "snapshot/kanban-code-base:v1", "sharing": "private"}
         ]
         """
         let machines = try BoxdCliAdapter.decodeMachines(json)
@@ -61,12 +61,12 @@ struct BoxdCliAdapterTests {
     @Test("machine new --json decodes although it carries no status")
     func decodesMachineNew() throws {
         let json = """
-        {"name":"kc-langwatch-01ab","id":"6f0e...","url":"kc-langwatch-01ab.boxd.sh","source":"snapshot/kanban-code-base:v1","boot":"1.9s"}
+        {"name":"kanban-langwatch-01ab","id":"6f0e...","url":"kanban-langwatch-01ab.boxd.sh","source":"snapshot/kanban-code-base:v1","boot":"1.9s"}
         """
         let machine = try BoxdCliAdapter.decodeMachine(json)
-        #expect(machine.name == "kc-langwatch-01ab")
+        #expect(machine.name == "kanban-langwatch-01ab")
         #expect(machine.status == .unknown)
-        #expect(machine.url == "kc-langwatch-01ab.boxd.sh")
+        #expect(machine.url == "kanban-langwatch-01ab.boxd.sh")
     }
 
     // MARK: - snapshots

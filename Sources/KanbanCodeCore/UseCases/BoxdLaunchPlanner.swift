@@ -22,28 +22,28 @@ public enum BoxdLaunchPlanner {
 
     // MARK: - Machine name
 
-    /// Machine name of a card: `kc-<repo>-<first 8 of the card id>`.
+    /// Machine name of a card: `kanban-<repo>-<first 8 of the card id>`.
     public static func machineName(repoName: String, cardId: String) -> String {
         let identifier = cardId.hasPrefix("card_") ? String(cardId.dropFirst("card_".count)) : cardId
         let suffix = sanitize(String(identifier.prefix(8)))
         var repository = sanitize(repoName)
         if repository.isEmpty { repository = "repo" }
 
-        let fixedLength = "kc-".count + 1 + suffix.count
+        let fixedLength = "kanban-".count + 1 + suffix.count
         let room = max(1, maximumMachineNameLength - fixedLength)
         if repository.count > room {
             repository = trimDashes(String(repository.prefix(room)))
             if repository.isEmpty { repository = "repo" }
         }
 
-        let name = suffix.isEmpty ? "kc-\(repository)" : "kc-\(repository)-\(suffix)"
+        let name = suffix.isEmpty ? "kanban-\(repository)" : "kanban-\(repository)-\(suffix)"
         return String(name.prefix(maximumMachineNameLength))
     }
 
-    /// True for a machine this app created: `kc-<repo>-<card>`. The sweep
+    /// True for a machine this app created: `kanban-<repo>-<card>`. The sweep
     /// only ever touches these.
     public static func isManagedMachineName(_ name: String) -> Bool {
-        guard name.hasPrefix("kc-"), name.count > "kc-".count else { return false }
+        guard name.hasPrefix("kanban-"), name.count > "kanban-".count else { return false }
         return name.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }
     }
 

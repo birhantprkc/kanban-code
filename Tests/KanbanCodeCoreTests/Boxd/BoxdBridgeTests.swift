@@ -9,7 +9,7 @@ struct BoxdBridgeTests {
 
     /// Starts a bridge and answers its `hello` wait from the fake channel.
     private func connected(
-        machineName: String = "kc-repo-1",
+        machineName: String = "kanban-repo-1",
         home: String = "/home/boxd",
         agentVersion: String = "1.4.0"
     ) async throws -> (BoxdBridge, FakeBridgeChannel) {
@@ -46,7 +46,7 @@ struct BoxdBridgeTests {
     @Test("start resolves on hello and records the machine's home and version")
     func startResolvesOnHello() async throws {
         let channel = FakeBridgeChannel()
-        let bridge = BoxdBridge(machineName: "kc-repo-1", channel: channel)
+        let bridge = BoxdBridge(machineName: "kanban-repo-1", channel: channel)
         let collector = Task { () -> [BridgeEvent] in
             var seen: [BridgeEvent] = []
             for await event in await bridge.events {
@@ -56,19 +56,19 @@ struct BoxdBridgeTests {
             return seen
         }
 
-        channel.feed(json: ["type": "hello", "home": "/home/boxd", "agentVersion": "1.4.0", "vm": "kc-repo-1"])
+        channel.feed(json: ["type": "hello", "home": "/home/boxd", "agentVersion": "1.4.0", "vm": "kanban-repo-1"])
         try await bridge.start(helloTimeout: .seconds(5))
 
         #expect(await bridge.connected == true)
         #expect(await bridge.remoteHome == "/home/boxd")
         #expect(await bridge.agentVersion == "1.4.0")
-        #expect(await collector.value == [.hello(agentVersion: "1.4.0", home: "/home/boxd", vm: "kc-repo-1")])
+        #expect(await collector.value == [.hello(agentVersion: "1.4.0", home: "/home/boxd", vm: "kanban-repo-1")])
     }
 
     @Test("start times out when hello never arrives")
     func startTimesOutWithoutHello() async throws {
         let channel = FakeBridgeChannel()
-        let bridge = BoxdBridge(machineName: "kc-repo-1", channel: channel)
+        let bridge = BoxdBridge(machineName: "kanban-repo-1", channel: channel)
 
         await #expect(throws: BoxdBridgeError.timeout("hello")) {
             try await bridge.start(helloTimeout: .milliseconds(200))
@@ -109,7 +109,7 @@ struct BoxdBridgeTests {
     @Test("exec on a bridge that never connected throws disconnected")
     func execWithoutConnection() async throws {
         let channel = FakeBridgeChannel()
-        let bridge = BoxdBridge(machineName: "kc-repo-1", channel: channel)
+        let bridge = BoxdBridge(machineName: "kanban-repo-1", channel: channel)
 
         await #expect(throws: BoxdBridgeError.disconnected) {
             _ = try await bridge.exec(["ls"], stdin: nil, cwd: nil, timeout: 1)
@@ -295,7 +295,7 @@ struct BoxdBridgeTests {
         channel.feed(json: ["type": "removed", "path": "/home/boxd/.claude/projects/-home-boxd-repo/s1.jsonl"])
         #expect(await nextEvent(bridge) == .removed(path: "/home/boxd/.claude/projects/-home-boxd-repo/s1.jsonl"))
 
-        let (other, otherChannel) = try await connected(machineName: "kc-repo-2")
+        let (other, otherChannel) = try await connected(machineName: "kanban-repo-2")
         otherChannel.feed(json: ["type": "activity", "kind": "hook"])
         #expect(await nextEvent(other) == .activity(kind: "hook"))
     }
@@ -326,8 +326,8 @@ struct BoxdBridgeTests {
     func finishFailsPendingExec() async throws {
         let channel = FakeBridgeChannel()
         channel.setTerminationReason("exit 1: agent crashed")
-        let bridge = BoxdBridge(machineName: "kc-repo-1", channel: channel)
-        channel.feed(json: ["type": "hello", "home": "/home/boxd", "agentVersion": "1.0.0", "vm": "kc-repo-1"])
+        let bridge = BoxdBridge(machineName: "kanban-repo-1", channel: channel)
+        channel.feed(json: ["type": "hello", "home": "/home/boxd", "agentVersion": "1.0.0", "vm": "kanban-repo-1"])
         try await bridge.start(helloTimeout: .seconds(5))
 
         let collector = Task { () -> [BridgeEvent] in

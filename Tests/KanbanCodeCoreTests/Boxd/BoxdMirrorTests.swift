@@ -23,7 +23,7 @@ struct BoxdMirrorTests {
             root = NSTemporaryDirectory() + "boxd-mirror-\(UUID().uuidString)"
             localHome = root + "/home"
             localKanbanHome = localHome + "/.kanban-code"
-            stateDirectory = localKanbanHome + "/boxd/kc-repo-1"
+            stateDirectory = localKanbanHome + "/boxd/kanban-repo-1"
             localProject = root + "/work/repo"
             now = Date(timeIntervalSince1970: 1_700_000_000)
             try? FileManager.default.createDirectory(atPath: localProject, withIntermediateDirectories: true)
@@ -42,7 +42,7 @@ struct BoxdMirrorTests {
 
         func makeMirror() -> BoxdMirror {
             BoxdMirror(
-                machineName: "kc-repo-1",
+                machineName: "kanban-repo-1",
                 rewriter: rewriter,
                 remoteHome: remoteHome,
                 localHome: localHome,
@@ -336,7 +336,7 @@ struct BoxdMirrorTests {
         for object in objects {
             #expect(object["transcriptPath"] as? String == localTranscript)
             #expect(object["cwd"] as? String == fixture.localProject)
-            #expect(object["machine"] as? String == "kc-repo-1")
+            #expect(object["machine"] as? String == "kanban-repo-1")
             #expect(object["timestamp"] as? String == formatter.string(from: fixture.now))
         }
         #expect(objects.map { $0["event"] as? String } == ["Stop", "Notification"])
@@ -484,7 +484,7 @@ struct BoxdMirrorTests {
         defer { fixture.cleanUp() }
         let mirror = fixture.makeMirror()
 
-        #expect(await mirror.apply(.hello(agentVersion: "1", home: "/home/boxd", vm: "kc-repo-1")) == nil)
+        #expect(await mirror.apply(.hello(agentVersion: "1", home: "/home/boxd", vm: "kanban-repo-1")) == nil)
         #expect(await mirror.apply(.activity(kind: "transcript")) == nil)
         #expect(await mirror.apply(.disconnected(reason: "exit 0")) == nil)
     }

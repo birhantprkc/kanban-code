@@ -99,7 +99,7 @@ The app quits only after `pauseAll` returns or after 10 seconds, whichever comes
 
 ### Sweep
 
-At startup and every 10 minutes the app lists the machines and cleans up the ones it created (`kc-<repo>-<card>`):
+At startup and every 10 minutes the app lists the machines and cleans up the ones it created (`kanban-<repo>-<card>`):
 
 | Machine | Action |
 |---|---|

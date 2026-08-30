@@ -9,14 +9,14 @@ struct BoxdLaunchPlannerTests {
 
     @Test("The machine name carries the repository and the first 8 of the card id")
     func machineName() {
-        #expect(BoxdLaunchPlanner.machineName(repoName: "langwatch", cardId: "card_01ab2c3d4e5f") == "kc-langwatch-01ab2c3d")
-        #expect(BoxdLaunchPlanner.machineName(repoName: "langwatch", cardId: "01ab2c3d4e5f") == "kc-langwatch-01ab2c3d")
+        #expect(BoxdLaunchPlanner.machineName(repoName: "langwatch", cardId: "card_01ab2c3d4e5f") == "kanban-langwatch-01ab2c3d")
+        #expect(BoxdLaunchPlanner.machineName(repoName: "langwatch", cardId: "01ab2c3d4e5f") == "kanban-langwatch-01ab2c3d")
     }
 
     @Test("The name only keeps lowercase letters, digits and dashes")
     func machineNameSanitised() {
         let name = BoxdLaunchPlanner.machineName(repoName: "LangWatch_SaaS.v2", cardId: "card_AB.cd/ef")
-        #expect(name == "kc-langwatch-saas-v2-ab-cd-ef")
+        #expect(name == "kanban-langwatch-saas-v2-ab-cd-ef")
         #expect(name.allSatisfy { $0.isLowercase || $0.isNumber || $0 == "-" })
     }
 
@@ -27,13 +27,13 @@ struct BoxdLaunchPlannerTests {
             cardId: "card_0123456789"
         )
         #expect(name.count <= BoxdLaunchPlanner.maximumMachineNameLength)
-        #expect(name.hasPrefix("kc-a-very-long"))
+        #expect(name.hasPrefix("kanban-a-very-long"))
         #expect(name.hasSuffix("-01234567"))
     }
 
     @Test("An empty repository name still gives a usable machine name")
     func machineNameEmptyRepo() {
-        #expect(BoxdLaunchPlanner.machineName(repoName: "", cardId: "card_0123") == "kc-repo-0123")
+        #expect(BoxdLaunchPlanner.machineName(repoName: "", cardId: "card_0123") == "kanban-repo-0123")
     }
 
     // MARK: - Repository name
@@ -239,13 +239,13 @@ struct BoxdLaunchPlannerTests {
 
     // MARK: - Managed machine names
 
-    @Test("Only kc- machines with a plain name count as managed")
+    @Test("Only kanban- machines with a plain name count as managed")
     func managedMachineName() {
-        #expect(BoxdLaunchPlanner.isManagedMachineName("kc-langwatch-3icygdab"))
+        #expect(BoxdLaunchPlanner.isManagedMachineName("kanban-langwatch-3icygdab"))
         #expect(BoxdLaunchPlanner.isManagedMachineName(BoxdLaunchPlanner.machineName(repoName: "kanban-code", cardId: "card_e2e1234567")))
         #expect(!BoxdLaunchPlanner.isManagedMachineName("good-wolf"))
-        #expect(!BoxdLaunchPlanner.isManagedMachineName("kc-"))
-        #expect(!BoxdLaunchPlanner.isManagedMachineName("kc-with space"))
+        #expect(!BoxdLaunchPlanner.isManagedMachineName("kanban-"))
+        #expect(!BoxdLaunchPlanner.isManagedMachineName("kanban-with space"))
         #expect(!BoxdLaunchPlanner.isManagedMachineName(""))
     }
 

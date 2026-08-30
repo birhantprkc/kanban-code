@@ -747,7 +747,7 @@ public struct RemoteLink: Codable, Sendable, Equatable {
     }
 
     public var mode: Mode
-    /// The boxd machine name, for example `kc-langwatch-3iet4jym`.
+    /// The boxd machine name, for example `kanban-langwatch-3iet4jym`.
     public var machineName: String
     public var machineId: String?
     /// The repository checkout on the machine, for example `/home/boxd/langwatch`.
