@@ -719,6 +719,14 @@ extension ContentView {
             }
         }
 
+        // The terminal of the resumed session mounts as soon as the card
+        // resumes, so a card that leaves its machine routes its names
+        // locally first; otherwise the terminal would connect to the machine.
+        if !runRemotely, card.link.remote?.mode == .boxd, let registry = AppServices.remoteRegistry {
+            let names = (card.link.tmuxLink?.allSessionNames ?? []) + ["\(assistant.cliCommand)-\(String(sessionId.prefix(8)))"]
+            for name in names { registry.unassign(sessionName: name) }
+        }
+
         let previouslySelectedCardId = store.state.selectedCardId
         store.dispatch(.resumeCard(cardId: cardId))
         if !focusCard {
@@ -773,12 +781,21 @@ extension ContentView {
                     // The tmux session survives a pause, so a live one is
                     // attached as it is. Otherwise the newer transcript wins
                     // before a fresh `--resume` starts on the machine.
-                    if existingMachine == currentMachine,
-                       await boxdSupervisor.hasSession(machineName: preparation.machineName, sessionName: resumeSessionName) {
+                    var liveOnMachine = false
+                    if existingMachine == currentMachine {
+                        liveOnMachine = await boxdSupervisor.hasSession(machineName: preparation.machineName, sessionName: resumeSessionName)
+                    }
+                    if liveOnMachine, card.link.isRemote {
                         KanbanCodeLog.info("resume", "Attaching to live remote tmux \(resumeSessionName) on \(preparation.machineName)")
                         AppServices.markRemoteSessionReady(resumeSessionName, machine: preparation.machineName)
                         store.dispatch(.resumeCompleted(cardId: cardId, tmuxName: resumeSessionName, isRemote: true))
                         return
+                    }
+                    if liveOnMachine {
+                        // The card continued locally after that session; the
+                        // newer transcript wins and a fresh --resume starts.
+                        KanbanCodeLog.info("resume", "Dropping stale remote tmux \(resumeSessionName) on \(preparation.machineName)")
+                        try? await tmuxAdapter.killSession(name: resumeSessionName)
                     }
                     if let localTranscript = store.state.links[cardId]?.sessionLink?.sessionPath,
                        let localSize = try? FileManager.default.attributesOfItem(atPath: localTranscript)[.size] as? Int {

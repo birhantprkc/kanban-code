@@ -81,6 +81,15 @@ public actor EffectHandler {
                 await dispatch(.terminalFailed(cardId: cardId, error: error.localizedDescription))
             }
 
+        case .createRemoteTmuxSession(let cardId, let machineName, let name, let path):
+            await remoteMachines?.assignSession(name, to: machineName)
+            do {
+                try await tmuxAdapter?.createSession(name: name, path: path, command: nil)
+                await dispatch(.terminalCreated(cardId: cardId, tmuxName: name))
+            } catch {
+                await dispatch(.terminalFailed(cardId: cardId, error: error.localizedDescription))
+            }
+
         case .killTmuxSession(let name):
             try? await tmuxAdapter?.killSession(name: name)
 

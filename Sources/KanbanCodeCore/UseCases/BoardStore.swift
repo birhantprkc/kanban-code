@@ -596,6 +596,8 @@ public enum Effect: Sendable {
     case upsertLink(Link)
     case removeLink(String) // id
     case createTmuxSession(cardId: String, name: String, path: String)
+    /// A shell session on the machine of the card, in its remote checkout.
+    case createRemoteTmuxSession(cardId: String, machineName: String, name: String, path: String)
     case killTmuxSession(String) // name
     case killTmuxSessions([String])
     case deleteSessionFile(String) // path
@@ -741,6 +743,9 @@ public enum Reducer {
             link.updatedAt = .now
             state.links[cardId] = link
             state.busyCards.insert(cardId)
+            if let remote = link.remote, remote.mode == .boxd, remote.pausedReason == nil, let cwd = remote.remoteCwd {
+                return [.createRemoteTmuxSession(cardId: cardId, machineName: remote.machineName, name: tmuxName, path: cwd), .upsertLink(link)]
+            }
             let workDir = link.worktreeLink?.path.isEmpty == false
                 ? link.worktreeLink!.path
                 : (link.projectPath ?? NSHomeDirectory())
@@ -758,6 +763,11 @@ public enum Reducer {
             link.updatedAt = .now
             state.links[cardId] = link
             state.busyCards.insert(cardId)
+            // A card that runs on a machine opens its shells there, in the
+            // remote checkout.
+            if let remote = link.remote, remote.mode == .boxd, link.isRemote, remote.pausedReason == nil, let cwd = remote.remoteCwd {
+                return [.createRemoteTmuxSession(cardId: cardId, machineName: remote.machineName, name: sessionName, path: cwd), .upsertLink(link)]
+            }
             return [.createTmuxSession(cardId: cardId, name: sessionName, path: workDir), .upsertLink(link)]
 
         case .launchCard(let cardId, _, let projectPath, let worktreeName, _, _):

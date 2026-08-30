@@ -202,7 +202,7 @@ struct BoxdLaunchPlannerTests {
     // MARK: - Files to copy
 
     @Test("copyMatches walks the project and skips .git and node_modules")
-    func copyMatches() throws {
+    func copyMatches() async throws {
         let root = NSTemporaryDirectory() + "kanban-copy-\(UUID().uuidString)"
         let fileManager = FileManager.default
         defer { try? fileManager.removeItem(atPath: root) }
@@ -214,27 +214,51 @@ struct BoxdLaunchPlannerTests {
             try "x".write(toFile: (root as NSString).appendingPathComponent(file), atomically: true, encoding: .utf8)
         }
 
-        let matched = BoxdLaunchPlanner.copyMatches(globs: ["**/.env"], projectRoot: root)
+        let matched = await BoxdLaunchPlanner.copyMatches(globs: ["**/.env"], projectRoot: root)
         #expect(matched == [".env", "platform/app/.env"])
 
-        let several = BoxdLaunchPlanner.copyMatches(globs: ["**/.env", "config/*.yaml"], projectRoot: root)
+        let several = await BoxdLaunchPlanner.copyMatches(globs: ["**/.env", "config/*.yaml"], projectRoot: root)
         #expect(several == [".env", "config/app.yaml", "platform/app/.env"])
     }
 
     @Test("Blank and commented glob lines are ignored")
-    func copyMatchesEmptyGlobs() throws {
+    func copyMatchesEmptyGlobs() async throws {
         let root = NSTemporaryDirectory() + "kanban-copy-\(UUID().uuidString)"
         try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: root) }
         try "x".write(toFile: (root as NSString).appendingPathComponent(".env"), atomically: true, encoding: .utf8)
 
-        #expect(BoxdLaunchPlanner.copyMatches(globs: [], projectRoot: root).isEmpty)
-        #expect(BoxdLaunchPlanner.copyMatches(globs: ["  ", "# a comment"], projectRoot: root).isEmpty)
+        #expect(await BoxdLaunchPlanner.copyMatches(globs: [], projectRoot: root).isEmpty)
+        #expect(await BoxdLaunchPlanner.copyMatches(globs: ["  ", "# a comment"], projectRoot: root).isEmpty)
     }
 
     @Test("A project root that does not exist matches nothing")
-    func copyMatchesMissingRoot() {
-        #expect(BoxdLaunchPlanner.copyMatches(globs: ["**/.env"], projectRoot: "/nowhere/at/all").isEmpty)
+    func copyMatchesMissingRoot() async {
+        #expect(await BoxdLaunchPlanner.copyMatches(globs: ["**/.env"], projectRoot: "/nowhere/at/all").isEmpty)
+    }
+
+    @Test("In a repository the candidates come from git: ignored and untracked files, not tracked ones or ignored folders")
+    func copyMatchesUsesGit() async throws {
+        let root = NSTemporaryDirectory() + "kanban-copy-git-\(UUID().uuidString)"
+        let fileManager = FileManager.default
+        defer { try? fileManager.removeItem(atPath: root) }
+        for directory in ["", "app", "node_modules/pkg", "fresh/sub"] {
+            try fileManager.createDirectory(atPath: (root as NSString).appendingPathComponent(directory), withIntermediateDirectories: true)
+        }
+        for file in [".env", "app/.env", "node_modules/pkg/.env", "fresh/sub/.env", "fresh/note.txt", "tracked.env", ".gitignore"] {
+            try "x".write(toFile: (root as NSString).appendingPathComponent(file), atomically: true, encoding: .utf8)
+        }
+        try ".env\nnode_modules/\n".write(toFile: root + "/.gitignore", atomically: true, encoding: .utf8)
+        for arguments in [["init", "-q"], ["add", "tracked.env", ".gitignore"], ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "x"]] {
+            let result = try await ShellCommand.run("/usr/bin/git", arguments: ["-C", root] + arguments)
+            #expect(result.succeeded, "git \(arguments) failed: \(result.stderr)")
+        }
+
+        let candidates = await BoxdLaunchPlanner.gitUntrackedAndIgnored(root: root)
+        // An untracked folder is walked, an ignored one is not.
+        #expect(candidates?.sorted() == [".env", "app/.env", "fresh/note.txt", "fresh/sub/.env"])
+        let matched = await BoxdLaunchPlanner.copyMatches(globs: ["**/*.env", "**/.env"], projectRoot: root)
+        #expect(matched == [".env", "app/.env", "fresh/sub/.env"])
     }
 
     // MARK: - Managed machine names

@@ -9,4 +9,7 @@ public protocol RemoteMachineControl: Sendable {
 
     /// Removes a machine for good.
     func destroy(machineName: String) async throws
+
+    /// Routes a tmux name to a machine before the session is created there.
+    func assignSession(_ sessionName: String, to machineName: String) async
 }

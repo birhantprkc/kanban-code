@@ -179,13 +179,75 @@ public enum BoxdLaunchPlanner {
 
     /// Relative paths under `projectRoot` that match one of the glob lines.
     /// `.git` and `node_modules` are never walked.
-    public static func copyMatches(globs: [String], projectRoot: String) -> [String] {
+    /// Files under the project that match the copy globs. The candidates
+    /// come from `git status`, which lists untracked and ignored files and
+    /// collapses ignored directories such as `node_modules`, so a large
+    /// checkout answers in a second or two. A tracked file is in the clone
+    /// on the machine already. A folder that is not a repository is walked.
+    public static func copyMatches(globs: [String], projectRoot: String) async -> [String] {
         let patterns = globs
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty && !$0.hasPrefix("#") }
         guard !patterns.isEmpty else { return [] }
-
         let root = trimTrailingSlash(projectRoot)
+        if let candidates = await gitUntrackedAndIgnored(root: root) {
+            return candidates
+                .filter { relative in patterns.contains(where: { matches(glob: $0, path: relative) }) }
+                .sorted()
+        }
+        return walkMatches(patterns: patterns, root: root)
+    }
+
+    /// Untracked (`??`) and ignored (`!!`) files of a checkout, relative to
+    /// its root; nil when the folder is not a git repository.
+    static func gitUntrackedAndIgnored(root: String) async -> [String]? {
+        // `matching` lists an ignored file on its own and an ignored folder
+        // as one entry with nothing under it. An untracked folder that
+        // still comes collapsed is walked here.
+        let arguments = ["-C", root, "status", "--porcelain", "--ignored=matching", "--untracked-files=all", "-z"]
+        guard let result = try? await ShellCommand.run("/usr/bin/git", arguments: arguments, timeout: 120),
+              result.succeeded else { return nil }
+        var files: [String] = []
+        var tokens = result.stdout.split(separator: "\0", omittingEmptySubsequences: true).makeIterator()
+        while let token = tokens.next() {
+            guard token.count > 3 else { continue }
+            let status = token.prefix(2)
+            let path = String(token.dropFirst(3))
+            // A rename or copy carries its source path as the next token.
+            if status.first == "R" || status.first == "C" { _ = tokens.next() }
+            guard status == "??" || status == "!!" else { continue }
+            if path.hasSuffix("/") {
+                guard status == "??" else { continue }
+                let folder = String(path.dropLast())
+                files.append(contentsOf: walkFiles(root: "\(root)/\(folder)").map { "\(folder)/\($0)" })
+            } else {
+                files.append(path)
+            }
+        }
+        return files
+    }
+
+    /// Every file under `root`, relative to it, skipping the folders never
+    /// copied.
+    static func walkFiles(root: String) -> [String] {
+        guard let enumerator = FileManager.default.enumerator(
+            at: URL(fileURLWithPath: root),
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.producesRelativePathURLs]
+        ) else { return [] }
+        var files: [String] = []
+        for case let url as URL in enumerator {
+            let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            if isDirectory {
+                if skippedDirectories.contains(url.lastPathComponent) { enumerator.skipDescendants() }
+                continue
+            }
+            files.append(url.relativePath)
+        }
+        return files
+    }
+
+    static func walkMatches(patterns: [String], root: String) -> [String] {
         let fileManager = FileManager.default
         guard let enumerator = fileManager.enumerator(
             at: URL(fileURLWithPath: root),

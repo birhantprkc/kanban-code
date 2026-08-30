@@ -73,6 +73,18 @@ Feature: Boxd Remote Mode
     And hook events from the machine are appended to the local hook-events.jsonl with local paths
     And the card shows activity as if the session ran locally
 
+  Scenario: A new terminal of a card on a machine opens on the machine
+    Given a card runs on a machine
+    When I open a new terminal (cmd+T)
+    Then the shell runs on the machine, in the checkout or worktree of the card
+
+  Scenario: Resume locally does not touch the machine
+    Given a card with a paused machine
+    When I resume the card with "Run on boxd" unchecked
+    Then the assistant resumes on the Mac from the mirrored transcript
+    And the terminal shows the local session, and the machine stays paused
+    And a later resume on the machine starts from the newer transcript instead of the old session left there
+
   Scenario: kanban CLI inside the machine
     Given a card runs on a machine
     When the assistant runs "kanban dm" or "kanban list" on the machine

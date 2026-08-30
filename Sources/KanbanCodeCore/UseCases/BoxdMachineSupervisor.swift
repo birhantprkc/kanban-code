@@ -341,7 +341,7 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         try await trustClaudeFolders([remoteProjectPath, remoteCwd], bridge: bridge, remoteHome: remoteHome)
 
         // Files that never reach git, like .env, go over the bridge.
-        let matches = BoxdLaunchPlanner.copyMatches(globs: settings.copyGlobs, projectRoot: repoRoot)
+        let matches = await BoxdLaunchPlanner.copyMatches(globs: settings.copyGlobs, projectRoot: repoRoot)
         if !matches.isEmpty { log("Copying \(matches.count) file(s)") }
         for relative in matches {
             guard let data = FileManager.default.contents(atPath: "\(repoRoot)/\(relative)") else { continue }
@@ -436,6 +436,12 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         for (key, value) in env {
             _ = try? await bridge.exec(["tmux", "set-environment", "-t", sessionName, key, value], stdin: nil, cwd: nil, timeout: 20)
         }
+    }
+
+    /// Routes a tmux name to a machine, for a session created after the
+    /// launch, such as an extra terminal.
+    public func assignSession(_ sessionName: String, to machineName: String) {
+        registry.assign(sessionName: sessionName, to: machineName)
     }
 
     /// Forgets the machine of these tmux names, so they route locally again.
