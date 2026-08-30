@@ -237,6 +237,19 @@ struct BoxdLaunchPlannerTests {
         #expect(BoxdLaunchPlanner.copyMatches(globs: ["**/.env"], projectRoot: "/nowhere/at/all").isEmpty)
     }
 
+    // MARK: - Worktree name
+
+    @Test("An unnamed worktree gets a name that is one branch-safe path component")
+    func randomWorktreeNameShape() {
+        let names = (0..<20).map { _ in BoxdLaunchPlanner.randomWorktreeName() }
+        for name in names {
+            #expect(!name.isEmpty)
+            #expect(!name.contains("/"))
+            #expect(name.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") })
+        }
+        #expect(Set(names).count > 1)
+    }
+
     // MARK: - Resume decision
 
     @Test("A live tmux session is only attached to")

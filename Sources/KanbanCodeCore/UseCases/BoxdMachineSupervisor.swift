@@ -197,6 +197,7 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     /// - `existingMachine`: the machine the card already has, or another
     ///   machine the user picked. Nil creates a new machine from the snapshot.
     /// - `worktreeName`: the worktree to create locally and on the machine.
+    ///   An empty name asks for a random one, as `claude --worktree` does.
     /// - `sessionNames`: tmux names the card will use, registered as remote
     ///   before anything runs.
     public func prepare(
@@ -232,11 +233,44 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         )
         guard let bridge = machines[machineName]?.bridge else { throw BoxdSupervisorError.notConnected(machineName) }
 
+        do {
+            return try await prepareCheckout(
+                cardId: cardId, machine: machine, machineName: machineName, bridge: bridge,
+                settings: settings, repoRoot: repoRoot, originURL: originURL, repoName: repoName,
+                remoteHome: remoteHome, remoteProjectPath: remoteProjectPath,
+                worktreeName: worktreeName, existingWorktree: existingWorktree, runInit: runInit, log: log)
+        } catch {
+            // A card with no session must not keep a running machine. The
+            // machine is kept in standby, so a retry resumes it.
+            log("Preparation failed, pausing \(machineName)")
+            await pause(machineName: machineName, reason: .sessionStopped)
+            throw error
+        }
+    }
+
+    private func prepareCheckout(
+        cardId: String,
+        machine: BoxdMachine,
+        machineName: String,
+        bridge: BoxdBridge,
+        settings: BoxdSettings,
+        repoRoot: String,
+        originURL: String?,
+        repoName: String,
+        remoteHome: String,
+        remoteProjectPath: String,
+        worktreeName: String?,
+        existingWorktree: WorktreeLink?,
+        runInit: Bool,
+        log: @escaping @Sendable (String) -> Void
+    ) async throws -> BoxdPreparation {
         // Local worktree first: the branch has to exist on origin before the
         // machine can check it out.
         var worktree = existingWorktree
         var branch = existingWorktree?.branch
-        if let worktreeName, worktree == nil {
+        if let requested = worktreeName, worktree == nil {
+            let name = requested.trimmingCharacters(in: .whitespacesAndNewlines)
+            let worktreeName = name.isEmpty ? BoxdLaunchPlanner.randomWorktreeName() : name
             log("Creating worktree \(worktreeName)")
             worktree = try await Self.createLocalWorktree(repoRoot: repoRoot, name: worktreeName)
             branch = worktree?.branch
@@ -946,6 +980,9 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     /// Creates `<repo>/.claude/worktrees/<name>` on a new branch, the same
     /// layout Claude Code's `--worktree` uses.
     nonisolated static func createLocalWorktree(repoRoot: String, name: String) async throws -> WorktreeLink {
+        guard !name.isEmpty, !name.contains("/") else {
+            throw WorktreeError.createFailed(name: name, message: "worktree name must be one non-empty path component")
+        }
         let path = "\(repoRoot)/.claude/worktrees/\(name)"
         if FileManager.default.fileExists(atPath: path) {
             let branch = await currentBranch(of: path) ?? name

@@ -40,6 +40,18 @@ public enum BoxdLaunchPlanner {
         return String(name.prefix(maximumMachineNameLength))
     }
 
+    // MARK: - Worktree name
+
+    /// Name of a worktree the user left unnamed: a word pair with a short
+    /// random suffix, so two unnamed launches on the same repository never
+    /// share a branch.
+    public static func randomWorktreeName() -> String {
+        let adjectives = ["quick", "calm", "bright", "brisk", "keen", "bold", "warm", "swift", "clear", "fresh"]
+        let nouns = ["otter", "falcon", "maple", "harbor", "meadow", "comet", "river", "ember", "summit", "willow"]
+        let suffix = String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(4)).lowercased()
+        return "\(adjectives.randomElement()!)-\(nouns.randomElement()!)-\(suffix)"
+    }
+
     /// Lowercases and keeps only `[a-z0-9-]`, with no repeated or edge dashes.
     private static func sanitize(_ value: String) -> String {
         var result = ""

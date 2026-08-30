@@ -88,6 +88,37 @@ struct BoxdMachineSupervisorTests {
         #expect(command.contains(#"'/opt/it'\''s/boxd'"#))
     }
 
+    @Test("createLocalWorktree refuses an empty name instead of using the worktrees folder itself")
+    func createLocalWorktreeRefusesEmptyName() async throws {
+        let root = NSTemporaryDirectory() + "kanban-worktree-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: root + "/.claude/worktrees", withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        await #expect(throws: WorktreeError.self) {
+            try await BoxdMachineSupervisor.createLocalWorktree(repoRoot: root, name: "")
+        }
+        await #expect(throws: WorktreeError.self) {
+            try await BoxdMachineSupervisor.createLocalWorktree(repoRoot: root, name: "a/b")
+        }
+    }
+
+    @Test("createLocalWorktree makes a new branch in the Claude worktree layout")
+    func createLocalWorktreeMakesBranch() async throws {
+        let root = NSTemporaryDirectory() + "kanban-worktree-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let git = ShellCommand.findExecutable("git") ?? "/usr/bin/git"
+        _ = try await ShellCommand.run(git, arguments: ["init", "-q", "-b", "main"], currentDirectory: root)
+        _ = try await ShellCommand.run(git, arguments: ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"], currentDirectory: root)
+
+        let worktree = try await BoxdMachineSupervisor.createLocalWorktree(repoRoot: root, name: "calm-otter-ab12")
+
+        #expect(worktree.path == root + "/.claude/worktrees/calm-otter-ab12")
+        #expect(worktree.branch == "calm-otter-ab12")
+        let branch = try await ShellCommand.run(git, arguments: ["rev-parse", "--abbrev-ref", "HEAD"], currentDirectory: worktree.path)
+        #expect(branch.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "calm-otter-ab12")
+    }
+
     @Test("remoteWorktreeScript covers the local branch, the remote branch and the new branch")
     func remoteWorktreeScriptCoversEveryBranch() {
         let script = BoxdMachineSupervisor.remoteWorktreeScript(
