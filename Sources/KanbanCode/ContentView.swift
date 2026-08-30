@@ -1079,12 +1079,14 @@ struct ContentView: View {
                 dismissDialog()
                 offerWorktreeCleanupIfNeeded(card: card)
             }
+            .keyboardShortcut(.defaultAction)
         case .confirmDestroyMachine(let cardId):
             Button("Cancel", role: .cancel) { dismissDialog() }
             Button("Destroy Machine", role: .destructive) {
                 store.dispatch(.destroyRemoteMachine(cardId: cardId))
                 dismissDialog()
             }
+            .keyboardShortcut(.defaultAction)
         case .confirmFork(let cardId):
             Button("Cancel", role: .cancel) { dismissDialog() }
             if store.state.cards.first(where: { $0.id == cardId })?.link.worktreeLink != nil {
@@ -1109,6 +1111,7 @@ struct ContentView: View {
                 Task { await cleanupWorktree(cardId: cardId) }
                 dismissDialog()
             }
+            .keyboardShortcut(.defaultAction)
         case .confirmMoveToProject(let cardId, let projectPath, _):
             Button("Cancel", role: .cancel) { dismissDialog() }
             Button("Move") {
