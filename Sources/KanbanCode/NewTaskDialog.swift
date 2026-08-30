@@ -29,6 +29,7 @@ struct NewTaskDialog: View {
         nonmutating set { selectedAssistantRaw = newValue.rawValue }
     }
     @State private var prompt = ""
+    @FocusState private var titleFocused: Bool
     @State private var images: [ImageAttachment] = []
     @State private var title = ""
     @State private var selectedProjectPath: String = ""
@@ -51,6 +52,12 @@ struct NewTaskDialog: View {
                 .font(.app(.title3))
                 .fontWeight(.semibold)
 
+            // Title (optional)
+            TextField("Title (optional)", text: $title)
+                .textFieldStyle(.roundedBorder)
+                .font(.app(.callout))
+                .focused($titleFocused)
+
             // Prompt
             PromptSection(
                 text: $prompt,
@@ -60,11 +67,6 @@ struct NewTaskDialog: View {
                 onSubmit: submitForm,
                 onEscape: { isPresented = false }
             )
-
-            // Title (optional)
-            TextField("Title (optional)", text: $title)
-                .textFieldStyle(.roundedBorder)
-                .font(.app(.callout))
 
             // Project picker
             if projects.isEmpty {
@@ -161,6 +163,11 @@ struct NewTaskDialog: View {
                         Text("on boxd machine \(selectedMachineLabel)")
                             .font(.app(.caption2))
                             .foregroundStyle(.secondary)
+                        if createWorktree && isGitRepo && selectedAssistant.supportsWorktree {
+                            Text("The worktree is created on the machine and on this Mac, so the command has no --worktree flag.")
+                                .font(.app(.caption2))
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     CommandTextEditor(text: $command, onSubmit: submitForm, onEscape: { isPresented = false })
                         .font(.app(.caption).monospaced())
@@ -208,6 +215,7 @@ struct NewTaskDialog: View {
             }
             applyProjectDefaults()
             command = commandPreview
+            titleFocused = true
         }
         .task { await reloadServices() }
         .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeSettingsChanged)) { _ in

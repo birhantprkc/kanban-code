@@ -203,6 +203,11 @@ struct LaunchConfirmationDialog: View {
                             Text("on boxd machine \(selectedMachineLabel)")
                                 .font(.app(.caption2))
                                 .foregroundStyle(.secondary)
+                            if createWorktree && isGitRepo && assistant.supportsWorktree {
+                                Text("The worktree is created on the machine and on this Mac, so the command has no --worktree flag.")
+                                    .font(.app(.caption2))
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                         CommandTextEditor(text: $command, onSubmit: submitForm, onEscape: { isPresented = false })
                             .font(.app(.caption).monospaced())
