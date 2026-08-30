@@ -1117,19 +1117,20 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         return WorktreeLink(path: path, branch: name)
     }
 
-    /// The worktree script of the machine. A new worktree branches from the
-    /// checkout as it is; `fetch` is for a branch the card already has,
-    /// which may only exist on origin.
+    /// The worktree script of the machine. A worktree that is already there
+    /// is left as the assistant left it, with no network access. A new
+    /// worktree branches from the checkout as it is; `fetch` is for a branch
+    /// the card already has, which may only exist on origin.
     nonisolated static func remoteWorktreeScript(repo: String, worktreePath: String, branch: String, fetch: Bool = true) -> String {
         let repoQ = shellEscape(repo)
         let worktreeQ = shellEscape(worktreePath)
         let branchQ = shellEscape(branch)
-        let fetchLine = fetch ? "git fetch origin \(branchQ) || true\n" : ""
+        let fetchLine = fetch ? "  git fetch origin \(branchQ) || true\n" : ""
         return """
         set -e
         cd \(repoQ)
-        \(fetchLine)if [ ! -d \(worktreeQ) ]; then
-          mkdir -p "$(dirname \(worktreeQ))"
+        if [ ! -d \(worktreeQ) ]; then
+        \(fetchLine)  mkdir -p "$(dirname \(worktreeQ))"
           if git show-ref --verify --quiet refs/heads/\(branchQ); then
             git worktree add \(worktreeQ) \(branchQ)
           elif git show-ref --verify --quiet refs/remotes/origin/\(branchQ); then
@@ -1137,8 +1138,6 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
           else
             git worktree add -b \(branchQ) \(worktreeQ)
           fi
-        else
-          cd \(worktreeQ) && git pull --ff-only || true
         fi
         """
     }

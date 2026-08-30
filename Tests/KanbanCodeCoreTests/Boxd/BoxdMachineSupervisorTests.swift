@@ -129,15 +129,19 @@ struct BoxdMachineSupervisorTests {
         )
 
         #expect(script.contains("cd '/home/boxd/repo'"))
-        #expect(script.contains("git fetch origin 'feature' || true"))
+        // The fetch only runs for a worktree that is not there yet.
+        #expect(script.contains("if [ ! -d '/home/boxd/repo/.claude/worktrees/feature' ]; then\n  git fetch origin 'feature' || true"))
         // Branch already on the machine.
         #expect(script.contains("git worktree add '/home/boxd/repo/.claude/worktrees/feature' 'feature'"))
         // Branch only on origin.
         #expect(script.contains("git worktree add --track -b 'feature' '/home/boxd/repo/.claude/worktrees/feature' origin/'feature'"))
         // Branch nowhere yet.
         #expect(script.contains("git worktree add -b 'feature' '/home/boxd/repo/.claude/worktrees/feature'"))
-        // An existing worktree is only brought up to date.
-        #expect(script.contains("git pull --ff-only || true"))
+        // An existing worktree is left as the assistant left it.
+        #expect(!script.contains("git pull"))
+        let fresh = BoxdMachineSupervisor.remoteWorktreeScript(
+            repo: "/home/boxd/repo", worktreePath: "/home/boxd/repo/.claude/worktrees/new", branch: "new", fetch: false)
+        #expect(!fresh.contains("git fetch"))
     }
 
     @Test("shellEscape wraps in single quotes and escapes the quotes inside")

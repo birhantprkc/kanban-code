@@ -2080,9 +2080,13 @@ public enum Reducer {
                     link.sortOrder = existing.sortOrder
                     link.pinnedSortOrder = existing.pinnedSortOrder
                     if existing.isLaunching == true {
-                        // Check if activity hook has confirmed the session is running
+                        // Check if activity hook has confirmed the session is running.
+                        // A card on a machine keeps the flag until its launch
+                        // reports: its mirrored transcript looks active as
+                        // soon as the bridge reconnects, long before the
+                        // session is back.
                         let activity = result.activityMap[existing.sessionLink?.sessionId ?? ""]
-                        if activity != nil {
+                        if activity != nil, existing.remote == nil {
                             // Activity detected — clear isLaunching, let column recomputation run
                             var cleared = existing
                             cleared.isLaunching = nil
