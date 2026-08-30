@@ -110,6 +110,21 @@ Feature: Boxd Remote Mode
     Then the machine is paused
     And the card shows "Machine <name> was paused due to inactivity for over 1h" with a Continue button
 
+  Scenario: The terminal does not wake a paused machine
+    Given a terminal attached to a session on a machine
+    When the app pauses the machine
+    Then the terminal prints "Machine paused." and waits
+    And it does not run `boxd machine connect` again until the app resumes the machine
+    When the app resumes the machine
+    Then the terminal attaches again on its own
+
+  Scenario: The app follows a machine resumed elsewhere
+    Given a machine the app paused
+    When `boxd machine resume` runs in a shell
+    Then within a minute the bridge reconnects
+    And the card leaves its paused state
+    And a `kanban` command waiting inside the machine gets its answer
+
   Scenario: Resume attaches to the existing tmux session
     Given a card with a paused machine whose tmux session is still there
     When I resume the card with "Run on boxd" checked and the same machine selected

@@ -47,12 +47,14 @@ enum AppServices {
             atPath: remoteReadyMarkerPath(for: sessionName),
             contents: (machine ?? "").data(using: .utf8)
         )
+        try? FileManager.default.removeItem(atPath: remoteReadyMarkerPath(for: sessionName) + BoxdMachineSupervisor.pausedMarkerSuffix)
         expectedLock.lock(); defer { expectedLock.unlock() }
         expectedRemoteSessions.remove(sessionName)
     }
 
     static func clearRemoteSessionReady(_ sessionName: String) {
         try? FileManager.default.removeItem(atPath: remoteReadyMarkerPath(for: sessionName))
+        try? FileManager.default.removeItem(atPath: remoteReadyMarkerPath(for: sessionName) + BoxdMachineSupervisor.pausedMarkerSuffix)
         expectedLock.lock(); defer { expectedLock.unlock() }
         expectedRemoteSessions.remove(sessionName)
     }

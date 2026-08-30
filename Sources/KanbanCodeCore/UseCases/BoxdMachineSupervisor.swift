@@ -526,6 +526,9 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     // MARK: - RemoteMachineControl
 
     public func pause(machineName: String, reason: RemotePausedReason) async {
+        // Before the connection drops, so the attach loop of the terminal
+        // finds the marker when it does.
+        setPausedMarkers(machineName: machineName, paused: true)
         guard var runtime = machines[machineName] else {
             try? await boxd.pause(name: machineName)
             await report(machineName, state: .paused(reason))
@@ -823,6 +826,7 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
 
         let transport = BridgeTmuxTransport(runner: bridge, remoteHome: runtime.remoteHome)
         registry.setMachine(machineName, state: .connected, tmux: TmuxAdapter(transport: transport))
+        setPausedMarkers(machineName: machineName, paused: false)
         await report(machineName, state: .connected)
         KanbanCodeLog.info(Self.subsystem, "\(machineName): connected (agent \(await bridge.agentVersion ?? "?"))")
 
@@ -1023,10 +1027,74 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
                 await self?.checkInactivity()
+                await self?.followExternalResumes()
                 await self?.syncAllLogins()
                 await self?.sweepOnTick()
             }
         }
+    }
+
+    // MARK: - Pause markers
+
+    /// The ready marker of every session on the machine gets a `.paused`
+    /// sibling while the app holds the machine paused. The attach loop of
+    /// the terminal waits on it instead of reconnecting, because
+    /// `boxd machine connect` wakes a paused machine.
+    public static let pausedMarkerSuffix = ".paused"
+
+    private func setPausedMarkers(machineName: String, paused: Bool) {
+        let directory = "\(localKanbanHome)/remote-ready"
+        for session in registry.sessionNames(on: machineName) {
+            let path = "\(directory)/\(session)\(Self.pausedMarkerSuffix)"
+            if paused {
+                try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+                FileManager.default.createFile(atPath: path, contents: Data())
+            } else {
+                try? FileManager.default.removeItem(atPath: path)
+            }
+        }
+    }
+
+    // MARK: - External resumes
+
+    /// A machine the app paused can be running again through another path
+    /// (`boxd machine resume` in a shell, a `connect` from elsewhere). The
+    /// app follows: it reconnects the bridge and the card leaves its paused
+    /// state, so proxied commands answer and the sidebar tells the truth.
+    public func followExternalResumes() async {
+        struct Target { let localProjectPath: String; let remoteProjectPath: String?; let remoteHome: String }
+        var targets: [String: Target] = [:]
+        for (name, runtime) in machines where runtime.bridge == nil && runtime.pausedReason != nil {
+            targets[name] = Target(localProjectPath: runtime.localProjectPath, remoteProjectPath: runtime.remoteProjectPath, remoteHome: runtime.remoteHome)
+        }
+        // A card paused before this app run has no runtime yet.
+        for link in await linksProvider?() ?? [] {
+            guard let remote = link.remote, remote.mode == .boxd, remote.pausedReason != nil,
+                  !link.manuallyArchived, machines[remote.machineName] == nil,
+                  let projectPath = link.projectPath else { continue }
+            targets[remote.machineName] = Target(
+                localProjectPath: projectPath, remoteProjectPath: remote.remoteProjectPath,
+                remoteHome: remote.remoteHome ?? Self.defaultRemoteHome)
+        }
+        guard !targets.isEmpty, let listed = try? await boxd.listMachines() else { return }
+        for name in Self.machinesToReconnect(paused: Set(targets.keys), listed: listed) {
+            guard let target = targets[name] else { continue }
+            KanbanCodeLog.info(Self.subsystem, "\(name): running outside the app, reconnecting")
+            do {
+                try await connect(
+                    machineName: name,
+                    localProjectPath: target.localProjectPath,
+                    remoteProjectPath: target.remoteProjectPath,
+                    remoteHome: target.remoteHome)
+            } catch {
+                KanbanCodeLog.warn(Self.subsystem, "\(name): reconnect failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// The paused machines boxd reports as running, in name order.
+    public nonisolated static func machinesToReconnect(paused: Set<String>, listed: [BoxdMachine]) -> [String] {
+        listed.filter { $0.status == .running && paused.contains($0.name) }.map(\.name).sorted()
     }
 
     // MARK: - Logins

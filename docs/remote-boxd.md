@@ -95,6 +95,10 @@ On the Mac the app runs the bundled CLI with the same arguments and `KANBAN_CARD
 
 Machines are created with `--auto-suspend-timeout` equal to the inactivity timeout. If the Mac disappears without pausing the machine, boxd suspends it when the bridge traffic stops.
 
+`boxd machine connect` wakes a paused machine in half a second. The attach loop of the embedded terminal reconnects after a drop, so a plain retry would undo every pause two seconds after the app made it. Before the app pauses a machine it writes `~/.kanban-code/remote-ready/<session>.paused` for every session on it; the loop prints "Machine paused." and waits on that file instead of reconnecting, and the file goes away when the bridge connects again. The loop reads the machine name from the ready marker on every try, so a resume that moved the session to another machine is followed.
+
+A machine the app paused can be running again through another path, for example `boxd machine resume` in a shell. Once a minute the supervisor lists the machines it holds paused; one that boxd reports as running gets its bridge reconnected, its cards leave the paused state, and the agent answers the proxied `kanban` commands that waited meanwhile (the CLI waits up to 120 seconds for an answer).
+
 The app quits only after `pauseAll` returns or after 10 seconds, whichever comes first. A panel says "Pausing boxd machines" meanwhile. A pause that takes longer keeps running on its own.
 
 A card that resumes locally after it ran on a machine gets its worktree created on the Mac at that moment, tracking `origin/<branch>` when the branch was pushed and starting a new branch otherwise. While a machine is paused the card is never shown as working, whatever the last hook event said.

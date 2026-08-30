@@ -753,12 +753,26 @@ final class TerminalCache {
         let fallback = quote(machine ?? "")
         let program = expectProgram(boxd: boxd, session: session)
         let attach = "KANBAN_MACHINE=\"$m\" /usr/bin/expect -c \(quote(program))"
-        let wait = readyMarker.map {
-            "for i in $(seq 1 2400); do [ -e \(quote($0)) ] && break; sleep 0.5; done; "
-                + "m=\"$(cat \(quote($0)) 2>/dev/null)\"; [ -n \"$m\" ] || m=\(fallback); "
-        } ?? "m=\(fallback); "
-        return wait + "for i in $(seq 1 30); do \(attach) && break; sleep 2; done; echo 'Session ended.'"
+        guard let readyMarker else {
+            return "m=\(fallback); for i in $(seq 1 30); do \(attach) && break; sleep 2; done; echo 'Session ended.'"
+        }
+        // `boxd machine connect` wakes a paused machine, so a retry while the
+        // app holds the machine paused would undo the pause. The pause marker
+        // stops the retries until the app takes it away. The machine is read
+        // from the marker on every try: a resume may move the session.
+        let marker = quote(readyMarker)
+        let paused = quote(readyMarker + Self.pausedMarkerSuffix)
+        return "for i in $(seq 1 2400); do [ -e \(marker) ] && break; sleep 0.5; done; "
+            + "n=0; while [ $n -lt 30 ]; do "
+            + "m=\"$(cat \(marker) 2>/dev/null)\"; [ -n \"$m\" ] || m=\(fallback); "
+            + "\(attach) && break; "
+            + "if [ -e \(paused) ]; then echo 'Machine paused.'; while [ -e \(paused) ]; do sleep 1; done; n=0; continue; fi; "
+            + "n=$((n+1)); sleep 2; done; echo 'Session ended.'"
     }
+
+    /// Suffix of the file next to the ready marker that tells the attach loop
+    /// the app has the machine paused.
+    static let pausedMarkerSuffix = BoxdMachineSupervisor.pausedMarkerSuffix
 
     /// The Tcl program `expect` runs for one attach. The machine comes in
     /// through `KANBAN_MACHINE`, because `expect -c` takes no arguments. A

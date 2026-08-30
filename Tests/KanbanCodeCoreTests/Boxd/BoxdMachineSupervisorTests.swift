@@ -45,6 +45,43 @@ struct BoxdMachineSupervisorTests {
         )
     }
 
+    // MARK: - Pause markers and external resumes
+
+    @Test("A pause writes the pause marker of every session on the machine")
+    func pauseWritesMarkers() async throws {
+        let boxd = FakeBoxdPort()
+        let registry = RemoteSessionRegistry()
+        registry.setMachine("kanban-repo-1", state: .connected)
+        registry.assign(sessionName: "repo-card_1", to: "kanban-repo-1")
+        registry.assign(sessionName: "claude-abcdef12", to: "kanban-repo-1")
+        registry.assign(sessionName: "repo-card_9", to: "kanban-other")
+        let home = NSTemporaryDirectory() + "boxd-markers-\(UUID().uuidString)"
+        let supervisor = BoxdMachineSupervisor(
+            boxd: boxd, registry: registry, settingsProvider: { BoxdSettings() }, cliBundlePath: nil,
+            appVersion: "1.0.0-test", localHome: home, localKanbanHome: home + "/.kanban-code")
+
+        await supervisor.pause(machineName: "kanban-repo-1", reason: .inactivity)
+
+        let markers = home + "/.kanban-code/remote-ready/"
+        #expect(FileManager.default.fileExists(atPath: markers + "repo-card_1.paused"))
+        #expect(FileManager.default.fileExists(atPath: markers + "claude-abcdef12.paused"))
+        #expect(!FileManager.default.fileExists(atPath: markers + "repo-card_9.paused"))
+        #expect(boxd.calls.contains(FakeBoxdPort.Call(name: "pause", argument: "kanban-repo-1")))
+    }
+
+    @Test("Paused machines boxd reports as running are reconnected, in name order")
+    func machinesToReconnect() {
+        let listed = [
+            BoxdMachine(name: "kanban-repo-2", status: .running),
+            BoxdMachine(name: "kanban-repo-1", status: .running),
+            BoxdMachine(name: "kanban-repo-3", status: .standby),
+            BoxdMachine(name: "kanban-other", status: .running),
+        ]
+        let names = BoxdMachineSupervisor.machinesToReconnect(
+            paused: ["kanban-repo-1", "kanban-repo-2", "kanban-repo-3"], listed: listed)
+        #expect(names == ["kanban-repo-1", "kanban-repo-2"])
+    }
+
     // MARK: - Pure helpers
 
     @Test("repositoryRoot walks up out of a Claude worktree")
