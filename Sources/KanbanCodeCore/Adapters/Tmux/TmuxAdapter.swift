@@ -23,6 +23,12 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
         try await transport.run(arguments, timeout: timeout)
     }
 
+    /// Runs one tmux command on the server this adapter talks to. For the
+    /// commands the terminal sends on its own, such as copy-mode navigation.
+    public func run(_ arguments: [String], timeout: TimeInterval = 20) async throws -> ShellCommand.Result {
+        try await runTmux(arguments, timeout: timeout)
+    }
+
     /// Field separator of the session list. A printable sequence, because
     /// tmux on Linux replaces control characters such as a tab in its
     /// format output with `_`.

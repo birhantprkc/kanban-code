@@ -41,6 +41,19 @@ struct RemoteAttachScriptTests {
         #expect(TerminalCache.pausedMarkerSuffix == ".paused")
     }
 
+    @Test("wheel ticks on a machine become one copy-mode move per flush")
+    func remoteScrollCommands() {
+        #expect(TerminalCache.remoteScrollCommands(session: "s", enter: true, delta: 5) == [
+            ["copy-mode", "-t", "s"],
+            ["send-keys", "-t", "s", "-X", "-N", "5", "cursor-up"],
+        ])
+        #expect(TerminalCache.remoteScrollCommands(session: "s", enter: false, delta: -3) == [
+            ["send-keys", "-t", "s", "-X", "-N", "3", "cursor-down"],
+        ])
+        // Ticks that cancel out send nothing.
+        #expect(TerminalCache.remoteScrollCommands(session: "s", enter: false, delta: 0).isEmpty)
+    }
+
     @Test("without a marker the attach is retried right away")
     func noMarker() {
         let script = TerminalCache.remoteAttachScript(boxd: "boxd", machine: "kanban-repo-1", session: "s")

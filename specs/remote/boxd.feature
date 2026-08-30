@@ -73,6 +73,13 @@ Feature: Boxd Remote Mode
     And hook events from the machine are appended to the local hook-events.jsonl with local paths
     And the card shows activity as if the session ran locally
 
+  Scenario: The wheel scrolls a session on a machine
+    Given a terminal attached to a session on a machine
+    When I scroll up with the wheel
+    Then the session enters tmux copy-mode on the machine and moves up
+    When I scroll back to the bottom
+    Then copy-mode ends, as it does for a local session
+
   Scenario: A new terminal of a card on a machine opens on the machine
     Given a card runs on a machine
     When I open a new terminal (cmd+T)

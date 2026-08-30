@@ -493,6 +493,13 @@ final class TerminalCache {
     /// to prevent residual momentum from re-entering copy-mode.
     fileprivate var copyModeExitTime: [String: ContinuousClock.Instant] = [:]
 
+    /// Wheel ticks of a session on a machine, summed until the next flush.
+    /// Each command to a machine is a round trip over the bridge, so one
+    /// command carries the ticks of the last 60 ms instead of one per tick.
+    private var remoteScrollPending: [String: Int] = [:]
+    private var remoteScrollEnter: Set<String> = []
+    private var remoteScrollFlush: [String: Task<Void, Never>] = [:]
+
     private init() {
         let tmux = Self.tmuxPath
 
@@ -571,6 +578,11 @@ final class TerminalCache {
                 return nil // consume during cooldown
             }
 
+            if AppServices.tmux.isRemote(session) {
+                self?.scrollRemote(session: session, deltaY: event.deltaY, inCopyMode: inCopyMode)
+                return nil
+            }
+
             if event.deltaY > 0 {
                 // Scroll UP — enter copy-mode if needed, then scroll.
                 // All scroll commands use -X (copy-mode commands) so they're
@@ -627,6 +639,61 @@ final class TerminalCache {
                 self?.applyFontSizeIfChanged()
             }
         }
+    }
+
+    // MARK: - Scroll on a machine
+
+    private func scrollRemote(session: String, deltaY: CGFloat, inCopyMode: Bool) {
+        let lines = max(1, Int(abs(deltaY)))
+        if deltaY > 0 {
+            if !inCopyMode, !copyModeSessions.contains(session) {
+                copyModeSessions.insert(session)
+                terminals[session]?.passthroughMode = true
+                remoteScrollEnter.insert(session)
+            }
+            remoteScrollPending[session, default: 0] += lines
+        } else if inCopyMode {
+            remoteScrollPending[session, default: 0] -= lines
+        } else {
+            return
+        }
+        guard remoteScrollFlush[session] == nil else { return }
+        remoteScrollFlush[session] = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(60))
+            guard let self else { return }
+            let enter = self.remoteScrollEnter.remove(session) != nil
+            let delta = self.remoteScrollPending.removeValue(forKey: session) ?? 0
+            self.remoteScrollFlush[session] = nil
+            await self.flushRemoteScroll(session: session, enter: enter, delta: delta)
+        }
+    }
+
+    private func flushRemoteScroll(session: String, enter: Bool, delta: Int) async {
+        guard let adapter = try? AppServices.tmux.adapter(for: session) else { return }
+        for command in Self.remoteScrollCommands(session: session, enter: enter, delta: delta) {
+            _ = try? await adapter.run(command)
+        }
+        guard delta < 0 else { return }
+        // Back at the bottom: leave copy-mode, as the local path does.
+        let position = try? await adapter.run(["display-message", "-p", "-t", session, "#{scroll_position}"])
+        guard position?.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "0",
+              copyModeSessions.remove(session) != nil else { return }
+        copyModeExitTime[session] = .now
+        terminals[session]?.passthroughMode = false
+        _ = try? await adapter.run(["send-keys", "-t", session, "-X", "cancel"])
+    }
+
+    /// The tmux commands of one flush: enter copy-mode when asked, then move
+    /// by the net number of lines. `-X` commands are no-ops outside copy-mode.
+    nonisolated static func remoteScrollCommands(session: String, enter: Bool, delta: Int) -> [[String]] {
+        var commands: [[String]] = []
+        if enter { commands.append(["copy-mode", "-t", session]) }
+        if delta > 0 {
+            commands.append(["send-keys", "-t", session, "-X", "-N", "\(delta)", "cursor-up"])
+        } else if delta < 0 {
+            commands.append(["send-keys", "-t", session, "-X", "-N", "\(-delta)", "cursor-down"])
+        }
+        return commands
     }
 
     private func applyFontSizeIfChanged() {
