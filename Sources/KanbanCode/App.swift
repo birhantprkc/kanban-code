@@ -250,16 +250,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !terminationReplyPending else { return .terminateLater }
-        let managedSessions = Self.listManagedTmuxSessionsSync()
-        KanbanCodeLog.info("quit", "Resolved \(managedSessions.count) live managed tmux session(s)")
-        guard !managedSessions.isEmpty else {
-            // Boxd machines bill per minute, so they are paused before the
-            // process goes away, within a short bound.
-            if AppServices.hasConnectedMachines, let supervisor = AppServices.boxdSupervisor {
-                terminationReplyPending = true
-                pauseMachinesThenTerminate(supervisor)
-                return .terminateLater
-            }
+        let localSessions = Self.listManagedTmuxSessionsSync()
+        let remoteSessions = Self.listRemoteManagedSessionsSync()
+        KanbanCodeLog.info("quit", "Resolved \(localSessions.count) local and \(remoteSessions.count) remote managed tmux session(s)")
+        guard !localSessions.isEmpty || !remoteSessions.isEmpty else {
+            // The machines keep running: killing the sessions is what stops
+            // them, and boxd suspends an idle machine on its own.
             return .terminateNow
         }
 
@@ -271,7 +267,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         // ContentView is already being torn down while AppKit waits here.
         DispatchQueue.main.async { [weak self] in
             guard self?.terminationReplyPending == true else { return }
-            self?.presentQuitConfirmation(managedSessions: managedSessions)
+            self?.presentQuitConfirmation(localSessions: localSessions, remoteSessions: remoteSessions)
         }
         return .terminateLater
     }
@@ -285,15 +281,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
     }
 
     @MainActor
-    private func presentQuitConfirmation(managedSessions: [TmuxSession]) {
+    private func presentQuitConfirmation(localSessions: [TmuxSession], remoteSessions: [(session: TmuxSession, machine: String)]) {
         guard quitConfirmationPanel == nil else { return }
 
-        let rows = Self.quitConfirmationRows(for: managedSessions)
+        let rows = Self.quitConfirmationRows(local: localSessions, remote: remoteSessions)
         let cancel: () -> Void = { [weak self] in
             self?.finishQuitConfirmation(
                 shouldTerminate: false,
                 killManagedSessions: false,
-                managedSessions: managedSessions
+                localSessions: localSessions,
+                remoteSessions: remoteSessions
             )
         }
         let view = QuitConfirmationView(
@@ -304,7 +301,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                 self?.finishQuitConfirmation(
                     shouldTerminate: true,
                     killManagedSessions: shouldKill,
-                    managedSessions: managedSessions
+                    localSessions: localSessions,
+                    remoteSessions: remoteSessions
                 )
             }
         )
@@ -340,7 +338,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
     private func finishQuitConfirmation(
         shouldTerminate: Bool,
         killManagedSessions: Bool,
-        managedSessions: [TmuxSession]
+        localSessions: [TmuxSession],
+        remoteSessions: [(session: TmuxSession, machine: String)]
     ) {
         dismissQuitConfirmation()
 
@@ -350,29 +349,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         }
 
         UserDefaults.standard.set(killManagedSessions, forKey: "killTmuxOnQuit")
-        if killManagedSessions {
-            let sessionNames = Set(managedSessions.map(\.name))
-            for sessionName in sessionNames {
-                Self.killTmuxSessionSync(name: sessionName)
-            }
-            CoordinationStore.clearTmuxSessionsSnapshot(sessionNames)
-        }
-        if AppServices.hasConnectedMachines, let supervisor = AppServices.boxdSupervisor {
-            pauseMachinesThenTerminate(supervisor)
+        guard killManagedSessions else {
+            // The machines keep running; boxd suspends an idle one on its own.
+            replyToTermination(true)
             return
         }
-        replyToTermination(true)
+        let sessionNames = Set(localSessions.map(\.name))
+        for sessionName in sessionNames {
+            Self.killTmuxSessionSync(name: sessionName)
+        }
+        CoordinationStore.clearTmuxSessionsSnapshot(sessionNames)
+        guard !remoteSessions.isEmpty, let supervisor = AppServices.boxdSupervisor else {
+            replyToTermination(true)
+            return
+        }
+        stopMachinesThenTerminate(remoteSessions: remoteSessions, supervisor: supervisor)
     }
 
-    /// Pauses every connected boxd machine, with a panel that says so, and
-    /// then lets the app terminate. The pause is bounded: a machine that does
-    /// not answer in time is left to its auto-suspend timeout and to the next
-    /// sweep, the quit never hangs on it.
+    /// Kills the sessions on the machines and puts the machines in standby,
+    /// with a panel that says so, then lets the app terminate. The pause is
+    /// bounded: a machine that does not answer in time is left to its
+    /// auto-suspend timeout, the quit never hangs on it.
     @MainActor
-    private func pauseMachinesThenTerminate(_ supervisor: BoxdMachineSupervisor) {
-        KanbanCodeLog.info("quit", "Pausing boxd machines before termination")
+    private func stopMachinesThenTerminate(
+        remoteSessions: [(session: TmuxSession, machine: String)],
+        supervisor: BoxdMachineSupervisor
+    ) {
+        KanbanCodeLog.info("quit", "Killing the remote sessions and stopping their machines")
         presentPausingMachinesPanel()
         Task { @MainActor [weak self] in
+            await withTaskGroup(of: Void.self) { group in
+                for (session, _) in remoteSessions {
+                    group.addTask { try? await AppServices.tmux.killSession(name: session.name) }
+                }
+            }
+            CoordinationStore.clearTmuxSessionsSnapshot(Set(remoteSessions.map(\.session.name)))
             await supervisor.pauseAll(reason: .appQuit, deadline: .seconds(10))
             self?.dismissPausingMachinesPanel()
             self?.replyToTermination(true)
@@ -439,16 +450,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         }
     }
 
-    static func quitConfirmationRows(for managedSessions: [TmuxSession]) -> [QuitConfirmationSession] {
+    static func quitConfirmationRows(
+        local: [TmuxSession],
+        remote: [(session: TmuxSession, machine: String)] = []
+    ) -> [QuitConfirmationSession] {
         let links = CoordinationStore.readLinksSnapshot()
-        return managedSessions.map { session in
-            let cardTitle = links.first { link in
-                link.tmuxLink?.allSessionNames.contains(session.name) == true
+        func cardTitle(_ sessionName: String) -> String? {
+            links.first { link in
+                link.tmuxLink?.allSessionNames.contains(sessionName) == true
             }.map { link in
                 KanbanCodeCard(link: link).displayTitle
             }
-            return QuitConfirmationSession(session: session, cardTitle: cardTitle)
         }
+        return local.map { QuitConfirmationSession(session: $0, cardTitle: cardTitle($0.name), machineName: nil) }
+            + remote.map { QuitConfirmationSession(session: $0.session, cardTitle: cardTitle($0.session.name), machineName: $0.machine) }
+    }
+
+    /// Sessions on the boxd machines, from the registry: `list-sessions` on
+    /// this Mac cannot see them and a synchronous answer is required here.
+    /// Only connected machines count; a paused one stays as it is.
+    static func listRemoteManagedSessionsSync() -> [(session: TmuxSession, machine: String)] {
+        guard let registry = AppServices.remoteRegistry else { return [] }
+        let managedNames = Set(
+            CoordinationStore.readLinksSnapshot()
+                .flatMap { $0.tmuxLink?.allSessionNames ?? [] }
+        )
+        guard !managedNames.isEmpty else { return [] }
+        var rows: [(session: TmuxSession, machine: String)] = []
+        for machine in registry.machineNames where registry.state(of: machine)?.isConnected == true {
+            for session in registry.knownSessions(on: machine) where managedNames.contains(session.name) {
+                rows.append((session, machine))
+            }
+        }
+        return rows.sorted { $0.session.name.localizedStandardCompare($1.session.name) == .orderedAscending }
     }
 
     /// Synchronous tmux list-sessions — returns all sessions (no filtering).

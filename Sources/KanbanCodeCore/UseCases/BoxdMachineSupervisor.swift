@@ -675,23 +675,6 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     }
 
     /// Machines paused for system sleep come back after wake.
-    public func resumeAfterSleep() async {
-        for (name, runtime) in machines where runtime.pausedReason == .systemSleep {
-            do {
-                _ = try await ensureRunning(machineName: name, settings: await settingsProvider(), log: { _ in })
-                try await connect(
-                    machineName: name,
-                    localProjectPath: runtime.localProjectPath,
-                    remoteProjectPath: runtime.remoteProjectPath,
-                    remoteHome: runtime.remoteHome
-                )
-            } catch {
-                KanbanCodeLog.warn(Self.subsystem, "\(name): wake failed: \(error.localizedDescription)")
-                await report(name, state: .unreachable)
-            }
-        }
-    }
-
     /// Names of machines with an open bridge.
     public var connectedMachines: [String] {
         machines.filter { $0.value.bridge != nil }.map(\.key).sorted()

@@ -1532,18 +1532,17 @@ struct ContentView: View {
             .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.willSleepNotification).receive(on: RunLoop.main)) { _ in
                 // Stop periodic work for the night: dark wakes fire the refresh
                 // timer every few minutes and each pass spawns gh subprocesses.
+                // The boxd machines keep working: their sessions run there,
+                // not here. The bridges drop with the network and come back
+                // through the reconnect path after wake.
                 store.isSystemSleeping = true
-                let supervisor = boxdSupervisor
-                Task.detached { await supervisor.pauseAll(reason: .systemSleep) }
             }
             .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification).receive(on: RunLoop.main)) { _ in
                 store.isSystemSleeping = false
-                let supervisor = boxdSupervisor
                 Task {
                     // Let the network come back before the first pass — the
                     // reconcile clears dead tmux links and refreshes activity.
                     try? await Task.sleep(for: .seconds(2))
-                    await supervisor.resumeAfterSleep()
                     await store.reconcile()
                     systemTray.update()
                 }

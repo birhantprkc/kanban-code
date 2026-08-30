@@ -21,15 +21,15 @@ final class EscapeCancellingPanel: NSPanel {
     }
 }
 
-/// Shown while the app pauses its boxd machines on quit.
+/// Shown while the app kills the remote sessions and stops their machines.
 struct PausingMachinesView: View {
     var body: some View {
         VStack(spacing: 12) {
             ProgressView()
                 .controlSize(.large)
-            Text("Pausing boxd machines…")
+            Text("Stopping boxd machines…")
                 .font(.app(.headline))
-            Text("Kanban Code quits when every machine is in standby.")
+            Text("The sessions were killed; the machines go to standby.")
                 .font(.app(.caption))
                 .foregroundStyle(.secondary)
         }
@@ -41,6 +41,8 @@ struct PausingMachinesView: View {
 struct QuitConfirmationSession: Identifiable {
     let session: TmuxSession
     let cardTitle: String?
+    /// The boxd machine of the session, nil for a session on this Mac.
+    let machineName: String?
 
     var id: String { session.name }
 }
@@ -75,6 +77,11 @@ struct QuitConfirmationView: View {
                 Text("You have \(sessions.count) managed tmux session\(sessions.count == 1 ? "" : "s") running.")
                     .font(.app(.subheadline))
                     .foregroundStyle(.secondary)
+                if sessions.contains(where: { $0.machineName != nil }) {
+                    Text("Sessions on a machine keep running unless killed; killing them puts their machine in standby.")
+                        .font(.app(.caption))
+                        .foregroundStyle(.tertiary)
+                }
             }
             .padding(.top, 20)
             .padding(.bottom, 12)
@@ -88,8 +95,16 @@ struct QuitConfirmationView: View {
                 .width(16)
 
                 TableColumn("Session") { row in
-                    Text(row.session.name)
-                        .lineLimit(1)
+                    HStack(spacing: 4) {
+                        Text(row.session.name)
+                            .lineLimit(1)
+                        if let machine = row.machineName {
+                            Image(systemName: "cloud")
+                                .font(.app(.caption))
+                                .foregroundStyle(.secondary)
+                                .help("Runs on \(machine)")
+                        }
+                    }
                 }
 
                 TableColumn("Card") { row in

@@ -184,10 +184,23 @@ Feature: Boxd Remote Mode
     Then the subagent runs on the same machine
     And archiving the subagent does not destroy the machine
 
-  Scenario: Quit and sleep pause every machine
-    When the app quits or the Mac goes to sleep
-    Then every running machine is paused before the process ends
-    And machines paused for sleep are resumed after wake
+  Scenario: Quit leaves the machines running
+    Given sessions on machines
+    When the app quits
+    Then the quit sheet lists them with a cloud icon next to the name
+    And quitting without killing leaves the machines running
+
+  Scenario: Killing the managed sessions on quit stops the machines
+    Given sessions on machines
+    When I quit with "Kill managed sessions on quit" checked
+    Then the sessions on the machines are killed
+    And their machines go to standby before the process ends
+
+  Scenario: Sleep leaves the machines working
+    When the Mac goes to sleep
+    Then no machine is paused and the sessions keep working
+    And the bridges reconnect after wake
+    And a card on a machine does not keep the Mac awake through Amphetamine
 
   Scenario: The card shows what the launch is doing
     Given a launch on boxd takes more than 30 seconds
@@ -211,9 +224,9 @@ Feature: Boxd Remote Mode
     And a running machine of a card without a session is paused
     And the source machine of the snapshot is never touched
 
-  Scenario: Quit does not wait forever for a pause
-    When the app quits with connected machines
-    Then a panel says the machines are being paused
+  Scenario: Quit does not wait forever for the machines
+    When the quit kills sessions on machines
+    Then a panel says the machines are being stopped
     And the app quits after ten seconds even when a pause has not answered
 
   Scenario: The machines get the login of the Mac

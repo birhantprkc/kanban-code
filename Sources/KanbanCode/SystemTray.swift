@@ -21,6 +21,7 @@ final class SystemTray: NSObject, @unchecked Sendable {
     private var activeSessionProcess: Process?
     /// Time when In Progress last had sessions (for linger timeout).
     private var lastActiveTime: Date?
+    private var lastLocalActiveTime: Date?
     /// Timer for live-updating the countdown while menu is open.
     private var countdownTimer: Timer?
     /// Reference to the countdown menu item for live updates.
@@ -149,21 +150,31 @@ final class SystemTray: NSObject, @unchecked Sendable {
 
     /// Show tray icon when there are In Progress sessions, or within linger timeout.
     /// Also manages the active-session helper app for Amphetamine integration.
+    /// The tray icon shows any active session; the helper only runs for
+    /// sessions on this Mac, so cards on a boxd machine never keep it awake.
     private func updateVisibility() {
         guard let store else { return }
         let hasActive = store.state.cardCount(in: .inProgress) > 0
+        let hasLocalActive = store.state.hasLocalActiveCards
 
         if hasActive {
             lastActiveTime = Date()
             statusItem?.isVisible = true
-            startActiveSessionIfNeeded()
         } else if let lastActive = lastActiveTime,
                   Date().timeIntervalSince(lastActive) < lingerTimeout {
             // Linger: keep visible for a bit after last active session
             statusItem?.isVisible = true
-            // Keep active-session running during linger
         } else {
             statusItem?.isVisible = false
+        }
+
+        if hasLocalActive {
+            lastLocalActiveTime = Date()
+            startActiveSessionIfNeeded()
+        } else if let lastLocal = lastLocalActiveTime,
+                  Date().timeIntervalSince(lastLocal) < lingerTimeout {
+            // Keep the helper running during the linger window.
+        } else {
             stopActiveSession()
         }
     }

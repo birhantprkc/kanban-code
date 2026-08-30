@@ -356,6 +356,16 @@ public final class AppState: @unchecked Sendable {
         cardsByColumn[column]?.count ?? 0
     }
 
+    /// True while a session works on this Mac itself. A card whose session
+    /// runs on a boxd machine does not count: its work continues on the
+    /// machine while the Mac sleeps, so it must not keep the Mac awake.
+    public var hasLocalActiveCards: Bool {
+        cards.contains { card in
+            card.column == .inProgress && card.link.parentCardId == nil
+                && !(card.link.remote?.mode == .boxd && card.link.isRemote)
+        }
+    }
+
     private func cardMatchesProjectFilter(_ card: KanbanCodeCard) -> Bool {
         guard let selectedPath = selectedProjectPath else {
             return !isExcludedFromGlobalView(card)

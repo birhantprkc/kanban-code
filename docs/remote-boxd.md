@@ -89,7 +89,7 @@ On the Mac the app runs the bundled CLI with the same arguments and `KANBAN_CARD
 |---|---|
 | Session stopped, terminal killed, card archived | `boxd machine pause` |
 | No activity for the configured timeout | `boxd machine pause`, the card shows the reason |
-| App quit, system sleep | `boxd machine pause` for every running machine |
+| App quit, system sleep | The machines keep running; killing the sessions from the quit sheet puts their machines in standby |
 | Resume | `boxd machine get`, then `resume`, `wake` or `start` by status. If the tmux session still exists the app attaches to it. Otherwise it uploads the transcript and starts `claude --resume`. |
 | Archive or delete with a machine | The app asks before it runs `boxd machine remove`. |
 
@@ -99,7 +99,7 @@ Machines are created with `--auto-suspend-timeout` equal to the inactivity timeo
 
 A machine the app paused can be running again through another path, for example `boxd machine resume` in a shell. Once a minute the supervisor lists the machines it holds paused; one that boxd reports as running gets its bridge reconnected, its cards leave the paused state, and the agent answers the proxied `kanban` commands that waited meanwhile (the CLI waits up to 120 seconds for an answer).
 
-The app quits only after `pauseAll` returns or after 10 seconds, whichever comes first. A panel says "Pausing boxd machines" meanwhile. A pause that takes longer keeps running on its own.
+Quit and Mac sleep leave the machines running: the work continues there while the Mac is off, and the bridges reconnect after wake. The quit sheet lists the sessions on machines with a cloud icon; "Kill managed sessions on quit" kills them and puts their machines in standby, bounded to 10 seconds ("Stopping boxd machines" panel meanwhile). A card whose session runs on a machine does not keep the Mac awake: the active-session helper that Amphetamine watches only runs for sessions on the Mac itself.
 
 A card that resumes locally after it ran on a machine gets its worktree created on the Mac at that moment, tracking `origin/<branch>` when the branch was pushed and starting a new branch otherwise. While a machine is paused the card is never shown as working, whatever the last hook event said.
 

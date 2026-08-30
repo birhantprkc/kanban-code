@@ -981,7 +981,7 @@ struct AmphetamineSettingsView: View {
                         instructionRow(4, "Search for **\"kanban-code-active-session\"** and select it")
                     }
 
-                    Text("Amphetamine will keep your Mac awake whenever Claude is working, and allow sleep when all sessions finish.")
+                    Text("Amphetamine will keep your Mac awake whenever Claude is working, and allow sleep when all sessions finish. Cards that run on a boxd machine do not count: their work continues on the machine while the Mac sleeps.")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                 }

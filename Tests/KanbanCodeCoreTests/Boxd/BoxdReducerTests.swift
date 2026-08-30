@@ -79,6 +79,19 @@ struct BoxdReducerTests {
         return state
     }
 
+    // MARK: - hasLocalActiveCards
+
+    @Test("A card on a machine does not keep the Mac awake")
+    func hasLocalActiveCards() {
+        #expect(stateWith([localCard(id: "card_1", sessionName: "repo-card_1")]).hasLocalActiveCards)
+        #expect(!stateWith([remoteCard(id: "card_1", sessionName: "repo-card_1")]).hasLocalActiveCards)
+        // A card that continued locally keeps its machine record but works here.
+        var continued = remoteCard(id: "card_2", sessionName: "repo-card_2")
+        continued.isRemote = false
+        #expect(stateWith([continued]).hasLocalActiveCards)
+        #expect(!stateWith([remoteCard(id: "card_3", column: .done)]).hasLocalActiveCards)
+    }
+
     // MARK: - cardIds(onMachine:)
 
     @Test("cardIds(onMachine:) lists only the cards of that machine, sorted")
