@@ -1185,7 +1185,7 @@ struct CardDetailView: View {
                 .colorScheme(.dark)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color.black)
+            .background(Color.black, ignoresSafeAreaEdges: [])
         } else if card.link.sessionLink != nil {
             VStack(spacing: 12) {
                 AssistantIcon(assistant: assistant)
