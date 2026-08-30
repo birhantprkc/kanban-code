@@ -33,13 +33,38 @@ enum AppServices {
         remoteReadyDirectory + "/" + sessionName
     }
 
-    static func markRemoteSessionReady(_ sessionName: String) {
+    /// Sessions a launch in flight will create on a machine. The terminal
+    /// consults this before the session registry knows the machine, which
+    /// happens only once the launch has reached the machine.
+    nonisolated(unsafe) private static var expectedRemoteSessions: Set<String> = []
+    private static let expectedLock = NSLock()
+
+    /// Writes the marker; its content is the machine name, so a terminal that
+    /// started before the machine was known can still attach.
+    static func markRemoteSessionReady(_ sessionName: String, machine: String? = nil) {
         try? FileManager.default.createDirectory(atPath: remoteReadyDirectory, withIntermediateDirectories: true)
-        FileManager.default.createFile(atPath: remoteReadyMarkerPath(for: sessionName), contents: Data())
+        FileManager.default.createFile(
+            atPath: remoteReadyMarkerPath(for: sessionName),
+            contents: (machine ?? "").data(using: .utf8)
+        )
+        expectedLock.lock(); defer { expectedLock.unlock() }
+        expectedRemoteSessions.remove(sessionName)
     }
 
     static func clearRemoteSessionReady(_ sessionName: String) {
         try? FileManager.default.removeItem(atPath: remoteReadyMarkerPath(for: sessionName))
+        expectedLock.lock(); defer { expectedLock.unlock() }
+        expectedRemoteSessions.remove(sessionName)
+    }
+
+    static func expectRemoteSession(_ sessionName: String) {
+        expectedLock.lock(); defer { expectedLock.unlock() }
+        expectedRemoteSessions.insert(sessionName)
+    }
+
+    static func isRemoteSessionExpected(_ sessionName: String) -> Bool {
+        expectedLock.lock(); defer { expectedLock.unlock() }
+        return expectedRemoteSessions.contains(sessionName)
     }
 
     /// True when at least one boxd machine has an open bridge.

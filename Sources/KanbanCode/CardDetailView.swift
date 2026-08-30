@@ -901,7 +901,9 @@ struct CardDetailView: View {
                         }
 
                         // Overlay for non-terminal Claude tab states
-                        if showOverlay && selectedBrowserTabId == nil {
+                        // A remote launch reports its steps while the
+                        // terminal below already waits for the machine.
+                        if (showOverlay || (isLaunching && launchStatus != nil)) && selectedBrowserTabId == nil {
                             assistantTabOverlay(isLaunching: isLaunching)
                         }
 
@@ -1178,6 +1180,7 @@ struct CardDetailView: View {
                 .controlSize(.small)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(.ultraThinMaterial)
         } else if card.link.sessionLink != nil {
             VStack(spacing: 12) {
                 AssistantIcon(assistant: assistant)

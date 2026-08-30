@@ -166,3 +166,10 @@ Feature: Boxd Remote Mode
     When a session starts on a machine
     Then CLAUDE_CODE_OAUTH_TOKEN is set in the session
     And a token refresh on one machine does not log the others out
+
+  Scenario: The terminal opened during the first seconds of a launch still reaches the machine
+    Given a launch on boxd that has not created its machine yet
+    When the card terminal opens
+    Then the terminal waits for the ready marker instead of the local tmux
+    And it attaches to the machine named in the marker
+    And the spinner and the current step show on top of the terminal until the session exists

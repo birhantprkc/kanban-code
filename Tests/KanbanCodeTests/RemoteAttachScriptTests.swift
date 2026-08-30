@@ -19,7 +19,8 @@ struct RemoteAttachScriptTests {
             readyMarker: "/Users/me/.kanban-code/remote-ready/repo-card_1"
         )
         let waitIndex = script.range(of: "[ -e '/Users/me/.kanban-code/remote-ready/repo-card_1' ] && break")
-        let attachIndex = script.range(of: "machine exec --tty 'kc-repo-1' -- tmux attach-session -t 'repo-card_1'")
+        let attachIndex = script.range(of: "machine exec --tty \"$m\" -- tmux attach-session -t 'repo-card_1'")
+        #expect(script.contains("m=\"$(cat '/Users/me/.kanban-code/remote-ready/repo-card_1' 2>/dev/null)\"; [ -n \"$m\" ] || m='kc-repo-1'"))
         #expect(waitIndex != nil)
         #expect(attachIndex != nil)
         if let waitIndex, let attachIndex {
@@ -32,7 +33,26 @@ struct RemoteAttachScriptTests {
     func noMarker() {
         let script = TerminalCache.remoteAttachScript(boxd: "boxd", machine: "kc-repo-1", session: "s")
         #expect(!script.contains("remote-ready"))
-        #expect(script.hasPrefix("for i in $(seq 1 30); do"))
+        #expect(script.hasPrefix("m='kc-repo-1'; for i in $(seq 1 30); do"))
+    }
+
+    @Test("a terminal that starts before the machine is known takes the machine from the marker")
+    func machineFromMarker() {
+        let script = TerminalCache.remoteAttachScript(
+            boxd: "boxd", machine: nil, session: "s", readyMarker: "/tmp/marker")
+        #expect(script.contains("m=\"$(cat '/tmp/marker' 2>/dev/null)\"; [ -n \"$m\" ] || m=''"))
+        #expect(script.contains("machine exec --tty \"$m\""))
+    }
+
+    @Test("a launch flags its session as remote until the marker names the machine")
+    func expectedSession() {
+        AppServices.expectRemoteSession("repo-card_expected")
+        #expect(AppServices.isRemoteSessionExpected("repo-card_expected"))
+        AppServices.markRemoteSessionReady("repo-card_expected", machine: "kc-repo-2")
+        #expect(!AppServices.isRemoteSessionExpected("repo-card_expected"))
+        let content = try? String(contentsOfFile: AppServices.remoteReadyMarkerPath(for: "repo-card_expected"), encoding: .utf8)
+        #expect(content == "kc-repo-2")
+        AppServices.clearRemoteSessionReady("repo-card_expected")
     }
 
     @Test("the ready marker lives under the kanban home, named after the session")

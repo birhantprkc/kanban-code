@@ -710,6 +710,14 @@ final class TerminalCache {
                 session: sessionName,
                 readyMarker: AppServices.remoteReadyMarkerPath(for: sessionName)
             )
+        } else if AppServices.isRemoteSessionExpected(sessionName) {
+            // The launch has not reached its machine yet; the marker names it.
+            script = Self.remoteAttachScript(
+                boxd: AppServices.boxdPath,
+                machine: nil,
+                session: sessionName,
+                readyMarker: AppServices.remoteReadyMarkerPath(for: sessionName)
+            )
         } else {
             script = Self.attachScript(tmux: Self.tmuxPath, session: sessionName)
         }
@@ -726,12 +734,19 @@ final class TerminalCache {
     /// `boxd machine exec --tty`. The terminal opens when the launch starts,
     /// so it first waits for the ready marker the launch writes once the
     /// session exists (up to 20 minutes, a machine may have to be created
-    /// and a repository checked out first). The machine may still be
-    /// resuming after that, so the attach itself is retried for a while.
-    static func remoteAttachScript(boxd: String, machine: String, session: String, readyMarker: String? = nil) -> String {
+    /// and a repository checked out first). The marker names the machine,
+    /// which wins over `machine` when it is not empty, so a terminal that
+    /// started before the launch knew the machine still attaches to the
+    /// right one. The machine may still be resuming after that, so the
+    /// attach itself is retried for a while.
+    static func remoteAttachScript(boxd: String, machine: String?, session: String, readyMarker: String? = nil) -> String {
         let quote = { (value: String) in "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
-        let attach = "\(quote(boxd)) machine exec --tty \(quote(machine)) -- tmux attach-session -t \(quote(session))"
-        let wait = readyMarker.map { "for i in $(seq 1 2400); do [ -e \(quote($0)) ] && break; sleep 0.5; done; " } ?? ""
+        let fallback = quote(machine ?? "")
+        let attach = "\(quote(boxd)) machine exec --tty \"$m\" -- tmux attach-session -t \(quote(session))"
+        let wait = readyMarker.map {
+            "for i in $(seq 1 2400); do [ -e \(quote($0)) ] && break; sleep 0.5; done; "
+                + "m=\"$(cat \(quote($0)) 2>/dev/null)\"; [ -n \"$m\" ] || m=\(fallback); "
+        } ?? "m=\(fallback); "
         return wait + "for i in $(seq 1 30); do \(attach) && break; sleep 2; done; echo 'Session ended.'"
     }
 

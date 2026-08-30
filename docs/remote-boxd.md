@@ -113,7 +113,9 @@ The source machine of the snapshot and machines with an open bridge are never to
 
 A launch or resume on boxd reports every step (`Creating machine`, `Running the initialization command`, `Checking out <branch> on the machine`, ...) as an action. The card shows the current step under the "Starting session" spinner, and the step repeats every 10 seconds, which keeps the 30 second stale-launch timers of the reconciler and of the card from giving up during a long checkout.
 
-The embedded terminal opens when the launch starts. For a remote session it waits for a marker file, `~/.kanban-code/remote-ready/<session>`, which the launch writes once the tmux session exists on the machine, and only then runs `boxd machine exec --tty <vm> -- tmux attach-session`.
+The embedded terminal opens when the launch starts. For a remote session it waits for a marker file, `~/.kanban-code/remote-ready/<session>`, which the launch writes once the tmux session exists on the machine, and only then runs `boxd machine exec --tty <vm> -- tmux attach-session`. The marker contains the machine name. A launch flags its session as remote before it knows the machine, so a terminal that starts during the first seconds of a launch still takes the remote path and reads the machine from the marker. While a remote launch reports steps, the card shows the spinner and the step on top of the terminal.
+
+The service graph of the app (store, boxd supervisor, session registry, tmux router) is built once in `AppComposition` and shared by every `ContentView` value SwiftUI creates. The supervisor sends its actions to that one store.
 
 ### Claude login
 

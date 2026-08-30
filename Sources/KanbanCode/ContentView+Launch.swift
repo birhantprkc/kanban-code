@@ -69,6 +69,9 @@ extension ContentView {
         // A marker from an earlier run of this session name would let the
         // terminal attach before the machine is ready.
         AppServices.clearRemoteSessionReady(predictedTmuxName)
+        if runRemotely, store.state.remoteMode == .boxd {
+            AppServices.expectRemoteSession(predictedTmuxName)
+        }
         let progress = LaunchProgress(cardId: cardId, store: store)
 
         Task {
@@ -212,7 +215,7 @@ extension ContentView {
                 if let preparation = boxdPreparation {
                     await boxdSupervisor.exportSessionEnvironment(
                         machineName: preparation.machineName, sessionName: tmuxName, env: preparation.extraEnv)
-                    AppServices.markRemoteSessionReady(tmuxName)
+                    AppServices.markRemoteSessionReady(tmuxName, machine: preparation.machineName)
                 }
 
                 // Show terminal immediately — clear isLaunching so UI switches
@@ -739,6 +742,9 @@ extension ContentView {
                 var boxdPreparation: BoxdPreparation?
                 let resumeSessionName = "\(assistant.cliCommand)-\(String(sessionId.prefix(8)))"
                 AppServices.clearRemoteSessionReady(resumeSessionName)
+                if runRemotely, store.state.remoteMode == .boxd {
+                    AppServices.expectRemoteSession(resumeSessionName)
+                }
 
                 let globalRemote = settings?.remote
                 let remoteMode = settings?.remoteMode ?? .boxd
@@ -770,7 +776,7 @@ extension ContentView {
                     if existingMachine == currentMachine,
                        await boxdSupervisor.hasSession(machineName: preparation.machineName, sessionName: resumeSessionName) {
                         KanbanCodeLog.info("resume", "Attaching to live remote tmux \(resumeSessionName) on \(preparation.machineName)")
-                        AppServices.markRemoteSessionReady(resumeSessionName)
+                        AppServices.markRemoteSessionReady(resumeSessionName, machine: preparation.machineName)
                         store.dispatch(.resumeCompleted(cardId: cardId, tmuxName: resumeSessionName, isRemote: true))
                         return
                     }
@@ -859,7 +865,7 @@ extension ContentView {
                 if let preparation = boxdPreparation {
                     await boxdSupervisor.exportSessionEnvironment(
                         machineName: preparation.machineName, sessionName: actualTmuxName, env: preparation.extraEnv)
-                    AppServices.markRemoteSessionReady(actualTmuxName)
+                    AppServices.markRemoteSessionReady(actualTmuxName, machine: preparation.machineName)
                 }
 
                 store.dispatch(.resumeCompleted(cardId: cardId, tmuxName: actualTmuxName, isRemote: isRemote))
