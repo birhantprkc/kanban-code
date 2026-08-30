@@ -9,6 +9,9 @@ struct PromptSection: View {
     var minHeight: CGFloat = 80
     var maxHeight: CGFloat = 400
     var onSubmit: () -> Void = {}
+    /// Escape key. Dialogs pass their cancel action here, because the text
+    /// view takes the key before the responder chain reaches the buttons.
+    var onEscape: (() -> Void)?
     @State private var usesInlineImageMarkers = false
     @State private var editorHeight: CGFloat
 
@@ -18,7 +21,8 @@ struct PromptSection: View {
         placeholder: String = "Describe what you want Claude to do...",
         minHeight: CGFloat = 80,
         maxHeight: CGFloat = 400,
-        onSubmit: @escaping () -> Void = {}
+        onSubmit: @escaping () -> Void = {},
+        onEscape: (() -> Void)? = nil
     ) {
         self._text = text
         self._images = images
@@ -26,6 +30,7 @@ struct PromptSection: View {
         self.minHeight = minHeight
         self.maxHeight = maxHeight
         self.onSubmit = onSubmit
+        self.onEscape = onEscape
         self._editorHeight = State(initialValue: minHeight)
     }
 
@@ -56,6 +61,7 @@ struct PromptSection: View {
                     images.append(ImageAttachment(data: data))
                     return marker
                 },
+                onEscape: onEscape,
                 onHeightChange: { height in
                     editorHeight = min(maxHeight, max(minHeight, height))
                 }

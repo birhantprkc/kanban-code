@@ -292,16 +292,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         guard quitConfirmationPanel == nil else { return }
 
         let rows = Self.quitConfirmationRows(for: managedSessions)
+        let cancel: () -> Void = { [weak self] in
+            self?.finishQuitConfirmation(
+                shouldTerminate: false,
+                killManagedSessions: false,
+                managedSessions: managedSessions
+            )
+        }
         let view = QuitConfirmationView(
             sessions: rows,
             killManagedSessions: UserDefaults.standard.bool(forKey: "killTmuxOnQuit"),
-            onCancel: { [weak self] in
-                self?.finishQuitConfirmation(
-                    shouldTerminate: false,
-                    killManagedSessions: false,
-                    managedSessions: managedSessions
-                )
-            },
+            onCancel: cancel,
             onQuit: { [weak self] shouldKill in
                 self?.finishQuitConfirmation(
                     shouldTerminate: true,
@@ -311,12 +312,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             }
         )
 
-        let panel = NSPanel(
+        let panel = EscapeCancellingPanel(
             contentRect: NSRect(x: 0, y: 0, width: 520, height: 380),
             styleMask: [.titled, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
+        panel.onCancel = cancel
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
         panel.standardWindowButton(.closeButton)?.isHidden = true

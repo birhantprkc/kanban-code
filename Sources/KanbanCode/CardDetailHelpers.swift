@@ -803,7 +803,8 @@ struct EditPromptSheet: View {
                 images: $images,
                 placeholder: "Describe what you want Claude to do...",
                 maxHeight: 300,
-                onSubmit: save
+                onSubmit: save,
+                onEscape: { isPresented = false }
             )
 
             HStack {

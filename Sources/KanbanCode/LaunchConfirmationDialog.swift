@@ -158,7 +158,8 @@ struct LaunchConfirmationDialog: View {
                             text: $prompt,
                             images: $images,
                             minHeight: 120,
-                            onSubmit: submitForm
+                            onSubmit: submitForm,
+                            onEscape: { isPresented = false }
                         )
                     }
 
@@ -203,7 +204,7 @@ struct LaunchConfirmationDialog: View {
                                 .font(.app(.caption2))
                                 .foregroundStyle(.secondary)
                         }
-                        CommandTextEditor(text: $command, onSubmit: submitForm)
+                        CommandTextEditor(text: $command, onSubmit: submitForm, onEscape: { isPresented = false })
                             .font(.app(.caption).monospaced())
                             .frame(minHeight: 36, maxHeight: 80)
                             .padding(4)

@@ -133,7 +133,7 @@ struct SettingsView: View {
             AmphetamineSettingsView()
                 .tabItem { Label("Amphetamine", systemImage: "bolt.fill") }
         }
-        .frame(width: 560, height: 620)
+        .frame(width: 720, height: 620)
         .task {
             await checkAvailability()
         }

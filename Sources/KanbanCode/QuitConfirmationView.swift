@@ -1,5 +1,25 @@
 import SwiftUI
+import AppKit
 import KanbanCodeCore
+
+/// Panel that answers the Escape key. A sheet without a close button drops the
+/// key before it reaches the Cancel button, so the quit sheet needs its own
+/// handler to stay dismissible from the keyboard.
+final class EscapeCancellingPanel: NSPanel {
+    var onCancel: (() -> Void)?
+
+    override func cancelOperation(_ sender: Any?) {
+        onCancel?()
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53 {
+            onCancel?()
+            return
+        }
+        super.keyDown(with: event)
+    }
+}
 
 struct QuitConfirmationSession: Identifiable {
     let session: TmuxSession

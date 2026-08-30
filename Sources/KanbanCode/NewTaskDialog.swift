@@ -57,7 +57,8 @@ struct NewTaskDialog: View {
                 images: $images,
                 placeholder: "Describe what you want \(selectedAssistant.displayName) to do...",
                 maxHeight: 180,
-                onSubmit: submitForm
+                onSubmit: submitForm,
+                onEscape: { isPresented = false }
             )
 
             // Title (optional)
@@ -161,7 +162,7 @@ struct NewTaskDialog: View {
                             .font(.app(.caption2))
                             .foregroundStyle(.secondary)
                     }
-                    CommandTextEditor(text: $command, onSubmit: submitForm)
+                    CommandTextEditor(text: $command, onSubmit: submitForm, onEscape: { isPresented = false })
                         .font(.app(.caption).monospaced())
                         .frame(minHeight: 36, maxHeight: 80)
                         .padding(4)
