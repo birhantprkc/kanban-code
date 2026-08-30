@@ -86,6 +86,7 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     private let appVersion: String
     private let localHome: String
     private let localKanbanHome: String
+    private let loginStore: any LocalLoginStore
     /// Current links of the board, read when a sweep decides what a machine is for.
     public typealias LinksProvider = @Sendable () async -> [Link]
 
@@ -108,6 +109,7 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         appVersion: String,
         localHome: String = NSHomeDirectory(),
         localKanbanHome: String? = nil,
+        loginStore: any LocalLoginStore = MacLoginStore(),
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.boxd = boxd
@@ -117,6 +119,7 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         self.appVersion = appVersion
         self.localHome = localHome
         self.localKanbanHome = localKanbanHome ?? "\(localHome)/.kanban-code"
+        self.loginStore = loginStore
         self.now = now
     }
 
@@ -807,6 +810,11 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         }
         try await bridge.watch(roots: await mirror.watchRoots, offsets: await mirror.offsets)
 
+        // The machine starts with the login of the snapshot. The session
+        // must not: it gets the login of this Mac before it starts.
+        log("Syncing logins")
+        await syncLogins(machineName: machineName, bridge: bridge, remoteHome: runtime.remoteHome)
+
         let transport = BridgeTmuxTransport(runner: bridge, remoteHome: runtime.remoteHome)
         registry.setMachine(machineName, state: .connected, tmux: TmuxAdapter(transport: transport))
         await report(machineName, state: .connected)
@@ -1009,7 +1017,33 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
                 await self?.checkInactivity()
+                await self?.syncAllLogins()
                 await self?.sweepOnTick()
+            }
+        }
+    }
+
+    // MARK: - Logins
+
+    /// Every connected machine gets the login of this Mac, and a login a
+    /// machine refreshed comes back to the Mac and on to the other machines.
+    public func syncAllLogins() async {
+        for (name, runtime) in machines {
+            guard let bridge = runtime.bridge else { continue }
+            await syncLogins(machineName: name, bridge: bridge, remoteHome: runtime.remoteHome)
+        }
+    }
+
+    private func syncLogins(machineName: String, bridge: BoxdBridge, remoteHome: String) async {
+        let sync = AssistantLoginSync(runner: bridge, store: loginStore, remoteHome: remoteHome)
+        for change in await sync.run() {
+            switch change.decision {
+            case .push:
+                KanbanCodeLog.info(Self.subsystem, "\(machineName): \(change.kind.displayName) login sent to the machine")
+            case .pull:
+                KanbanCodeLog.info(Self.subsystem, "\(machineName): \(change.kind.displayName) login taken from the machine")
+            case .none:
+                break
             }
         }
     }

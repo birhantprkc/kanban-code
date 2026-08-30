@@ -193,11 +193,24 @@ Feature: Boxd Remote Mode
     Then a panel says the machines are being paused
     And the app quits after ten seconds even when a pause has not answered
 
-  Scenario: One Claude login for every machine
-    Given a Claude token from `claude setup-token` in the Remote settings
+  Scenario: The machines get the login of the Mac
+    Given a Claude login on the Mac
+    When a machine connects
+    Then its ~/.claude/.credentials.json is the Mac's login before the session starts
+    And its ~/.claude.json carries the Mac's oauthAccount
+    When I switch accounts on the Mac
+    Then every connected machine gets the new login within a minute
+
+  Scenario: A refresh on a machine comes back to the Mac
+    Given a machine that refreshed its Claude token
+    When the next sync tick runs
+    Then the Mac's Keychain holds the refreshed token
+    And the other machines get it on their next tick
+
+  Scenario: A long-lived token replaces the synced login
+    Given a Claude token from `claude setup-token` in the Assistants settings
     When a session starts on a machine
     Then CLAUDE_CODE_OAUTH_TOKEN is set in the session
-    And a token refresh on one machine does not log the others out
 
   Scenario: The terminal opened during the first seconds of a launch still reaches the machine
     Given a launch on boxd that has not created its machine yet

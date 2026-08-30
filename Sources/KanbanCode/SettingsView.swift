@@ -244,6 +244,8 @@ struct AssistantsSettingsView: View {
     @State private var commandsLoaded = false
     @State private var commandsSaveTask: Task<Void, Never>?
     @State private var savedCommands: [String: AssistantCommandTemplate] = [:]
+    @State private var remoteClaudeToken = ""
+    @State private var remoteTokenSaveTask: Task<Void, Never>?
 
     var body: some View {
         Form {
@@ -362,6 +364,9 @@ struct AssistantsSettingsView: View {
                     .foregroundStyle(.blue)
 
                     launchCommandRows(for: assistant)
+                    if assistant == .claude {
+                        remoteLoginRows
+                    }
                 } header: {
                     HStack {
                         Text(assistant.displayName)
@@ -416,6 +421,38 @@ struct AssistantsSettingsView: View {
             TextField("Remote launch command", text: remoteCommandBinding(for: assistant))
                 .textFieldStyle(.roundedBorder)
                 .font(.system(.caption, design: .monospaced))
+        }
+    }
+
+    // MARK: - Remote login
+
+    @ViewBuilder
+    private var remoteLoginRows: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            SecureField("Remote token (optional)", text: $remoteClaudeToken)
+                .textFieldStyle(.roundedBorder)
+                .onChange(of: remoteClaudeToken) { scheduleRemoteTokenSave() }
+            Text("Machines get the login of this Mac and send a refresh back, so one account switch reaches every session, local and remote. A long-lived token from `claude setup-token` replaces that login on the machines only.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func scheduleRemoteTokenSave() {
+        guard commandsLoaded else { return }
+        let token = remoteClaudeToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        remoteTokenSaveTask?.cancel()
+        remoteTokenSaveTask = Task {
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            var settings = (try? await settingsStore.read()) ?? Settings()
+            var boxd = settings.boxd ?? BoxdSettings()
+            guard boxd.claudeOAuthToken != token else { return }
+            boxd.claudeOAuthToken = token
+            settings.boxd = boxd
+            try? await settingsStore.write(settings)
+            NotificationCenter.default.post(name: .kanbanCodeSettingsChanged, object: nil)
         }
     }
 
@@ -494,6 +531,7 @@ struct AssistantsSettingsView: View {
         defaultAPIServiceIds = settings.defaultAPIServiceIds
         assistantCommands = settings.assistantCommands
         savedCommands = settings.assistantCommands
+        remoteClaudeToken = settings.boxd?.claudeOAuthToken ?? ""
         commandsLoaded = true
     }
 

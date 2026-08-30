@@ -193,10 +193,9 @@ public struct BoxdSettings: Codable, Sendable, Equatable {
     public var copyGlobs: [String]
     /// Seconds without activity before the machine is paused.
     public var inactivityTimeoutSeconds: Int
-    /// Long-lived Claude token (`claude setup-token`) exported as
-    /// `CLAUDE_CODE_OAUTH_TOKEN` in every session on a machine. Machines made
-    /// from one snapshot share the login of the source machine, and a token
-    /// refresh on one of them logs the others out; this token avoids that.
+    /// Optional long-lived Claude token (`claude setup-token`) exported as
+    /// `CLAUDE_CODE_OAUTH_TOKEN` in every session on a machine. Without it
+    /// the machines get the login of this Mac, kept in sync while they run.
     public var claudeOAuthToken: String
 
     public static let defaultSnapshotName = "kanban-code-base"

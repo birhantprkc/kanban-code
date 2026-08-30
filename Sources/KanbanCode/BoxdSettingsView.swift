@@ -34,6 +34,7 @@ struct BoxdSettingsView: View {
     @State private var initCommand = BoxdSettings.defaultInitCommand
     @State private var copyGlobsText = BoxdSettings.defaultCopyGlobs.joined(separator: "\n")
     @State private var inactivityMinutes = BoxdSettings.defaultInactivityTimeoutSeconds / 60
+    /// Edited in the Assistants tab; carried through the save unchanged.
     @State private var claudeOAuthToken = ""
 
     @State private var loaded = false
@@ -141,15 +142,6 @@ struct BoxdSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
-        }
-
-        Section("Claude login") {
-            SecureField("Claude token", text: $claudeOAuthToken)
-                .textFieldStyle(.roundedBorder)
-                .onChange(of: claudeOAuthToken) { scheduleSave() }
-            Text("Machines made from the snapshot share the Claude login of the source machine, and a token refresh on one machine logs the others out. Run `claude setup-token` on this Mac and paste the token here. Every session on a machine then uses it as CLAUDE_CODE_OAUTH_TOKEN.")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
         }
 
         Section("Lifecycle") {

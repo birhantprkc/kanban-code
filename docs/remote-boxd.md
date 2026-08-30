@@ -125,6 +125,10 @@ The embedded terminal opens when the launch starts. For a remote session it wait
 
 The service graph of the app (store, boxd supervisor, session registry, tmux router) is built once in `AppComposition` and shared by every `ContentView` value SwiftUI creates. The supervisor sends its actions to that one store.
 
-### Claude login
+### Logins
 
-Every machine made from the snapshot carries the Claude login of the source machine. A token refresh on one machine logs the others out ("Login expired" in the pane). The Remote settings take a long-lived token from `claude setup-token`; it is exported as `CLAUDE_CODE_OAUTH_TOKEN` in every session on a machine.
+Claude Code keeps its OAuth tokens in the Keychain on macOS (`Claude Code-credentials`) and in `~/.claude/.credentials.json` on Linux, with the same JSON inside. Codex keeps `~/.codex/auth.json` on both. Both rotate the refresh token on every refresh, so a machine made from the snapshot drifts from the Mac within hours and one side shows "Login expired".
+
+The supervisor keeps the copies equal. When a bridge connects, and then once a minute, it reads the login files of the machine with one `exec` and compares each with the Mac's copy. The newest copy wins: `claudeAiOauth.expiresAt` for Claude, `last_refresh` for Codex. A newer local copy is written to the machine (`put`, mode 600) together with the `oauthAccount` block of `~/.claude.json`; a newer remote copy is written to the Keychain (`security add-generic-password -U`) or to `~/.codex/auth.json`, and reaches the other machines on their next tick. Running assistants read the shared copy before they refresh, so an account switch on the Mac reaches every session, local and remote.
+
+Two machines that refresh the same token in the same minute leave one of them with a rejected refresh until the next tick. A long-lived token from `claude setup-token`, set in Settings, Assistants, is exported as `CLAUDE_CODE_OAUTH_TOKEN` in every remote session and takes precedence over the synced login.
