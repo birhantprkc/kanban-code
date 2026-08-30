@@ -33,7 +33,7 @@ Both directions carry one JSON object per line.
 | `~/.kanban-code/commands/proxy-responses/<id>.json` | The result of that command. |
 | `~/.kanban-code/tmp/` | Prompt buffers and launch scripts written by the Mac. |
 | `~/.kanban-code/images/<cardId>/` | Prompt images uploaded by the Mac. |
-| `~/<repo_name>/` | The repository checkout (folder template in settings). Worktrees are under `<repo>/.claude/worktrees/<name>`. |
+| `~/<repo_name>/` | The repository checkout (folder template in settings). Worktrees are under `<repo>/.claude/worktrees/<name>`, created on the machine only with `git worktree add -b <name>`; the branch reaches origin when the assistant pushes it. |
 
 Card tmux sessions on the machine are created with the environment `KANBAN_REMOTE_PROXY=1`, `KANBAN_CARD_ID=<cardId>` and `KANBAN_CODE_HOME=/home/boxd/.kanban-code`.
 
@@ -96,6 +96,14 @@ On the Mac the app runs the bundled CLI with the same arguments and `KANBAN_CARD
 Machines are created with `--auto-suspend-timeout` equal to the inactivity timeout. If the Mac disappears without pausing the machine, boxd suspends it when the bridge traffic stops.
 
 The app quits only after `pauseAll` returns or after 10 seconds, whichever comes first. A panel says "Pausing boxd machines" meanwhile. A pause that takes longer keeps running on its own.
+
+A card that resumes locally after it ran on a machine gets its worktree created on the Mac at that moment, tracking `origin/<branch>` when the branch was pushed and starting a new branch otherwise. While a machine is paused the card is never shown as working, whatever the last hook event said.
+
+### Embedded terminal
+
+The terminal attaches through `boxd machine connect <machine>`, the interactive shell of the CLI, which is what a terminal app uses too: it puts the local pty in raw mode, sizes the remote pty, follows resizes, and the session lives as long as the shell. `boxd machine exec --tty` does none of that (canonical mode, remote pty 0x0) and hangs up a full-screen program such as tmux after a few seconds, so it is not used for the terminal.
+
+`connect` takes no command, so `/usr/bin/expect` drives it: `spawn` connect, `expect` the prompt (20 seconds, then the command is sent anyway), `send " exec tmux -u -T hyperlinks attach-session -t <session>\r"`, then `interact`. `exec` replaces the shell, so a detach closes the connection and the script prints "Session ended.". A WINCH trap copies the local size to the pty of connect. The machine name reaches the Tcl program through `KANBAN_MACHINE`. Everything else (the bridge, tmux commands, file copies) stays on plain `boxd machine exec`, which runs for hours. The assistant runs with `LANG=C.UTF-8`.
 
 ### Sweep
 

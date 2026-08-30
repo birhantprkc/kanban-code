@@ -827,11 +827,20 @@ extension ContentView {
                     preamble = nil
                     // A card that leaves its machine continues from the local
                     // mirror. The machine is kept, paused, and its tmux name is
-                    // released so the local tmux server can own it.
+                    // released so the local tmux server can own it. A worktree
+                    // that only existed on the machine is created here first.
                     if let remote = card.link.remote, remote.mode == .boxd {
                         await boxdSupervisor.releaseSessions([resumeSessionName])
                         if await boxdSupervisor.isConnected(remote.machineName) {
                             await boxdSupervisor.pause(machineName: remote.machineName, reason: .manual)
+                        }
+                        if let worktree = card.link.worktreeLink,
+                           let repoRoot = card.link.projectPath,
+                           !FileManager.default.fileExists(atPath: worktree.path) {
+                            let name = (worktree.path as NSString).lastPathComponent
+                            progress.start()
+                            progress.report("Creating worktree \(name) locally")
+                            _ = try await BoxdMachineSupervisor.createLocalWorktree(repoRoot: repoRoot, name: name)
                         }
                     }
                 }

@@ -47,9 +47,23 @@ Feature: Boxd Remote Mode
 
   Scenario: Worktree launch on a machine
     Given I start a card on boxd with "Create worktree" checked
-    Then the worktree is created locally under .claude/worktrees and its branch is pushed
-    And the machine checks out the same branch under its own .claude/worktrees
+    Then the machine creates the worktree under its own .claude/worktrees on a new branch
+    And nothing is created or pushed on the Mac
+    And the card shows the branch
     And the assistant starts in the remote worktree
+
+  Scenario: Resume locally a card whose worktree is on the machine
+    Given a card with a machine and a worktree that does not exist on the Mac
+    When I resume the card with "Run on boxd" unchecked
+    Then the worktree is created on the Mac, tracking origin when the branch was pushed
+    And the assistant resumes there from the mirrored transcript
+
+  Scenario: The embedded terminal behaves like a local one
+    Given a card runs on a machine
+    When I type in the terminal
+    Then keystrokes reach the machine at once and Enter submits
+    And the terminal has the size of the pane and follows a resize
+    And Unicode glyphs render
 
   Scenario: The transcript is mirrored to the Mac
     Given a card runs on a machine
@@ -72,6 +86,11 @@ Feature: Boxd Remote Mode
     When the session ends or the terminal is killed
     Then the machine is paused right away
     And the card keeps its machine
+
+  Scenario: A paused machine is not working
+    Given a card runs on a machine and the assistant is mid-tool
+    When the machine is paused
+    Then the card stops its spinner
 
   Scenario: Machine paused after inactivity
     Given a card runs on a machine

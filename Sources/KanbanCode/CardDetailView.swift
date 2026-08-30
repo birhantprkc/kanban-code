@@ -1166,21 +1166,26 @@ struct CardDetailView: View {
     private func assistantTabOverlay(isLaunching: Bool) -> some View {
         let assistant = card.link.effectiveAssistant
         if isLaunching {
+            // Drawn on top of the terminal, so it takes the terminal's colors.
             VStack(spacing: 12) {
                 ProgressView()
                     .controlSize(.large)
+                    .tint(.white)
+                    .colorScheme(.dark)
                 Text("Starting session…")
                     .font(.app(.body))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.white)
                 launchStatusText
+                    .foregroundStyle(.white.opacity(0.7))
                 Button(action: onCancelLaunch) {
                     Label("Stop", systemImage: "stop.fill")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .colorScheme(.dark)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(.ultraThinMaterial)
+            .background(Color.black)
         } else if card.link.sessionLink != nil {
             VStack(spacing: 12) {
                 AssistantIcon(assistant: assistant)
@@ -1221,7 +1226,6 @@ struct CardDetailView: View {
         if let launchStatus, !launchStatus.isEmpty {
             Text(launchStatus)
                 .font(.app(.caption))
-                .foregroundStyle(.tertiary)
                 .lineLimit(2)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)

@@ -730,24 +730,53 @@ final class TerminalCache {
         )
     }
 
-    /// Attaches to a tmux session on a boxd machine through a pty of
-    /// `boxd machine exec --tty`. The terminal opens when the launch starts,
-    /// so it first waits for the ready marker the launch writes once the
-    /// session exists (up to 20 minutes, a machine may have to be created
-    /// and a repository checked out first). The marker names the machine,
-    /// which wins over `machine` when it is not empty, so a terminal that
-    /// started before the launch knew the machine still attaches to the
-    /// right one. The machine may still be resuming after that, so the
-    /// attach itself is retried for a while.
+    /// Attaches to a tmux session on a boxd machine. The terminal opens when
+    /// the launch starts, so it first waits for the ready marker the launch
+    /// writes once the session exists (up to 20 minutes, a machine may have
+    /// to be created and a repository checked out first). The marker names
+    /// the machine, which wins over `machine` when it is not empty, so a
+    /// terminal that started before the launch knew the machine still
+    /// attaches to the right one. The machine may still be resuming after
+    /// that, so the attach itself is retried for a while.
+    ///
+    /// The transport is `boxd machine connect`, the interactive shell of the
+    /// CLI: it puts the local pty in raw mode, sizes the remote pty and
+    /// follows resizes, and the session lives as long as the shell. (`exec
+    /// --tty` does none of that and hangs up a full-screen program after a
+    /// few seconds.) `connect` takes no command, so `expect` drives it: it
+    /// waits for the prompt, types `exec tmux attach-session` and hands the
+    /// pty over with `interact`. `exec` replaces the shell, so a detach ends
+    /// the connection. The tmux client runs with `-u` so it writes UTF-8
+    /// whatever the locale of the machine.
     static func remoteAttachScript(boxd: String, machine: String?, session: String, readyMarker: String? = nil) -> String {
         let quote = { (value: String) in "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
         let fallback = quote(machine ?? "")
-        let attach = "\(quote(boxd)) machine exec --tty \"$m\" -- tmux attach-session -t \(quote(session))"
+        let program = expectProgram(boxd: boxd, session: session)
+        let attach = "KANBAN_MACHINE=\"$m\" /usr/bin/expect -c \(quote(program))"
         let wait = readyMarker.map {
             "for i in $(seq 1 2400); do [ -e \(quote($0)) ] && break; sleep 0.5; done; "
                 + "m=\"$(cat \(quote($0)) 2>/dev/null)\"; [ -n \"$m\" ] || m=\(fallback); "
         } ?? "m=\(fallback); "
         return wait + "for i in $(seq 1 30); do \(attach) && break; sleep 2; done; echo 'Session ended.'"
+    }
+
+    /// The Tcl program `expect` runs for one attach. The machine comes in
+    /// through `KANBAN_MACHINE`, because `expect -c` takes no arguments. A
+    /// prompt that never shows (a machine still resuming) sends the command
+    /// after the timeout anyway; the exit status of `connect` then decides
+    /// the retry. The WINCH trap copies the size of the local pty to the pty
+    /// of `connect`, which forwards it to the machine.
+    static func expectProgram(boxd: String, session: String) -> String {
+        let attach = " exec tmux -u -T hyperlinks attach-session -t \(session)\\r"
+        return [
+            "set timeout 20",
+            "spawn -noecho {\(boxd)} machine connect $env(KANBAN_MACHINE)",
+            "trap {stty rows [stty rows] columns [stty columns] < $spawn_out(slave,name)} WINCH",
+            "expect -re {\\$ $} {send \"\(attach)\"} timeout {send \"\(attach)\"} eof {exit 1}",
+            "interact",
+            "catch wait result",
+            "exit [lindex $result 3]",
+        ].joined(separator: "; ")
     }
 
     /// The shell command a terminal runs to reach its tmux session.

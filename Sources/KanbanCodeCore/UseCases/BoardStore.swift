@@ -279,7 +279,12 @@ public final class AppState: @unchecked Sendable {
     func rebuildCards() {
         let newCards = links.values.map { link in
             let session = link.sessionLink.flatMap { sessions[$0.sessionId] }
-            let activity = link.sessionLink.flatMap { activityMap[$0.sessionId] }
+            var activity = link.sessionLink.flatMap { activityMap[$0.sessionId] }
+            // The activity of a paused machine is frozen with it; the last
+            // hook event may say the assistant was mid-tool.
+            if link.remote?.pausedReason != nil, activity == .activelyWorking {
+                activity = .idleWaiting
+            }
             let rateLimited = link.projectPath.map { rateLimitedRepos.contains($0) } ?? false
             return KanbanCodeCard(
                 link: link,

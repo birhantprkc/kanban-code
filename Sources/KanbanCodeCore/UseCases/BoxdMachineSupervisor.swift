@@ -288,19 +288,19 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         runInit: Bool,
         log: @escaping @Sendable (String) -> Void
     ) async throws -> BoxdPreparation {
-        // Local worktree first: the branch has to exist on origin before the
-        // machine can check it out.
+        // A new worktree lives on the machine only. The link keeps the
+        // local path it would have, so the card shows its branch and a local
+        // resume knows where to create it. A worktree the card already has
+        // is checked out from origin, where its branch was pushed.
         var worktree = existingWorktree
         var branch = existingWorktree?.branch
+        var worktreeIsNew = false
         if let requested = worktreeName, worktree == nil {
             let name = requested.trimmingCharacters(in: .whitespacesAndNewlines)
             let worktreeName = name.isEmpty ? BoxdLaunchPlanner.randomWorktreeName() : name
-            log("Creating worktree \(worktreeName)")
-            worktree = try await Self.createLocalWorktree(repoRoot: repoRoot, name: worktreeName)
-            branch = worktree?.branch
-        }
-        if let branch {
-            await Self.pushBranchIfNeeded(repoRoot: repoRoot, branch: branch, log: log)
+            worktree = WorktreeLink(path: "\(repoRoot)/.claude/worktrees/\(worktreeName)", branch: worktreeName)
+            branch = worktreeName
+            worktreeIsNew = true
         }
 
         if runInit {
@@ -324,8 +324,9 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         var remoteCwd = remoteProjectPath
         if let worktree, let branch = worktree.branch {
             let remoteWorktree = "\(remoteProjectPath)/.claude/worktrees/\((worktree.path as NSString).lastPathComponent)"
-            log("Checking out \(branch) on the machine")
-            let script = Self.remoteWorktreeScript(repo: remoteProjectPath, worktreePath: remoteWorktree, branch: branch)
+            log(worktreeIsNew ? "Creating worktree \(branch) on the machine" : "Checking out \(branch) on the machine")
+            let script = Self.remoteWorktreeScript(
+                repo: remoteProjectPath, worktreePath: remoteWorktree, branch: branch, fetch: !worktreeIsNew)
             let result = try await bridge.exec(["bash", "-lc", script], stdin: nil, cwd: remoteHome, timeout: 300)
             if !result.succeeded {
                 throw BoxdSupervisorError.initFailed(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -420,6 +421,7 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
             "KANBAN_REMOTE_PROXY": "1",
             "KANBAN_CARD_ID": cardId,
             "KANBAN_CODE_HOME": "\(remoteHome)/.kanban-code",
+            "LANG": "C.UTF-8",
         ]
         if let token = claudeOAuthToken?.trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty {
             env["CLAUDE_CODE_OAUTH_TOKEN"] = token
@@ -1084,9 +1086,11 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         return branch.isEmpty || branch == "HEAD" ? nil : branch
     }
 
-    /// Creates `<repo>/.claude/worktrees/<name>` on a new branch, the same
-    /// layout Claude Code's `--worktree` uses.
-    nonisolated static func createLocalWorktree(repoRoot: String, name: String) async throws -> WorktreeLink {
+    /// Creates `<repo>/.claude/worktrees/<name>`, the layout Claude Code's
+    /// `--worktree` uses. A card that ran on a machine has its branch on
+    /// origin when the assistant pushed it, so that branch is tracked when
+    /// it exists; otherwise the worktree starts a new branch.
+    public nonisolated static func createLocalWorktree(repoRoot: String, name: String) async throws -> WorktreeLink {
         guard !name.isEmpty, !name.contains("/") else {
             throw WorktreeError.createFailed(name: name, message: "worktree name must be one non-empty path component")
         }
@@ -1096,33 +1100,35 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
             return WorktreeLink(path: path, branch: branch)
         }
         try? FileManager.default.createDirectory(atPath: "\(repoRoot)/.claude/worktrees", withIntermediateDirectories: true)
-        let branchExists = (await git(["show-ref", "--verify", "--quiet", "refs/heads/\(name)"], in: repoRoot))?.succeeded == true
-        let arguments = branchExists ? ["worktree", "add", path, name] : ["worktree", "add", "-b", name, path]
+        let arguments: [String]
+        if (await git(["show-ref", "--verify", "--quiet", "refs/heads/\(name)"], in: repoRoot))?.succeeded == true {
+            arguments = ["worktree", "add", path, name]
+        } else {
+            _ = await git(["fetch", "origin", name], in: repoRoot)
+            if (await git(["show-ref", "--verify", "--quiet", "refs/remotes/origin/\(name)"], in: repoRoot))?.succeeded == true {
+                arguments = ["worktree", "add", "--track", "-b", name, path, "origin/\(name)"]
+            } else {
+                arguments = ["worktree", "add", "-b", name, path]
+            }
+        }
         guard let result = await git(arguments, in: repoRoot), result.succeeded else {
             throw WorktreeError.createFailed(name: name, message: (await git(arguments, in: repoRoot))?.stderr ?? "git failed")
         }
         return WorktreeLink(path: path, branch: name)
     }
 
-    nonisolated static func pushBranchIfNeeded(repoRoot: String, branch: String, log: @escaping @Sendable (String) -> Void) async {
-        let upstream = await git(["rev-parse", "--abbrev-ref", "\(branch)@{upstream}"], in: repoRoot)
-        if upstream?.succeeded == true { return }
-        log("Pushing \(branch) to origin")
-        let result = await git(["push", "-u", "origin", branch], in: repoRoot)
-        if result?.succeeded != true {
-            KanbanCodeLog.warn(subsystem, "push \(branch) failed: \(result?.stderr ?? "git failed")")
-        }
-    }
-
-    nonisolated static func remoteWorktreeScript(repo: String, worktreePath: String, branch: String) -> String {
+    /// The worktree script of the machine. A new worktree branches from the
+    /// checkout as it is; `fetch` is for a branch the card already has,
+    /// which may only exist on origin.
+    nonisolated static func remoteWorktreeScript(repo: String, worktreePath: String, branch: String, fetch: Bool = true) -> String {
         let repoQ = shellEscape(repo)
         let worktreeQ = shellEscape(worktreePath)
         let branchQ = shellEscape(branch)
+        let fetchLine = fetch ? "git fetch origin \(branchQ) || true\n" : ""
         return """
         set -e
         cd \(repoQ)
-        git fetch origin \(branchQ) || true
-        if [ ! -d \(worktreeQ) ]; then
+        \(fetchLine)if [ ! -d \(worktreeQ) ]; then
           mkdir -p "$(dirname \(worktreeQ))"
           if git show-ref --verify --quiet refs/heads/\(branchQ); then
             git worktree add \(worktreeQ) \(branchQ)
