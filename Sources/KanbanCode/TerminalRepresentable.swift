@@ -234,7 +234,11 @@ final class BatchedTerminalView: LocalProcessTerminalView {
     /// Claude Code always expects bracketed paste for image detection.
     override func paste(_ sender: Any) {
         let clipboard = NSPasteboard.general
-        let text = clipboard.string(forType: .string) ?? ""
+        if pasteImageToMachine(clipboard) { return }
+        sendBracketedPaste(text: clipboard.string(forType: .string) ?? "")
+    }
+
+    private func sendBracketedPaste(text: String) {
         // Always send bracketed paste codes — Claude Code needs them for image detection.
         // Raw bytes for \e[200~ and \e[201~ to avoid Swift 6 concurrency issues
         // with EscapeSequences static properties.
@@ -245,6 +249,43 @@ final class BatchedTerminalView: LocalProcessTerminalView {
             send(txt: text)
         }
         send(data: pasteEnd[0...])
+    }
+
+    /// An image pasted into the terminal of a session on a machine. Claude
+    /// there reads the machine's clipboard, which has nothing, so the bytes
+    /// go over the bridge and the paste types the path of the file on the
+    /// machine, as a dropped file does.
+    private func pasteImageToMachine(_ clipboard: NSPasteboard) -> Bool {
+        guard clipboard.string(forType: .string) == nil else { return false }
+        guard let session = enclosingSessionName(),
+              let machine = AppServices.machine(forSession: session),
+              let supervisor = AppServices.boxdSupervisor,
+              let data = Self.pngData(from: clipboard) else { return false }
+        Task { @MainActor [weak self] in
+            do {
+                let remotePath = try await supervisor.uploadPastedImage(machineName: machine, data: data)
+                self?.sendBracketedPaste(text: remotePath + " ")
+            } catch {
+                KanbanCodeLog.warn("terminal", "Image paste to \(machine) failed: \(error.localizedDescription)")
+            }
+        }
+        return true
+    }
+
+    private func enclosingSessionName() -> String? {
+        var view: NSView? = self
+        while let current = view, !(current is TerminalContainerNSView) {
+            view = current.superview
+        }
+        return (view as? TerminalContainerNSView)?.activeSession
+    }
+
+    /// PNG bytes of the image on the pasteboard; a screenshot arrives as TIFF.
+    private static func pngData(from clipboard: NSPasteboard) -> Data? {
+        if let png = clipboard.data(forType: .png) { return png }
+        guard let tiff = clipboard.data(forType: .tiff),
+              let bitmap = NSBitmapImageRep(data: tiff) else { return nil }
+        return bitmap.representation(using: .png, properties: [:])
     }
 
     // MARK: - Cmd+hover URL detection
@@ -538,12 +579,15 @@ final class TerminalCache {
                 self.terminals[session]?.passthroughMode = false
 
                 // Esc just dismisses scroll mode — don't forward it to the shell.
+                // The command must reach the server that owns the session: the
+                // local tmux, or the bridge of the machine of a remote card.
                 let isEscape = event.keyCode == 53
                 let chars = isEscape ? "" : (event.characters ?? "")
                 Task.detached {
-                    _ = try? await ShellCommand.run(tmux, arguments: ["send-keys", "-t", session, "-X", "cancel"])
+                    guard let adapter = try? AppServices.tmux.adapter(for: session) else { return }
+                    _ = try? await adapter.run(["send-keys", "-t", session, "-X", "cancel"])
                     if !chars.isEmpty {
-                        _ = try? await ShellCommand.run(tmux, arguments: ["send-keys", "-t", session, chars])
+                        _ = try? await adapter.run(["send-keys", "-t", session, chars])
                     }
                 }
                 return nil // consume — key is re-sent via tmux above

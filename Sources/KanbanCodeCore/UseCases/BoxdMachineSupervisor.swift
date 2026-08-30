@@ -450,6 +450,37 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         registry.assign(sessionName: sessionName, to: machineName)
     }
 
+    public func uploadImages(sessionName: String, imagePaths: [String]) async throws -> [String]? {
+        guard let machineName = registry.machine(forSession: sessionName) else { return nil }
+        guard let runtime = machines[machineName], let bridge = runtime.bridge else {
+            throw BoxdSupervisorError.notConnected(machineName)
+        }
+        let folder = String(UUID().uuidString.lowercased().prefix(8))
+        var remotePaths: [String] = []
+        for (index, localPath) in imagePaths.enumerated() {
+            guard let data = FileManager.default.contents(atPath: localPath) else { continue }
+            let pathExtension = (localPath as NSString).pathExtension
+            let suffix = pathExtension.isEmpty ? "png" : pathExtension
+            let remotePath = "\(runtime.remoteHome)/.kanban-code/images/\(folder)/\(index + 1).\(suffix)"
+            try await upload(machineName: machineName, bridge: bridge, remotePath: remotePath, data: data)
+            remotePaths.append(remotePath)
+        }
+        return remotePaths
+    }
+
+    /// One image from the Mac clipboard, pasted straight into the terminal of
+    /// a session on `machineName`: the bytes go over the bridge and the
+    /// terminal types the path that comes back.
+    public func uploadPastedImage(machineName: String, data: Data) async throws -> String {
+        guard let runtime = machines[machineName], let bridge = runtime.bridge else {
+            throw BoxdSupervisorError.notConnected(machineName)
+        }
+        let name = String(UUID().uuidString.lowercased().prefix(8))
+        let remotePath = "\(runtime.remoteHome)/.kanban-code/images/pasted/\(name).png"
+        try await upload(machineName: machineName, bridge: bridge, remotePath: remotePath, data: data)
+        return remotePath
+    }
+
     /// Forgets the machine of these tmux names, so they route locally again.
     public func releaseSessions(_ sessionNames: [String]) {
         for name in sessionNames { registry.unassign(sessionName: name) }

@@ -45,6 +45,25 @@ struct BoxdMachineSupervisorTests {
         )
     }
 
+    // MARK: - Images
+
+    @Test("Images of a session that is not on a machine stay on the Mac")
+    func uploadImagesLocalSession() async throws {
+        let supervisor = makeSupervisor(boxd: FakeBoxdPort())
+        let paths = try await supervisor.uploadImages(sessionName: "repo-card_1", imagePaths: ["/tmp/x.png"])
+        #expect(paths == nil)
+    }
+
+    @Test("Images for a machine without a bridge do not go anywhere")
+    func uploadImagesDisconnected() async {
+        let registry = RemoteSessionRegistry()
+        registry.assign(sessionName: "repo-card_2", to: "kanban-repo-1")
+        let supervisor = makeSupervisor(boxd: FakeBoxdPort(), registry: registry)
+        await #expect(throws: (any Error).self) {
+            _ = try await supervisor.uploadImages(sessionName: "repo-card_2", imagePaths: [])
+        }
+    }
+
     // MARK: - Pause markers and external resumes
 
     @Test("A pause writes the pause marker of every session on the machine")

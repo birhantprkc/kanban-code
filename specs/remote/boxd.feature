@@ -64,6 +64,15 @@ Feature: Boxd Remote Mode
     Then keystrokes reach the machine at once and Enter submits
     And the terminal has the size of the pane and follows a resize
     And Unicode glyphs render
+    And Esc leaves scroll mode
+
+  Scenario: Images reach a session on a machine
+    Given a card runs on a machine
+    When I paste an image into the terminal with Cmd+V
+    Then the image is put on the machine over the bridge
+    And its path on the machine is typed into the prompt
+    When I send a chat message with images to the card
+    Then the images go over the bridge and the prompt points at them by path
 
   Scenario: The transcript is mirrored to the Mac
     Given a card runs on a machine

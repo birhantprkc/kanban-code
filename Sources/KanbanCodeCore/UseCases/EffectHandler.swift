@@ -177,7 +177,17 @@ public actor EffectHandler {
                 let images = assistant.supportsImageUpload
                     ? imagePaths.compactMap { ImageAttachment.fromPath($0) }
                     : []
-                if !images.isEmpty {
+                if !images.isEmpty,
+                   let remotePaths = try await remoteMachines?.uploadImages(sessionName: sessionName, imagePaths: imagePaths) {
+                    // The clipboard does not reach the machine: the images go
+                    // over the bridge and the prompt points at them by path.
+                    let body = PromptImageLayout.replacingMarkersWithMarkdown(in: promptBody, imagePaths: remotePaths)
+                    if assistant.submitsPromptWithPaste {
+                        try await tmux.pastePrompt(to: sessionName, text: body)
+                    } else {
+                        try await tmux.sendPrompt(to: sessionName, text: body)
+                    }
+                } else if !images.isEmpty {
                     guard let setClipboard = setClipboardImage else { return }
                     let sender = ImageSender(tmux: tmux)
                     try await sender.waitForReady(sessionName: sessionName, assistant: assistant)
@@ -352,7 +362,12 @@ public actor EffectHandler {
         let canSendImages = target.assistant.supportsImageUpload && !imagePaths.isEmpty
         let bodyWithMarkdownImages = PromptImageLayout.replacingMarkersWithMarkdown(in: body, imagePaths: imagePaths)
         do {
-            if canSendImages, let tmux = tmuxAdapter, let setClipboard = setClipboardImage {
+            if canSendImages, let tmux = tmuxAdapter,
+               let remotePaths = try await remoteMachines?.uploadImages(sessionName: target.sessionName, imagePaths: imagePaths) {
+                // The images go over the bridge; the prompt points at them by path.
+                let remoteBody = PromptImageLayout.replacingMarkersWithMarkdown(in: body, imagePaths: remotePaths)
+                try await tmux.pastePrompt(to: target.sessionName, text: remoteBody)
+            } else if canSendImages, let tmux = tmuxAdapter, let setClipboard = setClipboardImage {
                 let images = imagePaths.compactMap { ImageAttachment.fromPath($0) }
                 if !images.isEmpty {
                     let sender = ImageSender(tmux: tmux)
