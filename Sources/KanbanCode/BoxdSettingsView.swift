@@ -34,6 +34,7 @@ struct BoxdSettingsView: View {
     @State private var initCommand = BoxdSettings.defaultInitCommand
     @State private var copyGlobsText = BoxdSettings.defaultCopyGlobs.joined(separator: "\n")
     @State private var inactivityMinutes = BoxdSettings.defaultInactivityTimeoutSeconds / 60
+    @State private var claudeOAuthToken = ""
 
     @State private var loaded = false
     @State private var saveTask: Task<Void, Never>?
@@ -142,6 +143,15 @@ struct BoxdSettingsView: View {
             }
         }
 
+        Section("Claude login") {
+            SecureField("Claude token", text: $claudeOAuthToken)
+                .textFieldStyle(.roundedBorder)
+                .onChange(of: claudeOAuthToken) { scheduleSave() }
+            Text("Machines made from the snapshot share the Claude login of the source machine, and a token refresh on one machine logs the others out. Run `claude setup-token` on this Mac and paste the token here. Every session on a machine then uses it as CLAUDE_CODE_OAUTH_TOKEN.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+        }
+
         Section("Lifecycle") {
             HStack {
                 Text("Pause after inactivity")
@@ -196,6 +206,7 @@ struct BoxdSettingsView: View {
         initCommand = boxd.initCommand
         copyGlobsText = boxd.copyGlobs.joined(separator: "\n")
         inactivityMinutes = max(Self.minimumMinutes, boxd.inactivityTimeoutSeconds / 60)
+        claudeOAuthToken = boxd.claudeOAuthToken
         loaded = true
 
         let adapter = BoxdCliAdapter()
@@ -232,7 +243,8 @@ struct BoxdSettingsView: View {
                 .components(separatedBy: "\n")
                 .map { $0.trimmingCharacters(in: .whitespaces) }
                 .filter { !$0.isEmpty },
-            inactivityTimeoutSeconds: max(Self.minimumMinutes, inactivityMinutes) * 60
+            inactivityTimeoutSeconds: max(Self.minimumMinutes, inactivityMinutes) * 60,
+            claudeOAuthToken: claudeOAuthToken.trimmingCharacters(in: .whitespacesAndNewlines)
         )
     }
 

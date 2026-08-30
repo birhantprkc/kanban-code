@@ -40,6 +40,13 @@ public enum BoxdLaunchPlanner {
         return String(name.prefix(maximumMachineNameLength))
     }
 
+    /// True for a machine this app created: `kc-<repo>-<card>`. The sweep
+    /// only ever touches these.
+    public static func isManagedMachineName(_ name: String) -> Bool {
+        guard name.hasPrefix("kc-"), name.count > "kc-".count else { return false }
+        return name.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }
+    }
+
     // MARK: - Worktree name
 
     /// Name of a worktree the user left unnamed: a word pair with a short

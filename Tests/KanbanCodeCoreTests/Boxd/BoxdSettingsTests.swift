@@ -28,6 +28,7 @@ struct BoxdSettingsTests {
         #expect(boxd.copyGlobs == ["**/.env"])
         #expect(boxd.inactivityTimeoutSeconds == 3600)
         #expect(boxd.initCommand == BoxdSettings.defaultInitCommand)
+        #expect(boxd.claudeOAuthToken == "")
         #expect(boxd.initCommand.contains("${repo_dir}"))
         #expect(boxd.initCommand.contains("${repo_url}"))
     }
@@ -194,5 +195,18 @@ struct BoxdSettingsTests {
         settings.assistantCommands["claude"] = AssistantCommandTemplate(local: "langwatch ${cli_command}", remote: "  ")
         #expect(settings.commandTemplate(for: .claude, remote: true) == nil)
         #expect(settings.commandTemplate(for: .claude, remote: false) == "langwatch ${cli_command}")
+    }
+
+
+    @Test("The Claude token round-trips and is empty when absent")
+    func claudeTokenRoundTrip() throws {
+        var settings = Settings()
+        settings.boxd = BoxdSettings(claudeOAuthToken: "sk-ant-oat01-abc")
+        let data = try JSONEncoder().encode(settings)
+        let decoded = try JSONDecoder().decode(Settings.self, from: data)
+        #expect(decoded.boxd?.claudeOAuthToken == "sk-ant-oat01-abc")
+
+        let absent = try decode(#"{"remoteMode":"boxd","boxd":{"snapshotName":"base"}}"#)
+        #expect(absent.boxd?.claudeOAuthToken == "")
     }
 }

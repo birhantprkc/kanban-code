@@ -428,4 +428,85 @@ struct BoxdReducerTests {
         #expect(state.remoteMode == .mutagen)
         #expect(state.boxdSettings == nil)
     }
+
+
+    // MARK: - Launch progress
+
+    @Test("launchProgress keeps a launch alive and shows the step")
+    func launchProgressKeepsLaunchAlive() throws {
+        var link = localCard(id: "card_1", sessionName: "repo-card_1")
+        link.isLaunching = true
+        link.updatedAt = Date(timeIntervalSinceNow: -120)
+        var state = stateWith([link])
+
+        let effects = Reducer.reduce(state: &state, action: .launchProgress(cardId: "card_1", message: "Creating machine"))
+
+        #expect(effects.isEmpty)
+        #expect(state.launchProgress["card_1"] == "Creating machine")
+        let updated = try #require(state.links["card_1"])
+        #expect(Date.now.timeIntervalSince(updated.updatedAt) < 5)
+    }
+
+    @Test("launchProgress is ignored for a card that is not launching")
+    func launchProgressIgnoredWhenNotLaunching() {
+        var state = stateWith([localCard(id: "card_1", sessionName: "repo-card_1")])
+
+        _ = Reducer.reduce(state: &state, action: .launchProgress(cardId: "card_1", message: "late"))
+
+        #expect(state.launchProgress["card_1"] == nil)
+    }
+
+    @Test("launchCompleted and launchFailed drop the progress line")
+    func launchEndClearsProgress() {
+        var link = localCard(id: "card_1", sessionName: "repo-card_1")
+        link.isLaunching = true
+        var state = stateWith([link])
+        _ = Reducer.reduce(state: &state, action: .launchProgress(cardId: "card_1", message: "step"))
+        _ = Reducer.reduce(state: &state, action: .launchTmuxReady(cardId: "card_1"))
+        #expect(state.launchProgress["card_1"] == nil)
+
+        var again = localCard(id: "card_2", sessionName: "repo-card_2")
+        again.isLaunching = true
+        state = stateWith([again])
+        _ = Reducer.reduce(state: &state, action: .launchProgress(cardId: "card_2", message: "step"))
+        _ = Reducer.reduce(state: &state, action: .launchFailed(cardId: "card_2", error: "boom"))
+        #expect(state.launchProgress["card_2"] == nil)
+    }
+
+    // MARK: - Reconciled merge
+
+    @Test("A reconciled snapshot without the machine record does not take it away")
+    func reconciledKeepsMachineRecord() throws {
+        let inMemory = remoteCard(id: "card_1", sessionName: "repo-card_1")
+        var state = stateWith([inMemory])
+
+        var snapshot = localCard(id: "card_1", sessionName: "repo-card_1")
+        snapshot.updatedAt = Date(timeIntervalSinceNow: 60)
+        _ = Reducer.reduce(state: &state, action: .reconciled(ReconciliationResult(
+            links: [snapshot], sessions: [], activityMap: [:], tmuxSessions: ["repo-card_1"])))
+
+        let merged = try #require(state.links["card_1"])
+        #expect(merged.remote?.machineName == "kc-repo-1")
+        #expect(merged.isRemote == true)
+    }
+
+    @Test("A stale launch loses only its flag, not the machine or the worktree")
+    func staleLaunchKeepsMachine() throws {
+        var inMemory = remoteCard(id: "card_1", sessionName: "repo-card_1")
+        inMemory.isLaunching = true
+        inMemory.worktreeLink = WorktreeLink(path: "/work/repo/.claude/worktrees/x", branch: "x")
+        inMemory.updatedAt = Date(timeIntervalSinceNow: -120)
+        var state = stateWith([inMemory])
+
+        var snapshot = localCard(id: "card_1", sessionName: "repo-card_1")
+        snapshot.isLaunching = true
+        snapshot.updatedAt = Date(timeIntervalSinceNow: -120)
+        _ = Reducer.reduce(state: &state, action: .reconciled(ReconciliationResult(
+            links: [snapshot], sessions: [], activityMap: [:], tmuxSessions: [])))
+
+        let merged = try #require(state.links["card_1"])
+        #expect(merged.isLaunching == nil)
+        #expect(merged.remote?.machineName == "kc-repo-1")
+        #expect(merged.worktreeLink?.branch == "x")
+    }
 }

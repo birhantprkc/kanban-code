@@ -19,6 +19,29 @@ enum AppServices {
         ShellCommand.findExecutable("boxd") ?? "boxd"
     }
 
+    // MARK: - Remote session readiness
+
+    /// Directory of the marker files that tell the embedded terminal a remote
+    /// tmux session exists. The terminal opens as soon as a launch starts,
+    /// long before the machine is ready, so it waits for the marker instead
+    /// of retrying `tmux attach` against a session that is not there yet.
+    static var remoteReadyDirectory: String {
+        NSHomeDirectory() + "/.kanban-code/remote-ready"
+    }
+
+    static func remoteReadyMarkerPath(for sessionName: String) -> String {
+        remoteReadyDirectory + "/" + sessionName
+    }
+
+    static func markRemoteSessionReady(_ sessionName: String) {
+        try? FileManager.default.createDirectory(atPath: remoteReadyDirectory, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: remoteReadyMarkerPath(for: sessionName), contents: Data())
+    }
+
+    static func clearRemoteSessionReady(_ sessionName: String) {
+        try? FileManager.default.removeItem(atPath: remoteReadyMarkerPath(for: sessionName))
+    }
+
     /// True when at least one boxd machine has an open bridge.
     static var hasConnectedMachines: Bool {
         remoteRegistry?.states.values.contains { $0.isConnected } ?? false

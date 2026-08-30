@@ -704,7 +704,12 @@ final class TerminalCache {
         let userShell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         let script: String
         if let machine = AppServices.machine(forSession: sessionName) {
-            script = Self.remoteAttachScript(boxd: AppServices.boxdPath, machine: machine, session: sessionName)
+            script = Self.remoteAttachScript(
+                boxd: AppServices.boxdPath,
+                machine: machine,
+                session: sessionName,
+                readyMarker: AppServices.remoteReadyMarkerPath(for: sessionName)
+            )
         } else {
             script = Self.attachScript(tmux: Self.tmuxPath, session: sessionName)
         }
@@ -718,12 +723,16 @@ final class TerminalCache {
     }
 
     /// Attaches to a tmux session on a boxd machine through a pty of
-    /// `boxd machine exec --tty`. The machine may still be resuming when the
-    /// terminal opens, so the attach is retried for a while.
-    static func remoteAttachScript(boxd: String, machine: String, session: String) -> String {
+    /// `boxd machine exec --tty`. The terminal opens when the launch starts,
+    /// so it first waits for the ready marker the launch writes once the
+    /// session exists (up to 20 minutes, a machine may have to be created
+    /// and a repository checked out first). The machine may still be
+    /// resuming after that, so the attach itself is retried for a while.
+    static func remoteAttachScript(boxd: String, machine: String, session: String, readyMarker: String? = nil) -> String {
         let quote = { (value: String) in "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
         let attach = "\(quote(boxd)) machine exec --tty \(quote(machine)) -- tmux attach-session -t \(quote(session))"
-        return "for i in $(seq 1 30); do \(attach) && break; sleep 2; done; echo 'Session ended.'"
+        let wait = readyMarker.map { "for i in $(seq 1 2400); do [ -e \(quote($0)) ] && break; sleep 0.5; done; " } ?? ""
+        return wait + "for i in $(seq 1 30); do \(attach) && break; sleep 2; done; echo 'Session ended.'"
     }
 
     /// The shell command a terminal runs to reach its tmux session.

@@ -138,6 +138,10 @@ public final class AppState: @unchecked Sendable {
     /// Transient: the supervisor reports it, nothing persists it.
     public var remoteMachineStates: [String: RemoteMachineState] = [:]
 
+    /// Last progress line of a launch or resume in flight, by card id.
+    /// Transient: shown under the "Starting session" spinner.
+    public var launchProgress: [String: String] = [:]
+
     /// Cards that keep their tmux session on `machineName`.
     public func cardIds(onMachine machineName: String) -> [String] {
         links.values
@@ -472,6 +476,10 @@ public enum Action: Sendable {
 
     // Busy state (transient spinners)
     case setBusy(cardId: String, busy: Bool)
+
+    /// A step of a launch or resume in flight. Keeps the launch alive for
+    /// the stale-launch timers and shows the step under the spinner.
+    case launchProgress(cardId: String, message: String)
 
     // Remote machines (boxd)
     /// A card got a machine, or its machine record changed (new cwd, new status).
@@ -1505,6 +1513,7 @@ public enum Reducer {
 
         case .cancelLaunch(let cardId):
             guard var link = state.links[cardId] else { return [] }
+            state.launchProgress[cardId] = nil
             let tmuxName = link.tmuxLink?.sessionName
             link.isLaunching = nil
             link.tmuxLink = nil
@@ -1852,8 +1861,16 @@ public enum Reducer {
 
         // MARK: Async Completions
 
+        case .launchProgress(let cardId, let message):
+            guard var link = state.links[cardId], link.isLaunching == true else { return [] }
+            state.launchProgress[cardId] = message
+            link.updatedAt = .now
+            state.links[cardId] = link
+            return []
+
         case .launchCompleted(let cardId, let tmuxName, let sessionLink, let worktreeLink, let isRemote):
             guard var link = state.links[cardId] else { return [] }
+            state.launchProgress[cardId] = nil
             let existingExtras = link.tmuxLink?.extraSessions
             link.tmuxLink = TmuxLink(sessionName: tmuxName, extraSessions: existingExtras)
             if let sl = sessionLink { link.sessionLink = sl }
@@ -1870,6 +1887,7 @@ public enum Reducer {
 
         case .launchTmuxReady(let cardId):
             guard var link = state.links[cardId] else { return [] }
+            state.launchProgress[cardId] = nil
             // Clear isLaunching so the UI shows the terminal immediately.
             // tmuxLink was already set by launchCard — we just flip the flag.
             link.isLaunching = nil
@@ -1880,6 +1898,7 @@ public enum Reducer {
 
         case .launchFailed(let cardId, let error):
             guard var link = state.links[cardId] else { return [] }
+            state.launchProgress[cardId] = nil
             link.tmuxLink = nil
             link.isLaunching = nil
             link.updatedAt = .now
@@ -1889,6 +1908,7 @@ public enum Reducer {
 
         case .resumeCompleted(let cardId, let tmuxName, let isRemote):
             guard var link = state.links[cardId] else { return [] }
+            state.launchProgress[cardId] = nil
             let existingExtras = link.tmuxLink?.extraSessions
             link.tmuxLink = TmuxLink(sessionName: tmuxName, extraSessions: existingExtras)
             link.isRemote = isRemote
@@ -1900,6 +1920,7 @@ public enum Reducer {
 
         case .resumeFailed(let cardId, let error):
             guard var link = state.links[cardId] else { return [] }
+            state.launchProgress[cardId] = nil
             link.tmuxLink = nil
             link.isLaunching = nil
             link.updatedAt = .now
@@ -2039,6 +2060,13 @@ public enum Reducer {
                     link.parentCardId = existing.parentCardId
                     link.modelOverride = existing.modelOverride
                     link.selfCompactContextThresholdTokens = existing.selfCompactContextThresholdTokens
+                    // The machine record is written by the supervisor, never
+                    // by the reconciler. A snapshot taken before the machine
+                    // was assigned must not take it away again.
+                    if link.remote == nil, let remote = existing.remote {
+                        link.remote = remote
+                        link.isRemote = existing.isRemote
+                    }
                     // Manual ordering is UI-owned: the reconciler only ever echoes
                     // back whatever links.json held when it took its snapshot. A
                     // drag that lands mid-cycle carries no updatedAt bump (it would
@@ -2057,10 +2085,14 @@ public enum Reducer {
                             KanbanCodeLog.info("store", "Cleared isLaunching on card=\(link.id.prefix(12)) (activity=\(activity!))")
                             continue
                         }
-                        // Stale launch timeout: clear isLaunching after 30s (crash recovery)
+                        // Stale launch timeout: clear isLaunching after 30s
+                        // (crash recovery). The in-memory link is kept, so
+                        // everything the launch wrote so far (machine, worktree)
+                        // survives; only the flag goes.
                         if Date.now.timeIntervalSince(existing.updatedAt) > 30 {
-                            var cleared = link
+                            var cleared = existing
                             cleared.isLaunching = nil
+                            cleared.updatedAt = .now
                             mergedLinks[link.id] = cleared
                             KanbanCodeLog.info("store", "Cleared stale isLaunching on card=\(link.id.prefix(12))")
                             continue
@@ -2486,7 +2518,8 @@ public final class BoardStore: @unchecked Sendable {
             // pass that produces the same links must not relayout the board.
             return false
         case .setPaletteOpen, .setDetailExpanded, .setPromptEditorFocused,
-             .showDialog, .dismissDialog, .setError, .setNotice, .setLoading, .setIsRefreshingBacklog:
+             .showDialog, .dismissDialog, .setError, .setNotice, .setLoading, .setIsRefreshingBacklog,
+             .launchProgress:
             return false
         case .refreshChannels, .refreshChannelMessages, .channelsLoaded,
              .channelMessagesLoaded, .createChannel, .sendChannelMessage,

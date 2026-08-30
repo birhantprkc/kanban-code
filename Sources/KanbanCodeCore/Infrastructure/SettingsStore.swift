@@ -193,6 +193,11 @@ public struct BoxdSettings: Codable, Sendable, Equatable {
     public var copyGlobs: [String]
     /// Seconds without activity before the machine is paused.
     public var inactivityTimeoutSeconds: Int
+    /// Long-lived Claude token (`claude setup-token`) exported as
+    /// `CLAUDE_CODE_OAUTH_TOKEN` in every session on a machine. Machines made
+    /// from one snapshot share the login of the source machine, and a token
+    /// refresh on one of them logs the others out; this token avoids that.
+    public var claudeOAuthToken: String
 
     public static let defaultSnapshotName = "kanban-code-base"
     public static let defaultSourceMachine = "good-wolf"
@@ -217,7 +222,8 @@ public struct BoxdSettings: Codable, Sendable, Equatable {
         folderTemplate: String = BoxdSettings.defaultFolderTemplate,
         initCommand: String = BoxdSettings.defaultInitCommand,
         copyGlobs: [String] = BoxdSettings.defaultCopyGlobs,
-        inactivityTimeoutSeconds: Int = BoxdSettings.defaultInactivityTimeoutSeconds
+        inactivityTimeoutSeconds: Int = BoxdSettings.defaultInactivityTimeoutSeconds,
+        claudeOAuthToken: String = ""
     ) {
         self.snapshotName = snapshotName
         self.sourceMachine = sourceMachine
@@ -225,6 +231,7 @@ public struct BoxdSettings: Codable, Sendable, Equatable {
         self.initCommand = initCommand
         self.copyGlobs = copyGlobs
         self.inactivityTimeoutSeconds = max(Self.minimumInactivityTimeoutSeconds, inactivityTimeoutSeconds)
+        self.claudeOAuthToken = claudeOAuthToken
     }
 
     // Per-field `try?` decoding, same rule as `Settings`: one bad value must
@@ -238,10 +245,12 @@ public struct BoxdSettings: Codable, Sendable, Equatable {
         copyGlobs = (try? c.decodeIfPresent([String].self, forKey: .copyGlobs)) ?? Self.defaultCopyGlobs
         let seconds = (try? c.decodeIfPresent(Int.self, forKey: .inactivityTimeoutSeconds)) ?? Self.defaultInactivityTimeoutSeconds
         inactivityTimeoutSeconds = max(Self.minimumInactivityTimeoutSeconds, seconds)
+        claudeOAuthToken = (try? c.decodeIfPresent(String.self, forKey: .claudeOAuthToken)) ?? ""
     }
 
     private enum CodingKeys: String, CodingKey {
         case snapshotName, sourceMachine, folderTemplate, initCommand, copyGlobs, inactivityTimeoutSeconds
+        case claudeOAuthToken
     }
 }
 

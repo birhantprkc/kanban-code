@@ -316,6 +316,9 @@ struct ContentView: View {
                     }
                 }
             }
+            await supervisor.setLinksProvider {
+                await MainActor.run { boardStore.map { Array($0.state.links.values) } ?? [] }
+            }
         }
 
         // Restore persisted detail expansion and card selection before first render
@@ -752,7 +755,8 @@ struct ContentView: View {
                 get: { isExpandedDetail },
                 set: { isExpandedDetail = $0 }
             ),
-            isDroppingImage: $isDroppingImage
+            isDroppingImage: $isDroppingImage,
+            launchStatus: store.state.launchProgress[card.id]
         )
     }
 
@@ -1482,9 +1486,22 @@ struct ContentView: View {
                 // Remote cards route their tmux names to their machines before
                 // the first reconcile, so the liveness scan does not clear them.
                 let remoteLinks = store.state.links.values.filter { $0.remote != nil && $0.isRemote }
-                if !remoteLinks.isEmpty {
-                    let supervisor = boxdSupervisor
-                    Task.detached { await supervisor.restore(links: Array(remoteLinks)) }
+                let supervisor = boxdSupervisor
+                let sweepsMachines = store.state.remoteMode == .boxd
+                Task.detached {
+                    if !remoteLinks.isEmpty {
+                        await supervisor.restore(links: Array(remoteLinks))
+                    } else {
+                        await supervisor.restore(links: [])
+                    }
+                    // Machines left behind by a failed launch or a killed app
+                    // are paused or destroyed once the known ones are back.
+                    if sweepsMachines {
+                        let report = await supervisor.sweepIfPossible()
+                        if !report.destroyed.isEmpty || !report.paused.isEmpty {
+                            KanbanCodeLog.info("boxd", "startup sweep: destroyed \(report.destroyed), paused \(report.paused)")
+                        }
+                    }
                 }
                 await store.reconcile()
                 systemTray.update()

@@ -133,3 +133,36 @@ Feature: Boxd Remote Mode
     When the app quits or the Mac goes to sleep
     Then every running machine is paused before the process ends
     And machines paused for sleep are resumed after wake
+
+  Scenario: The card shows what the launch is doing
+    Given a launch on boxd takes more than 30 seconds
+    When the machine is created, the repository is checked out and files are copied
+    Then the card shows the current step under the "Starting session" spinner
+    And the launch is not marked stale while a step is in progress
+    And the terminal attaches only after the tmux session exists on the machine
+
+  Scenario: A failed preparation keeps the machine for a retry
+    Given a launch on boxd fails after the machine was created
+    Then the card remembers the machine
+    And the machine is paused
+    And a retry resumes the same machine
+
+  Scenario: Orphan machines are cleaned up
+    Given a machine named kc-<repo>-<card> that no card references
+    When the app starts or ten minutes pass
+    Then a paused machine is destroyed
+    And a running machine is paused first and destroyed on the next sweep
+    And a machine of an archived card is destroyed
+    And a running machine of a card without a session is paused
+    And the source machine of the snapshot is never touched
+
+  Scenario: Quit does not wait forever for a pause
+    When the app quits with connected machines
+    Then a panel says the machines are being paused
+    And the app quits after ten seconds even when a pause has not answered
+
+  Scenario: One Claude login for every machine
+    Given a Claude token from `claude setup-token` in the Remote settings
+    When a session starts on a machine
+    Then CLAUDE_CODE_OAUTH_TOKEN is set in the session
+    And a token refresh on one machine does not log the others out

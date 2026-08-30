@@ -110,6 +110,7 @@ struct KanbanCodeApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNotificationCenterDelegate, @unchecked Sendable {
     private var terminationReplyPending = false
     private var quitConfirmationPanel: NSPanel?
+    private var pausingMachinesPanel: NSPanel?
     private weak var channelShareController: ChannelShareController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -256,11 +257,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             // process goes away, within a short bound.
             if AppServices.hasConnectedMachines, let supervisor = AppServices.boxdSupervisor {
                 terminationReplyPending = true
-                KanbanCodeLog.info("quit", "Pausing boxd machines before termination")
-                Task { @MainActor [weak self] in
-                    await supervisor.pauseAll(reason: .appQuit)
-                    self?.replyToTermination(true)
-                }
+                pauseMachinesThenTerminate(supervisor)
                 return .terminateLater
             }
             return .terminateNow
@@ -361,14 +358,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             CoordinationStore.clearTmuxSessionsSnapshot(sessionNames)
         }
         if AppServices.hasConnectedMachines, let supervisor = AppServices.boxdSupervisor {
-            KanbanCodeLog.info("quit", "Pausing boxd machines before termination")
-            Task { @MainActor [weak self] in
-                await supervisor.pauseAll(reason: .appQuit)
-                self?.replyToTermination(true)
-            }
+            pauseMachinesThenTerminate(supervisor)
             return
         }
         replyToTermination(true)
+    }
+
+    /// Pauses every connected boxd machine, with a panel that says so, and
+    /// then lets the app terminate. The pause is bounded: a machine that does
+    /// not answer in time is left to its auto-suspend timeout and to the next
+    /// sweep, the quit never hangs on it.
+    @MainActor
+    private func pauseMachinesThenTerminate(_ supervisor: BoxdMachineSupervisor) {
+        KanbanCodeLog.info("quit", "Pausing boxd machines before termination")
+        presentPausingMachinesPanel()
+        Task { @MainActor [weak self] in
+            await supervisor.pauseAll(reason: .appQuit, deadline: .seconds(10))
+            self?.dismissPausingMachinesPanel()
+            self?.replyToTermination(true)
+        }
+    }
+
+    @MainActor
+    private func presentPausingMachinesPanel() {
+        guard pausingMachinesPanel == nil else { return }
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 360, height: 140),
+            styleMask: [.titled, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        panel.titleVisibility = .hidden
+        panel.titlebarAppearsTransparent = true
+        panel.standardWindowButton(.closeButton)?.isHidden = true
+        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        panel.standardWindowButton(.zoomButton)?.isHidden = true
+        panel.isReleasedWhenClosed = false
+        panel.contentViewController = NSHostingController(rootView: PausingMachinesView())
+        pausingMachinesPanel = panel
+        if let parent = Self.quitConfirmationParentWindow(excluding: panel) {
+            parent.beginSheet(panel)
+        } else {
+            panel.center()
+            panel.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    @MainActor
+    private func dismissPausingMachinesPanel() {
+        guard let panel = pausingMachinesPanel else { return }
+        if let parent = panel.sheetParent {
+            parent.endSheet(panel)
+        } else {
+            panel.orderOut(nil)
+        }
+        pausingMachinesPanel = nil
     }
 
     @MainActor

@@ -237,6 +237,18 @@ struct BoxdLaunchPlannerTests {
         #expect(BoxdLaunchPlanner.copyMatches(globs: ["**/.env"], projectRoot: "/nowhere/at/all").isEmpty)
     }
 
+    // MARK: - Managed machine names
+
+    @Test("Only kc- machines with a plain name count as managed")
+    func managedMachineName() {
+        #expect(BoxdLaunchPlanner.isManagedMachineName("kc-langwatch-3icygdab"))
+        #expect(BoxdLaunchPlanner.isManagedMachineName(BoxdLaunchPlanner.machineName(repoName: "kanban-code", cardId: "card_e2e1234567")))
+        #expect(!BoxdLaunchPlanner.isManagedMachineName("good-wolf"))
+        #expect(!BoxdLaunchPlanner.isManagedMachineName("kc-"))
+        #expect(!BoxdLaunchPlanner.isManagedMachineName("kc-with space"))
+        #expect(!BoxdLaunchPlanner.isManagedMachineName(""))
+    }
+
     // MARK: - Worktree name
 
     @Test("An unnamed worktree gets a name that is one branch-safe path component")

@@ -21,6 +21,23 @@ final class EscapeCancellingPanel: NSPanel {
     }
 }
 
+/// Shown while the app pauses its boxd machines on quit.
+struct PausingMachinesView: View {
+    var body: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+                .controlSize(.large)
+            Text("Pausing boxd machines…")
+                .font(.app(.headline))
+            Text("Kanban Code quits when every machine is in standby.")
+                .font(.app(.caption))
+                .foregroundStyle(.secondary)
+        }
+        .padding(24)
+        .frame(width: 360, height: 140)
+    }
+}
+
 struct QuitConfirmationSession: Identifiable {
     let session: TmuxSession
     let cardTitle: String?

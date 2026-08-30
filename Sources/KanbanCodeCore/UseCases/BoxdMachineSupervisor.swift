@@ -86,11 +86,18 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     private let appVersion: String
     private let localHome: String
     private let localKanbanHome: String
+    /// Current links of the board, read when a sweep decides what a machine is for.
+    public typealias LinksProvider = @Sendable () async -> [Link]
+
     private var dispatch: Dispatch?
     private var proxyRunner: ProxyRunner?
     private var busyCheck: BusyCheck?
+    private var linksProvider: LinksProvider?
     private var machines: [String: MachineRuntime] = [:]
     private var inactivityTask: Task<Void, Never>?
+    private var timerTicks = 0
+    /// Minutes between two sweeps of the machine list.
+    public static let sweepIntervalMinutes = 10
     private let now: @Sendable () -> Date
 
     public init(
@@ -125,6 +132,10 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         self.busyCheck = check
     }
 
+    public func setLinksProvider(_ provider: @escaping LinksProvider) {
+        self.linksProvider = provider
+    }
+
     // MARK: - Queries
 
     public func isConnected(_ machineName: String) -> Bool {
@@ -153,6 +164,7 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     /// Re-seeds the registry from persisted links and reconnects the
     /// machines that are running. Paused machines stay paused.
     public func restore(links: [Link]) async {
+        defer { startInactivityTimer() }
         registry.seed(from: links)
         var seen: Set<String> = []
         for link in links {
@@ -232,6 +244,18 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
             log: log
         )
         guard let bridge = machines[machineName]?.bridge else { throw BoxdSupervisorError.notConnected(machineName) }
+
+        // The card remembers its machine from here on, so a failed step
+        // further down still leaves a machine to pause, retry or destroy.
+        await dispatch?(.remoteMachineAssigned(cardId: cardId, remote: RemoteLink(
+            mode: .boxd,
+            machineName: machineName,
+            machineId: machine.id,
+            remoteProjectPath: remoteProjectPath,
+            remoteCwd: remoteProjectPath,
+            remoteHome: remoteHome,
+            lastStatus: "running"
+        )))
 
         do {
             return try await prepareCheckout(
@@ -344,7 +368,7 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
             remoteProjectPath: remoteProjectPath,
             remoteCwd: remoteCwd,
             worktree: worktree,
-            extraEnv: Self.sessionEnvironment(cardId: cardId, remoteHome: remoteHome),
+            extraEnv: Self.sessionEnvironment(cardId: cardId, remoteHome: remoteHome, claudeOAuthToken: settings.claudeOAuthToken),
             remoteLink: remoteLink
         )
     }
@@ -391,12 +415,16 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     }
 
     /// Environment every assistant process gets on the machine.
-    public nonisolated static func sessionEnvironment(cardId: String, remoteHome: String) -> [String: String] {
-        [
+    public nonisolated static func sessionEnvironment(cardId: String, remoteHome: String, claudeOAuthToken: String? = nil) -> [String: String] {
+        var env = [
             "KANBAN_REMOTE_PROXY": "1",
             "KANBAN_CARD_ID": cardId,
             "KANBAN_CODE_HOME": "\(remoteHome)/.kanban-code",
         ]
+        if let token = claudeOAuthToken?.trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty {
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = token
+        }
+        return env
     }
 
     /// Makes the session environment visible to every pane of the tmux
@@ -533,28 +561,100 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     }
 
     /// Pauses every running machine, in parallel, within `deadline`.
+    /// Returns when every machine is paused or when `deadline` passes,
+    /// whichever comes first. A `boxd machine pause` that hangs keeps
+    /// running on its own; the caller (the quit path) must not wait for it.
     public func pauseAll(reason: RemotePausedReason, deadline: Duration = .seconds(8)) async {
         let running = machines.filter { $0.value.bridge != nil }.map(\.key)
         guard !running.isEmpty else { return }
-        await withTaskGroup(of: Bool.self) { group in
-            for name in running {
-                group.addTask {
-                    await self.pause(machineName: name, reason: reason)
-                    return true
+        let pauses = running.map { name in
+            Task { await self.pause(machineName: name, reason: reason) }
+        }
+        let gate = FirstToFinish()
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            Task {
+                for pause in pauses { await pause.value }
+                if gate.claim() { continuation.resume() }
+            }
+            Task {
+                try? await Task.sleep(for: deadline)
+                if gate.claim() {
+                    KanbanCodeLog.warn(Self.subsystem, "pauseAll: deadline passed with machines still pausing")
+                    continuation.resume()
                 }
             }
-            group.addTask {
-                try? await Task.sleep(for: deadline)
-                return false
-            }
-            var paused = 0
-            for await done in group {
-                if !done { break }
-                paused += 1
-                if paused == running.count { break }
-            }
-            group.cancelAll()
         }
+    }
+
+    // MARK: - Sweep
+
+    /// What the sweep did to the machines it found.
+    public struct SweepReport: Sendable, Equatable {
+        public var destroyed: [String] = []
+        public var paused: [String] = []
+        public init(destroyed: [String] = [], paused: [String] = []) {
+            self.destroyed = destroyed
+            self.paused = paused
+        }
+    }
+
+    /// Cleans up machines this app created (`kc-*`) that no card needs:
+    /// - a machine no card references, or only archived cards reference, is
+    ///   destroyed once it is not running (a running one is paused first, so
+    ///   a machine in use by another process gets a grace period);
+    /// - a running machine whose cards have no tmux session and no bridge in
+    ///   this app is paused.
+    /// `sourceMachine` and machines with an open bridge are never touched.
+    public func sweep(links: [Link]) async -> SweepReport {
+        let settings = await settingsProvider()
+        var report = SweepReport()
+        guard let listed = try? await boxd.listMachines() else { return report }
+
+        var referencedBy: [String: [Link]] = [:]
+        for link in links {
+            guard let remote = link.remote, remote.mode == .boxd else { continue }
+            referencedBy[remote.machineName, default: []].append(link)
+        }
+
+        for machine in listed where BoxdLaunchPlanner.isManagedMachineName(machine.name) {
+            let name = machine.name
+            guard name != settings.sourceMachine, machine.status != .destroyed else { continue }
+            if machines[name]?.bridge != nil { continue }
+
+            let holders = referencedBy[name] ?? []
+            let liveHolders = holders.filter { !$0.manuallyArchived }
+            if liveHolders.isEmpty {
+                if machine.status == .running || machine.status == .booting {
+                    KanbanCodeLog.info(Self.subsystem, "sweep: \(name) has no card, pausing")
+                    try? await boxd.pause(name: name)
+                    report.paused.append(name)
+                } else {
+                    KanbanCodeLog.info(Self.subsystem, "sweep: \(name) has no card, destroying")
+                    do {
+                        try await destroy(machineName: name)
+                        report.destroyed.append(name)
+                        if !holders.isEmpty { await self.report(name, state: .destroyed) }
+                    } catch {
+                        KanbanCodeLog.warn(Self.subsystem, "sweep: destroy \(name) failed: \(error.localizedDescription)")
+                    }
+                }
+                continue
+            }
+
+            let hasSession = liveHolders.contains { $0.tmuxLink != nil }
+            if !hasSession, machine.status == .running {
+                KanbanCodeLog.info(Self.subsystem, "sweep: \(name) has no session, pausing")
+                await pause(machineName: name, reason: .sessionStopped)
+                report.paused.append(name)
+            }
+        }
+        return report
+    }
+
+    /// A sweep with the links the app provided, or nothing when it did not.
+    public func sweepIfPossible() async -> SweepReport {
+        guard let linksProvider else { return SweepReport() }
+        return await sweep(links: await linksProvider())
     }
 
     /// Machines paused for system sleep come back after wake.
@@ -901,11 +1001,18 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
                 await self?.checkInactivity()
+                await self?.sweepOnTick()
             }
         }
     }
 
     /// Pauses machines that had no activity for the configured timeout.
+    private func sweepOnTick() async {
+        timerTicks += 1
+        guard timerTicks % Self.sweepIntervalMinutes == 0 else { return }
+        _ = await sweepIfPossible()
+    }
+
     public func checkInactivity() async {
         let timeout = TimeInterval(await settingsProvider().inactivityTimeoutSeconds)
         let current = now()
@@ -1032,5 +1139,18 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
 
     nonisolated static func shellEscape(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+}
+
+/// Lets the first of several racing tasks resume a continuation, once.
+private final class FirstToFinish: @unchecked Sendable {
+    private let lock = NSLock()
+    private var claimed = false
+
+    func claim() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if claimed { return false }
+        claimed = true
+        return true
     }
 }

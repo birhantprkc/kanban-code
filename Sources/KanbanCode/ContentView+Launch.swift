@@ -66,8 +66,13 @@ extension ContentView {
         // Reducer computed the unique tmux name and stored it in the link
         let predictedTmuxName = store.state.links[cardId]?.tmuxLink?.sessionName ?? cardId
         KanbanCodeLog.info("launch", "Starting launch for card=\(cardId.prefix(12)) tmux=\(predictedTmuxName) project=\(projectPath)")
+        // A marker from an earlier run of this session name would let the
+        // terminal attach before the machine is ready.
+        AppServices.clearRemoteSessionReady(predictedTmuxName)
+        let progress = LaunchProgress(cardId: cardId, store: store)
 
         Task {
+            defer { progress.finish() }
             do {
                 let settings = try? await settingsStore.read()
 
@@ -87,6 +92,7 @@ extension ContentView {
                 if runRemotely, remoteMode == .boxd {
                     let existingMachine = machineChoice?.machineName
                         ?? (machineChoice == nil ? cardLink?.remote?.machineName : nil)
+                    progress.start()
                     let preparation = try await boxdSupervisor.prepare(
                         cardId: cardId,
                         localProjectPath: projectPath,
@@ -94,8 +100,9 @@ extension ContentView {
                         worktreeName: worktreeName,
                         existingWorktree: cardLink?.worktreeLink,
                         sessionNames: [predictedTmuxName],
-                        log: { line in KanbanCodeLog.info("boxd", "\(cardId.prefix(12)): \(line)") }
+                        log: { line in progress.report(line) }
                     )
+                    progress.report("Starting \(assistant.displayName) on \(preparation.machineName)")
                     boxdPreparation = preparation
                     shellOverride = nil
                     extraEnv = preparation.extraEnv
@@ -205,6 +212,7 @@ extension ContentView {
                 if let preparation = boxdPreparation {
                     await boxdSupervisor.exportSessionEnvironment(
                         machineName: preparation.machineName, sessionName: tmuxName, env: preparation.extraEnv)
+                    AppServices.markRemoteSessionReady(tmuxName)
                 }
 
                 // Show terminal immediately — clear isLaunching so UI switches
@@ -716,8 +724,10 @@ extension ContentView {
             shouldFocusTerminal = true
         }
         KanbanCodeLog.info("resume", "Starting resume for card=\(cardId.prefix(12)) session=\(sessionId.prefix(8))")
+        let progress = LaunchProgress(cardId: cardId, store: store)
 
         Task {
+            defer { progress.finish() }
             do {
                 let settings = try? await settingsStore.read()
 
@@ -728,6 +738,7 @@ extension ContentView {
                 var resumePath = projectPath
                 var boxdPreparation: BoxdPreparation?
                 let resumeSessionName = "\(assistant.cliCommand)-\(String(sessionId.prefix(8)))"
+                AppServices.clearRemoteSessionReady(resumeSessionName)
 
                 let globalRemote = settings?.remote
                 let remoteMode = settings?.remoteMode ?? .boxd
@@ -735,6 +746,7 @@ extension ContentView {
                     let currentMachine = card.link.remote?.machineName
                     let existingMachine = machineChoice?.machineName
                         ?? (machineChoice == nil ? currentMachine : nil)
+                    progress.start()
                     let preparation = try await boxdSupervisor.prepare(
                         cardId: cardId,
                         localProjectPath: projectPath,
@@ -743,7 +755,7 @@ extension ContentView {
                         existingWorktree: card.link.worktreeLink,
                         sessionNames: [resumeSessionName],
                         runInit: existingMachine == nil || existingMachine != currentMachine,
-                        log: { line in KanbanCodeLog.info("boxd", "\(cardId.prefix(12)): \(line)") }
+                        log: { line in progress.report(line) }
                     )
                     boxdPreparation = preparation
                     shellOverride = nil
@@ -758,6 +770,7 @@ extension ContentView {
                     if existingMachine == currentMachine,
                        await boxdSupervisor.hasSession(machineName: preparation.machineName, sessionName: resumeSessionName) {
                         KanbanCodeLog.info("resume", "Attaching to live remote tmux \(resumeSessionName) on \(preparation.machineName)")
+                        AppServices.markRemoteSessionReady(resumeSessionName)
                         store.dispatch(.resumeCompleted(cardId: cardId, tmuxName: resumeSessionName, isRemote: true))
                         return
                     }
@@ -846,6 +859,7 @@ extension ContentView {
                 if let preparation = boxdPreparation {
                     await boxdSupervisor.exportSessionEnvironment(
                         machineName: preparation.machineName, sessionName: actualTmuxName, env: preparation.extraEnv)
+                    AppServices.markRemoteSessionReady(actualTmuxName)
                 }
 
                 store.dispatch(.resumeCompleted(cardId: cardId, tmuxName: actualTmuxName, isRemote: isRemote))
@@ -856,4 +870,50 @@ extension ContentView {
         }
     }
 
+}
+
+/// Reports the steps of a launch or resume to the board and keeps the launch
+/// alive while a long step runs.
+///
+/// A remote launch can take minutes (machine creation, a repository checkout,
+/// file copies). The stale-launch timers (the reconciler and the card detail)
+/// give up after 30 seconds of silence, so every step is reported as it
+/// starts and the last one is repeated every 10 seconds until `finish()`.
+@MainActor
+final class LaunchProgress {
+    private let cardId: String
+    private weak var store: BoardStore?
+    private var lastMessage: String?
+    private var heartbeat: Task<Void, Never>?
+
+    init(cardId: String, store: BoardStore) {
+        self.cardId = cardId
+        self.store = store
+    }
+
+    /// Starts the heartbeat. Idempotent.
+    func start() {
+        guard heartbeat == nil else { return }
+        heartbeat = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(10))
+                guard !Task.isCancelled, let self, let message = self.lastMessage else { continue }
+                self.store?.dispatch(.launchProgress(cardId: self.cardId, message: message))
+            }
+        }
+    }
+
+    /// Shows `line` under the spinner and logs it.
+    nonisolated func report(_ line: String) {
+        Task { @MainActor [self] in
+            KanbanCodeLog.info("boxd", "\(cardId.prefix(12)): \(line)")
+            lastMessage = line
+            store?.dispatch(.launchProgress(cardId: cardId, message: line))
+        }
+    }
+
+    func finish() {
+        heartbeat?.cancel()
+        heartbeat = nil
+    }
 }

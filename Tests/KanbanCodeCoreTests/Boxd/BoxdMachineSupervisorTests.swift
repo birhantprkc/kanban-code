@@ -243,4 +243,97 @@ struct BoxdMachineSupervisorTests {
         #expect(await supervisor.mirror(for: "kc-repo-1") == nil)
         #expect(await supervisor.lastActivity(of: "kc-repo-1") == nil)
     }
+
+
+    // MARK: - Sweep
+
+    private func link(id: String, machine: String?, session: String? = nil, archived: Bool = false) -> Link {
+        var link = Link(
+            id: id,
+            name: id,
+            projectPath: "/work/repo",
+            column: archived ? .allSessions : .inProgress,
+            source: .manual,
+            tmuxLink: session.map { TmuxLink(sessionName: $0) },
+            isRemote: machine != nil,
+            remote: machine.map { RemoteLink(machineName: $0, remoteProjectPath: "/home/boxd/repo", remoteCwd: "/home/boxd/repo", remoteHome: "/home/boxd") }
+        )
+        link.manuallyArchived = archived
+        return link
+    }
+
+    @Test("sweep destroys idle orphans, pauses running ones and leaves used machines alone")
+    func sweepCleansOrphans() async {
+        let boxd = FakeBoxdPort()
+        boxd.setMachine(BoxdMachine(name: "kc-repo-orphan", status: .standby))
+        boxd.setMachine(BoxdMachine(name: "kc-repo-orphan-run", status: .running))
+        boxd.setMachine(BoxdMachine(name: "kc-repo-archived", status: .hibernated))
+        boxd.setMachine(BoxdMachine(name: "kc-repo-idle", status: .running))
+        boxd.setMachine(BoxdMachine(name: "kc-repo-live", status: .running))
+        boxd.setMachine(BoxdMachine(name: "kc-repo-paused", status: .standby))
+        boxd.setMachine(BoxdMachine(name: "good-wolf", status: .running))
+        boxd.setMachine(BoxdMachine(name: "my-own-box", status: .standby))
+        let supervisor = makeSupervisor(boxd: boxd)
+
+        let report = await supervisor.sweep(links: [
+            link(id: "card_archived", machine: "kc-repo-archived", archived: true),
+            link(id: "card_idle", machine: "kc-repo-idle"),
+            link(id: "card_live", machine: "kc-repo-live", session: "repo-card_live"),
+            link(id: "card_paused", machine: "kc-repo-paused"),
+            link(id: "card_local", machine: nil, session: "repo-card_local"),
+        ])
+
+        #expect(Set(report.destroyed) == ["kc-repo-orphan", "kc-repo-archived"])
+        #expect(Set(report.paused) == ["kc-repo-orphan-run", "kc-repo-idle"])
+        #expect(Set(boxd.callNames("remove")) == ["kc-repo-orphan", "kc-repo-archived"])
+        #expect(Set(boxd.callNames("pause")) == ["kc-repo-orphan-run", "kc-repo-idle"])
+    }
+
+    @Test("sweep never touches the source machine even when it matches the pattern")
+    func sweepSkipsSourceMachine() async {
+        let boxd = FakeBoxdPort()
+        boxd.setMachine(BoxdMachine(name: "kc-base", status: .standby))
+        let home = NSTemporaryDirectory() + "boxd-supervisor-\(UUID().uuidString)"
+        let supervisor = BoxdMachineSupervisor(
+            boxd: boxd,
+            registry: RemoteSessionRegistry(),
+            settingsProvider: { BoxdSettings(sourceMachine: "kc-base") },
+            cliBundlePath: nil,
+            appVersion: "1.0.0-test",
+            localHome: home,
+            localKanbanHome: home + "/.kanban-code"
+        )
+
+        let report = await supervisor.sweep(links: [])
+
+        #expect(report == BoxdMachineSupervisor.SweepReport())
+        #expect(boxd.callNames("remove").isEmpty)
+    }
+
+    @Test("sweep without a links provider does nothing")
+    func sweepNeedsLinks() async {
+        let boxd = FakeBoxdPort()
+        boxd.setMachine(BoxdMachine(name: "kc-repo-orphan", status: .standby))
+        let supervisor = makeSupervisor(boxd: boxd)
+
+        let report = await supervisor.sweepIfPossible()
+
+        #expect(report == BoxdMachineSupervisor.SweepReport())
+        #expect(boxd.callNames("listMachines").isEmpty)
+    }
+
+    // MARK: - Session environment
+
+    @Test("The Claude token joins the session environment only when it is set")
+    func sessionEnvironmentToken() {
+        let plain = BoxdMachineSupervisor.sessionEnvironment(cardId: "card_1", remoteHome: "/home/boxd")
+        #expect(plain["CLAUDE_CODE_OAUTH_TOKEN"] == nil)
+        #expect(plain["KANBAN_CARD_ID"] == "card_1")
+
+        let blank = BoxdMachineSupervisor.sessionEnvironment(cardId: "card_1", remoteHome: "/home/boxd", claudeOAuthToken: "  ")
+        #expect(blank["CLAUDE_CODE_OAUTH_TOKEN"] == nil)
+
+        let withToken = BoxdMachineSupervisor.sessionEnvironment(cardId: "card_1", remoteHome: "/home/boxd", claudeOAuthToken: " sk-ant-oat01-x \n")
+        #expect(withToken["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-x")
+    }
 }

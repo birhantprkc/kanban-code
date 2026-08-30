@@ -94,3 +94,27 @@ On the Mac the app runs the bundled CLI with the same arguments and `KANBAN_CARD
 | Archive or delete with a machine | The app asks before it runs `boxd machine remove`. |
 
 Machines are created with `--auto-suspend-timeout` equal to the inactivity timeout. If the Mac disappears without pausing the machine, boxd suspends it when the bridge traffic stops.
+
+The app quits only after `pauseAll` returns or after 10 seconds, whichever comes first. A panel says "Pausing boxd machines" meanwhile. A pause that takes longer keeps running on its own.
+
+### Sweep
+
+At startup and every 10 minutes the app lists the machines and cleans up the ones it created (`kc-<repo>-<card>`):
+
+| Machine | Action |
+|---|---|
+| No card references it, or only archived cards do, and it is not running | `boxd machine remove` |
+| No card references it and it is running | `boxd machine pause`; the next sweep removes it |
+| A card references it, the card has no tmux session, the machine is running and has no bridge | `boxd machine pause` |
+
+The source machine of the snapshot and machines with an open bridge are never touched. A running orphan is paused before it is removed so a machine another process is using (for example the end to end test) gets a grace period.
+
+### Launch progress
+
+A launch or resume on boxd reports every step (`Creating machine`, `Running the initialization command`, `Checking out <branch> on the machine`, ...) as an action. The card shows the current step under the "Starting session" spinner, and the step repeats every 10 seconds, which keeps the 30 second stale-launch timers of the reconciler and of the card from giving up during a long checkout.
+
+The embedded terminal opens when the launch starts. For a remote session it waits for a marker file, `~/.kanban-code/remote-ready/<session>`, which the launch writes once the tmux session exists on the machine, and only then runs `boxd machine exec --tty <vm> -- tmux attach-session`.
+
+### Claude login
+
+Every machine made from the snapshot carries the Claude login of the source machine. A token refresh on one machine logs the others out ("Login expired" in the pane). The Remote settings take a long-lived token from `claude setup-token`; it is exported as `CLAUDE_CODE_OAUTH_TOKEN` in every session on a machine.
