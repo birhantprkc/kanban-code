@@ -147,6 +147,7 @@ Feature: Boxd Remote Mode
     When I archive the card
     Then a dialog asks "Are you sure? This destroys the boxd machine"
     And confirming destroys the machine and archives the card
+    And a notice says "Machine <name> destroyed"
 
   Scenario: Card menu machine actions
     Given a card with a machine

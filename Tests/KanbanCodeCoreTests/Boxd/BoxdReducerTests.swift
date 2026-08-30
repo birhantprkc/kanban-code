@@ -264,6 +264,7 @@ struct BoxdReducerTests {
         #expect(state.links["card_3"]?.remote?.machineName == "kanban-other")
         #expect(state.remoteMachineStates["kanban-repo-1"] == nil)
         #expect(state.remoteMachineStates["kanban-other"] == .connected)
+        #expect(state.notice == Notice("Machine kanban-repo-1 destroyed", kind: .success))
     }
 
     // MARK: - remoteMachineStateChanged

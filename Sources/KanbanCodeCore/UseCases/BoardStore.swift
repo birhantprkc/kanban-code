@@ -2378,6 +2378,7 @@ public enum Reducer {
 
         case .remoteMachineDestroyed(let machineName):
             state.remoteMachineStates[machineName] = nil
+            state.notice = Notice("Machine \(machineName) destroyed", kind: .success)
             var effects: [Effect] = []
             for id in state.cardIds(onMachine: machineName) {
                 guard var link = state.links[id] else { continue }
