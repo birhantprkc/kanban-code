@@ -3,9 +3,12 @@ import SwiftUI
 /// Compact command editor for launch dialogs.
 ///
 /// Return confirms the dialog. Command+Return inserts a newline in the command.
+/// Escape runs `onEscape`, because the text view takes the key before the
+/// responder chain reaches the dialog buttons.
 struct CommandTextEditor: NSViewRepresentable {
     @Binding var text: String
     var onSubmit: () -> Void
+    var onEscape: (() -> Void)?
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -20,6 +23,7 @@ struct CommandTextEditor: NSViewRepresentable {
         let textView = CommandNSTextView()
         textView.delegate = context.coordinator
         textView.onSubmit = onSubmit
+        textView.onEscape = onEscape
         textView.isRichText = false
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
@@ -41,6 +45,7 @@ struct CommandTextEditor: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? CommandNSTextView else { return }
         textView.onSubmit = onSubmit
+        textView.onEscape = onEscape
         if textView.string != text {
             textView.string = text
         }
@@ -62,6 +67,7 @@ struct CommandTextEditor: NSViewRepresentable {
 
 final class CommandNSTextView: NSTextView {
     var onSubmit: (() -> Void)?
+    var onEscape: (() -> Void)?
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
@@ -75,6 +81,10 @@ final class CommandNSTextView: NSTextView {
 
     override func keyDown(with event: NSEvent) {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if event.keyCode == 53, let onEscape {
+            onEscape()
+            return
+        }
         let isReturn = event.keyCode == 36 || event.keyCode == 76
         if isReturn && modifiers.isEmpty {
             onSubmit?()

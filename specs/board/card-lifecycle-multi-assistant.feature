@@ -135,3 +135,4 @@ Feature: Card Lifecycle with Multiple Assistants
     Given cards with Claude, Gemini, and Codex tmux sessions
     When the app quits
     Then all tmux sessions should be killed regardless of assistant type
+    And the boxd machine of a session that runs on one goes to standby

@@ -234,7 +234,11 @@ final class BatchedTerminalView: LocalProcessTerminalView {
     /// Claude Code always expects bracketed paste for image detection.
     override func paste(_ sender: Any) {
         let clipboard = NSPasteboard.general
-        let text = clipboard.string(forType: .string) ?? ""
+        if pasteImageToMachine(clipboard) { return }
+        sendBracketedPaste(text: clipboard.string(forType: .string) ?? "")
+    }
+
+    private func sendBracketedPaste(text: String) {
         // Always send bracketed paste codes — Claude Code needs them for image detection.
         // Raw bytes for \e[200~ and \e[201~ to avoid Swift 6 concurrency issues
         // with EscapeSequences static properties.
@@ -245,6 +249,46 @@ final class BatchedTerminalView: LocalProcessTerminalView {
             send(txt: text)
         }
         send(data: pasteEnd[0...])
+    }
+
+    /// An image pasted into the terminal of a session on a machine. Claude
+    /// there reads the machine's clipboard, which has nothing, so the bytes
+    /// go over the bridge and the paste types the path of the file on the
+    /// machine, as a dropped file does.
+    private func pasteImageToMachine(_ clipboard: NSPasteboard) -> Bool {
+        guard clipboard.string(forType: .string) == nil else { return false }
+        guard let session = enclosingSessionName(),
+              let machine = AppServices.machine(forSession: session),
+              let supervisor = AppServices.boxdSupervisor,
+              let data = Self.pngData(from: clipboard) else { return false }
+        Task {
+            do {
+                let remotePath = try await supervisor.uploadPastedImage(machineName: machine, data: data)
+                // Pasted through the tmux server of the machine, which runs
+                // after the upload on the same bridge, so the assistant
+                // finds the file when it checks the pasted path.
+                try await AppServices.tmux.pasteText(to: session, text: remotePath + " ")
+            } catch {
+                KanbanCodeLog.warn("terminal", "Image paste to \(machine) failed: \(error.localizedDescription)")
+            }
+        }
+        return true
+    }
+
+    private func enclosingSessionName() -> String? {
+        var view: NSView? = self
+        while let current = view, !(current is TerminalContainerNSView) {
+            view = current.superview
+        }
+        return (view as? TerminalContainerNSView)?.activeSession
+    }
+
+    /// PNG bytes of the image on the pasteboard; a screenshot arrives as TIFF.
+    private static func pngData(from clipboard: NSPasteboard) -> Data? {
+        if let png = clipboard.data(forType: .png) { return png }
+        guard let tiff = clipboard.data(forType: .tiff),
+              let bitmap = NSBitmapImageRep(data: tiff) else { return nil }
+        return bitmap.representation(using: .png, properties: [:])
     }
 
     // MARK: - Cmd+hover URL detection
@@ -493,6 +537,13 @@ final class TerminalCache {
     /// to prevent residual momentum from re-entering copy-mode.
     fileprivate var copyModeExitTime: [String: ContinuousClock.Instant] = [:]
 
+    /// Wheel ticks of a session on a machine, summed until the next flush.
+    /// Each command to a machine is a round trip over the bridge, so one
+    /// command carries the ticks of the last 60 ms instead of one per tick.
+    private var remoteScrollPending: [String: Int] = [:]
+    private var remoteScrollEnter: Set<String> = []
+    private var remoteScrollFlush: [String: Task<Void, Never>] = [:]
+
     private init() {
         let tmux = Self.tmuxPath
 
@@ -531,12 +582,15 @@ final class TerminalCache {
                 self.terminals[session]?.passthroughMode = false
 
                 // Esc just dismisses scroll mode — don't forward it to the shell.
+                // The command must reach the server that owns the session: the
+                // local tmux, or the bridge of the machine of a remote card.
                 let isEscape = event.keyCode == 53
                 let chars = isEscape ? "" : (event.characters ?? "")
                 Task.detached {
-                    _ = try? await ShellCommand.run(tmux, arguments: ["send-keys", "-t", session, "-X", "cancel"])
+                    guard let adapter = await Self.remoteAdapter(for: session) else { return }
+                    _ = try? await adapter.run(["send-keys", "-t", session, "-X", "cancel"])
                     if !chars.isEmpty {
-                        _ = try? await ShellCommand.run(tmux, arguments: ["send-keys", "-t", session, chars])
+                        _ = try? await adapter.run(["send-keys", "-t", session, chars])
                     }
                 }
                 return nil // consume — key is re-sent via tmux above
@@ -569,6 +623,11 @@ final class TerminalCache {
             if let exitTime = self?.copyModeExitTime[session],
                exitTime.duration(to: .now) < .milliseconds(500) {
                 return nil // consume during cooldown
+            }
+
+            if AppServices.tmux.isRemote(session) {
+                self?.scrollRemote(session: session, deltaY: event.deltaY, inCopyMode: inCopyMode)
+                return nil
             }
 
             if event.deltaY > 0 {
@@ -629,6 +688,72 @@ final class TerminalCache {
         }
     }
 
+    // MARK: - Scroll on a machine
+
+    private func scrollRemote(session: String, deltaY: CGFloat, inCopyMode: Bool) {
+        let lines = max(1, Int(abs(deltaY)))
+        if deltaY > 0 {
+            if !inCopyMode, !copyModeSessions.contains(session) {
+                copyModeSessions.insert(session)
+                terminals[session]?.passthroughMode = true
+                remoteScrollEnter.insert(session)
+            }
+            remoteScrollPending[session, default: 0] += lines
+        } else if inCopyMode {
+            remoteScrollPending[session, default: 0] -= lines
+        } else {
+            return
+        }
+        guard remoteScrollFlush[session] == nil else { return }
+        remoteScrollFlush[session] = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(60))
+            guard let self else { return }
+            let enter = self.remoteScrollEnter.remove(session) != nil
+            let delta = self.remoteScrollPending.removeValue(forKey: session) ?? 0
+            self.remoteScrollFlush[session] = nil
+            await self.flushRemoteScroll(session: session, enter: enter, delta: delta)
+        }
+    }
+
+    /// The tmux adapter of a session on a machine. A machine the app has
+    /// as paused or unreachable, but boxd reports running, is reconnected
+    /// first, so the first wheel tick or key after a restart is not lost.
+    private static func remoteAdapter(for session: String) async -> TmuxAdapter? {
+        if let adapter = try? AppServices.tmux.adapter(for: session) { return adapter }
+        guard let machine = AppServices.machine(forSession: session),
+              let supervisor = AppServices.boxdSupervisor,
+              await supervisor.reconnectIfRunning(machineName: machine) else { return nil }
+        return try? AppServices.tmux.adapter(for: session)
+    }
+
+    private func flushRemoteScroll(session: String, enter: Bool, delta: Int) async {
+        guard let adapter = await Self.remoteAdapter(for: session) else { return }
+        for command in Self.remoteScrollCommands(session: session, enter: enter, delta: delta) {
+            _ = try? await adapter.run(command)
+        }
+        guard delta < 0 else { return }
+        // Back at the bottom: leave copy-mode, as the local path does.
+        let position = try? await adapter.run(["display-message", "-p", "-t", session, "#{scroll_position}"])
+        guard position?.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "0",
+              copyModeSessions.remove(session) != nil else { return }
+        copyModeExitTime[session] = .now
+        terminals[session]?.passthroughMode = false
+        _ = try? await adapter.run(["send-keys", "-t", session, "-X", "cancel"])
+    }
+
+    /// The tmux commands of one flush: enter copy-mode when asked, then move
+    /// by the net number of lines. `-X` commands are no-ops outside copy-mode.
+    nonisolated static func remoteScrollCommands(session: String, enter: Bool, delta: Int) -> [[String]] {
+        var commands: [[String]] = []
+        if enter { commands.append(["copy-mode", "-t", session]) }
+        if delta > 0 {
+            commands.append(["send-keys", "-t", session, "-X", "-N", "\(delta)", "cursor-up"])
+        } else if delta < 0 {
+            commands.append(["send-keys", "-t", session, "-X", "-N", "\(-delta)", "cursor-down"])
+        }
+        return commands
+    }
+
     private func applyFontSizeIfChanged() {
         let stored = UserDefaults.standard.double(forKey: Self.fontSizeKey)
         let newSize = stored > 0 ? CGFloat(stored) : Self.defaultFontSize
@@ -654,6 +779,10 @@ final class TerminalCache {
             return existing
         }
         let terminal = BatchedTerminalView(frame: frame)
+        // The assistant may ask for mouse tracking to select text on its
+        // own. The terminal keeps its native selection instead, and the
+        // wheel reaches tmux through the scroll monitor.
+        terminal.allowMouseReporting = false
         // Dark terminal colors matching a real terminal
         terminal.nativeBackgroundColor = NSColor(red: 0.07, green: 0.07, blue: 0.07, alpha: 1.0)
         terminal.nativeForegroundColor = NSColor(red: 0.93, green: 0.93, blue: 0.93, alpha: 1.0)
@@ -702,13 +831,95 @@ final class TerminalCache {
         startedSessions.insert(sessionName)
 
         let userShell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        let script: String
+        if let machine = AppServices.machine(forSession: sessionName) {
+            script = Self.remoteAttachScript(
+                boxd: AppServices.boxdPath,
+                machine: machine,
+                session: sessionName,
+                readyMarker: AppServices.remoteReadyMarkerPath(for: sessionName)
+            )
+        } else if AppServices.isRemoteSessionExpected(sessionName) {
+            // The launch has not reached its machine yet; the marker names it.
+            script = Self.remoteAttachScript(
+                boxd: AppServices.boxdPath,
+                machine: nil,
+                session: sessionName,
+                readyMarker: AppServices.remoteReadyMarkerPath(for: sessionName)
+            )
+        } else {
+            script = Self.attachScript(tmux: Self.tmuxPath, session: sessionName)
+        }
         terminal.startProcess(
             executable: userShell,
-            args: ["-l", "-c", Self.attachScript(tmux: Self.tmuxPath, session: sessionName)],
+            args: ["-l", "-c", script],
             environment: nil,
             execName: nil,
             currentDirectory: nil
         )
+    }
+
+    /// Attaches to a tmux session on a boxd machine. The terminal opens when
+    /// the launch starts, so it first waits for the ready marker the launch
+    /// writes once the session exists (up to 20 minutes, a machine may have
+    /// to be created and a repository checked out first). The marker names
+    /// the machine, which wins over `machine` when it is not empty, so a
+    /// terminal that started before the launch knew the machine still
+    /// attaches to the right one. The machine may still be resuming after
+    /// that, so the attach itself is retried for a while.
+    ///
+    /// The transport is `boxd machine connect`, the interactive shell of the
+    /// CLI: it puts the local pty in raw mode, sizes the remote pty and
+    /// follows resizes, and the session lives as long as the shell. (`exec
+    /// --tty` does none of that and hangs up a full-screen program after a
+    /// few seconds.) `connect` takes no command, so `expect` drives it: it
+    /// waits for the prompt, types `exec tmux attach-session` and hands the
+    /// pty over with `interact`. `exec` replaces the shell, so a detach ends
+    /// the connection. The tmux client runs with `-u` so it writes UTF-8
+    /// whatever the locale of the machine.
+    static func remoteAttachScript(boxd: String, machine: String?, session: String, readyMarker: String? = nil) -> String {
+        let quote = { (value: String) in "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+        let fallback = quote(machine ?? "")
+        let program = expectProgram(boxd: boxd, session: session)
+        let attach = "KANBAN_MACHINE=\"$m\" /usr/bin/expect -c \(quote(program))"
+        guard let readyMarker else {
+            return "m=\(fallback); for i in $(seq 1 30); do \(attach) && break; sleep 2; done; echo 'Session ended.'"
+        }
+        // `boxd machine connect` wakes a paused machine, so a retry while the
+        // app holds the machine paused would undo the pause. The pause marker
+        // stops the retries until the app takes it away. The machine is read
+        // from the marker on every try: a resume may move the session.
+        let marker = quote(readyMarker)
+        let paused = quote(readyMarker + Self.pausedMarkerSuffix)
+        return "for i in $(seq 1 2400); do [ -e \(marker) ] && break; sleep 0.5; done; "
+            + "n=0; while [ $n -lt 30 ]; do "
+            + "m=\"$(cat \(marker) 2>/dev/null)\"; [ -n \"$m\" ] || m=\(fallback); "
+            + "\(attach) && break; "
+            + "if [ -e \(paused) ]; then echo 'Machine paused.'; while [ -e \(paused) ]; do sleep 1; done; n=0; continue; fi; "
+            + "n=$((n+1)); sleep 2; done; echo 'Session ended.'"
+    }
+
+    /// Suffix of the file next to the ready marker that tells the attach loop
+    /// the app has the machine paused.
+    static let pausedMarkerSuffix = BoxdMachineSupervisor.pausedMarkerSuffix
+
+    /// The Tcl program `expect` runs for one attach. The machine comes in
+    /// through `KANBAN_MACHINE`, because `expect -c` takes no arguments. A
+    /// prompt that never shows (a machine still resuming) sends the command
+    /// after the timeout anyway; the exit status of `connect` then decides
+    /// the retry. The WINCH trap copies the size of the local pty to the pty
+    /// of `connect`, which forwards it to the machine.
+    static func expectProgram(boxd: String, session: String) -> String {
+        let attach = " exec tmux -u -T hyperlinks attach-session -t \(session)\\r"
+        return [
+            "set timeout 20",
+            "spawn -noecho {\(boxd)} machine connect $env(KANBAN_MACHINE)",
+            "trap {stty rows [stty rows] columns [stty columns] < $spawn_out(slave,name)} WINCH",
+            "expect -re {\\$ $} {send \"\(attach)\"} timeout {send \"\(attach)\"} eof {exit 1}",
+            "interact",
+            "catch wait result",
+            "exit [lindex $result 3]",
+        ].joined(separator: "; ")
     }
 
     /// The shell command a terminal runs to reach its tmux session.

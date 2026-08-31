@@ -1,9 +1,48 @@
 import SwiftUI
+import AppKit
 import KanbanCodeCore
+
+/// Panel that answers the Escape key. A sheet without a close button drops the
+/// key before it reaches the Cancel button, so the quit sheet needs its own
+/// handler to stay dismissible from the keyboard.
+final class EscapeCancellingPanel: NSPanel {
+    var onCancel: (() -> Void)?
+
+    override func cancelOperation(_ sender: Any?) {
+        onCancel?()
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53 {
+            onCancel?()
+            return
+        }
+        super.keyDown(with: event)
+    }
+}
+
+/// Shown while the app kills the remote sessions and stops their machines.
+struct PausingMachinesView: View {
+    var body: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+                .controlSize(.large)
+            Text("Stopping boxd machines…")
+                .font(.app(.headline))
+            Text("The sessions were killed; the machines go to standby.")
+                .font(.app(.caption))
+                .foregroundStyle(.secondary)
+        }
+        .padding(24)
+        .frame(width: 360, height: 140)
+    }
+}
 
 struct QuitConfirmationSession: Identifiable {
     let session: TmuxSession
     let cardTitle: String?
+    /// The boxd machine of the session, nil for a session on this Mac.
+    let machineName: String?
 
     var id: String { session.name }
 }
@@ -38,6 +77,11 @@ struct QuitConfirmationView: View {
                 Text("You have \(sessions.count) managed tmux session\(sessions.count == 1 ? "" : "s") running.")
                     .font(.app(.subheadline))
                     .foregroundStyle(.secondary)
+                if sessions.contains(where: { $0.machineName != nil }) {
+                    Text("Sessions on a machine keep running unless killed; killing them puts their machine in standby.")
+                        .font(.app(.caption))
+                        .foregroundStyle(.tertiary)
+                }
             }
             .padding(.top, 20)
             .padding(.bottom, 12)
@@ -51,8 +95,16 @@ struct QuitConfirmationView: View {
                 .width(16)
 
                 TableColumn("Session") { row in
-                    Text(row.session.name)
-                        .lineLimit(1)
+                    HStack(spacing: 4) {
+                        Text(row.session.name)
+                            .lineLimit(1)
+                        if let machine = row.machineName {
+                            Image(systemName: "cloud")
+                                .font(.app(.caption))
+                                .foregroundStyle(.secondary)
+                                .help("Runs on \(machine)")
+                        }
+                    }
                 }
 
                 TableColumn("Card") { row in

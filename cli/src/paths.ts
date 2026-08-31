@@ -31,6 +31,20 @@ export function commandResponsesDir(): string {
   return join(kanbanHome(), "commands", "responses");
 }
 
+/// Commands a remote machine hands back to the Mac to run, and their results.
+export function proxyRequestsDir(): string {
+  return join(kanbanHome(), "commands", "proxy");
+}
+
+export function proxyResponsesDir(): string {
+  return join(kanbanHome(), "commands", "proxy-responses");
+}
+
+/// Images the Mac stores for a proxied command, one directory per request.
+export function proxyImagesDir(requestId: string): string {
+  return join(kanbanHome(), "images", "proxy", requestId);
+}
+
 /// Claude Code's config dir. Honors CLAUDE_CONFIG_DIR so a sandboxed test can
 /// point it elsewhere.
 export function claudeConfigDir(): string {
@@ -44,4 +58,14 @@ export function claudeProjectsDir(): string {
 
 export function claudeSettingsPath(): string {
   return join(claudeConfigDir(), "settings.json");
+}
+
+/// Codex's config dir. Honors CODEX_HOME the same way Codex itself does.
+export function codexConfigDir(): string {
+  return process.env.CODEX_HOME || join(homedir(), ".codex");
+}
+
+/// Where Codex writes its rollout transcripts.
+export function codexSessionsDir(): string {
+  return join(codexConfigDir(), "sessions");
 }

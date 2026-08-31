@@ -98,6 +98,20 @@ export interface ManualOverrides {
   branchWatermark?: number;
 }
 
+/// A card whose tmux session, assistant and checkout live on a cloud machine.
+/// `mode` says how the Mac reaches it: `boxd` runs every command through the
+/// boxd CLI, `mutagen` keeps a synchronised directory instead.
+export interface RemoteLink {
+  mode: "boxd" | "mutagen";
+  machineName: string;
+  machineId?: string;
+  remoteProjectPath?: string;
+  remoteCwd?: string;
+  pausedReason?: string;
+  pausedAt?: string;
+  lastStatus?: string;
+}
+
 export interface Link {
   id: string;
   name?: string;
@@ -125,6 +139,7 @@ export interface Link {
   discoveredBranches?: string[];
   discoveredRepos?: Record<string, string>;
   isRemote: boolean;
+  remote?: RemoteLink;
   sortOrder?: number;
   assistant?: CodingAssistant;
   isLaunching?: boolean;

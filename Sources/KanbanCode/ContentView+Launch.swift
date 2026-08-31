@@ -53,7 +53,7 @@ extension ContentView {
         }
     }
 
-    func executeLaunch(cardId: String, prompt: String, projectPath: String, worktreeName: String?, runRemotely: Bool = true, skipPermissions: Bool = true, commandOverride: String? = nil, images: [ImageAttachment] = [], assistant: CodingAssistant = .claude, serviceIdOverride: String? = nil, modelOverride: String? = nil, focusCard: Bool = true, completion: ((String?) -> Void)? = nil) {
+    func executeLaunch(cardId: String, prompt: String, projectPath: String, worktreeName: String?, runRemotely: Bool = true, skipPermissions: Bool = true, commandOverride: String? = nil, images: [ImageAttachment] = [], assistant: CodingAssistant = .claude, serviceIdOverride: String? = nil, modelOverride: String? = nil, machineChoice: BoxdMachineChoice? = nil, focusCard: Bool = true, completion: ((String?) -> Void)? = nil) {
         let previouslySelectedCardId = store.state.selectedCardId
         // IMMEDIATE state update via reducer — no more dual memory+disk writes
         store.dispatch(.launchCard(cardId: cardId, prompt: prompt, projectPath: projectPath, worktreeName: worktreeName, runRemotely: runRemotely, commandOverride: commandOverride))
@@ -66,8 +66,16 @@ extension ContentView {
         // Reducer computed the unique tmux name and stored it in the link
         let predictedTmuxName = store.state.links[cardId]?.tmuxLink?.sessionName ?? cardId
         KanbanCodeLog.info("launch", "Starting launch for card=\(cardId.prefix(12)) tmux=\(predictedTmuxName) project=\(projectPath)")
+        // A marker from an earlier run of this session name would let the
+        // terminal attach before the machine is ready.
+        AppServices.clearRemoteSessionReady(predictedTmuxName)
+        if runRemotely, store.state.remoteMode == .boxd {
+            AppServices.expectRemoteSession(predictedTmuxName)
+        }
+        let progress = LaunchProgress(cardId: cardId, store: store)
 
         Task {
+            defer { progress.finish() }
             do {
                 let settings = try? await settingsStore.read()
 
@@ -75,9 +83,37 @@ extension ContentView {
                 let extraEnv: [String: String]
                 let isRemote: Bool
                 let preamble: String?
+                // Where the assistant starts and which worktree flag it gets.
+                // On a boxd machine the app creates the worktree itself.
+                var launchPath = projectPath
+                var launchWorktreeName = assistant.supportsWorktree ? worktreeName : nil
+                var boxdPreparation: BoxdPreparation?
 
+                let cardLink = store.state.cards.first(where: { $0.id == cardId })?.link
                 let globalRemote = settings?.remote
-                if runRemotely, let remote = globalRemote, projectPath.hasPrefix(remote.localPath) {
+                let remoteMode = settings?.remoteMode ?? .boxd
+                if runRemotely, remoteMode == .boxd {
+                    let existingMachine = machineChoice?.machineName
+                        ?? (machineChoice == nil ? cardLink?.remote?.machineName : nil)
+                    progress.start()
+                    let preparation = try await boxdSupervisor.prepare(
+                        cardId: cardId,
+                        localProjectPath: projectPath,
+                        existingMachine: existingMachine,
+                        worktreeName: worktreeName,
+                        existingWorktree: cardLink?.worktreeLink,
+                        sessionNames: [predictedTmuxName],
+                        log: { line in progress.report(line) }
+                    )
+                    progress.report("Starting \(assistant.displayName) on \(preparation.machineName)")
+                    boxdPreparation = preparation
+                    shellOverride = nil
+                    extraEnv = preparation.extraEnv
+                    isRemote = true
+                    preamble = nil
+                    launchPath = preparation.remoteCwd
+                    launchWorktreeName = nil
+                } else if runRemotely, let remote = globalRemote, projectPath.hasPrefix(remote.localPath) {
                     try? RemoteShellManager.deploy()
                     shellOverride = RemoteShellManager.shellOverridePath()
                     var env = RemoteShellManager.setupEnvironment(remote: remote, projectPath: projectPath)
@@ -107,9 +143,9 @@ extension ContentView {
                     isRemote = false
                     preamble = nil
                 }
+                let commandTemplate = settings?.commandTemplate(for: assistant, remote: isRemote)
 
                 // Resolve API service for this card and inject base URL env var if needed
-                let cardLink = store.state.cards.first(where: { $0.id == cardId })?.link
                 let resolvedServiceId = serviceIdOverride ?? cardLink?.apiServiceId ?? settings?.defaultAPIServiceIds[assistant.rawValue]
                 let resolvedService = resolvedServiceId.flatMap { sid in
                     settings?.apiServices.first { $0.id == sid && $0.assistant == assistant }
@@ -162,12 +198,13 @@ extension ContentView {
 
                 let tmuxName = try await launcher.launch(
                     sessionName: predictedTmuxName,
-                    projectPath: projectPath,
+                    projectPath: launchPath,
                     prompt: prompt,
-                    worktreeName: assistant.supportsWorktree ? worktreeName : nil,
+                    worktreeName: launchWorktreeName,
                     shellOverride: shellOverride,
                     extraEnv: serviceExtraEnv,
                     commandOverride: commandOverride,
+                    commandTemplate: commandTemplate,
                     skipPermissions: skipPermissions,
                     preamble: preamble,
                     assistant: assistant,
@@ -175,6 +212,11 @@ extension ContentView {
                     modelOverride: effectiveModelOverride
                 )
                 KanbanCodeLog.info("launch", "Tmux session created: \(tmuxName)")
+                if let preparation = boxdPreparation {
+                    await boxdSupervisor.exportSessionEnvironment(
+                        machineName: preparation.machineName, sessionName: tmuxName, env: preparation.extraEnv)
+                    AppServices.markRemoteSessionReady(tmuxName, machine: preparation.machineName)
+                }
 
                 // Show terminal immediately — clear isLaunching so UI switches
                 // from spinner to terminal view without waiting for session detection.
@@ -189,7 +231,19 @@ extension ContentView {
                         let imageSender = ImageSender(tmux: self.tmuxAdapter)
                         try await imageSender.waitForReady(sessionName: tmuxName, assistant: assistant)
 
-                        if !images.isEmpty && assistant.supportsImageUpload {
+                        if let preparation = boxdPreparation, !images.isEmpty {
+                            // The clipboard does not reach the machine: the
+                            // images go over the bridge and the prompt points
+                            // at them by path.
+                            let remotePaths = try await uploadPromptImages(
+                                images, cardId: cardId, preparation: preparation)
+                            let promptToSend = PromptImageLayout.replacingMarkersWithMarkdown(in: prompt, imagePaths: remotePaths)
+                            if assistant.submitsPromptWithPaste {
+                                try await self.tmuxAdapter.pastePrompt(to: tmuxName, text: promptToSend)
+                            } else {
+                                try await self.tmuxAdapter.sendPrompt(to: tmuxName, text: promptToSend)
+                            }
+                        } else if !images.isEmpty && assistant.supportsImageUpload {
                             try await imageSender.sendPromptWithImages(
                                 sessionName: tmuxName,
                                 prompt: prompt,
@@ -221,7 +275,10 @@ extension ContentView {
 
                 // Detect new session by polling for new session file
                 // Worktree launches, Gemini, and Codex need more attempts (slower startup)
-                let maxAttempts = (worktreeName != nil || assistant == .gemini || assistant == .codex) ? 12 : 6
+                // A remote session shows up after the bridge streams its first
+                // lines, so it gets the longest window.
+                let maxAttempts = boxdPreparation != nil ? 30
+                    : (worktreeName != nil || assistant == .gemini || assistant == .codex) ? 12 : 6
                 var sessionLink: SessionLink?
                 for attempt in 0..<maxAttempts {
                     try? await Task.sleep(for: .milliseconds(500))
@@ -286,8 +343,8 @@ extension ContentView {
                 }
 
                 // If worktree launch, try to extract branch from the session file immediately
-                var worktreeLink: WorktreeLink?
-                if worktreeName != nil, let sl = sessionLink, let sp = sl.sessionPath {
+                var worktreeLink: WorktreeLink? = boxdPreparation?.worktree
+                if worktreeLink == nil, worktreeName != nil, let sl = sessionLink, let sp = sl.sessionPath {
                     worktreeLink = Self.extractWorktreeLink(sessionPath: sp, projectPath: projectPath)
                 }
 
@@ -302,6 +359,29 @@ extension ContentView {
                 completion?(error.localizedDescription)
             }
         }
+    }
+
+    /// Writes prompt images to the machine and returns their paths there.
+    func uploadPromptImages(_ images: [ImageAttachment], cardId: String, preparation: BoxdPreparation) async throws -> [String] {
+        guard let bridge = await boxdSupervisor.bridge(for: preparation.machineName) else {
+            throw BoxdSupervisorError.notConnected(preparation.machineName)
+        }
+        var paths: [String] = []
+        for (index, image) in images.enumerated() {
+            let localPath: String
+            if let tempPath = image.tempPath {
+                localPath = tempPath
+            } else {
+                var copy = image
+                localPath = try copy.saveToTemp()
+            }
+            guard let data = FileManager.default.contents(atPath: localPath) else { continue }
+            let ext = (localPath as NSString).pathExtension.isEmpty ? "png" : (localPath as NSString).pathExtension
+            let remotePath = "\(preparation.remoteHome)/.kanban-code/images/\(cardId)/\(index + 1).\(ext)"
+            try await bridge.put(path: remotePath, data: data, mode: nil)
+            paths.append(remotePath)
+        }
+        return paths
     }
 
     private func newestFile(from paths: [String]) -> String? {
@@ -485,6 +565,13 @@ extension ContentView {
             var n = 1
             while existing.contains("\(baseName)-sh\(n)") || liveTmux.contains("\(baseName)-sh\(n)") { n += 1 }
             let newName = "\(baseName)-sh\(n)"
+            // The terminal opens before the effect has created the session on
+            // the machine, so it has to know it is a remote one from the
+            // first frame; a local attach would find no such session.
+            if let remote = card.link.remote, remote.mode == .boxd, card.link.isRemote {
+                AppServices.expectRemoteSession(newName)
+                KanbanCodeLog.info("terminal", "Extra shell \(newName) opens on \(remote.machineName)")
+            }
             store.dispatch(.addExtraTerminal(cardId: cardId, sessionName: newName))
         } else {
             // No tmux at all — create a primary terminal session (plain shell, no Claude)
@@ -606,7 +693,7 @@ extension ContentView {
         }
     }
 
-    func executeResume(cardId: String, runRemotely: Bool, skipPermissions: Bool = true, commandOverride: String?, assistant: CodingAssistant = .claude, serviceIdOverride: String? = nil, modelOverride: String? = nil, focusCard: Bool = true) {
+    func executeResume(cardId: String, runRemotely: Bool, skipPermissions: Bool = true, commandOverride: String?, assistant: CodingAssistant = .claude, serviceIdOverride: String? = nil, modelOverride: String? = nil, machineChoice: BoxdMachineChoice? = nil, focusCard: Bool = true) {
         guard let card = store.state.cards.first(where: { $0.id == cardId }) else { return }
         let effectiveModelOverride = modelOverride ?? card.link.modelOverride
         let sessionId = card.link.sessionLink?.sessionId ?? card.link.id
@@ -639,6 +726,14 @@ extension ContentView {
             }
         }
 
+        // The terminal of the resumed session mounts as soon as the card
+        // resumes, so a card that leaves its machine routes its names
+        // locally first; otherwise the terminal would connect to the machine.
+        if !runRemotely, card.link.remote?.mode == .boxd, let registry = AppServices.remoteRegistry {
+            let names = (card.link.tmuxLink?.allSessionNames ?? []) + ["\(assistant.cliCommand)-\(String(sessionId.prefix(8)))"]
+            for name in names { registry.unassign(sessionName: name) }
+        }
+
         let previouslySelectedCardId = store.state.selectedCardId
         store.dispatch(.resumeCard(cardId: cardId))
         if !focusCard {
@@ -647,8 +742,10 @@ extension ContentView {
             shouldFocusTerminal = true
         }
         KanbanCodeLog.info("resume", "Starting resume for card=\(cardId.prefix(12)) session=\(sessionId.prefix(8))")
+        let progress = LaunchProgress(cardId: cardId, store: store)
 
         Task {
+            defer { progress.finish() }
             do {
                 let settings = try? await settingsStore.read()
 
@@ -656,9 +753,74 @@ extension ContentView {
                 let extraEnv: [String: String]
                 let isRemote: Bool
                 let preamble: String?
+                var resumePath = projectPath
+                var boxdPreparation: BoxdPreparation?
+                let resumeSessionName = "\(assistant.cliCommand)-\(String(sessionId.prefix(8)))"
+                AppServices.clearRemoteSessionReady(resumeSessionName)
+                if runRemotely, store.state.remoteMode == .boxd {
+                    AppServices.expectRemoteSession(resumeSessionName)
+                }
 
                 let globalRemote = settings?.remote
-                if runRemotely, let remote = globalRemote, projectPath.hasPrefix(remote.localPath) {
+                let remoteMode = settings?.remoteMode ?? .boxd
+                if runRemotely, remoteMode == .boxd {
+                    let currentMachine = card.link.remote?.machineName
+                    let existingMachine = machineChoice?.machineName
+                        ?? (machineChoice == nil ? currentMachine : nil)
+                    progress.start()
+                    let preparation = try await boxdSupervisor.prepare(
+                        cardId: cardId,
+                        localProjectPath: projectPath,
+                        existingMachine: existingMachine,
+                        worktreeName: nil,
+                        existingWorktree: card.link.worktreeLink,
+                        sessionNames: [resumeSessionName],
+                        runInit: existingMachine == nil || existingMachine != currentMachine,
+                        log: { line in progress.report(line) }
+                    )
+                    boxdPreparation = preparation
+                    shellOverride = nil
+                    extraEnv = preparation.extraEnv
+                    isRemote = true
+                    preamble = nil
+                    resumePath = preparation.remoteCwd
+
+                    // The tmux session survives a pause, so a live one is
+                    // attached as it is. Otherwise the newer transcript wins
+                    // before a fresh `--resume` starts on the machine.
+                    var liveOnMachine = false
+                    if existingMachine == currentMachine {
+                        liveOnMachine = await boxdSupervisor.hasSession(machineName: preparation.machineName, sessionName: resumeSessionName)
+                    }
+                    if liveOnMachine, card.link.isRemote {
+                        KanbanCodeLog.info("resume", "Attaching to live remote tmux \(resumeSessionName) on \(preparation.machineName)")
+                        AppServices.markRemoteSessionReady(resumeSessionName, machine: preparation.machineName)
+                        store.dispatch(.resumeCompleted(cardId: cardId, tmuxName: resumeSessionName, isRemote: true))
+                        return
+                    }
+                    if liveOnMachine {
+                        // The card continued locally after that session; the
+                        // newer transcript wins and a fresh --resume starts.
+                        KanbanCodeLog.info("resume", "Dropping stale remote tmux \(resumeSessionName) on \(preparation.machineName)")
+                        try? await tmuxAdapter.killSession(name: resumeSessionName)
+                    }
+                    if let localTranscript = store.state.links[cardId]?.sessionLink?.sessionPath,
+                       let localSize = try? FileManager.default.attributesOfItem(atPath: localTranscript)[.size] as? Int {
+                        let remoteSize = await boxdSupervisor.remoteTranscriptSize(
+                            machineName: preparation.machineName, localPath: localTranscript, remoteCwd: preparation.remoteCwd)
+                        let decision = BoxdLaunchPlanner.resumeDecision(
+                            tmuxAlive: false, localTranscriptBytes: localSize, remoteTranscriptBytes: remoteSize)
+                        if decision == .pushThenResume {
+                            KanbanCodeLog.info("resume", "Pushing transcript \(sessionId.prefix(8)) to \(preparation.machineName) (\(localSize) > \(remoteSize) bytes)")
+                            try await boxdSupervisor.pushTranscript(
+                                machineName: preparation.machineName,
+                                localPath: localTranscript,
+                                sessionId: sessionId,
+                                remoteCwd: preparation.remoteCwd
+                            )
+                        }
+                    }
+                } else if runRemotely, let remote = globalRemote, projectPath.hasPrefix(remote.localPath) {
                     try? RemoteShellManager.deploy()
                     shellOverride = RemoteShellManager.shellOverridePath()
                     var env = RemoteShellManager.setupEnvironment(remote: remote, projectPath: projectPath)
@@ -687,7 +849,26 @@ extension ContentView {
                     extraEnv = [:]
                     isRemote = false
                     preamble = nil
+                    // A card that leaves its machine continues from the local
+                    // mirror. The machine is kept, paused, and its tmux name is
+                    // released so the local tmux server can own it. A worktree
+                    // that only existed on the machine is created here first.
+                    if let remote = card.link.remote, remote.mode == .boxd {
+                        await boxdSupervisor.releaseSessions([resumeSessionName])
+                        if await boxdSupervisor.isConnected(remote.machineName) {
+                            await boxdSupervisor.pause(machineName: remote.machineName, reason: .manual)
+                        }
+                        if let worktree = card.link.worktreeLink,
+                           let repoRoot = card.link.projectPath,
+                           !FileManager.default.fileExists(atPath: worktree.path) {
+                            let name = (worktree.path as NSString).lastPathComponent
+                            progress.start()
+                            progress.report("Creating worktree \(name) locally")
+                            _ = try await BoxdMachineSupervisor.createLocalWorktree(repoRoot: repoRoot, name: name)
+                        }
+                    }
                 }
+                let commandTemplate = settings?.commandTemplate(for: assistant, remote: isRemote)
 
                 let resumeServiceId = serviceIdOverride ?? card.link.apiServiceId ?? settings?.defaultAPIServiceIds[assistant.rawValue]
                 let resolvedService = resumeServiceId.flatMap { sid in
@@ -702,10 +883,11 @@ extension ContentView {
 
                 let actualTmuxName = try await launcher.resume(
                     sessionId: sessionId,
-                    projectPath: projectPath,
+                    projectPath: resumePath,
                     shellOverride: shellOverride,
                     extraEnv: serviceExtraEnv,
                     commandOverride: commandOverride,
+                    commandTemplate: commandTemplate,
                     skipPermissions: skipPermissions,
                     preamble: preamble,
                     assistant: assistant,
@@ -713,6 +895,11 @@ extension ContentView {
                     modelOverride: effectiveModelOverride
                 )
                 KanbanCodeLog.info("resume", "Resume launched for card=\(cardId.prefix(12)) actualTmux=\(actualTmuxName)")
+                if let preparation = boxdPreparation {
+                    await boxdSupervisor.exportSessionEnvironment(
+                        machineName: preparation.machineName, sessionName: actualTmuxName, env: preparation.extraEnv)
+                    AppServices.markRemoteSessionReady(actualTmuxName, machine: preparation.machineName)
+                }
 
                 store.dispatch(.resumeCompleted(cardId: cardId, tmuxName: actualTmuxName, isRemote: isRemote))
             } catch {
@@ -722,4 +909,50 @@ extension ContentView {
         }
     }
 
+}
+
+/// Reports the steps of a launch or resume to the board and keeps the launch
+/// alive while a long step runs.
+///
+/// A remote launch can take minutes (machine creation, a repository checkout,
+/// file copies). The stale-launch timers (the reconciler and the card detail)
+/// give up after 30 seconds of silence, so every step is reported as it
+/// starts and the last one is repeated every 10 seconds until `finish()`.
+@MainActor
+final class LaunchProgress {
+    private let cardId: String
+    private weak var store: BoardStore?
+    private var lastMessage: String?
+    private var heartbeat: Task<Void, Never>?
+
+    init(cardId: String, store: BoardStore) {
+        self.cardId = cardId
+        self.store = store
+    }
+
+    /// Starts the heartbeat. Idempotent.
+    func start() {
+        guard heartbeat == nil else { return }
+        heartbeat = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(10))
+                guard !Task.isCancelled, let self, let message = self.lastMessage else { continue }
+                self.store?.dispatch(.launchProgress(cardId: self.cardId, message: message))
+            }
+        }
+    }
+
+    /// Shows `line` under the spinner and logs it.
+    nonisolated func report(_ line: String) {
+        Task { @MainActor [self] in
+            KanbanCodeLog.info("boxd", "\(cardId.prefix(12)): \(line)")
+            lastMessage = line
+            store?.dispatch(.launchProgress(cardId: cardId, message: line))
+        }
+    }
+
+    func finish() {
+        heartbeat?.cancel()
+        heartbeat = nil
+    }
 }

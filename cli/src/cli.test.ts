@@ -62,6 +62,25 @@ exit 0
   return { binDir, logPath };
 }
 
+/**
+ * The detached self-compact shell sleeps before it drives tmux, so the log
+ * fills in after the CLI already exited. Poll it until the last expected line
+ * arrives instead of guessing a wall-clock wait.
+ */
+function waitForLog(logPath: string, pattern: RegExp, timeoutSeconds = 20): string {
+  const deadline = Date.now() + timeoutSeconds * 1000;
+  let log = "";
+  for (;;) {
+    try {
+      log = readFileSync(logPath, "utf-8");
+    } catch {
+      log = "";
+    }
+    if (pattern.test(log) || Date.now() >= deadline) return log;
+    execFileSync("sleep", ["0.1"]);
+  }
+}
+
 describe("kanban help", () => {
   test("prioritizes collaboration and subagent commands over low-level send", () => {
     const r = runCli(["--help"]);
@@ -313,20 +332,14 @@ describe("kanban channel (CLI e2e)", () => {
     const r = runCli(["self-compact", "--follow-up-delay", "0.1", "Continue", "after", "compact."], env);
     assert.equal(r.code, 0, r.stderr);
     assert.match(r.stdout, /Sent \/compact to sess-self with post-compact follow-up/);
-    // The detached self-compact shell sleeps 2s before Escape (see
-    // scheduleTmuxSelfCompact in data.ts), then the per-step sleeps and the
-    // follow-up delay. Wait past all of that so every fake-tmux line we
-    // assert on has been written to the log file.
-    execFileSync("sleep", ["2.8"]);
-
-    const log = readFileSync(logPath, "utf-8");
+    const log = waitForLog(logPath, /set-buffer -b kc-\d+-\d+ -- Continue after compact\.[\s\S]*paste-buffer/);
     assert.match(log, /display-message -p #S/);
     assert.match(log, /send-keys -t sess-self Enter/);
     assert.match(log, /send-keys -t sess-self Escape/);
-    assert.match(log, /set-buffer -b kc-\d+-\d+ \/compact/);
+    assert.match(log, /set-buffer -b kc-\d+-\d+ -- \/compact/);
     assert.match(log, /paste-buffer -p -d -b kc-\d+-\d+ -t sess-self/);
     assert.match(log, /send-keys -t sess-self Enter/);
-    assert.match(log, /set-buffer -b kc-\d+-\d+ Continue after compact\./);
+    assert.match(log, /set-buffer -b kc-\d+-\d+ -- Continue after compact\./);
     assert.match(log, /paste-buffer -p -d -b kc-\d+-\d+ -t sess-self/);
   });
 
@@ -360,10 +373,8 @@ describe("kanban channel (CLI e2e)", () => {
     const r = runCli(["self-compact", "--follow-up-delay", "0.1"], env, followUp);
     assert.equal(r.code, 0, r.stderr);
     assert.match(r.stdout, /with post-compact follow-up/);
-    execFileSync("sleep", ["2.8"]);
-
-    const log = readFileSync(logPath, "utf-8");
-    assert.match(log, /set-buffer -b kc-\d+-\d+ Continue after compact/);
+    const log = waitForLog(logPath, /2\. Report back\./);
+    assert.match(log, /set-buffer -b kc-\d+-\d+ -- Continue after compact/);
     assert.match(log, /1\. Recheck CI/);
     assert.match(log, /2\. Report back\./);
   });
@@ -430,12 +441,8 @@ describe("kanban channel (CLI e2e)", () => {
     const r = runCli(["self-compact"], env);
     assert.equal(r.code, 0, r.stderr);
     assert.match(r.stdout, /Sent \/compact to sess-self-no-follow-up\./);
-    // Detached shell sleeps 2s before Escape (see scheduleTmuxSelfCompact);
-    // wait past it before reading the log.
-    execFileSync("sleep", ["2.4"]);
-
-    const log = readFileSync(logPath, "utf-8");
-    assert.match(log, /set-buffer -b kc-\d+-\d+ \/compact/);
+    const log = waitForLog(logPath, /send-keys -t sess-self-no-follow-up Enter/);
+    assert.match(log, /set-buffer -b kc-\d+-\d+ -- \/compact/);
     assert.match(log, /paste-buffer -p -d -b kc-\d+-\d+ -t sess-self-no-follow-up/);
     assert.match(log, /send-keys -t sess-self-no-follow-up Enter/);
   });

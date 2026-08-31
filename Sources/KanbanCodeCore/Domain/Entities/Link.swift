@@ -225,6 +225,11 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
     /// Whether this card's project is configured for remote execution.
     public var isRemote: Bool
 
+    /// The remote machine that hosts this card's tmux session. Set when the
+    /// card runs on a boxd machine, kept while the session is stopped so a
+    /// resume can go back to the same machine.
+    public var remote: RemoteLink?
+
     /// Manual sort order within a column. Cards with sortOrder are sorted by it
     /// (lower first); cards without fall back to time-based sort.
     public var sortOrder: Int?
@@ -372,6 +377,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         browserTabs: [BrowserTabInfo]? = nil,
         assistant: CodingAssistant? = nil,
         isRemote: Bool = false,
+        remote: RemoteLink? = nil,
         isLaunching: Bool? = nil,
         launchedAt: Date? = nil,
         sortOrder: Int? = nil,
@@ -405,6 +411,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         self.browserTabs = browserTabs
         self.assistant = assistant
         self.isRemote = isRemote
+        self.remote = remote
         self.isLaunching = isLaunching
         self.launchedAt = launchedAt
         self.sortOrder = sortOrder
@@ -421,7 +428,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         case id, name, projectPath, column, createdAt, updatedAt, lastActivity, lastOpenedAt
         case manualOverrides, manuallyArchived, source, promptBody, promptImagePaths, parentCardId, modelOverride
         case selfCompactContextThresholdTokens
-        case isRemote, isLaunching, launchedAt, sortOrder, pinnedAt, pinnedSortOrder
+        case isRemote, remote, isLaunching, launchedAt, sortOrder, pinnedAt, pinnedSortOrder
         case discoveredBranches, discoveredRepos, assistant, apiServiceId
         // Typed links (new nested format)
         case sessionLink, tmuxLink, worktreeLink, prLinks, issueLink, queuedPrompts, browserTabs
@@ -451,6 +458,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         modelOverride = try c.decodeIfPresent(String.self, forKey: .modelOverride)
         selfCompactContextThresholdTokens = try c.decodeIfPresent(Int.self, forKey: .selfCompactContextThresholdTokens)
         isRemote = try c.decodeIfPresent(Bool.self, forKey: .isRemote) ?? false
+        remote = try? c.decodeIfPresent(RemoteLink.self, forKey: .remote)
         isLaunching = try c.decodeIfPresent(Bool.self, forKey: .isLaunching)
         launchedAt = try c.decodeIfPresent(Date.self, forKey: .launchedAt)
         sortOrder = try c.decodeIfPresent(Int.self, forKey: .sortOrder)
@@ -544,6 +552,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         try c.encodeIfPresent(modelOverride, forKey: .modelOverride)
         try c.encodeIfPresent(selfCompactContextThresholdTokens, forKey: .selfCompactContextThresholdTokens)
         try c.encode(isRemote, forKey: .isRemote)
+        try c.encodeIfPresent(remote, forKey: .remote)
         try c.encodeIfPresent(isLaunching, forKey: .isLaunching)
         try c.encodeIfPresent(launchedAt, forKey: .launchedAt)
         try c.encodeIfPresent(sortOrder, forKey: .sortOrder)
@@ -715,5 +724,81 @@ public struct ConversationTurn: Sendable, Equatable {
         self.contentBlocks = contentBlocks
         self.imageCount = imageCount
         self.modelName = modelName
+    }
+}
+
+// MARK: - Remote machine
+
+/// Why a boxd machine was paused. Shown on the card so the user knows
+/// what to expect from a resume.
+public enum RemotePausedReason: String, Codable, Sendable, Equatable {
+    case sessionStopped
+    case inactivity
+    case appQuit
+    case systemSleep
+    case manual
+}
+
+/// The remote execution target of a card.
+public struct RemoteLink: Codable, Sendable, Equatable {
+    public enum Mode: String, Codable, Sendable {
+        case boxd
+        case mutagen
+    }
+
+    public var mode: Mode
+    /// The boxd machine name, for example `kanban-langwatch-3iet4jym`.
+    public var machineName: String
+    public var machineId: String?
+    /// The repository checkout on the machine, for example `/home/boxd/langwatch`.
+    public var remoteProjectPath: String?
+    /// The working directory of the session on the machine (the worktree when
+    /// the card has one, else the project path).
+    public var remoteCwd: String?
+    /// The home directory on the machine, `/home/boxd` on boxd.
+    public var remoteHome: String?
+    public var pausedReason: RemotePausedReason?
+    public var pausedAt: Date?
+    /// Last machine status reported by boxd (`running`, `standby`, ...).
+    public var lastStatus: String?
+
+    public init(
+        mode: Mode = .boxd,
+        machineName: String,
+        machineId: String? = nil,
+        remoteProjectPath: String? = nil,
+        remoteCwd: String? = nil,
+        remoteHome: String? = nil,
+        pausedReason: RemotePausedReason? = nil,
+        pausedAt: Date? = nil,
+        lastStatus: String? = nil
+    ) {
+        self.mode = mode
+        self.machineName = machineName
+        self.machineId = machineId
+        self.remoteProjectPath = remoteProjectPath
+        self.remoteCwd = remoteCwd
+        self.remoteHome = remoteHome
+        self.pausedReason = pausedReason
+        self.pausedAt = pausedAt
+        self.lastStatus = lastStatus
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case mode, machineName, machineId, remoteProjectPath, remoteCwd, remoteHome
+        case pausedReason, pausedAt, lastStatus
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        mode = (try? c.decodeIfPresent(Mode.self, forKey: .mode)) ?? .boxd
+        machineName = try c.decode(String.self, forKey: .machineName)
+        machineId = try? c.decodeIfPresent(String.self, forKey: .machineId)
+        remoteProjectPath = try? c.decodeIfPresent(String.self, forKey: .remoteProjectPath)
+        remoteCwd = try? c.decodeIfPresent(String.self, forKey: .remoteCwd)
+        remoteHome = try? c.decodeIfPresent(String.self, forKey: .remoteHome)
+        pausedReason = try? c.decodeIfPresent(RemotePausedReason.self, forKey: .pausedReason)
+        pausedAt = try? c.decodeIfPresent(Date.self, forKey: .pausedAt)
+        lastStatus = try? c.decodeIfPresent(String.self, forKey: .lastStatus)
     }
 }

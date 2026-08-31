@@ -133,7 +133,7 @@ struct SettingsView: View {
             AmphetamineSettingsView()
                 .tabItem { Label("Amphetamine", systemImage: "bolt.fill") }
         }
-        .frame(width: 560, height: 620)
+        .frame(width: 720, height: 620)
         .task {
             await checkAvailability()
         }
@@ -240,6 +240,12 @@ struct AssistantsSettingsView: View {
     @State private var apiServices: [APIService] = []
     @State private var defaultAPIServiceIds: [String: String] = [:]
     @State private var serviceSheetRequest: ServiceSheetRequest? = nil
+    @State private var assistantCommands: [String: AssistantCommandTemplate] = [:]
+    @State private var commandsLoaded = false
+    @State private var commandsSaveTask: Task<Void, Never>?
+    @State private var savedCommands: [String: AssistantCommandTemplate] = [:]
+    @State private var remoteClaudeToken = ""
+    @State private var remoteTokenSaveTask: Task<Void, Never>?
 
     var body: some View {
         Form {
@@ -356,6 +362,11 @@ struct AssistantsSettingsView: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.blue)
+
+                    launchCommandRows(for: assistant)
+                    if assistant == .claude {
+                        remoteLoginRows
+                    }
                 } header: {
                     HStack {
                         Text(assistant.displayName)
@@ -376,6 +387,7 @@ struct AssistantsSettingsView: View {
         .formStyle(.grouped)
         .padding()
         .task { await loadServices() }
+        .onChange(of: assistantCommands) { scheduleCommandsSave() }
         .sheet(item: $serviceSheetRequest) { request in
             AddAPIServiceSheet(assistant: request.assistant, existingService: request.existingService) { service in
                 if let existing = request.existingService,
@@ -386,6 +398,120 @@ struct AssistantsSettingsView: View {
                 }
                 saveServices()
             }
+        }
+    }
+
+    // MARK: - Launch commands
+
+    @ViewBuilder
+    private func launchCommandRows(for assistant: CodingAssistant) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            TextField("Launch command", text: localCommandBinding(for: assistant))
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.caption, design: .monospaced))
+            Text("`${cli_command}` is the command Kanban Code builds. Example: `langwatch ${cli_command}` or `${cli_command} --rc`.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+
+        Toggle("Different command when running on a remote machine", isOn: remoteCommandEnabledBinding(for: assistant))
+
+        if assistantCommands[assistant.rawValue]?.remote != nil {
+            TextField("Remote launch command", text: remoteCommandBinding(for: assistant))
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.caption, design: .monospaced))
+        }
+    }
+
+    // MARK: - Remote login
+
+    @ViewBuilder
+    private var remoteLoginRows: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            SecureField("Remote token (optional)", text: $remoteClaudeToken)
+                .textFieldStyle(.roundedBorder)
+                .onChange(of: remoteClaudeToken) { scheduleRemoteTokenSave() }
+            Text("Machines get the login of this Mac and send a refresh back, so one account switch reaches every session, local and remote. A long-lived token from `claude setup-token` replaces that login on the machines only.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func scheduleRemoteTokenSave() {
+        guard commandsLoaded else { return }
+        let token = remoteClaudeToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        remoteTokenSaveTask?.cancel()
+        remoteTokenSaveTask = Task {
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            var settings = (try? await settingsStore.read()) ?? Settings()
+            var boxd = settings.boxd ?? BoxdSettings()
+            guard boxd.claudeOAuthToken != token else { return }
+            boxd.claudeOAuthToken = token
+            settings.boxd = boxd
+            try? await settingsStore.write(settings)
+            NotificationCenter.default.post(name: .kanbanCodeSettingsChanged, object: nil)
+        }
+    }
+
+    private func localCommandBinding(for assistant: CodingAssistant) -> Binding<String> {
+        Binding(
+            get: { assistantCommands[assistant.rawValue]?.local ?? AssistantCommandTemplate.placeholder },
+            set: { newValue in
+                var entry = assistantCommands[assistant.rawValue] ?? AssistantCommandTemplate()
+                entry.local = newValue
+                assistantCommands[assistant.rawValue] = entry
+            }
+        )
+    }
+
+    private func remoteCommandBinding(for assistant: CodingAssistant) -> Binding<String> {
+        Binding(
+            get: { assistantCommands[assistant.rawValue]?.remote ?? AssistantCommandTemplate.placeholder },
+            set: { newValue in
+                var entry = assistantCommands[assistant.rawValue] ?? AssistantCommandTemplate()
+                entry.remote = newValue
+                assistantCommands[assistant.rawValue] = entry
+            }
+        )
+    }
+
+    private func remoteCommandEnabledBinding(for assistant: CodingAssistant) -> Binding<Bool> {
+        Binding(
+            get: { assistantCommands[assistant.rawValue]?.remote != nil },
+            set: { isOn in
+                var entry = assistantCommands[assistant.rawValue] ?? AssistantCommandTemplate()
+                entry.remote = isOn ? AssistantCommandTemplate.placeholder : nil
+                assistantCommands[assistant.rawValue] = entry
+            }
+        )
+    }
+
+    private func scheduleCommandsSave() {
+        guard commandsLoaded else { return }
+        let commands = normalizedCommands()
+        guard commands != savedCommands else { return }
+        savedCommands = commands
+        commandsSaveTask?.cancel()
+        commandsSaveTask = Task {
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            var settings = (try? await settingsStore.read()) ?? Settings()
+            settings.assistantCommands = commands
+            try? await settingsStore.write(settings)
+            NotificationCenter.default.post(name: .kanbanCodeSettingsChanged, object: nil)
+        }
+    }
+
+    /// Drops entries that carry no instruction: the bare placeholder or a
+    /// blank local command with no remote command.
+    private func normalizedCommands() -> [String: AssistantCommandTemplate] {
+        assistantCommands.filter { _, template in
+            let local = template.local.trimmingCharacters(in: .whitespacesAndNewlines)
+            let isDefaultLocal = local.isEmpty || local == AssistantCommandTemplate.placeholder
+            return !isDefaultLocal || template.remote != nil
         }
     }
 
@@ -403,6 +529,10 @@ struct AssistantsSettingsView: View {
         let settings = (try? await settingsStore.read()) ?? Settings()
         apiServices = settings.apiServices
         defaultAPIServiceIds = settings.defaultAPIServiceIds
+        assistantCommands = settings.assistantCommands
+        savedCommands = settings.assistantCommands
+        remoteClaudeToken = settings.boxd?.claudeOAuthToken ?? ""
+        commandsLoaded = true
     }
 
     private func saveServices() {
@@ -851,7 +981,7 @@ struct AmphetamineSettingsView: View {
                         instructionRow(4, "Search for **\"kanban-code-active-session\"** and select it")
                     }
 
-                    Text("Amphetamine will keep your Mac awake whenever Claude is working, and allow sleep when all sessions finish.")
+                    Text("Amphetamine will keep your Mac awake whenever Claude is working, and allow sleep when all sessions finish. Cards that run on a boxd machine do not count: their work continues on the machine while the Mac sleeps.")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                 }
@@ -1112,55 +1242,23 @@ struct RemoteSettingsView: View {
     @State private var syncIgnoresText = ""
     @State private var saveTask: Task<Void, Never>?
     @State private var mutagenAvailable = false
+    @State private var remoteMode: RemoteMode = .boxd
+    @State private var loaded = false
 
     private let settingsStore = SettingsStore()
 
     var body: some View {
         Form {
-            Section("SSH") {
-                TextField("Remote Host", text: $remoteHost)
-                    .textFieldStyle(.roundedBorder)
-                    .onChange(of: remoteHost) { scheduleSave() }
-                TextField("Remote Path", text: $remotePath)
-                    .textFieldStyle(.roundedBorder)
-                    .onChange(of: remotePath) { scheduleSave() }
-                TextField("Local Path", text: $localPath)
-                    .textFieldStyle(.roundedBorder)
-                    .onChange(of: localPath) { scheduleSave() }
-            }
-
-            if !remoteHost.isEmpty && !mutagenAvailable {
-                Section("Dependency") {
-                    HStack {
-                        Label("Mutagen", systemImage: "minus.circle")
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Text("brew install mutagen")
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(.orange)
-                            .textSelection(.enabled)
-                    }
-                    Text("Mutagen is required for syncing files between local and remote machines.")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
+            Section("Mode") {
+                ForEach(RemoteMode.allCases, id: \.self) { mode in
+                    modeRow(mode)
                 }
             }
 
-            Section("Sync Ignores") {
-                Text("Patterns excluded from mutagen sync (one per line)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                TextEditor(text: $syncIgnoresText)
-                    .font(.system(.body, design: .monospaced))
-                    .frame(height: 140)
-                    .onChange(of: syncIgnoresText) { scheduleSave() }
-                HStack {
-                    Spacer()
-                    Button("Reset to Defaults") {
-                        syncIgnoresText = MutagenAdapter.defaultIgnores.joined(separator: "\n")
-                        scheduleSave()
-                    }
-                }
+            if remoteMode == .boxd {
+                BoxdSettingsView()
+            } else {
+                mutagenSections
             }
         }
         .formStyle(.grouped)
@@ -1171,14 +1269,99 @@ struct RemoteSettingsView: View {
         }
     }
 
+    @ViewBuilder
+    private var mutagenSections: some View {
+        Section("SSH") {
+            TextField("Remote Host", text: $remoteHost)
+                .textFieldStyle(.roundedBorder)
+                .onChange(of: remoteHost) { scheduleSave() }
+            TextField("Remote Path", text: $remotePath)
+                .textFieldStyle(.roundedBorder)
+                .onChange(of: remotePath) { scheduleSave() }
+            TextField("Local Path", text: $localPath)
+                .textFieldStyle(.roundedBorder)
+                .onChange(of: localPath) { scheduleSave() }
+        }
+
+        if !remoteHost.isEmpty && !mutagenAvailable {
+            Section("Dependency") {
+                HStack {
+                    Label("Mutagen", systemImage: "minus.circle")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("brew install mutagen")
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.orange)
+                        .textSelection(.enabled)
+                }
+                Text("Mutagen is required for syncing files between local and remote machines.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+
+        Section("Sync Ignores") {
+            Text("Patterns excluded from mutagen sync (one per line)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextEditor(text: $syncIgnoresText)
+                .font(.system(.body, design: .monospaced))
+                .frame(height: 140)
+                .onChange(of: syncIgnoresText) { scheduleSave() }
+            HStack {
+                Spacer()
+                Button("Reset to Defaults") {
+                    syncIgnoresText = MutagenAdapter.defaultIgnores.joined(separator: "\n")
+                    scheduleSave()
+                }
+            }
+        }
+    }
+
+    private func modeRow(_ mode: RemoteMode) -> some View {
+        Button {
+            guard remoteMode != mode else { return }
+            remoteMode = mode
+            saveMode()
+        } label: {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: remoteMode == mode ? "largecircle.fill.circle" : "circle")
+                    .foregroundStyle(remoteMode == mode ? Color.accentColor : Color.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(mode.settingsTitle)
+                    Text(mode.settingsDescription)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func saveMode() {
+        guard loaded else { return }
+        let mode = remoteMode
+        Task {
+            guard var settings = try? await settingsStore.read() else { return }
+            settings.remoteMode = mode
+            try? await settingsStore.write(settings)
+            NotificationCenter.default.post(name: .kanbanCodeSettingsChanged, object: nil)
+        }
+    }
+
     private func loadSettings() async {
         do {
             let settings = try await settingsStore.read()
+            remoteMode = settings.remoteMode
             remoteHost = settings.remote?.host ?? ""
             remotePath = settings.remote?.remotePath ?? ""
             localPath = settings.remote?.localPath ?? ""
             let ignores = settings.remote?.syncIgnores ?? MutagenAdapter.defaultIgnores
             syncIgnoresText = ignores.joined(separator: "\n")
+            loaded = true
         } catch {}
     }
 

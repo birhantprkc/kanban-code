@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { cardForTmuxSession, currentTmuxSessionName } from "./broadcast.js";
+import { cardForTmuxSession, cardFromEnvironment, currentTmuxSessionName } from "./broadcast.js";
 import { readLinks, readSettings } from "./data.js";
 import { slugifyDisplay, truncateSlug } from "./handles.js";
 import { descendantIds, subagentDepth } from "./hierarchy.js";
@@ -111,6 +111,8 @@ export function normalizeMaximumDepth(value: number | undefined): number {
 }
 
 export function currentCardOrThrow(links: Link[] = readLinks()): Link {
+  const declared = cardFromEnvironment(links);
+  if (declared) return declared;
   const tmuxSession = currentTmuxSessionName();
   if (!tmuxSession) {
     throw new Error(

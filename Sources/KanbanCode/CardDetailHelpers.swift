@@ -134,6 +134,25 @@ struct CardActionsMenu: View {
         // Move / Migrate submenus
         moveAndMigrateSection
 
+        // Boxd machine of the card
+        if let remote = card.link.remote, remote.mode == .boxd {
+            Divider()
+            if remote.pausedReason == nil, card.link.tmuxLink != nil {
+                Button {
+                    AppServices.pauseMachine?(card.id)
+                } label: {
+                    Label("Pause Machine \(remote.machineName)", systemImage: "pause.circle")
+                }
+            }
+            if card.link.tmuxLink == nil || remote.pausedReason != nil {
+                Button(role: .destructive) {
+                    AppServices.destroyMachine?(card.id)
+                } label: {
+                    Label("Destroy Machine \(remote.machineName)", systemImage: "xmark.icloud")
+                }
+            }
+        }
+
         // Delete / Archive
         Divider()
         if card.link.manuallyArchived {
@@ -784,7 +803,8 @@ struct EditPromptSheet: View {
                 images: $images,
                 placeholder: "Describe what you want Claude to do...",
                 maxHeight: 300,
-                onSubmit: save
+                onSubmit: save,
+                onEscape: { isPresented = false }
             )
 
             HStack {

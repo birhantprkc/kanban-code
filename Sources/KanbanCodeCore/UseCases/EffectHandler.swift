@@ -12,6 +12,27 @@ public actor EffectHandler {
     private let channelsStore: ChannelsStore
     private let notifier: NotifierPort?
     private let queuedPromptJournal: QueuedPromptJournal
+    private let remoteMachines: (any RemoteMachineControl)?
+
+    /// Creates a session on a machine, and reconnects the machine once when
+    /// it answers no longer: the app can hold a machine as paused while it
+    /// runs again, and the shell of the user must not fail for that.
+    private func createRemoteSession(machineName: String, name: String, path: String) async throws {
+        do {
+            try await tmuxAdapter?.createSession(name: name, path: path, command: nil)
+        } catch {
+            guard await remoteMachines?.reconnectIfRunning(machineName: machineName) == true else { throw error }
+            try await tmuxAdapter?.createSession(name: name, path: path, command: nil)
+        }
+    }
+
+    /// A shell that fails takes only its own tab. A session of a card that
+    /// fails takes the tmux link with it, so the card can be launched again.
+    static func terminalFailure(cardId: String, sessionName: String, isExtra: Bool, error: any Error) -> Action {
+        isExtra
+            ? .extraTerminalFailed(cardId: cardId, sessionName: sessionName, error: error.localizedDescription)
+            : .terminalFailed(cardId: cardId, error: error.localizedDescription)
+    }
 
     // MARK: - Chat notification burst throttler
     //
@@ -37,7 +58,8 @@ public actor EffectHandler {
         setClipboardImage: (@Sendable (Data) -> Void)? = nil,
         channelsStore: ChannelsStore? = nil,
         notifier: NotifierPort? = nil,
-        queuedPromptJournal: QueuedPromptJournal? = nil
+        queuedPromptJournal: QueuedPromptJournal? = nil,
+        remoteMachines: (any RemoteMachineControl)? = nil
     ) {
         self.coordinationStore = coordinationStore
         self.tmuxAdapter = tmuxAdapter
@@ -45,6 +67,7 @@ public actor EffectHandler {
         self.channelsStore = channelsStore ?? ChannelsStore()
         self.notifier = notifier
         self.queuedPromptJournal = queuedPromptJournal ?? QueuedPromptJournal()
+        self.remoteMachines = remoteMachines
     }
 
     public func execute(_ effect: Effect, dispatch: @MainActor @Sendable (Action) -> Void) async {
@@ -70,12 +93,26 @@ public actor EffectHandler {
                 KanbanCodeLog.warn("effect", "removeLink failed: \(error)")
             }
 
-        case .createTmuxSession(let cardId, let name, let path):
+        case .createTmuxSession(let cardId, let name, let path, let isExtra):
             do {
                 try await tmuxAdapter?.createSession(name: name, path: path, command: nil)
                 await dispatch(.terminalCreated(cardId: cardId, tmuxName: name))
             } catch {
-                await dispatch(.terminalFailed(cardId: cardId, error: error.localizedDescription))
+                await dispatch(Self.terminalFailure(
+                    cardId: cardId, sessionName: name, isExtra: isExtra, error: error))
+            }
+
+        case .createRemoteTmuxSession(let cardId, let machineName, let name, let path, let isExtra):
+            await remoteMachines?.assignSession(name, to: machineName)
+            do {
+                try await createRemoteSession(machineName: machineName, name: name, path: path)
+                // The terminal waits for this marker before it attaches, the
+                // same way it does for the session of the card.
+                await remoteMachines?.markSessionReady(name, on: machineName)
+                await dispatch(.terminalCreated(cardId: cardId, tmuxName: name))
+            } catch {
+                await dispatch(Self.terminalFailure(
+                    cardId: cardId, sessionName: name, isExtra: isExtra, error: error))
             }
 
         case .killTmuxSession(let name):
@@ -84,6 +121,18 @@ public actor EffectHandler {
         case .killTmuxSessions(let names):
             for name in names {
                 try? await tmuxAdapter?.killSession(name: name)
+            }
+
+        case .pauseRemoteMachine(let machineName, let reason):
+            await remoteMachines?.pause(machineName: machineName, reason: reason)
+
+        case .destroyRemoteMachine(let machineName):
+            do {
+                try await remoteMachines?.destroy(machineName: machineName)
+                await dispatch(.remoteMachineDestroyed(machineName: machineName))
+            } catch {
+                KanbanCodeLog.warn("effect", "destroyRemoteMachine \(machineName) failed: \(error)")
+                await dispatch(.setError("Could not destroy machine \(machineName): \(error.localizedDescription)"))
             }
 
         case .deleteSessionFile(let path):
@@ -153,7 +202,17 @@ public actor EffectHandler {
                 let images = assistant.supportsImageUpload
                     ? imagePaths.compactMap { ImageAttachment.fromPath($0) }
                     : []
-                if !images.isEmpty {
+                if !images.isEmpty,
+                   let remotePaths = try await remoteMachines?.uploadImages(sessionName: sessionName, imagePaths: imagePaths) {
+                    // The clipboard does not reach the machine: the images go
+                    // over the bridge and the prompt points at them by path.
+                    let body = PromptImageLayout.replacingMarkersWithMarkdown(in: promptBody, imagePaths: remotePaths)
+                    if assistant.submitsPromptWithPaste {
+                        try await tmux.pastePrompt(to: sessionName, text: body)
+                    } else {
+                        try await tmux.sendPrompt(to: sessionName, text: body)
+                    }
+                } else if !images.isEmpty {
                     guard let setClipboard = setClipboardImage else { return }
                     let sender = ImageSender(tmux: tmux)
                     try await sender.waitForReady(sessionName: sessionName, assistant: assistant)
@@ -328,7 +387,12 @@ public actor EffectHandler {
         let canSendImages = target.assistant.supportsImageUpload && !imagePaths.isEmpty
         let bodyWithMarkdownImages = PromptImageLayout.replacingMarkersWithMarkdown(in: body, imagePaths: imagePaths)
         do {
-            if canSendImages, let tmux = tmuxAdapter, let setClipboard = setClipboardImage {
+            if canSendImages, let tmux = tmuxAdapter,
+               let remotePaths = try await remoteMachines?.uploadImages(sessionName: target.sessionName, imagePaths: imagePaths) {
+                // The images go over the bridge; the prompt points at them by path.
+                let remoteBody = PromptImageLayout.replacingMarkersWithMarkdown(in: body, imagePaths: remotePaths)
+                try await tmux.pastePrompt(to: target.sessionName, text: remoteBody)
+            } else if canSendImages, let tmux = tmuxAdapter, let setClipboard = setClipboardImage {
                 let images = imagePaths.compactMap { ImageAttachment.fromPath($0) }
                 if !images.isEmpty {
                     let sender = ImageSender(tmux: tmux)

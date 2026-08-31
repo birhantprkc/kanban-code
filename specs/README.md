@@ -59,6 +59,7 @@ specs/
 │   └── hook-onboarding.feature   # Automatic Claude hook setup
 │
 ├── remote/                        # Remote execution support
+│   ├── boxd.feature              # Boxd machines per card, transcript mirror, pause and resume
 │   ├── mutagen-sync.feature      # Mutagen file sync management
 │   └── remote-execution.feature  # Shell interception, path replacement, fallback
 │

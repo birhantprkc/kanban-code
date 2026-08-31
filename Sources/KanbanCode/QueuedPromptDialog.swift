@@ -46,7 +46,8 @@ struct QueuedPromptDialog: View {
                 images: $images,
                 placeholder: "Type the next prompt for \(assistant.displayName)...",
                 maxHeight: 300,
-                onSubmit: submit
+                onSubmit: submit,
+                onEscape: { isPresented = false }
             )
 
             Toggle("Send automatically when \(assistant.displayName) finishes", isOn: $sendAutomatically)

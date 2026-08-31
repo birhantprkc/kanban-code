@@ -92,6 +92,22 @@ Feature: Session Launching
     Then the command preview should show:
       SHELL=~/.kanban-code/remote/zsh KANBAN_REMOTE_HOST=ubuntu@server.com ... claude '...'
 
+  Scenario: Command preview applies the assistant launch command template
+    Given Settings > Assistants has the launch command "langwatch ${cli_command}" for Claude
+    And the remote launch command "${cli_command} --rc" with "Different command when running on a remote machine" checked
+    When the launch confirmation dialog appears with "Run remotely" unchecked
+    Then the command preview should show: langwatch claude ...
+    When I check "Run remotely"
+    Then the command preview should show: claude ... --rc
+    And the launched command is the template applied to the built command, with the environment prefix in front
+
+  Scenario: Run on boxd in the launch dialog
+    Given Settings > Remote has the mode "Boxd integration"
+    When the launch confirmation dialog appears
+    Then the remote row reads "Run on boxd" and defaults to unchecked for a project without a machine
+    And checking it shows a machine picker with "New machine from snapshot" first
+    And a card that already has a machine opens with the box checked and its machine selected
+
   Scenario: Command preview truncates long prompts
     Given a prompt longer than 60 characters
     Then the command preview should show the first ~60 characters followed by "..."

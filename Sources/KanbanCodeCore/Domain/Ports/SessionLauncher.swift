@@ -11,6 +11,7 @@ public protocol SessionLauncher: Sendable {
         shellOverride: String?,
         extraEnv: [String: String],
         commandOverride: String?,
+        commandTemplate: String?,
         skipPermissions: Bool,
         preamble: String?,
         assistant: CodingAssistant,
@@ -25,6 +26,7 @@ public protocol SessionLauncher: Sendable {
         shellOverride: String?,
         extraEnv: [String: String],
         commandOverride: String?,
+        commandTemplate: String?,
         skipPermissions: Bool,
         preamble: String?,
         assistant: CodingAssistant,
@@ -50,6 +52,7 @@ extension SessionLauncher {
             shellOverride: shellOverride,
             extraEnv: [:],
             commandOverride: nil,
+            commandTemplate: nil,
             skipPermissions: false,
             preamble: nil,
             assistant: .claude,
@@ -63,7 +66,8 @@ extension SessionLauncher {
         projectPath: String,
         shellOverride: String?,
         extraEnv: [String: String] = [:],
-        commandOverride: String? = nil
+        commandOverride: String? = nil,
+        commandTemplate: String? = nil
     ) async throws -> String {
         try await resume(
             sessionId: sessionId,
@@ -71,6 +75,7 @@ extension SessionLauncher {
             shellOverride: shellOverride,
             extraEnv: extraEnv,
             commandOverride: commandOverride,
+            commandTemplate: commandTemplate,
             skipPermissions: false,
             preamble: nil,
             assistant: .claude,

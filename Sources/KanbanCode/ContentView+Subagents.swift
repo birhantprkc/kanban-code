@@ -306,6 +306,7 @@ extension ContentView {
                 assistant: assistant,
                 serviceIdOverride: child.apiServiceId,
                 modelOverride: model,
+                machineChoice: parent.remote.map { .existing($0.machineName) },
                 focusCard: false,
                 completion: { continuation.resume(returning: $0) }
             )

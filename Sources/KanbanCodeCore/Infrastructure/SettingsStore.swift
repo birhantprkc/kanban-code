@@ -7,6 +7,10 @@ public struct Settings: Codable, Sendable {
     public var github: GitHubSettings
     public var notifications: NotificationSettings
     public var remote: RemoteSettings?
+    /// Which remote backend the app uses when a card runs remotely.
+    public var remoteMode: RemoteMode
+    /// Settings of the boxd remote mode.
+    public var boxd: BoxdSettings?
     public var sessionTimeout: SessionTimeoutSettings
     public var promptTemplate: String
     public var githubIssuePromptTemplate: String
@@ -22,6 +26,8 @@ public struct Settings: Codable, Sendable {
     public var selfCompact: SelfCompactSettings
     /// First-class subagent hierarchy limits.
     public var subagents: SubagentSettings
+    /// Maps `CodingAssistant.rawValue` → the launch command template of that assistant.
+    public var assistantCommands: [String: AssistantCommandTemplate]
 
     public init(
         projects: [Project] = [],
@@ -29,6 +35,8 @@ public struct Settings: Codable, Sendable {
         github: GitHubSettings = GitHubSettings(),
         notifications: NotificationSettings = NotificationSettings(),
         remote: RemoteSettings? = nil,
+        remoteMode: RemoteMode = .boxd,
+        boxd: BoxdSettings? = nil,
         sessionTimeout: SessionTimeoutSettings = SessionTimeoutSettings(),
         promptTemplate: String = "",
         githubIssuePromptTemplate: String = "#${number}: ${title}\n\n${body}",
@@ -39,13 +47,16 @@ public struct Settings: Codable, Sendable {
         apiServices: [APIService] = [],
         defaultAPIServiceIds: [String: String] = [:],
         selfCompact: SelfCompactSettings = SelfCompactSettings(),
-        subagents: SubagentSettings = SubagentSettings()
+        subagents: SubagentSettings = SubagentSettings(),
+        assistantCommands: [String: AssistantCommandTemplate] = [:]
     ) {
         self.projects = projects
         self.globalView = globalView
         self.github = github
         self.notifications = notifications
         self.remote = remote
+        self.remoteMode = remoteMode
+        self.boxd = boxd
         self.sessionTimeout = sessionTimeout
         self.promptTemplate = promptTemplate
         self.githubIssuePromptTemplate = githubIssuePromptTemplate
@@ -57,14 +68,15 @@ public struct Settings: Codable, Sendable {
         self.defaultAPIServiceIds = defaultAPIServiceIds
         self.selfCompact = selfCompact
         self.subagents = subagents
+        self.assistantCommands = assistantCommands
     }
 
     private enum CodingKeys: String, CodingKey {
-        case projects, globalView, github, notifications, remote, sessionTimeout
+        case projects, globalView, github, notifications, remote, remoteMode, boxd, sessionTimeout
         case promptTemplate, githubIssuePromptTemplate, columnOrder, hasCompletedOnboarding, defaultAssistant
         case enabledAssistants
         case apiServices, defaultAPIServiceIds
-        case selfCompact, subagents
+        case selfCompact, subagents, assistantCommands
         case skill // backward-compat: old name for promptTemplate
     }
 
@@ -82,6 +94,19 @@ public struct Settings: Codable, Sendable {
         github = (try? container.decodeIfPresent(GitHubSettings.self, forKey: .github)) ?? GitHubSettings()
         notifications = (try? container.decodeIfPresent(NotificationSettings.self, forKey: .notifications)) ?? NotificationSettings()
         remote = try? container.decodeIfPresent(RemoteSettings.self, forKey: .remote)
+        boxd = try? container.decodeIfPresent(BoxdSettings.self, forKey: .boxd)
+        // A file written before the boxd mode existed has no `remoteMode`. It
+        // keeps the mutagen mode when it carries a `remote` block, so an
+        // existing remote setup is not switched under the user.
+        if let mode = try? container.decodeIfPresent(RemoteMode.self, forKey: .remoteMode) {
+            remoteMode = mode
+        } else if boxd != nil {
+            remoteMode = .boxd
+        } else if remote != nil {
+            remoteMode = .mutagen
+        } else {
+            remoteMode = .boxd
+        }
         sessionTimeout = (try? container.decodeIfPresent(SessionTimeoutSettings.self, forKey: .sessionTimeout)) ?? SessionTimeoutSettings()
         // Backward-compat: try "promptTemplate" first, fall back to "skill"
         promptTemplate = (try? container.decodeIfPresent(String.self, forKey: .promptTemplate))
@@ -105,6 +130,7 @@ public struct Settings: Codable, Sendable {
         defaultAPIServiceIds = (try? container.decodeIfPresent([String: String].self, forKey: .defaultAPIServiceIds)) ?? [:]
         selfCompact = (try? container.decodeIfPresent(SelfCompactSettings.self, forKey: .selfCompact)) ?? SelfCompactSettings()
         subagents = (try? container.decodeIfPresent(SubagentSettings.self, forKey: .subagents)) ?? SubagentSettings()
+        assistantCommands = (try? container.decodeIfPresent([String: AssistantCommandTemplate].self, forKey: .assistantCommands)) ?? [:]
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -114,6 +140,8 @@ public struct Settings: Codable, Sendable {
         try container.encode(github, forKey: .github)
         try container.encode(notifications, forKey: .notifications)
         try container.encodeIfPresent(remote, forKey: .remote)
+        try container.encode(remoteMode, forKey: .remoteMode)
+        try container.encodeIfPresent(boxd, forKey: .boxd)
         try container.encode(sessionTimeout, forKey: .sessionTimeout)
         try container.encode(promptTemplate, forKey: .promptTemplate)
         try container.encode(githubIssuePromptTemplate, forKey: .githubIssuePromptTemplate)
@@ -125,7 +153,128 @@ public struct Settings: Codable, Sendable {
         try container.encode(defaultAPIServiceIds, forKey: .defaultAPIServiceIds)
         try container.encode(selfCompact, forKey: .selfCompact)
         try container.encode(subagents, forKey: .subagents)
+        try container.encode(assistantCommands, forKey: .assistantCommands)
         // Note: "skill" is NOT encoded — only read for backward-compat
+    }
+
+    /// The launch command template of an assistant, or nil when the user did
+    /// not set one. A blank template and the bare placeholder both mean "run
+    /// the command as it is built", so both read as nil.
+    public func commandTemplate(for assistant: CodingAssistant, remote: Bool) -> String? {
+        guard let entry = assistantCommands[assistant.rawValue] else { return nil }
+        let candidate = remote ? (entry.remote ?? entry.local) : entry.local
+        let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != AssistantCommandTemplate.placeholder else { return nil }
+        return trimmed
+    }
+}
+
+/// Backend used to run a card on another machine.
+public enum RemoteMode: String, Codable, Sendable, CaseIterable {
+    /// Each card runs on its own boxd cloud machine.
+    case boxd
+    /// One SSH host with Mutagen file sync, the assistant runs on the Mac.
+    case mutagen
+}
+
+/// Settings of the boxd remote mode.
+public struct BoxdSettings: Codable, Sendable, Equatable {
+    /// Snapshot every new machine is created from.
+    public var snapshotName: String
+    /// Machine the snapshot is saved from.
+    public var sourceMachine: String
+    /// Where the repository is checked out on the machine. `${repo_name}` is
+    /// substituted and `~` expands to the home directory of the machine.
+    public var folderTemplate: String
+    /// Shell snippet that prepares the checkout on the machine.
+    /// `${repo_dir}`, `${repo_url}`, `${repo_name}` and `${branch}` are substituted.
+    public var initCommand: String
+    /// Glob lines of local files copied into the machine after the init command.
+    public var copyGlobs: [String]
+    /// Seconds without activity before the machine is paused.
+    public var inactivityTimeoutSeconds: Int
+    /// Optional long-lived Claude token (`claude setup-token`) exported as
+    /// `CLAUDE_CODE_OAUTH_TOKEN` in every session on a machine. Without it
+    /// the machines get the login of this Mac, kept in sync while they run.
+    public var claudeOAuthToken: String
+
+    public static let defaultSnapshotName = "kanban-code-base"
+    public static let defaultSourceMachine = "good-wolf"
+    public static let defaultFolderTemplate = "~/${repo_name}"
+    public static let defaultCopyGlobs = ["**/.env"]
+    public static let defaultInactivityTimeoutSeconds = 3600
+    /// Shortest timeout the app accepts. A smaller value pauses a machine
+    /// while it is still starting up.
+    public static let minimumInactivityTimeoutSeconds = 60
+
+    public static let defaultInitCommand = """
+    if [ -d "${repo_dir}" ]; then
+      cd "${repo_dir}" && git pull --ff-only
+    else
+      git clone "${repo_url}" "${repo_dir}" && cd "${repo_dir}"
+    fi
+    """
+
+    public init(
+        snapshotName: String = BoxdSettings.defaultSnapshotName,
+        sourceMachine: String = BoxdSettings.defaultSourceMachine,
+        folderTemplate: String = BoxdSettings.defaultFolderTemplate,
+        initCommand: String = BoxdSettings.defaultInitCommand,
+        copyGlobs: [String] = BoxdSettings.defaultCopyGlobs,
+        inactivityTimeoutSeconds: Int = BoxdSettings.defaultInactivityTimeoutSeconds,
+        claudeOAuthToken: String = ""
+    ) {
+        self.snapshotName = snapshotName
+        self.sourceMachine = sourceMachine
+        self.folderTemplate = folderTemplate
+        self.initCommand = initCommand
+        self.copyGlobs = copyGlobs
+        self.inactivityTimeoutSeconds = max(Self.minimumInactivityTimeoutSeconds, inactivityTimeoutSeconds)
+        self.claudeOAuthToken = claudeOAuthToken
+    }
+
+    // Per-field `try?` decoding, same rule as `Settings`: one bad value must
+    // never drop the whole boxd configuration.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        snapshotName = (try? c.decodeIfPresent(String.self, forKey: .snapshotName)) ?? Self.defaultSnapshotName
+        sourceMachine = (try? c.decodeIfPresent(String.self, forKey: .sourceMachine)) ?? Self.defaultSourceMachine
+        folderTemplate = (try? c.decodeIfPresent(String.self, forKey: .folderTemplate)) ?? Self.defaultFolderTemplate
+        initCommand = (try? c.decodeIfPresent(String.self, forKey: .initCommand)) ?? Self.defaultInitCommand
+        copyGlobs = (try? c.decodeIfPresent([String].self, forKey: .copyGlobs)) ?? Self.defaultCopyGlobs
+        let seconds = (try? c.decodeIfPresent(Int.self, forKey: .inactivityTimeoutSeconds)) ?? Self.defaultInactivityTimeoutSeconds
+        inactivityTimeoutSeconds = max(Self.minimumInactivityTimeoutSeconds, seconds)
+        claudeOAuthToken = (try? c.decodeIfPresent(String.self, forKey: .claudeOAuthToken)) ?? ""
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case snapshotName, sourceMachine, folderTemplate, initCommand, copyGlobs, inactivityTimeoutSeconds
+        case claudeOAuthToken
+    }
+}
+
+/// Launch command template of one assistant. `${cli_command}` stands for the
+/// command Kanban Code builds; `remote` is used when the card runs on a remote
+/// machine and falls back to `local` when it is nil.
+public struct AssistantCommandTemplate: Codable, Sendable, Equatable {
+    public static let placeholder = "${cli_command}"
+
+    public var local: String
+    public var remote: String?
+
+    public init(local: String = AssistantCommandTemplate.placeholder, remote: String? = nil) {
+        self.local = local
+        self.remote = remote
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        local = (try? c.decodeIfPresent(String.self, forKey: .local)) ?? Self.placeholder
+        remote = try? c.decodeIfPresent(String.self, forKey: .remote)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case local, remote
     }
 }
 

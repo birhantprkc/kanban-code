@@ -144,9 +144,13 @@ Cards created from GitHub issues get named worktrees (`issue-123`). Manual tasks
 
 ### Remote Execution
 
-Offload Claude to a remote machine and run even more agents in parallel without melting your laptop. Kanban Code manages a shell wrapper that transparently intercepts commands and executes them over SSH, with [Mutagen](https://mutagen.io/) handling bidirectional file sync. Local paths are automatically translated to remote paths — Claude doesn't know it's running remotely.
+Two remote modes are available in Settings > Remote.
 
-The UI shows Mutagen sync status in real time. If the remote host goes offline, Kanban Code automatically falls back to local execution and notifies you. Configure it globally or per-project.
+**Boxd integration.** Each card gets its own [boxd](https://boxd.sh) cloud machine, created from a snapshot you save from a machine you set up once. The tmux session, the coding assistant and the repository checkout live on the machine. Every transcript line, hook event and statusline file is streamed back to your Mac with the paths rewritten, so the conversation is always resumable locally, on the same machine, or on another one. Machines are paused the moment a session stops, after a configurable inactivity timeout, and when the app quits or the Mac sleeps. The `kanban` CLI inside the machine reaches back to your Mac, so DMs, channels and subagents work the same as local cards. See [`docs/remote-boxd.md`](docs/remote-boxd.md) for the protocol.
+
+**Mutagen + Claude Remote Exec.** Offload Claude to a remote machine and run even more agents in parallel without melting your laptop. Kanban Code manages a shell wrapper that transparently intercepts commands and executes them over SSH, with [Mutagen](https://mutagen.io/) handling bidirectional file sync. Local paths are automatically translated to remote paths, so Claude does not know it is running remotely. The UI shows Mutagen sync status in real time. If the remote host goes offline, Kanban Code automatically falls back to local execution and notifies you.
+
+Settings > Assistants also lets you wrap or extend the launch command of each assistant (`${cli_command}` stands for the command Kanban Code builds), with a separate command for cards that run remotely.
 
 ### GitHub PR Tracking
 

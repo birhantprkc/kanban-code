@@ -12,15 +12,24 @@ struct LaunchConfirmationDialog: View {
     let isGitRepo: Bool
     let hasRemoteConfig: Bool
     let remoteHost: String?
+    /// Remote backend of this launch. When set it decides the remote row, and
+    /// `hasRemoteConfig` / `remoteHost` are ignored.
+    var remoteOptions: RemoteLaunchOptions?
     let isResume: Bool
     let sessionId: String?
     let assistant: CodingAssistant
     let initialServiceId: String?
     let modelOverride: String?
     @Binding var isPresented: Bool
+    /// Boxd machine the user picked. Called just before `onLaunch` when the
+    /// launch runs on boxd.
+    var onMachineChoice: (BoxdMachineChoice) -> Void = { _ in }
+    /// Asks the caller to remove the machine of this card. The caller confirms.
+    var onRemoveMachine: (() -> Void)?
     var onLaunch: (String, Bool, String?, Bool, Bool, String?, [ImageAttachment], String?) -> Void = { _, _, _, _, _, _, _, _ in } // (editedPrompt, createWorktree, worktreeBranch, runRemotely, skipPermissions, commandOverride, images, apiServiceId)
 
     private let settingsStore = SettingsStore()
+    @State private var settings = Settings()
     @State private var apiServices: [APIService] = []
     @State private var selectedServiceId: String?
     @State private var prompt: String
@@ -30,6 +39,7 @@ struct LaunchConfirmationDialog: View {
     @State private var worktreeBranch: String = ""
     @State private var createWorktree: Bool
     @State private var runRemotely: Bool
+    @State private var machineChoice: BoxdMachineChoice
     @AppStorage("dangerouslySkipPermissions") private var dangerouslySkipPermissions = true
 
     init(
@@ -41,6 +51,7 @@ struct LaunchConfirmationDialog: View {
         isGitRepo: Bool = false,
         hasRemoteConfig: Bool = false,
         remoteHost: String? = nil,
+        remoteOptions: RemoteLaunchOptions? = nil,
         isResume: Bool = false,
         sessionId: String? = nil,
         promptImagePaths: [String] = [],
@@ -48,7 +59,9 @@ struct LaunchConfirmationDialog: View {
         initialServiceId: String? = nil,
         modelOverride: String? = nil,
         isPresented: Binding<Bool>,
-        onLaunch: @escaping (String, Bool, String?, Bool, Bool, String?, [ImageAttachment], String?) -> Void = { _, _, _, _, _, _, _, _ in }
+        onLaunch: @escaping (String, Bool, String?, Bool, Bool, String?, [ImageAttachment], String?) -> Void = { _, _, _, _, _, _, _, _ in },
+        onMachineChoice: @escaping (BoxdMachineChoice) -> Void = { _ in },
+        onRemoveMachine: (() -> Void)? = nil
     ) {
         self.cardId = cardId
         self.projectPath = projectPath
@@ -58,17 +71,26 @@ struct LaunchConfirmationDialog: View {
         self.isGitRepo = isGitRepo
         self.hasRemoteConfig = hasRemoteConfig
         self.remoteHost = remoteHost
+        self.remoteOptions = remoteOptions
         self.isResume = isResume
         self.sessionId = sessionId
         self.assistant = assistant
         self.initialServiceId = initialServiceId
         self.modelOverride = modelOverride
         self._isPresented = isPresented
+        self.onMachineChoice = onMachineChoice
+        self.onRemoveMachine = onRemoveMachine
         self.onLaunch = onLaunch
         self._selectedServiceId = State(initialValue: initialServiceId)
         self._prompt = State(initialValue: initialPrompt)
         self._images = State(initialValue: promptImagePaths.compactMap { ImageAttachment.fromPath($0) })
-        self._runRemotely = State(initialValue: UserDefaults.standard.object(forKey: "runRemotely_\(projectPath)") as? Bool ?? true)
+        let mode = remoteOptions?.mode ?? .mutagen
+        let cardMachine = remoteOptions?.cardMachine
+        let remoteDefault = remoteOptions == nil
+            ? (UserDefaults.standard.object(forKey: "runRemotely_\(projectPath)") as? Bool ?? true)
+            : RemoteLaunchOptions.defaultRunRemotely(mode: mode, projectPath: projectPath)
+        self._runRemotely = State(initialValue: cardMachine != nil ? true : remoteDefault)
+        self._machineChoice = State(initialValue: cardMachine.map { BoxdMachineChoice.existing($0) } ?? .newMachine)
         self._createWorktree = State(initialValue: UserDefaults.standard.object(forKey: "createWorktree_\(projectPath)") as? Bool ?? true)
     }
 
@@ -136,7 +158,8 @@ struct LaunchConfirmationDialog: View {
                             text: $prompt,
                             images: $images,
                             minHeight: 120,
-                            onSubmit: submitForm
+                            onSubmit: submitForm,
+                            onEscape: { isPresented = false }
                         )
                     }
 
@@ -165,15 +188,7 @@ struct LaunchConfirmationDialog: View {
                             }
                         }
 
-                        Toggle("Run remotely", isOn: hasRemoteConfig ? $runRemotely : .constant(false))
-                            .font(.app(.callout))
-                            .disabled(!hasRemoteConfig)
-                        if !hasRemoteConfig {
-                            Label("Configure remote execution in Settings > Remote", systemImage: "info.circle")
-                                .font(.app(.caption2))
-                                .foregroundStyle(.secondary)
-                                .padding(.leading, 20)
-                        }
+                        remoteSection
 
                         Toggle("Dangerously skip permissions", isOn: $dangerouslySkipPermissions)
                             .font(.app(.callout))
@@ -184,7 +199,17 @@ struct LaunchConfirmationDialog: View {
                         Text("Command")
                             .font(.app(.caption))
                             .foregroundStyle(.secondary)
-                        CommandTextEditor(text: $command, onSubmit: submitForm)
+                        if runsOnBoxd {
+                            Text("on boxd machine \(selectedMachineLabel)")
+                                .font(.app(.caption2))
+                                .foregroundStyle(.secondary)
+                            if createWorktree && isGitRepo && assistant.supportsWorktree {
+                                Text("The worktree is created on the machine and on this Mac, so the command has no --worktree flag.")
+                                    .font(.app(.caption2))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        CommandTextEditor(text: $command, onSubmit: submitForm, onEscape: { isPresented = false })
                             .font(.app(.caption).monospaced())
                             .frame(minHeight: 36, maxHeight: 80)
                             .padding(4)
@@ -229,7 +254,10 @@ struct LaunchConfirmationDialog: View {
             if !commandEdited { command = commandPreview }
         }
         .onChange(of: runRemotely) {
-            UserDefaults.standard.set(runRemotely, forKey: "runRemotely_\(projectPath)")
+            rememberRunRemotely()
+            if !commandEdited { command = commandPreview }
+        }
+        .onChange(of: machineChoice) {
             if !commandEdited { command = commandPreview }
         }
         .onChange(of: createWorktree) {
@@ -244,18 +272,116 @@ struct LaunchConfirmationDialog: View {
         }
     }
 
+    // MARK: - Remote row
+
+    @ViewBuilder
+    private var remoteSection: some View {
+        Toggle(remoteToggleLabel, isOn: canRunRemotely ? $runRemotely : .constant(false))
+            .font(.app(.callout))
+            .disabled(!canRunRemotely)
+
+        if let hint = remoteHint {
+            Label(hint, systemImage: "info.circle")
+                .font(.app(.caption2))
+                .foregroundStyle(.secondary)
+                .padding(.leading, 20)
+        }
+
+        if isResume, let machine = remoteOptions?.cardMachine {
+            Text("Machine \(machine): \(remoteOptions?.cardMachineState?.label ?? "unknown")")
+                .font(.app(.caption2))
+                .foregroundStyle(.secondary)
+                .padding(.leading, 20)
+            if !effectiveRunRemotely {
+                Label("Continues locally from the mirrored transcript. The machine is kept.", systemImage: "info.circle")
+                    .font(.app(.caption2))
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 20)
+            }
+        }
+
+        if runsOnBoxd {
+            HStack {
+                Picker("Machine", selection: $machineChoice) {
+                    ForEach(machineOptions, id: \.choice) { option in
+                        Text(option.label).tag(option.choice)
+                    }
+                }
+                if remoteOptions?.cardMachine != nil, let onRemoveMachine {
+                    Button("Remove machine", role: .destructive, action: onRemoveMachine)
+                        .controlSize(.small)
+                }
+            }
+            .padding(.leading, 20)
+        }
+    }
+
+    private struct MachineOption: Identifiable {
+        let choice: BoxdMachineChoice
+        let label: String
+        var id: BoxdMachineChoice { choice }
+    }
+
+    private var machineOptions: [MachineOption] {
+        var options: [MachineOption] = []
+        if let machine = remoteOptions?.cardMachine {
+            var label = machine
+            if let state = remoteOptions?.cardMachineState {
+                label += " (\(state.label))"
+            }
+            options.append(MachineOption(choice: .existing(machine), label: label))
+        }
+        options.append(MachineOption(choice: .newMachine, label: "New machine from snapshot \(snapshotName)"))
+        for name in remoteOptions?.availableMachines ?? [] where name != remoteOptions?.cardMachine {
+            options.append(MachineOption(choice: .existing(name), label: name))
+        }
+        return options
+    }
+
+    private var snapshotName: String {
+        remoteOptions?.boxd?.snapshotName ?? BoxdSettings.defaultSnapshotName
+    }
+
+    private var selectedMachineLabel: String {
+        machineChoice.machineName ?? "new machine"
+    }
+
+    private var remoteToggleLabel: String {
+        remoteMode == .boxd ? "Run on boxd" : "Run remotely"
+    }
+
+    private var remoteHint: String? {
+        guard !canRunRemotely else { return nil }
+        switch remoteMode {
+        case .boxd:
+            if remoteOptions?.boxd == nil { return "Configure boxd in Settings > Remote" }
+            return "Install the boxd CLI to run on boxd"
+        case .mutagen:
+            if remoteOptions?.mutagen != nil { return "Project not under remote sync path" }
+            return "Configure remote execution in Settings > Remote"
+        }
+    }
+
+    private func rememberRunRemotely() {
+        // A card that already has a machine keeps the toggle on by itself, so
+        // its value is not the project default.
+        guard remoteOptions?.cardMachine == nil else { return }
+        RemoteLaunchOptions.rememberRunRemotely(runRemotely, mode: remoteMode, projectPath: projectPath)
+    }
+
     // MARK: - Actions
 
     private func reloadServices() async {
-        let settings = (try? await settingsStore.read()) ?? Settings()
-        apiServices = settings.apiServices
+        let loaded = (try? await settingsStore.read()) ?? Settings()
+        settings = loaded
+        apiServices = loaded.apiServices
         // If the current selection still exists keep it; otherwise fall back to default.
         let currentStillValid = selectedServiceId.flatMap { id in
             apiServices.first { $0.id == id }
         } != nil
         if !currentStillValid {
             selectedServiceId = initialServiceId == nil
-                ? settings.defaultAPIServiceIds[assistant.rawValue]
+                ? loaded.defaultAPIServiceIds[assistant.rawValue]
                 : nil
         }
         if !commandEdited { command = commandPreview }
@@ -267,30 +393,47 @@ struct LaunchConfirmationDialog: View {
         }
         let override = commandEdited ? command : nil
         let branch = worktreeBranch.trimmingCharacters(in: .whitespacesAndNewlines)
+        if runsOnBoxd {
+            onMachineChoice(machineChoice)
+        }
         onLaunch(prompt, effectiveCreateWorktree, branch.isEmpty ? nil : branch, effectiveRunRemotely, dangerouslySkipPermissions, override, images, selectedServiceId)
         isPresented = false
     }
 
     // MARK: - Computed
 
+    private var remoteMode: RemoteMode {
+        remoteOptions?.mode ?? .mutagen
+    }
+
+    private var canRunRemotely: Bool {
+        remoteOptions?.canRunRemotely(projectPath: projectPath) ?? hasRemoteConfig
+    }
+
     private var effectiveCreateWorktree: Bool {
         !isResume && !hasExistingWorktree && createWorktree && isGitRepo && assistant.supportsWorktree
     }
 
     private var effectiveRunRemotely: Bool {
-        runRemotely && hasRemoteConfig
+        runRemotely && canRunRemotely
+    }
+
+    /// True when the session runs on a boxd machine.
+    private var runsOnBoxd: Bool {
+        remoteMode == .boxd && effectiveRunRemotely
     }
 
     private var commandPreview: String {
         var parts: [String] = []
 
-        if effectiveRunRemotely {
+        if effectiveRunRemotely && remoteMode == .mutagen {
             parts.append("SHELL=~/.kanban-code/remote/zsh")
             if assistant.requiresRemotePathWrapper {
                 parts.append("PATH=~/.kanban-code/remote:$PATH")
             }
         }
 
+        let template = settings.commandTemplate(for: assistant, remote: effectiveRunRemotely)
         let service = selectedServiceId.flatMap { id in apiServices.first { $0.id == id } }
         if isResume, let sid = sessionId {
             let resumeCmd = assistant.resumeCommand(
@@ -299,21 +442,25 @@ struct LaunchConfirmationDialog: View {
                 service: service,
                 modelOverride: modelOverride
             )
-            parts.append("cd \(projectPath) && \(resumeCmd)")
+            let templated = CodingAssistant.applyCommandTemplate(resumeCmd, template: template)
+            parts.append("cd \(projectPath) && \(templated)")
         } else {
             let branch = worktreeBranch.trimmingCharacters(in: .whitespacesAndNewlines)
             let effectiveWorktreeName: String?
-            if effectiveCreateWorktree {
+            // On boxd the app creates the worktree, so the command carries no
+            // worktree flag.
+            if effectiveCreateWorktree && !runsOnBoxd {
                 effectiveWorktreeName = (worktreeName?.isEmpty == false) ? worktreeName : branch
             } else {
                 effectiveWorktreeName = nil
             }
-            parts.append(assistant.launchCommand(
+            let launchCmd = assistant.launchCommand(
                 skipPermissions: dangerouslySkipPermissions,
                 worktreeName: effectiveWorktreeName,
                 service: service,
                 modelOverride: modelOverride
-            ))
+            )
+            parts.append(CodingAssistant.applyCommandTemplate(launchCmd, template: template))
         }
 
         return parts.joined(separator: " \\\n  ")

@@ -8,6 +8,7 @@ import {
   readLinks,
   readSettings,
   listTmuxSessions,
+  remoteTmuxSessionNames,
   captureTmuxPane,
   peekTmuxPane,
   sendTmuxKeys,
@@ -38,6 +39,8 @@ import { loadAgentsConfig } from "./agents/config.js";
 import { reconcileAll } from "./agents/reconcile.js";
 import { runtimeSpec } from "./agents/runtime.js";
 import { installHooks } from "./hooks.js";
+import { runRemoteAgent } from "./remote-agent.js";
+import { runProxiedCommand, shouldProxy } from "./remote-proxy.js";
 import { Daemon } from "./agents/daemon.js";
 import { slackAppManifest, MANIFEST_INSTRUCTIONS } from "./slack/manifest.js";
 import { runSlackBridge } from "./slack/bridge.js";
@@ -61,6 +64,7 @@ import {
 } from "./channels.js";
 import {
   cardForTmuxSession,
+  cardFromEnvironment,
   currentTmuxSessionName,
   formatChannelBroadcast,
   formatDirectMessage,
@@ -602,6 +606,17 @@ hooksCmd
     }
   });
 
+// ── kanban remote-agent ──────────────────────────────────────────────
+
+program
+  .command("remote-agent")
+  .description(
+    "Machine side of the boxd bridge: JSON lines on stdin and stdout, logs on stderr"
+  )
+  .action(async () => {
+    await runRemoteAgent();
+  });
+
 // ── kanban daemon ────────────────────────────────────────────────────
 
 program
@@ -739,6 +754,16 @@ async function readSubagentPromptFromArgsOrStdin(args: string[]): Promise<string
 }
 
 function selfCompactTarget(): { card: Link; tmuxSession: string } {
+  const declared = cardFromEnvironment(readLinks());
+  if (declared) {
+    const session = declared.tmuxLink?.sessionName ?? currentTmuxSessionName();
+    if (!session) {
+      throw new Error(
+        `Card ${declared.id} has no tmux session to compact. Start the card's terminal first.`
+      );
+    }
+    return { card: declared, tmuxSession: session };
+  }
   const tmuxSession = currentTmuxSessionName();
   if (!tmuxSession) {
     throw new Error(
@@ -1055,12 +1080,14 @@ function resolveCaller(
 ): { cardId: string | null; handle: string } {
   if (opts.asUser) return { cardId: null, handle: humanHandle() };
   const links = readLinks();
+  const declared = cardFromEnvironment(links);
   if (opts.as) {
     const handle = stripAt(opts.as);
     // Explicit cardId override wins.
     if (opts.asCardId) {
       return { cardId: opts.asCardId, handle };
     }
+    if (declared) return { cardId: declared.id, handle };
     // `--as` is a handle override, not a request to become a userlike
     // participant. When an agent runs inside its Kanban tmux session, preserve
     // that card identity so channel fanout and mention navigation keep working.
@@ -1079,17 +1106,20 @@ function resolveCaller(
     // Fallback: no specific card, just the chosen handle.
     return { cardId: null, handle };
   }
-  const session = currentTmuxSessionName();
-  if (!session) {
-    throw new Error(
-      "Could not detect your tmux session. Run inside tmux or pass --as <handle> / --as-user."
-    );
-  }
-  const card = cardForTmuxSession(links, session);
+  let card = declared;
   if (!card) {
-    throw new Error(
-      `Tmux session "${session}" is not linked to any kanban card. Pass --as <handle> or --as-user.`
-    );
+    const session = currentTmuxSessionName();
+    if (!session) {
+      throw new Error(
+        "Could not detect your tmux session. Run inside tmux or pass --as <handle> / --as-user."
+      );
+    }
+    card = cardForTmuxSession(links, session);
+    if (!card) {
+      throw new Error(
+        `Tmux session "${session}" is not linked to any kanban card. Pass --as <handle> or --as-user.`
+      );
+    }
   }
   // Handle: prefer the already-registered handle for this channel, else derive.
   if (channelName) {
@@ -1118,12 +1148,17 @@ function relativeTime(iso: string): string {
   return `${days}d ago`;
 }
 
+/// Live terminals: the local tmux server plus every session that lives on a
+/// boxd machine, which a local `tmux list-sessions` cannot see.
 function liveTmuxSet(): Set<string> {
+  const names = new Set<string>();
   try {
-    return new Set(listTmuxSessions().map((s) => s.name));
+    for (const session of listTmuxSessions()) names.add(session.name);
   } catch {
-    return new Set();
+    // No local tmux server: remote sessions still count.
   }
+  for (const name of remoteTmuxSessionNames()) names.add(name);
+  return names;
 }
 
 function cardParticipant(card: Link): { cardId: string; handle: string } {
@@ -2172,5 +2207,19 @@ sortTopLevelCommands([
   "parent",
   "send",
 ]);
+
+// ── Remote proxy gate ────────────────────────────────────────────────
+
+// A remote card runs its assistant on the machine, where there is no board and
+// no links.json. Everything except the commands that belong to the machine is
+// handed to the Mac, which runs the same CLI with the same arguments.
+const proxyArgv = process.argv.slice(2);
+if (shouldProxy(proxyArgv)) {
+  const code = await runProxiedCommand(proxyArgv, {
+    write: (text) => writeSyncToFd(1, text),
+    writeError: (text) => writeSyncToFd(2, text),
+  });
+  process.exit(code);
+}
 
 await program.parseAsync();
