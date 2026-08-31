@@ -478,6 +478,7 @@ public enum Action: Sendable {
     case terminalCreated(cardId: String, tmuxName: String)
     case terminalFailed(cardId: String, error: String)
     case extraTerminalCreated(cardId: String, sessionName: String)
+    case extraTerminalFailed(cardId: String, sessionName: String, error: String)
     case renameTerminalTab(cardId: String, sessionName: String, label: String)
     case reorderTerminalTab(cardId: String, sessionName: String, beforeSession: String?)
 
@@ -605,9 +606,9 @@ public enum Effect: Sendable {
     case persistLinks([Link])
     case upsertLink(Link)
     case removeLink(String) // id
-    case createTmuxSession(cardId: String, name: String, path: String)
+    case createTmuxSession(cardId: String, name: String, path: String, isExtra: Bool = false)
     /// A shell session on the machine of the card, in its remote checkout.
-    case createRemoteTmuxSession(cardId: String, machineName: String, name: String, path: String)
+    case createRemoteTmuxSession(cardId: String, machineName: String, name: String, path: String, isExtra: Bool = false)
     case killTmuxSession(String) // name
     case killTmuxSessions([String])
     case deleteSessionFile(String) // path
@@ -774,11 +775,20 @@ public enum Reducer {
             state.links[cardId] = link
             state.busyCards.insert(cardId)
             // A card that runs on a machine opens its shells there, in the
-            // remote checkout.
-            if let remote = link.remote, remote.mode == .boxd, link.isRemote, remote.pausedReason == nil, let cwd = remote.remoteCwd {
-                return [.createRemoteTmuxSession(cardId: cardId, machineName: remote.machineName, name: sessionName, path: cwd), .upsertLink(link)]
+            // remote checkout, whatever the app holds as the machine state:
+            // a machine that runs again is reconnected by the effect, and a
+            // machine that is really paused says so, instead of opening a
+            // shell on the Mac that has nothing to do with the work.
+            if let remote = link.remote, remote.mode == .boxd, link.isRemote {
+                let cwd = remote.remoteCwd ?? remote.remoteProjectPath ?? remote.remoteHome ?? "."
+                return [
+                    .createRemoteTmuxSession(
+                        cardId: cardId, machineName: remote.machineName,
+                        name: sessionName, path: cwd, isExtra: true),
+                    .upsertLink(link),
+                ]
             }
-            return [.createTmuxSession(cardId: cardId, name: sessionName, path: workDir), .upsertLink(link)]
+            return [.createTmuxSession(cardId: cardId, name: sessionName, path: workDir, isExtra: true), .upsertLink(link)]
 
         case .launchCard(let cardId, _, let projectPath, let worktreeName, _, _):
             guard var link = state.links[cardId] else { return [] }
@@ -1969,6 +1979,18 @@ public enum Reducer {
         case .extraTerminalCreated(let cardId, _):
             state.busyCards.remove(cardId)
             return []
+
+        case .extraTerminalFailed(let cardId, let sessionName, let error):
+            guard var link = state.links[cardId] else { return [] }
+            // Only the shell that failed goes away. The session of the card
+            // keeps running: it has nothing to do with this tab.
+            let remaining = (link.tmuxLink?.extraSessions ?? []).filter { $0 != sessionName }
+            link.tmuxLink?.extraSessions = remaining
+            link.updatedAt = .now
+            state.links[cardId] = link
+            state.busyCards.remove(cardId)
+            state.notice = Notice("Terminal failed: \(error)", kind: .error)
+            return [.upsertLink(link)]
 
         case .renameTerminalTab(let cardId, let sessionName, let label):
             guard var link = state.links[cardId],

@@ -101,6 +101,25 @@ struct BoxdMachineSupervisorTests {
         #expect(names == ["kanban-repo-1", "kanban-repo-2"])
     }
 
+    @Test("markSessionReady names the machine and clears the paused marker")
+    func markSessionReadyWritesTheMarker() async throws {
+        let home = NSTemporaryDirectory() + "boxd-ready-\(UUID().uuidString)"
+        let registry = RemoteSessionRegistry()
+        registry.assign(sessionName: "repo-card_1-sh1", to: "kanban-repo-1")
+        let supervisor = BoxdMachineSupervisor(
+            boxd: FakeBoxdPort(), registry: registry, settingsProvider: { BoxdSettings() }, cliBundlePath: nil,
+            appVersion: "1.0.0-test", localHome: home, localKanbanHome: home + "/.kanban-code")
+        let marker = home + "/.kanban-code/remote-ready/repo-card_1-sh1"
+        try FileManager.default.createDirectory(
+            atPath: (marker as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: marker + ".paused", contents: nil)
+
+        await supervisor.markSessionReady("repo-card_1-sh1", on: "kanban-repo-1")
+
+        #expect(try String(contentsOfFile: marker, encoding: .utf8) == "kanban-repo-1")
+        #expect(!FileManager.default.fileExists(atPath: marker + ".paused"))
+    }
+
     @Test("restore writes the paused markers of a machine in standby")
     func restoreWritesMarkersForStandbyMachine() async {
         let boxd = FakeBoxdPort()

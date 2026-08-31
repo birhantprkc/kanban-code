@@ -14,6 +14,26 @@ public actor EffectHandler {
     private let queuedPromptJournal: QueuedPromptJournal
     private let remoteMachines: (any RemoteMachineControl)?
 
+    /// Creates a session on a machine, and reconnects the machine once when
+    /// it answers no longer: the app can hold a machine as paused while it
+    /// runs again, and the shell of the user must not fail for that.
+    private func createRemoteSession(machineName: String, name: String, path: String) async throws {
+        do {
+            try await tmuxAdapter?.createSession(name: name, path: path, command: nil)
+        } catch {
+            guard await remoteMachines?.reconnectIfRunning(machineName: machineName) == true else { throw error }
+            try await tmuxAdapter?.createSession(name: name, path: path, command: nil)
+        }
+    }
+
+    /// A shell that fails takes only its own tab. A session of a card that
+    /// fails takes the tmux link with it, so the card can be launched again.
+    static func terminalFailure(cardId: String, sessionName: String, isExtra: Bool, error: any Error) -> Action {
+        isExtra
+            ? .extraTerminalFailed(cardId: cardId, sessionName: sessionName, error: error.localizedDescription)
+            : .terminalFailed(cardId: cardId, error: error.localizedDescription)
+    }
+
     // MARK: - Chat notification burst throttler
     //
     // When N messages arrive in the same channel / DM within a short window,
@@ -73,21 +93,26 @@ public actor EffectHandler {
                 KanbanCodeLog.warn("effect", "removeLink failed: \(error)")
             }
 
-        case .createTmuxSession(let cardId, let name, let path):
+        case .createTmuxSession(let cardId, let name, let path, let isExtra):
             do {
                 try await tmuxAdapter?.createSession(name: name, path: path, command: nil)
                 await dispatch(.terminalCreated(cardId: cardId, tmuxName: name))
             } catch {
-                await dispatch(.terminalFailed(cardId: cardId, error: error.localizedDescription))
+                await dispatch(Self.terminalFailure(
+                    cardId: cardId, sessionName: name, isExtra: isExtra, error: error))
             }
 
-        case .createRemoteTmuxSession(let cardId, let machineName, let name, let path):
+        case .createRemoteTmuxSession(let cardId, let machineName, let name, let path, let isExtra):
             await remoteMachines?.assignSession(name, to: machineName)
             do {
-                try await tmuxAdapter?.createSession(name: name, path: path, command: nil)
+                try await createRemoteSession(machineName: machineName, name: name, path: path)
+                // The terminal waits for this marker before it attaches, the
+                // same way it does for the session of the card.
+                await remoteMachines?.markSessionReady(name, on: machineName)
                 await dispatch(.terminalCreated(cardId: cardId, tmuxName: name))
             } catch {
-                await dispatch(.terminalFailed(cardId: cardId, error: error.localizedDescription))
+                await dispatch(Self.terminalFailure(
+                    cardId: cardId, sessionName: name, isExtra: isExtra, error: error))
             }
 
         case .killTmuxSession(let name):

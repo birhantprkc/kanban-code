@@ -133,7 +133,9 @@ The embedded terminal opens when the launch starts. For a remote session it wait
 
 The service graph of the app (store, boxd supervisor, session registry, tmux router) is built once in `AppComposition` and shared by every `ContentView` value SwiftUI creates. The supervisor sends its actions to that one store.
 
-### Files that are rewritten
+#A shell tab of a card on a machine (Cmd+T) opens on the machine, in the remote checkout. The app marks the name as remote before the tab opens, creates the session through the bridge, and writes the ready marker, which is what the terminal waits for. A shell that cannot be created takes only its own tab: the session of the card keeps running.
+
+## Files that are rewritten
 
 Only `.jsonl` files grow by appending, so only they are streamed by offset. The machine rewrites the other watched files in place, such as `context/<sessionId>.json` from the statusline, and their new content has nothing to do with the bytes the Mac holds. The agent sends those whole, at offset 0, and only when the content changes; the Mac replaces its copy. Sent as a tail, a shorter rewrite left the end of the last one behind, the file stopped being valid JSON, and the card lost its model name and its context measure.
 

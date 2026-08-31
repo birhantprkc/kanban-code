@@ -507,6 +507,17 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         return remotePath
     }
 
+    /// Writes the ready marker of a session that now exists on a machine.
+    /// The terminal waits for it before it attaches, and its content names
+    /// the machine to attach to.
+    public func markSessionReady(_ sessionName: String, on machineName: String) {
+        let marker = readyMarkerPath(sessionName)
+        try? FileManager.default.createDirectory(
+            atPath: (marker as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: marker, contents: Data(machineName.utf8))
+        try? FileManager.default.removeItem(atPath: marker + Self.pausedMarkerSuffix)
+    }
+
     /// Forgets the machine of these tmux names, so they route locally again.
     public func releaseSessions(_ sessionNames: [String]) {
         for name in sessionNames { registry.unassign(sessionName: name) }
@@ -1082,6 +1093,11 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     /// the terminal waits on it instead of reconnecting, because
     /// `boxd machine connect` wakes a paused machine.
     public static let pausedMarkerSuffix = ".paused"
+
+    /// Where the terminal looks for the marker of a session.
+    private func readyMarkerPath(_ sessionName: String) -> String {
+        "\(localKanbanHome)/remote-ready/\(sessionName)"
+    }
 
     private func setPausedMarkers(machineName: String, paused: Bool) {
         let directory = "\(localKanbanHome)/remote-ready"

@@ -565,6 +565,13 @@ extension ContentView {
             var n = 1
             while existing.contains("\(baseName)-sh\(n)") || liveTmux.contains("\(baseName)-sh\(n)") { n += 1 }
             let newName = "\(baseName)-sh\(n)"
+            // The terminal opens before the effect has created the session on
+            // the machine, so it has to know it is a remote one from the
+            // first frame; a local attach would find no such session.
+            if let remote = card.link.remote, remote.mode == .boxd, card.link.isRemote {
+                AppServices.expectRemoteSession(newName)
+                KanbanCodeLog.info("terminal", "Extra shell \(newName) opens on \(remote.machineName)")
+            }
             store.dispatch(.addExtraTerminal(cardId: cardId, sessionName: newName))
         } else {
             // No tmux at all — create a primary terminal session (plain shell, no Claude)

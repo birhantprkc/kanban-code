@@ -75,6 +75,14 @@ Feature: Boxd Remote Mode
     When I send a chat message with images to the card
     Then the images go over the bridge and the prompt points at them by path
 
+  Scenario: A new shell tab of a card on a machine opens on the machine
+    Given a card runs on a machine
+    When I press Cmd+T
+    Then the shell is created on the machine, in the remote checkout
+    And the terminal attaches to it, not to a session on the Mac
+    When the machine cannot be reached
+    Then only that tab goes away, with a notice, and the session of the card keeps running
+
   Scenario: A file the machine rewrites is mirrored whole
     Given a card runs on a machine
     When the statusline writes a shorter context file on the machine

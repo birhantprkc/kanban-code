@@ -13,6 +13,14 @@ public protocol RemoteMachineControl: Sendable {
     /// Routes a tmux name to a machine before the session is created there.
     func assignSession(_ sessionName: String, to machineName: String) async
 
+    /// Tells the terminal that a session now exists on a machine, so it
+    /// attaches instead of waiting for the marker.
+    func markSessionReady(_ sessionName: String, on machineName: String) async
+
+    /// Reconnects a machine the app holds as paused when boxd reports it
+    /// running. Returns whether the machine is connected afterwards.
+    func reconnectIfRunning(machineName: String) async -> Bool
+
     /// Puts the images on the machine of the session and returns their paths
     /// there, or nil when the session does not run on a machine. The
     /// assistant on a machine cannot read the Mac clipboard, so a prompt

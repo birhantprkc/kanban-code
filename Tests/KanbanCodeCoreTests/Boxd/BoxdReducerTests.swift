@@ -79,6 +79,53 @@ struct BoxdReducerTests {
         return state
     }
 
+    // MARK: - Extra terminals
+
+    @Test("A shell of a card on a machine is created there, in the remote checkout")
+    func extraTerminalGoesToTheMachine() {
+        var state = stateWith([remoteCard(id: "card_1", sessionName: "repo-card_1")])
+
+        let effects = Reducer.reduce(state: &state, action: .addExtraTerminal(
+            cardId: "card_1", sessionName: "repo-card_1-sh1"))
+
+        let created = effects.compactMap { effect -> (String, String, String, Bool)? in
+            guard case .createRemoteTmuxSession(_, let machine, let name, let path, let isExtra) = effect else { return nil }
+            return (machine, name, path, isExtra)
+        }
+        #expect(created.count == 1)
+        #expect(created.first?.0 == "kanban-repo-1")
+        #expect(created.first?.1 == "repo-card_1-sh1")
+        #expect(created.first?.2 == "/home/boxd/repo")
+        #expect(created.first?.3 == true)
+        #expect(!effects.contains { if case .createTmuxSession = $0 { return true }; return false })
+    }
+
+    @Test("A shell of a card whose machine the app holds as paused still goes to the machine")
+    func extraTerminalOfAPausedMachineStaysRemote() {
+        var state = stateWith([remoteCard(id: "card_1", sessionName: "repo-card_1", pausedReason: .inactivity)])
+
+        let effects = Reducer.reduce(state: &state, action: .addExtraTerminal(
+            cardId: "card_1", sessionName: "repo-card_1-sh1"))
+
+        // The effect reconnects a machine that runs again; a shell on the Mac
+        // would open in a checkout that has nothing of the work.
+        #expect(effects.contains { if case .createRemoteTmuxSession = $0 { return true }; return false })
+    }
+
+    @Test("A shell that fails takes its own tab only, not the session of the card")
+    func extraTerminalFailureKeepsTheSession() {
+        var link = remoteCard(id: "card_1", sessionName: "repo-card_1")
+        link.tmuxLink?.extraSessions = ["repo-card_1-sh1", "repo-card_1-sh2"]
+        var state = stateWith([link])
+
+        _ = Reducer.reduce(state: &state, action: .extraTerminalFailed(
+            cardId: "card_1", sessionName: "repo-card_1-sh1", error: "Machine is not connected"))
+
+        #expect(state.links["card_1"]?.tmuxLink?.sessionName == "repo-card_1")
+        #expect(state.links["card_1"]?.tmuxLink?.extraSessions == ["repo-card_1-sh2"])
+        #expect(state.notice?.kind == .error)
+    }
+
     // MARK: - hasLocalActiveCards
 
     @Test("A card on a machine does not keep the Mac awake")
