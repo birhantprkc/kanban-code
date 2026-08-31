@@ -101,6 +101,35 @@ struct BoxdMachineSupervisorTests {
         #expect(names == ["kanban-repo-1", "kanban-repo-2"])
     }
 
+    @Test("restore writes the paused markers of a machine in standby")
+    func restoreWritesMarkersForStandbyMachine() async {
+        let boxd = FakeBoxdPort()
+        boxd.setMachine(BoxdMachine(name: "kanban-repo-1", status: .standby))
+        let home = NSTemporaryDirectory() + "boxd-restore-\(UUID().uuidString)"
+        let supervisor = BoxdMachineSupervisor(
+            boxd: boxd, registry: RemoteSessionRegistry(), settingsProvider: { BoxdSettings() }, cliBundlePath: nil,
+            appVersion: "1.0.0-test", localHome: home, localKanbanHome: home + "/.kanban-code")
+
+        await supervisor.restore(links: [link(id: "card_1", machine: "kanban-repo-1", session: "repo-card_1")])
+
+        #expect(FileManager.default.fileExists(atPath: home + "/.kanban-code/remote-ready/repo-card_1.paused"))
+        #expect(!boxd.calls.contains { $0.name == "pause" })
+    }
+
+    @Test("reconnectIfRunning leaves a machine in standby alone")
+    func reconnectIfRunningStandby() async {
+        let boxd = FakeBoxdPort()
+        boxd.setMachine(BoxdMachine(name: "kanban-repo-1", status: .standby))
+        let home = NSTemporaryDirectory() + "boxd-reconnect-\(UUID().uuidString)"
+        let supervisor = BoxdMachineSupervisor(
+            boxd: boxd, registry: RemoteSessionRegistry(), settingsProvider: { BoxdSettings() }, cliBundlePath: nil,
+            appVersion: "1.0.0-test", localHome: home, localKanbanHome: home + "/.kanban-code")
+        await supervisor.restore(links: [link(id: "card_1", machine: "kanban-repo-1", session: "repo-card_1")])
+
+        #expect(await supervisor.reconnectIfRunning(machineName: "kanban-repo-1") == false)
+        #expect(!boxd.calls.contains { $0.name == "resume" })
+    }
+
     // MARK: - Pure helpers
 
     @Test("repositoryRoot walks up out of a Claude worktree")

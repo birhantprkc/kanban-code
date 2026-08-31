@@ -261,10 +261,13 @@ final class BatchedTerminalView: LocalProcessTerminalView {
               let machine = AppServices.machine(forSession: session),
               let supervisor = AppServices.boxdSupervisor,
               let data = Self.pngData(from: clipboard) else { return false }
-        Task { @MainActor [weak self] in
+        Task {
             do {
                 let remotePath = try await supervisor.uploadPastedImage(machineName: machine, data: data)
-                self?.sendBracketedPaste(text: remotePath + " ")
+                // Pasted through the tmux server of the machine, which runs
+                // after the upload on the same bridge, so the assistant
+                // finds the file when it checks the pasted path.
+                try await AppServices.tmux.pasteText(to: session, text: remotePath + " ")
             } catch {
                 KanbanCodeLog.warn("terminal", "Image paste to \(machine) failed: \(error.localizedDescription)")
             }
@@ -584,7 +587,7 @@ final class TerminalCache {
                 let isEscape = event.keyCode == 53
                 let chars = isEscape ? "" : (event.characters ?? "")
                 Task.detached {
-                    guard let adapter = try? AppServices.tmux.adapter(for: session) else { return }
+                    guard let adapter = await Self.remoteAdapter(for: session) else { return }
                     _ = try? await adapter.run(["send-keys", "-t", session, "-X", "cancel"])
                     if !chars.isEmpty {
                         _ = try? await adapter.run(["send-keys", "-t", session, chars])
@@ -712,8 +715,19 @@ final class TerminalCache {
         }
     }
 
+    /// The tmux adapter of a session on a machine. A machine the app has
+    /// as paused or unreachable, but boxd reports running, is reconnected
+    /// first, so the first wheel tick or key after a restart is not lost.
+    private static func remoteAdapter(for session: String) async -> TmuxAdapter? {
+        if let adapter = try? AppServices.tmux.adapter(for: session) { return adapter }
+        guard let machine = AppServices.machine(forSession: session),
+              let supervisor = AppServices.boxdSupervisor,
+              await supervisor.reconnectIfRunning(machineName: machine) else { return nil }
+        return try? AppServices.tmux.adapter(for: session)
+    }
+
     private func flushRemoteScroll(session: String, enter: Bool, delta: Int) async {
-        guard let adapter = try? AppServices.tmux.adapter(for: session) else { return }
+        guard let adapter = await Self.remoteAdapter(for: session) else { return }
         for command in Self.remoteScrollCommands(session: session, enter: enter, delta: delta) {
             _ = try? await adapter.run(command)
         }
@@ -765,6 +779,10 @@ final class TerminalCache {
             return existing
         }
         let terminal = BatchedTerminalView(frame: frame)
+        // The assistant may ask for mouse tracking to select text on its
+        // own. The terminal keeps its native selection instead, and the
+        // wheel reaches tmux through the scroll monitor.
+        terminal.allowMouseReporting = false
         // Dark terminal colors matching a real terminal
         terminal.nativeBackgroundColor = NSColor(red: 0.07, green: 0.07, blue: 0.07, alpha: 1.0)
         terminal.nativeForegroundColor = NSColor(red: 0.93, green: 0.93, blue: 0.93, alpha: 1.0)

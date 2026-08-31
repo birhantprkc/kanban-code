@@ -168,7 +168,9 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     // MARK: - Startup
 
     /// Re-seeds the registry from persisted links and reconnects the
-    /// machines that are running. Paused machines stay paused.
+    /// machines that are running. Paused machines stay paused, with their
+    /// markers written so the terminal waits for a resume instead of
+    /// waking them.
     public func restore(links: [Link]) async {
         defer { startInactivityTimer() }
         registry.seed(from: links)
@@ -198,6 +200,7 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
                         remoteHome: remote.remoteHome ?? Self.defaultRemoteHome,
                         pausedReason: reason
                     )
+                    setPausedMarkers(machineName: remote.machineName, paused: true)
                     await report(remote.machineName, state: .paused(reason))
                 }
             } catch {
@@ -472,6 +475,9 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     /// a session on `machineName`: the bytes go over the bridge and the
     /// terminal types the path that comes back.
     public func uploadPastedImage(machineName: String, data: Data) async throws -> String {
+        if machines[machineName]?.bridge == nil {
+            _ = await reconnectIfRunning(machineName: machineName)
+        }
         guard let runtime = machines[machineName], let bridge = runtime.bridge else {
             throw BoxdSupervisorError.notConnected(machineName)
         }
@@ -1076,33 +1082,62 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     /// app follows: it reconnects the bridge and the card leaves its paused
     /// state, so proxied commands answer and the sidebar tells the truth.
     public func followExternalResumes() async {
-        struct Target { let localProjectPath: String; let remoteProjectPath: String?; let remoteHome: String }
-        var targets: [String: Target] = [:]
-        for (name, runtime) in machines where runtime.bridge == nil && runtime.pausedReason != nil {
-            targets[name] = Target(localProjectPath: runtime.localProjectPath, remoteProjectPath: runtime.remoteProjectPath, remoteHome: runtime.remoteHome)
-        }
-        // A card paused before this app run has no runtime yet.
-        for link in await linksProvider?() ?? [] {
-            guard let remote = link.remote, remote.mode == .boxd, remote.pausedReason != nil,
-                  !link.manuallyArchived, machines[remote.machineName] == nil,
-                  let projectPath = link.projectPath else { continue }
-            targets[remote.machineName] = Target(
-                localProjectPath: projectPath, remoteProjectPath: remote.remoteProjectPath,
-                remoteHome: remote.remoteHome ?? Self.defaultRemoteHome)
-        }
+        let targets = await reconnectTargets(pausedOnly: true)
         guard !targets.isEmpty, let listed = try? await boxd.listMachines() else { return }
         for name in Self.machinesToReconnect(paused: Set(targets.keys), listed: listed) {
             guard let target = targets[name] else { continue }
-            KanbanCodeLog.info(Self.subsystem, "\(name): running outside the app, reconnecting")
-            do {
-                try await connect(
-                    machineName: name,
-                    localProjectPath: target.localProjectPath,
-                    remoteProjectPath: target.remoteProjectPath,
-                    remoteHome: target.remoteHome)
-            } catch {
-                KanbanCodeLog.warn(Self.subsystem, "\(name): reconnect failed: \(error.localizedDescription)")
-            }
+            await reconnect(machineName: name, target: target)
+        }
+    }
+
+    /// Reconnects one machine without a bridge when boxd reports it running,
+    /// for the terminal, which knows the machine answers before the next
+    /// tick does. Returns whether the machine is connected afterwards.
+    public func reconnectIfRunning(machineName: String) async -> Bool {
+        if machines[machineName]?.bridge != nil { return true }
+        guard let target = await reconnectTargets(pausedOnly: false)[machineName],
+              let machine = try? await boxd.getMachine(name: machineName),
+              machine.status == .running else { return false }
+        await reconnect(machineName: machineName, target: target)
+        return machines[machineName]?.bridge != nil
+    }
+
+    private struct ReconnectTarget {
+        let localProjectPath: String
+        let remoteProjectPath: String?
+        let remoteHome: String
+    }
+
+    /// The machines without a bridge, from the runtimes and from the links
+    /// of cards paused before this app run, which have no runtime yet.
+    private func reconnectTargets(pausedOnly: Bool) async -> [String: ReconnectTarget] {
+        var targets: [String: ReconnectTarget] = [:]
+        for (name, runtime) in machines where runtime.bridge == nil && (!pausedOnly || runtime.pausedReason != nil) {
+            targets[name] = ReconnectTarget(
+                localProjectPath: runtime.localProjectPath, remoteProjectPath: runtime.remoteProjectPath,
+                remoteHome: runtime.remoteHome)
+        }
+        for link in await linksProvider?() ?? [] {
+            guard let remote = link.remote, remote.mode == .boxd, !pausedOnly || remote.pausedReason != nil,
+                  !link.manuallyArchived, machines[remote.machineName] == nil,
+                  let projectPath = link.projectPath else { continue }
+            targets[remote.machineName] = ReconnectTarget(
+                localProjectPath: projectPath, remoteProjectPath: remote.remoteProjectPath,
+                remoteHome: remote.remoteHome ?? Self.defaultRemoteHome)
+        }
+        return targets
+    }
+
+    private func reconnect(machineName: String, target: ReconnectTarget) async {
+        KanbanCodeLog.info(Self.subsystem, "\(machineName): running outside the app, reconnecting")
+        do {
+            try await connect(
+                machineName: machineName,
+                localProjectPath: target.localProjectPath,
+                remoteProjectPath: target.remoteProjectPath,
+                remoteHome: target.remoteHome)
+        } catch {
+            KanbanCodeLog.warn(Self.subsystem, "\(machineName): reconnect failed: \(error.localizedDescription)")
         }
     }
 

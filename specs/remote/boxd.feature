@@ -65,12 +65,13 @@ Feature: Boxd Remote Mode
     And the terminal has the size of the pane and follows a resize
     And Unicode glyphs render
     And Esc leaves scroll mode
+    And a drag selects text in the terminal, not in the assistant
 
   Scenario: Images reach a session on a machine
     Given a card runs on a machine
     When I paste an image into the terminal with Cmd+V
     Then the image is put on the machine over the bridge
-    And its path on the machine is typed into the prompt
+    And its path is pasted into the session after the upload, so the assistant shows it as an attached image
     When I send a chat message with images to the card
     Then the images go over the bridge and the prompt points at them by path
 
@@ -108,6 +109,13 @@ Feature: Boxd Remote Mode
     And the caller is identified by the card id of the session
 
   # ── Pause and resume ──
+
+  Scenario: The app starts with a machine in standby
+    Given a card with a machine in standby
+    When the app starts
+    Then the terminal of the card waits for a resume instead of waking the machine
+    When I paste an image or scroll in a terminal of a machine that runs outside the app
+    Then the app reconnects at once and the paste or scroll goes through
 
   Scenario: Machine paused when the session stops
     Given a card runs on a machine
