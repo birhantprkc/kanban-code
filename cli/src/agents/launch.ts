@@ -123,6 +123,9 @@ export function ensureAgentSession(
       KANBAN_SESSION_ID: launchIdentity.sessionId,
       KANBAN_SLUG: launchIdentity.slug,
     };
+    // Before the process starts, not after: a question the runtime asks on
+    // its way up is one nothing here can answer.
+    spec.prepareWorkspace?.(opts.cwd);
     const res = createTmuxSession(launchIdentity.tmuxName, opts.cwd, command, env);
     if (!res.ok) {
       throw new Error(`Failed to create tmux session "${identity.tmuxName}": ${res.error}`);
@@ -152,13 +155,16 @@ export function ensureAgentSession(
 const NAME_READY_TIMEOUT_MS = 15_000;
 /// The gap between pane reads while waiting for that first frame.
 const NAME_POLL_MS = 500;
-/// The gap between typing the command and the Enter that submits it. A TUI
-/// that sees the whole line and the Enter arrive together reads the Enter as
-/// part of a paste and keeps the line in its composer instead of running it.
-const NAME_SUBMIT_MS = 100;
-/// How long the command gets to leave the composer before it counts as not
-/// submitted.
-const NAME_CONFIRM_MS = 3_000;
+/// How long the typed command gets to show up in the composer. Seeing it is
+/// what says the runtime read the keystrokes and drew them, which an Enter
+/// sent before then is dropped by.
+const NAME_TYPED_MS = 3_000;
+/// How long one Enter gets to clear the composer before another is sent. A
+/// TUI still loading a resumed session drops the first one silently.
+const NAME_SUBMIT_MS = 1_500;
+/// How many Enters the command gets. An Enter on a composer the runtime has
+/// already cleared does nothing, so retrying costs a keystroke and no more.
+const NAME_SUBMIT_ATTEMPTS = 4;
 
 /// What naming a started session needs from the outside, so the wait can be
 /// driven by a test without a real runtime on the other end.
@@ -212,19 +218,28 @@ export function nameStartedSession(
     if (!io.alive(tmuxName)) return false;
     if (paneAccepts(io.capture(tmuxName), marker)) {
       if (!io.type(tmuxName, command).ok) return false;
-      io.sleep(NAME_SUBMIT_MS);
-      if (!io.enter(tmuxName).ok) return false;
-      return commandLeftTheComposer({ tmuxName, command, io });
+      return submit({ tmuxName, command, io });
     }
     io.sleep(NAME_POLL_MS);
   }
   return false;
 }
 
-/// A submitted command is gone from the pane: the runtime clears its composer
-/// and answers on a line of its own. One still on screen was typed and never
-/// run, which is a session that is not named.
-function commandLeftTheComposer({
+/// Run a command already typed into the composer, and answer whether the
+/// runtime ran it.
+///
+/// The composer is read before the first Enter and after every one. Reading
+/// it first is what makes the answer mean anything: a pane that has not yet
+/// drawn the command looks exactly like one that has already run it, so an
+/// Enter sent before the runtime rendered its own keystrokes would be counted
+/// as a success by the very check meant to catch it. That is what named
+/// nothing on a box while reporting that it had.
+///
+/// Then the Enter is repeated. A runtime still loading a resumed session
+/// drops the first one with no sign of it, and an Enter on a composer it has
+/// since cleared does nothing, so retrying costs a keystroke and never a
+/// second command.
+function submit({
   tmuxName,
   command,
   io,
@@ -233,9 +248,37 @@ function commandLeftTheComposer({
   command: string;
   io: NameSessionIO;
 }): boolean {
-  const deadline = io.now() + NAME_CONFIRM_MS;
+  if (!waitUntil({ io, tmuxName, timeoutMs: NAME_TYPED_MS, done: (pane) => pane.includes(command) })) {
+    return false;
+  }
+  for (let attempt = 0; attempt < NAME_SUBMIT_ATTEMPTS; attempt++) {
+    if (!io.enter(tmuxName).ok) return false;
+    const ran = waitUntil({
+      io,
+      tmuxName,
+      timeoutMs: NAME_SUBMIT_MS,
+      done: (pane) => !pane.includes(command),
+    });
+    if (ran) return true;
+  }
+  return false;
+}
+
+/// Read the pane until it says what we are waiting for, or the time is up.
+function waitUntil({
+  io,
+  tmuxName,
+  timeoutMs,
+  done,
+}: {
+  io: NameSessionIO;
+  tmuxName: string;
+  timeoutMs: number;
+  done: (pane: string) => boolean;
+}): boolean {
+  const deadline = io.now() + timeoutMs;
   while (io.now() < deadline) {
-    if (!io.capture(tmuxName).includes(command)) return true;
+    if (done(io.capture(tmuxName))) return true;
     io.sleep(NAME_POLL_MS);
   }
   return false;

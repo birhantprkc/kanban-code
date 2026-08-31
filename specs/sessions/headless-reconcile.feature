@@ -36,6 +36,22 @@ Feature: Headless agent session reconciliation (CLI)
     And Claude is started with "--resume <uuid>" in the existing worktree
     And prior conversation history is preserved
 
+  Scenario: A workspace the runtime has never seen is settled before it starts
+    Given a runtime that stops to ask about a directory the first time it starts in one
+    And a workspace that runtime has no answer for
+    When the reconciler starts its session
+    Then the workspace is recorded as trusted before the process starts
+    And the session comes up ready instead of waiting on the question
+    # A headless agent has nobody to answer it, so its first launch in a fresh
+    # workspace sat on the question until a person opened the pane. It grants
+    # the runtime nothing it does not already have: agents launch with the
+    # sandbox off.
+
+  Scenario: An answer the operator already gave is kept
+    Given the operator has already ruled on that workspace
+    When the reconciler starts a session in it
+    Then that answer is left as it is, trusted or not
+
   Scenario: A runtime with no name flag is named once it is up
     Given the agent's runtime takes no session name at launch
     When the reconciler starts its session
