@@ -15,16 +15,18 @@ extension ContentView {
             HStack(spacing: 4) {
                 Image(systemName: connected > 0 ? "cloud.fill" : "cloud")
                     .foregroundStyle(connected > 0 ? Color.teal : Color.secondary)
-                if !isExpandedDetail {
-                    Text(boxdPillLabel(connected: connected, paused: paused, total: states.count))
-                        .font(.app(.headline))
-                        .lineLimit(1)
-                }
+                // The count belongs to the board, not to the card on screen.
+                // Without it the icon alone reads as "this card is remote".
+                Text(isExpandedDetail
+                     ? "\(max(connected, states.count))"
+                     : boxdPillLabel(connected: connected, paused: paused, total: states.count))
+                    .font(.app(.headline))
+                    .lineLimit(1)
             }
             .padding(.horizontal, isExpandedDetail ? 12 : 8)
         }
         .buttonStyle(.plain)
-        .help(boxdPillLabel(connected: connected, paused: paused, total: states.count))
+        .help("Machines of the whole board: \(boxdPillLabel(connected: connected, paused: paused, total: states.count))")
         .popover(isPresented: $showBoxdPopover) {
             boxdStatusPopover
         }

@@ -141,6 +141,36 @@ describe("remote agent protocol", () => {
     await harness.end();
   });
 
+  test("sends a rewritten file whole, and only when its content changes", async () => {
+    const context = join(process.env.KANBAN_CODE_HOME!, "context");
+    mkdirSync(context, { recursive: true });
+    const file = join(context, "s1.json");
+    writeFileSync(file, '{"usedPercentage":6,"model":"Opus 5 (1M context)"}');
+    const harness = startAgent();
+    harness.send({ type: "watch", roots: [{ path: context }], offsets: {} });
+    const first = await harness.waitFor((m) => m.type === "file", "first file");
+    assert.equal(first.offset, 0);
+
+    // Shorter than the first write: the Mac needs all of it, not a tail.
+    writeFileSync(file, '{"usedPercentage":18,"model":"Opus 5"}');
+    const second = await harness.waitFor(
+      (m) => m.type === "file" && String(m.data) !== String(first.data),
+      "rewritten file"
+    );
+    assert.equal(second.offset, 0);
+    assert.equal(
+      Buffer.from(String(second.data), "base64").toString("utf-8"),
+      '{"usedPercentage":18,"model":"Opus 5"}'
+    );
+
+    // The same bytes again are not sent a second time.
+    const seen = harness.messages.filter((m) => m.type === "file").length;
+    writeFileSync(file, '{"usedPercentage":18,"model":"Opus 5"}');
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(harness.messages.filter((m) => m.type === "file").length, seen);
+    await harness.end();
+  });
+
   test("reports a transcript's own working directory", async () => {
     const projects = join(process.env.CLAUDE_CONFIG_DIR!, "projects", "-home-boxd-app");
     mkdirSync(projects, { recursive: true });

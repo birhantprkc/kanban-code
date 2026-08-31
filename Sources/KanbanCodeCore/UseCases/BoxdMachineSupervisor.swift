@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// Everything a launch or resume needs after a machine is ready.
 public struct BoxdPreparation: Sendable {
@@ -158,6 +159,25 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
 
     public func lastActivity(of machineName: String) -> Date? {
         machines[machineName]?.lastActivity
+    }
+
+    /// What the machine records as the installed CLI: the app version and a
+    /// digest of the bundle. The version alone does not move between two
+    /// builds of the same version, so a fix in the CLI would never reach a
+    /// machine that already has one.
+    public nonisolated static func bundleStamp(appVersion: String, cliBundlePath: String) -> String {
+        let distPath = (cliBundlePath as NSString).appendingPathComponent("dist")
+        let manager = FileManager.default
+        var hasher = SHA256()
+        let files = (manager.enumerator(atPath: distPath)?.allObjects as? [String] ?? []).sorted()
+        for file in files where file.hasSuffix(".js") {
+            let full = (distPath as NSString).appendingPathComponent(file)
+            guard let data = manager.contents(atPath: full) else { continue }
+            hasher.update(data: Data(file.utf8))
+            hasher.update(data: data)
+        }
+        let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined().prefix(12)
+        return "\(appVersion)-\(digest)"
     }
 
     /// Command the embedded terminal runs to attach to a remote tmux session.
@@ -884,10 +904,11 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         let versionFile = "\(remoteHome)/.kanban-code/cli/VERSION"
         let installed = (try? await boxd.exec(name: machineName, command: "cat \(versionFile) 2>/dev/null; true", timeout: 60))?
             .stdout.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if installed == appVersion, !appVersion.isEmpty { return }
         guard let cliBundlePath, FileManager.default.fileExists(atPath: "\(cliBundlePath)/dist/kanban.js") else {
             throw BoxdSupervisorError.noCliBundle
         }
+        let stamp = Self.bundleStamp(appVersion: appVersion, cliBundlePath: cliBundlePath)
+        if installed == stamp, !stamp.isEmpty { return }
         log("Installing the kanban CLI \(appVersion) on \(machineName)")
         let archive = (NSTemporaryDirectory() as NSString).appendingPathComponent("kanban-cli-\(UUID().uuidString).tgz")
         defer { try? FileManager.default.removeItem(atPath: archive) }
@@ -915,7 +936,7 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         rm -rf \(remoteHome)/.kanban-code/cli
         mv \(remoteHome)/.kanban-code/cli.new \(remoteHome)/.kanban-code/cli
         rm -f /tmp/kanban-cli.tgz
-        printf '%s' \(Self.shellEscape(appVersion)) > \(versionFile)
+        printf '%s' \(Self.shellEscape(stamp)) > \(versionFile)
         printf '#!/bin/sh\\nexec /usr/local/bin/node \(remoteHome)/.kanban-code/cli/dist/kanban.js "$@"\\n' > \(remoteHome)/.local/bin/kanban
         chmod +x \(remoteHome)/.local/bin/kanban
         KANBAN_CODE_HOME=\(remoteHome)/.kanban-code \(remoteHome)/.local/bin/kanban hooks install

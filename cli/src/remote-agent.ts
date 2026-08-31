@@ -16,6 +16,7 @@ import {
   existsSync,
   mkdirSync,
   openSync,
+  readFileSync,
   readSync,
   realpathSync,
   renameSync,
@@ -23,6 +24,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { homedir, hostname } from "node:os";
@@ -147,6 +149,8 @@ export class RemoteAgent {
   private readonly now: () => number;
   private readonly input: NodeJS.ReadableStream;
   private readonly offsets = new Map<string, number>();
+  /** Content of the files sent whole, to send each one only when it changes. */
+  private readonly digests = new Map<string, string>();
   private readonly watchers: FSWatcher[] = [];
   private readonly lastActivity = new Map<string, number>();
   private stopped = false;
@@ -247,6 +251,7 @@ export class RemoteAgent {
     watcher.on("unlink", (path) => {
       if (!this.matchesRoot(root, path)) return;
       this.offsets.delete(path);
+      this.digests.delete(path);
       this.send({ type: "removed", path });
     });
     watcher.on("error", (error) => this.log(`watch error on ${root.path}: ${String(error)}`));
@@ -278,6 +283,13 @@ export class RemoteAgent {
 
   /** Send everything appended to `path` since the offset the Mac already has. */
   pump(path: string): void {
+    // Only `.jsonl` files grow by appending. The others, such as the
+    // statusline context, are rewritten in place, so their new content has
+    // nothing to do with the bytes the Mac already holds.
+    if (!path.endsWith(".jsonl")) {
+      this.pumpWholeFile(path);
+      return;
+    }
     let size: number;
     try {
       size = statSync(path).size;
@@ -321,6 +333,33 @@ export class RemoteAgent {
     const cwd = this.transcriptCwd(path);
     if (cwd) message.cwd = cwd;
     this.send(message);
+    this.reportActivity(path);
+  }
+
+  /**
+   * Sends a rewritten file whole, at offset 0, so the Mac replaces its copy.
+   * A file whose content did not change is not sent again: the watcher
+   * reports a write even when the bytes are the same.
+   */
+  private pumpWholeFile(path: string): void {
+    let data: Buffer;
+    try {
+      data = readFileSync(path);
+    } catch (error) {
+      this.log(`could not read ${path}: ${String(error)}`);
+      return;
+    }
+    const digest = createHash("sha1").update(data).digest("base64");
+    if (this.digests.get(path) === digest) return;
+    this.digests.set(path, digest);
+    this.offsets.set(path, data.length);
+    this.send({
+      type: "file",
+      path,
+      offset: 0,
+      data: data.toString("base64"),
+      eof: true,
+    });
     this.reportActivity(path);
   }
 

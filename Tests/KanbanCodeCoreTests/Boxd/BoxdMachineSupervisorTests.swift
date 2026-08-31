@@ -130,6 +130,23 @@ struct BoxdMachineSupervisorTests {
         #expect(!boxd.calls.contains { $0.name == "resume" })
     }
 
+    @Test("The CLI stamp of a machine follows the content of the bundle")
+    func bundleStampFollowsContent() throws {
+        let root = NSTemporaryDirectory() + "boxd-stamp-\(UUID().uuidString)"
+        let dist = root + "/dist"
+        try FileManager.default.createDirectory(atPath: dist, withIntermediateDirectories: true)
+        try "one".write(toFile: dist + "/kanban.js", atomically: true, encoding: .utf8)
+        let first = BoxdMachineSupervisor.bundleStamp(appVersion: "1.0.0", cliBundlePath: root)
+
+        #expect(first.hasPrefix("1.0.0-"))
+        #expect(BoxdMachineSupervisor.bundleStamp(appVersion: "1.0.0", cliBundlePath: root) == first)
+
+        // Same app version, new code: the machine has to take the new bundle.
+        try "two".write(toFile: dist + "/remote-agent.js", atomically: true, encoding: .utf8)
+        #expect(BoxdMachineSupervisor.bundleStamp(appVersion: "1.0.0", cliBundlePath: root) != first)
+        try? FileManager.default.removeItem(atPath: root)
+    }
+
     // MARK: - Pure helpers
 
     @Test("repositoryRoot walks up out of a Claude worktree")

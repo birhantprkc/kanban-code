@@ -75,6 +75,17 @@ Feature: Boxd Remote Mode
     When I send a chat message with images to the card
     Then the images go over the bridge and the prompt points at them by path
 
+  Scenario: A file the machine rewrites is mirrored whole
+    Given a card runs on a machine
+    When the statusline writes a shorter context file on the machine
+    Then the Mac replaces its copy instead of adding the new bytes at the end
+    And the card shows the model of the session and its context measure
+
+  Scenario: A new build of the CLI reaches a machine that has the old one
+    Given a machine with the CLI of an earlier build of the same app version
+    When the app connects to it
+    Then the machine takes the new bundle, because the stamp holds a digest of it
+
   Scenario: The transcript is mirrored to the Mac
     Given a card runs on a machine
     When the assistant writes to its transcript on the machine

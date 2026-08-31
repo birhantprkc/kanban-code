@@ -283,16 +283,17 @@ public actor BoxdMirror {
         return Data((rewritten + (endsWithNewline ? "\n" : "")).utf8)
     }
 
-    /// Appends `data` to the local file. An offset of zero while the Mac
-    /// holds bytes means the remote file was rewritten: the local copy starts
-    /// over. Offsets are tracked in remote bytes, so a rewritten chunk that
-    /// grows or shrinks does not shift them.
+    /// Appends `data` to the local file, or replaces it when the machine
+    /// sends it whole. An offset of zero always means the first byte of the
+    /// remote file, so the local copy starts over: a rewritten file, such as
+    /// the statusline context, would otherwise get its new content glued
+    /// after the old one. Offsets are tracked in remote bytes, so a chunk
+    /// that grows or shrinks does not shift them.
     private func write(data: Data, to localPath: String, offset: Int, remoteBytes: Int, remotePath: String) {
         let manager = FileManager.default
         try? manager.createDirectory(atPath: (localPath as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
         let known = offsets[remotePath] ?? 0
-        let truncate = offset == 0 && known > 0 || !manager.fileExists(atPath: localPath) && offset == 0
-        if truncate || !manager.fileExists(atPath: localPath) {
+        if offset == 0 || !manager.fileExists(atPath: localPath) {
             manager.createFile(atPath: localPath, contents: data)
         } else if let handle = FileHandle(forWritingAtPath: localPath) {
             defer { try? handle.close() }

@@ -54,7 +54,7 @@ Every `.jsonl` line under `~/.claude/projects/` and `~/.codex/sessions/` is rewr
 | Type | Fields | Meaning |
 |---|---|---|
 | `hello` | `agentVersion`, `home`, `kanbanHome`, `vm` | First line after start. `home` is the user's home directory on the machine. |
-| `file` | `path`, `cwd?`, `offset`, `data`, `eof` | `data` is base64 of the bytes appended at `offset`. For `.jsonl` files the chunk ends on a line boundary. `cwd` is the transcript's own working directory, read from the file or derived from its directory name. |
+| `file` | `path`, `cwd?`, `offset`, `data`, `eof` (a file that is not `.jsonl` always comes whole, at offset 0) | `data` is base64 of the bytes appended at `offset`. For `.jsonl` files the chunk ends on a line boundary. `cwd` is the transcript's own working directory, read from the file or derived from its directory name. |
 | `removed` | `path` | The file was deleted. |
 | `proxy` | `id`, `argv`, `cwd`, `stdin`, `env`, `images` | A `kanban` command to run on the Mac. `images` is a list of `{name, base64}`. |
 | `exec-result` | `id`, `stdout`, `stderr`, `code` | Result of an `exec`. |
@@ -133,7 +133,13 @@ The embedded terminal opens when the launch starts. For a remote session it wait
 
 The service graph of the app (store, boxd supervisor, session registry, tmux router) is built once in `AppComposition` and shared by every `ContentView` value SwiftUI creates. The supervisor sends its actions to that one store.
 
-### Logins
+### Files that are rewritten
+
+Only `.jsonl` files grow by appending, so only they are streamed by offset. The machine rewrites the other watched files in place, such as `context/<sessionId>.json` from the statusline, and their new content has nothing to do with the bytes the Mac holds. The agent sends those whole, at offset 0, and only when the content changes; the Mac replaces its copy. Sent as a tail, a shorter rewrite left the end of the last one behind, the file stopped being valid JSON, and the card lost its model name and its context measure.
+
+The machine records the installed CLI in `~/.kanban-code/cli/VERSION` as the app version plus a digest of the bundle. Two builds of one version have different digests, so a fix in the CLI reaches the machines that already have it.
+
+## Logins
 
 Claude Code keeps its OAuth tokens in the Keychain on macOS (`Claude Code-credentials`) and in `~/.claude/.credentials.json` on Linux, with the same JSON inside. Codex keeps `~/.codex/auth.json` on both. Both rotate the refresh token on every refresh, so a machine made from the snapshot drifts from the Mac within hours and one side shows "Login expired".
 

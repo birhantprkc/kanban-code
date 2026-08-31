@@ -235,6 +235,25 @@ struct BoxdMirrorTests {
         #expect(await mirror.offsets[remotePath] == rewritten.count)
     }
 
+    @Test("A rewritten context file replaces the local copy instead of growing it")
+    func rewrittenFileReplacesTheLocalCopy() async throws {
+        let fixture = Fixture()
+        defer { fixture.cleanUp() }
+        let mirror = fixture.makeMirror()
+        let remotePath = "\(fixture.remoteHome)/.kanban-code/context/s1.json"
+        let localPath = "\(fixture.localKanbanHome)/context/s1.json"
+        let first = Data(#"{"usedPercentage":6,"model":"Opus 5 (1M context)"}"#.utf8)
+        let second = Data(#"{"usedPercentage":18,"model":"Opus 5"}"#.utf8)
+
+        _ = await mirror.apply(.file(path: remotePath, cwd: nil, offset: 0, data: first, eof: true))
+        _ = await mirror.apply(.file(path: remotePath, cwd: nil, offset: 0, data: second, eof: true))
+
+        let written = try #require(read(localPath))
+        // The shorter rewrite must not leave the tail of the longer one behind.
+        #expect(written == String(decoding: second, as: UTF8.self))
+        #expect(try JSONSerialization.jsonObject(with: Data(written.utf8)) is [String: Any])
+    }
+
     @Test("The offset counts remote bytes even when the rewrite changes the length")
     func offsetsStayInRemoteBytes() async throws {
         let fixture = Fixture()
