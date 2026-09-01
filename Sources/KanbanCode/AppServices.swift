@@ -79,6 +79,24 @@ enum AppServices {
         remoteRegistry?.machine(forSession: sessionName)
     }
 
+    /// Takes a machine the app holds as paused out of standby, because a
+    /// person asked for it. A machine that is not paused is left as it is,
+    /// so this costs nothing on the common path.
+    @discardableResult
+    static func resumeMachineIfPaused(_ machineName: String) -> Bool {
+        guard remoteRegistry?.state(of: machineName)?.isPaused == true,
+              let supervisor = boxdSupervisor else { return false }
+        Task { _ = await supervisor.resume(machineName: machineName) }
+        return true
+    }
+
+    /// The same, for the machine that hosts a tmux session.
+    @discardableResult
+    static func resumeMachineIfPaused(forSession sessionName: String) -> Bool {
+        guard let machine = machine(forSession: sessionName) else { return false }
+        return resumeMachineIfPaused(machine)
+    }
+
     /// Runs the bundled kanban CLI on the Mac for a command proxied from a
     /// machine. `KANBAN_CARD_ID` names the card the command came from.
     static func runProxiedCommand(_ invocation: BoxdProxyInvocation) async -> ShellCommand.Result {

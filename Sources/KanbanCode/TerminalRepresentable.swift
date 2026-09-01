@@ -15,6 +15,9 @@ import KanbanCodeCore
 /// DispatchQueue.main.async runs between chunks (FIFO). We use asyncAfter
 /// with a short delay so multiple chunks accumulate before flushing.
 final class BatchedTerminalView: LocalProcessTerminalView {
+    /// The tmux session this terminal shows, used to find its machine.
+    var kanbanSession: String?
+
     private var pendingData: [UInt8] = []
     private var flushScheduled = false
     private var lastPendingDataWarningAt: CFTimeInterval = 0
@@ -543,6 +546,7 @@ final class TerminalCache {
     private var remoteScrollPending: [String: Int] = [:]
     private var remoteScrollEnter: Set<String> = []
     private var remoteScrollFlush: [String: Task<Void, Never>] = [:]
+    private var clickMonitor: Any?
 
     private init() {
         let tmux = Self.tmuxPath
@@ -568,6 +572,10 @@ final class TerminalCache {
             }
             guard let container = view as? TerminalContainerNSView,
                   let session = container.activeSession else { return event }
+
+            // Typing into the terminal of a card whose machine is in standby
+            // asks for the machine back.
+            AppServices.resumeMachineIfPaused(forSession: session)
 
             // If in copy-mode, exit it on any non-modifier keypress.
             // Uses -X cancel (copy-mode command) — no-op if already exited, never leaks.
@@ -597,6 +605,16 @@ final class TerminalCache {
             }
 
             return event // let the key through to the terminal
+        }
+
+        // A click on the terminal of a card whose machine is in standby is how
+        // a person asks for the machine back. The event is never consumed:
+        // the click still reaches the terminal for selection and focus.
+        clickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            guard let window = event.window,
+                  let session = self?.sessionUnderPoint(event.locationInWindow, in: window) else { return event }
+            AppServices.resumeMachineIfPaused(forSession: session)
+            return event
         }
 
         // Intercept scroll wheel events over terminal views and translate to tmux
@@ -779,6 +797,7 @@ final class TerminalCache {
             return existing
         }
         let terminal = BatchedTerminalView(frame: frame)
+        terminal.kanbanSession = sessionName
         // The assistant may ask for mouse tracking to select text on its
         // own. The terminal keeps its native selection instead, and the
         // wheel reaches tmux through the scroll monitor.
@@ -894,7 +913,7 @@ final class TerminalCache {
         let paused = quote(readyMarker + Self.pausedMarkerSuffix)
         return "for i in $(seq 1 2400); do [ -e \(marker) ] && break; sleep 0.5; done; "
             + "n=0; while [ $n -lt 30 ]; do "
-            + "if [ -e \(paused) ]; then echo 'Machine paused.'; while [ -e \(paused) ]; do sleep 1; done; n=0; fi; "
+            + "if [ -e \(paused) ]; then echo 'Machine paused. Click here to bring it back.'; while [ -e \(paused) ]; do sleep 1; done; n=0; fi; "
             + "m=\"$(cat \(marker) 2>/dev/null)\"; [ -n \"$m\" ] || m=\(fallback); "
             + "\(attach) && break; "
             + "if [ -e \(paused) ]; then continue; fi; "

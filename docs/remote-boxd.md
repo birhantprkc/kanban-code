@@ -88,14 +88,21 @@ On the Mac the app runs the bundled CLI with the same arguments and `KANBAN_CARD
 | Event | Action |
 |---|---|
 | Session stopped, terminal killed, card archived | `boxd machine pause` |
-| No activity for the configured timeout | `boxd machine pause`, the card shows the reason |
+| No activity for the idle window | `boxd machine pause`, the card shows the reason |
+| A card comes into focus, or a click or a key reaches its terminal | The machine is resumed and the bridge connects again |
 | App quit, system sleep | The machines keep running; killing the sessions from the quit sheet puts their machines in standby |
 | Resume | `boxd machine get`, then `resume`, `wake` or `start` by status. If the tmux session still exists the app attaches to it. Otherwise it uploads the transcript and starts `claude --resume`. |
 | Archive or delete with a machine | The app asks before it runs `boxd machine remove`. |
 
+### Which machine runs, and for how long
+
+Only a person takes a machine out of standby. The card that comes into focus gets its machine back, and a click or a key in the terminal of a paused card does the same, so "Machine paused. Click here to bring it back." is one click away from the session. Nothing else resumes a machine: cards nobody has open stay in standby.
+
+The idle window depends on the card in focus. The open card keeps the window of the settings (60 minutes by default), so a session that is read, or one that waits for a prompt, stays reachable. Every other machine goes back to standby after 5 minutes without activity. A machine with work on it is never paused, focused or not: the check asks the board first and any card that is actively working keeps its machine.
+
 Machines are created with `--auto-suspend-timeout` equal to the inactivity timeout. If the Mac disappears without pausing the machine, boxd suspends it when the bridge traffic stops.
 
-`boxd machine connect` wakes a paused machine in half a second. The attach loop of the embedded terminal reconnects after a drop, so a plain retry would undo every pause. Before the app pauses a machine it writes `~/.kanban-code/remote-ready/<session>.paused` for every session on it; the loop reads that file at the top of every try, prints "Machine paused." and waits on it, and the file goes away when the bridge connects again. The check comes before the connect, not after it: a connect that succeeds takes the machine out of standby and leaves the loop, so a check that runs only after a failed try never sees the marker. The loop reads the machine name from the ready marker on every try, so a resume that moved the session to another machine is followed. The markers are also written at app start for a machine that is not running, so the terminal waits instead of waking it. When a paste or a wheel tick reaches a machine the app has as paused, the app asks boxd first and reconnects at once if the machine runs.
+`boxd machine connect` wakes a paused machine in half a second. The attach loop of the embedded terminal reconnects after a drop, so a plain retry would undo every pause. Before the app pauses a machine it writes `~/.kanban-code/remote-ready/<session>.paused` for every session on it; the loop reads that file at the top of every try, prints "Machine paused. Click here to bring it back." and waits on it, and the file goes away when the bridge connects again. The check comes before the connect, not after it: a connect that succeeds takes the machine out of standby and leaves the loop, so a check that runs only after a failed try never sees the marker. The loop reads the machine name from the ready marker on every try, so a resume that moved the session to another machine is followed. The markers are also written at app start for a machine that is not running, so the terminal waits instead of waking it. When a paste or a wheel tick reaches a machine the app has as paused, the app asks boxd first and reconnects at once if the machine runs.
 
 A machine the app paused can be running again through another path, for example `boxd machine resume` in a shell. Once a minute the supervisor lists the machines it holds paused; one that boxd reports as running gets its bridge reconnected, its cards leave the paused state, and the agent answers the proxied `kanban` commands that waited meanwhile (the CLI waits up to 120 seconds for an answer).
 

@@ -769,6 +769,15 @@ struct ContentView: View {
                     if card.link.tmuxLink != nil {
                         shouldFocusTerminal = true
                     }
+                    // The card a person opens gets its machine back, and
+                    // keeps the full idle window while it is open. Cards
+                    // nobody looks at go back to standby in a few minutes,
+                    // unless there is work on their machine.
+                    let machine = card.link.remote.flatMap { $0.mode == .boxd ? $0.machineName : nil }
+                    if let machine { AppServices.resumeMachineIfPaused(machine) }
+                    if let supervisor = AppServices.boxdSupervisor {
+                        Task { await supervisor.setFocusedMachine(machine) }
+                    }
                 }
                 selectedCardIdPersisted = store.state.selectedCardId ?? ""
             }
@@ -1334,6 +1343,14 @@ struct ContentView: View {
                     showOnboarding = true
                 }
                 applyAppearance()
+                // The card restored from the last run counts as open, so its
+                // machine keeps the idle window of the settings.
+                if let cardId = store.state.selectedCardId,
+                   let card = store.state.cards.first(where: { $0.id == cardId }),
+                   let remote = card.link.remote, remote.mode == .boxd,
+                   let supervisor = AppServices.boxdSupervisor {
+                    await supervisor.setFocusedMachine(remote.machineName)
+                }
                 try? RemoteShellManager.deploy()
                 // Restore persisted project selection
                 if !selectedProjectPersisted.isEmpty {

@@ -161,6 +161,25 @@ Feature: Boxd Remote Mode
     When the app resumes the machine
     Then the terminal attaches again on its own
 
+  Scenario: The card in focus gets its machine back
+    Given a card whose machine is in standby
+    When I open the card
+    Then the machine is resumed and the terminal attaches again
+    And a card nobody opens keeps its machine in standby
+
+  Scenario: A click brings a paused machine back
+    Given a card in focus whose machine was paused while I read it
+    When I click in the terminal, or type in it
+    Then the machine is resumed and the terminal attaches again
+
+  Scenario: The idle window follows the card in focus
+    Given a machine with no work on it
+    When its card is the one I have open
+    Then it is paused after the timeout of the settings
+    When its card is not the one I have open
+    Then it is paused after 5 minutes
+    But a machine with a card that is actively working is never paused
+
   Scenario: The terminal reads the pause marker before it connects
     Given a terminal whose attach dropped when the app paused the machine
     When the loop starts its next try

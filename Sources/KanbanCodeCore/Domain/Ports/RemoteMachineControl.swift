@@ -17,6 +17,11 @@ public protocol RemoteMachineControl: Sendable {
     /// attaches instead of waiting for the marker.
     func markSessionReady(_ sessionName: String, on machineName: String) async
 
+    /// Takes a machine out of standby for a person: the card came into
+    /// focus, or a click reached its terminal. Returns whether the machine
+    /// is connected afterwards.
+    func resume(machineName: String) async -> Bool
+
     /// Reconnects a machine the app holds as paused when boxd reports it
     /// running. Returns whether the machine is connected afterwards.
     func reconnectIfRunning(machineName: String) async -> Bool

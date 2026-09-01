@@ -97,6 +97,9 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     private var linksProvider: LinksProvider?
     private var machines: [String: MachineRuntime] = [:]
     private var inactivityTask: Task<Void, Never>?
+    /// Machine of the card a person has open. It keeps the configured idle
+    /// window; the other machines get the shorter one.
+    private var focusedMachine: String?
     private var timerTicks = 0
     /// `accountUuid` of the Claude login seen on the last tick. A token
     /// rotation keeps it; an account switch changes it.
@@ -141,6 +144,12 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
 
     public func setLinksProvider(_ provider: @escaping LinksProvider) {
         self.linksProvider = provider
+    }
+
+    /// The card a person has open, by machine. Nil when the open card has no
+    /// machine.
+    public func setFocusedMachine(_ machineName: String?) {
+        focusedMachine = machineName
     }
 
     // MARK: - Queries
@@ -1137,6 +1146,31 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         }
     }
 
+    /// Takes a machine out of standby because a person asked for it: the
+    /// card came into focus, or a click reached its terminal. It resumes,
+    /// wakes or starts the machine, whatever state it is in, connects the
+    /// bridge and clears the pause markers, so the terminal attaches again.
+    /// Returns whether the machine is connected afterwards.
+    public func resume(machineName: String) async -> Bool {
+        if machines[machineName]?.bridge != nil { return true }
+        guard let target = await reconnectTargets(pausedOnly: false)[machineName] else { return false }
+        await report(machineName, state: .connecting)
+        do {
+            let settings = await settingsProvider()
+            _ = try await ensureRunning(machineName: machineName, settings: settings, log: { _ in })
+            try await connect(
+                machineName: machineName,
+                localProjectPath: target.localProjectPath,
+                remoteProjectPath: target.remoteProjectPath,
+                remoteHome: target.remoteHome)
+        } catch {
+            KanbanCodeLog.warn(Self.subsystem, "\(machineName): resume failed: \(error.localizedDescription)")
+            await report(machineName, state: .unreachable)
+            return false
+        }
+        return machines[machineName]?.bridge != nil
+    }
+
     /// Reconnects one machine without a bridge when boxd reports it running,
     /// for the terminal, which knows the machine answers before the next
     /// tick does. Returns whether the machine is connected afterwards.
@@ -1309,16 +1343,32 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         max(previous, now.addingTimeInterval(grace - timeout))
     }
 
+    /// Idle window of a machine nobody has open. A machine with work on it
+    /// is never paused, whatever the window says.
+    public static let unfocusedInactivitySeconds: TimeInterval = 300
+
+    /// The idle window of one machine. The card a person has open keeps the
+    /// window of the settings, so a session that is read, or one that waits
+    /// for a prompt, stays reachable. Every other machine goes back to
+    /// standby after a few minutes.
+    public nonisolated static func inactivityWindow(
+        focused: Bool, timeout: TimeInterval, unfocused: TimeInterval
+    ) -> TimeInterval {
+        focused ? timeout : min(timeout, unfocused)
+    }
+
     public func checkInactivity() async {
         let timeout = TimeInterval(await settingsProvider().inactivityTimeoutSeconds)
         let current = now()
         for (name, runtime) in machines where runtime.bridge != nil {
-            guard current.timeIntervalSince(runtime.lastActivity) > timeout else { continue }
+            let window = Self.inactivityWindow(
+                focused: name == focusedMachine, timeout: timeout, unfocused: Self.unfocusedInactivitySeconds)
+            guard current.timeIntervalSince(runtime.lastActivity) > window else { continue }
             if let busyCheck, await busyCheck(name) {
                 touch(name)
                 continue
             }
-            KanbanCodeLog.info(Self.subsystem, "\(name): no activity for \(Int(timeout))s, pausing")
+            KanbanCodeLog.info(Self.subsystem, "\(name): no activity for \(Int(window))s, pausing")
             await pause(machineName: name, reason: .inactivity)
         }
     }
