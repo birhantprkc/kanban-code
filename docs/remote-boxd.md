@@ -96,7 +96,9 @@ On the Mac the app runs the bundled CLI with the same arguments and `KANBAN_CARD
 
 ### Which machine runs, and for how long
 
-Only a person takes a machine out of standby. The card that comes into focus gets its machine back, and a click or a key in the terminal of a paused card does the same, so "Machine paused. Click here to bring it back." is one click away from the session. The terminal answers the click at once with "Resuming machine <name>…", and with a line to try again if the machine does not come back; the toolbar pill shows the machine as connecting meanwhile. A second click while the first resume runs does nothing. Nothing else resumes a machine: cards nobody has open stay in standby.
+Only a person takes a machine out of standby. The card that comes into focus gets its machine back, and a click or a key in the terminal of a paused card does the same, so "Machine paused. Click here to bring it back." is one click away from the session. The terminal answers the click at once with "Resuming machine <name>…", and with a line to try again if the machine does not come back; the toolbar pill shows the machine as connecting meanwhile. A second click while the first resume runs does nothing.
+
+A machine brought back this way is on approval: when its card leaves focus with no work done on it, it goes back to standby at once, so a quick look costs the seconds it took. The first hook event or transcript line on the machine ends that, and the machine then keeps the normal idle window. A machine that was already running before the look, or one with work on it, is never touched by this. Nothing else resumes a machine: cards nobody has open stay in standby.
 
 Every machine gets the same idle window, the one in the settings (30 minutes by default), whether its card is open or not: an agent can be waiting on a watcher, a subagent or a review, with nothing on the screen to show for it. A machine with work on it is never paused: the check asks the board first and any card that is actively working keeps its machine.
 

@@ -78,6 +78,10 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         var localProjectPath: String
         var remoteProjectPath: String
         var reconnectAttempts = 0
+        /// True from the moment a person brought the machine back until the
+        /// first work arrives on it. A peek that ends with nothing done
+        /// pauses the machine again at once.
+        var resumedForPeek = false
     }
 
     private let boxd: any BoxdPort
@@ -96,6 +100,8 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     private var busyCheck: BusyCheck?
     private var linksProvider: LinksProvider?
     private var machines: [String: MachineRuntime] = [:]
+    /// Machines a card left focus for while their resume was still running.
+    private var peekPauseRequested: Set<String> = []
     private var inactivityTask: Task<Void, Never>?
     private var timerTicks = 0
     /// `accountUuid` of the Claude login seen on the last tick. A token
@@ -991,6 +997,9 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
 
     private func touch(_ machineName: String) {
         machines[machineName]?.lastActivity = now()
+        // Work arrived: the machine is not a look any more.
+        machines[machineName]?.resumedForPeek = false
+        peekPauseRequested.remove(machineName)
     }
 
     private func handleDisconnect(machineName: String, reason: String) async {
@@ -1157,9 +1166,37 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         } catch {
             KanbanCodeLog.warn(Self.subsystem, "\(machineName): resume failed: \(error.localizedDescription)")
             await report(machineName, state: .unreachable)
+            peekPauseRequested.remove(machineName)
+            return false
+        }
+        machines[machineName]?.resumedForPeek = true
+        // The card lost focus while the machine was still coming back.
+        if peekPauseRequested.remove(machineName) != nil {
+            await pauseIfPeek(machineName: machineName)
             return false
         }
         return machines[machineName]?.bridge != nil
+    }
+
+    /// Pauses a machine a person brought back but did nothing with. The card
+    /// that leaves focus calls it, so a quick look at a session costs the
+    /// seconds it took, not the whole idle window. A machine with work on it,
+    /// or one that was already running before the look, is left alone.
+    public func pauseIfPeek(machineName: String) async {
+        guard let runtime = machines[machineName], runtime.resumedForPeek else {
+            // Still coming back: pause it as soon as it is here.
+            if machines[machineName]?.pausedReason == nil, machines[machineName]?.bridge == nil {
+                peekPauseRequested.insert(machineName)
+            }
+            return
+        }
+        guard runtime.bridge != nil else { return }
+        if let busyCheck, await busyCheck(machineName) {
+            machines[machineName]?.resumedForPeek = false
+            return
+        }
+        KanbanCodeLog.info(Self.subsystem, "\(machineName): looked at with no work, pausing again")
+        await pause(machineName: machineName, reason: .inactivity)
     }
 
     /// Reconnects one machine without a bridge when boxd reports it running,

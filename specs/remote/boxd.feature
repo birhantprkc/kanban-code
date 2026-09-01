@@ -174,6 +174,13 @@ Feature: Boxd Remote Mode
     And the machine is resumed and the terminal attaches again
     But a machine that does not come back says so, and the click can be repeated
 
+  Scenario: A look at a paused card costs only the look
+    Given a card whose machine I brought back with a click
+    When I open another card, with no work done on the machine meanwhile
+    Then the machine goes back to standby at once
+    But a prompt, or any work on the machine, keeps it running for the idle window
+    And a machine that was already running when I opened the card is left alone
+
   Scenario: The idle window is the same for every machine
     Given a machine with no work on it
     Then it is paused after the timeout of the settings, open card or not

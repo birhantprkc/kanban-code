@@ -22,6 +22,10 @@ public protocol RemoteMachineControl: Sendable {
     /// is connected afterwards.
     func resume(machineName: String) async -> Bool
 
+    /// Pauses a machine a person brought back but did nothing with, when
+    /// its card leaves focus.
+    func pauseIfPeek(machineName: String) async
+
     /// Reconnects a machine the app holds as paused when boxd reports it
     /// running. Returns whether the machine is connected afterwards.
     func reconnectIfRunning(machineName: String) async -> Bool

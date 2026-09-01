@@ -760,7 +760,15 @@ struct ContentView: View {
         }
             .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
             .navigationTitle("")
-            .onChange(of: store.state.selectedCardId) {
+            .onChange(of: store.state.selectedCardId) { previousCardId, _ in
+                // A machine brought back for a look, with nothing done on it,
+                // goes back to standby when its card leaves focus.
+                if let previousCardId,
+                   let previous = store.state.links[previousCardId]?.remote, previous.mode == .boxd,
+                   let supervisor = AppServices.boxdSupervisor {
+                    let machine = previous.machineName
+                    Task { await supervisor.pauseIfPeek(machineName: machine) }
+                }
                 if let cardId = store.state.selectedCardId,
                    let card = store.state.cards.first(where: { $0.id == cardId }) {
                     detailTab = DetailTab.initialTab(for: card)

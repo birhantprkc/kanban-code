@@ -38,6 +38,15 @@ extension ContentView {
         return total == 1 ? "1 machine" : "\(total) machines"
     }
 
+    /// The card of a machine by name, or how many cards it has when there
+    /// is more than one.
+    private func boxdCardsLabel(_ cardIds: [String]) -> String {
+        if cardIds.count == 1, let card = store.state.cards.first(where: { $0.id == cardIds[0] }) {
+            return card.displayTitle
+        }
+        return "\(cardIds.count) card\(cardIds.count == 1 ? "" : "s")"
+    }
+
     @ViewBuilder
     var boxdStatusPopover: some View {
         let states = store.state.remoteMachineStates.sorted { $0.key < $1.key }
@@ -50,14 +59,29 @@ extension ContentView {
             ForEach(states, id: \.key) { name, state in
                 let cardIds = store.state.cardIds(onMachine: name)
                 HStack(spacing: 8) {
-                    Image(systemName: state.isConnected ? "cloud.fill" : state.isPaused ? "pause.circle" : "exclamationmark.icloud")
-                        .foregroundStyle(state.isConnected ? Color.teal : Color.secondary)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(name).font(.app(.callout))
-                        Text("\(state.label) · \(cardIds.count) card\(cardIds.count == 1 ? "" : "s")")
-                            .font(.app(.caption))
-                            .foregroundStyle(.secondary)
+                    // The name and the state open the card of the machine.
+                    Button {
+                        guard let cardId = cardIds.first else { return }
+                        showBoxdPopover = false
+                        store.dispatch(.selectCard(cardId: cardId))
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: state.isConnected ? "cloud.fill" : state.isPaused ? "pause.circle" : "exclamationmark.icloud")
+                                .foregroundStyle(state.isConnected ? Color.teal : Color.secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(name).font(.app(.callout))
+                                Text("\(state.label) · \(boxdCardsLabel(cardIds))")
+                                    .font(.app(.caption))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
+                    .disabled(cardIds.isEmpty)
+                    .help(cardIds.isEmpty ? "No card uses this machine" : "Open the card of this machine")
                     Spacer()
                     if state.isConnected, let cardId = cardIds.first {
                         Button("Pause") {
