@@ -1145,6 +1145,8 @@ struct CardDetailView: View {
             return "Machine \(remote.machineName) was paused due to inactivity for over \(Self.durationText(minutes: minutes))"
         case .sessionStopped:
             return "Machine \(remote.machineName) paused after the session stopped"
+        case .stopped:
+            return "Machine \(remote.machineName) was stopped. Resume starts it again."
         case .appQuit:
             return "Machine \(remote.machineName) paused when the app quit"
         case .systemSleep:

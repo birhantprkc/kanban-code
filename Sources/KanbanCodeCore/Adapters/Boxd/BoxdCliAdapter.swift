@@ -106,6 +106,7 @@ public protocol BoxdPort: Sendable {
     func resume(name: String) async throws
     func wake(name: String) async throws
     func start(name: String) async throws
+    func stop(name: String) async throws
     func remove(name: String) async throws
     func saveSnapshot(machine: String, name: String) async throws
     func listSnapshots() async throws -> [BoxdSnapshot]
@@ -171,6 +172,10 @@ public final class BoxdCliAdapter: BoxdPort, @unchecked Sendable {
 
     public func start(name: String) async throws {
         _ = try await runJSON(["machine", "start", name, "--json"], timeout: 180)
+    }
+
+    public func stop(name: String) async throws {
+        _ = try await runJSON(["machine", "stop", name, "--json"], timeout: 180)
     }
 
     public func remove(name: String) async throws {

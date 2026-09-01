@@ -126,6 +126,9 @@ public actor EffectHandler {
         case .pauseRemoteMachine(let machineName, let reason):
             await remoteMachines?.pause(machineName: machineName, reason: reason)
 
+        case .stopRemoteMachine(let machineName):
+            await remoteMachines?.stop(machineName: machineName)
+
         case .destroyRemoteMachine(let machineName):
             do {
                 try await remoteMachines?.destroy(machineName: machineName)

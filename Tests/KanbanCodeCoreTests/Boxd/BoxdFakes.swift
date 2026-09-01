@@ -253,6 +253,7 @@ final class FakeBoxdPort: BoxdPort, @unchecked Sendable {
     func resume(name: String) async throws { try record("resume", name) }
     func wake(name: String) async throws { try record("wake", name) }
     func start(name: String) async throws { try record("start", name) }
+    func stop(name: String) async throws { try record("stop", name) }
     func remove(name: String) async throws { try record("remove", name) }
     func saveSnapshot(machine: String, name: String) async throws { try record("saveSnapshot", machine) }
 

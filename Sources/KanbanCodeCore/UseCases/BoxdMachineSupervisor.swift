@@ -628,6 +628,33 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         await report(machineName, state: .paused(reason))
     }
 
+    /// Stops a machine: the work on its card is over, so nothing of it has
+    /// to stay in memory. It costs its disk only, and comes back with a cold
+    /// start when the card is resumed.
+    public func stop(machineName: String) async {
+        setPausedMarkers(machineName: machineName, paused: true)
+        if var runtime = machines[machineName] {
+            runtime.pausedReason = .stopped
+            runtime.resumedForPeek = false
+            runtime.eventTask?.cancel()
+            runtime.keepaliveTask?.cancel()
+            runtime.eventTask = nil
+            runtime.keepaliveTask = nil
+            if let bridge = runtime.bridge { await bridge.stop() }
+            runtime.bridge = nil
+            machines[machineName] = runtime
+        }
+        peekPauseRequested.remove(machineName)
+        registry.disconnectMachine(machineName, state: .paused(.stopped))
+        do {
+            try await boxd.stop(name: machineName)
+            KanbanCodeLog.info(Self.subsystem, "\(machineName): stopped")
+        } catch {
+            KanbanCodeLog.warn(Self.subsystem, "\(machineName): stop failed: \(error.localizedDescription)")
+        }
+        await report(machineName, state: .paused(.stopped))
+    }
+
     public func destroy(machineName: String) async throws {
         if var runtime = machines[machineName] {
             runtime.eventTask?.cancel()

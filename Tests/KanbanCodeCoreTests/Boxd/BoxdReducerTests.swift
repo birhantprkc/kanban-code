@@ -12,6 +12,13 @@ extension Array where Element == Effect {
         }
     }
 
+    var stoppedMachines: [String] {
+        compactMap {
+            guard case .stopRemoteMachine(let machine) = $0 else { return nil }
+            return machine
+        }
+    }
+
     var destroyedMachines: [String] {
         compactMap {
             guard case .destroyRemoteMachine(let machine) = $0 else { return nil }
@@ -157,8 +164,8 @@ struct BoxdReducerTests {
 
     // MARK: - killTerminal
 
-    @Test("killTerminal keeps the machine record and pauses the machine")
-    func killTerminalKeepsRemoteAndPauses() throws {
+    @Test("killTerminal keeps the machine record and stops the machine")
+    func killTerminalKeepsRemoteAndStops() throws {
         var state = stateWith([remoteCard(id: "card_1", sessionName: "repo-card_1")])
 
         let effects = Reducer.reduce(state: &state, action: .killTerminal(cardId: "card_1", sessionName: "repo-card_1"))
@@ -167,13 +174,14 @@ struct BoxdReducerTests {
         #expect(link.tmuxLink == nil)
         #expect(link.remote?.machineName == "kanban-repo-1")
         #expect(link.isRemote == true)
-        #expect(effects.pausedMachines.count == 1)
-        #expect(effects.pausedMachines[0].machine == "kanban-repo-1")
-        #expect(effects.pausedMachines[0].reason == .sessionStopped)
+        // The tab was closed: the work is over, so the machine is stopped,
+        // not kept in standby.
+        #expect(effects.stoppedMachines == ["kanban-repo-1"])
+        #expect(effects.pausedMachines.isEmpty)
         #expect(effects.destroyedMachines.isEmpty)
     }
 
-    @Test("killTerminal does not pause a machine another card still runs on")
+    @Test("killTerminal does not stop a machine another card still runs on")
     func killTerminalKeepsSharedMachineRunning() {
         var state = stateWith([
             remoteCard(id: "card_1", sessionName: "repo-card_1"),
@@ -182,6 +190,7 @@ struct BoxdReducerTests {
 
         let effects = Reducer.reduce(state: &state, action: .killTerminal(cardId: "card_1", sessionName: "repo-card_1"))
 
+        #expect(effects.stoppedMachines.isEmpty)
         #expect(effects.pausedMachines.isEmpty)
         #expect(state.links["card_1"]?.remote != nil)
         #expect(state.links["card_2"]?.tmuxLink != nil)
@@ -193,6 +202,7 @@ struct BoxdReducerTests {
 
         let effects = Reducer.reduce(state: &state, action: .killTerminal(cardId: "card_1", sessionName: "repo-card_1"))
 
+        #expect(effects.stoppedMachines.isEmpty)
         #expect(effects.pausedMachines.isEmpty)
         #expect(state.links["card_1"]?.isRemote == false)
     }

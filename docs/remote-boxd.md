@@ -87,7 +87,8 @@ On the Mac the app runs the bundled CLI with the same arguments and `KANBAN_CARD
 
 | Event | Action |
 |---|---|
-| Session stopped, terminal killed, card archived | `boxd machine pause` |
+| Session stopped by itself | `boxd machine pause`, the machine keeps its tmux in standby |
+| Terminal tab closed, card archived | `boxd machine stop`: the work is over, so the machine keeps its disk only. Resume starts it again, cold. |
 | No activity for the idle window | `boxd machine pause`, the card shows the reason |
 | A card comes into focus, or a click or a key reaches its terminal | The machine is resumed and the bridge connects again |
 | App quit, system sleep | The machines keep running; killing the sessions from the quit sheet puts their machines in standby |

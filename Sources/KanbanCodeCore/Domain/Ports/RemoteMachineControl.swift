@@ -7,6 +7,10 @@ public protocol RemoteMachineControl: Sendable {
     /// inactivity timer or the next quit retries it.
     func pause(machineName: String, reason: RemotePausedReason) async
 
+    /// Stops a machine, for a card whose work is over. Never throws: a stop
+    /// that fails is logged, and the next sweep or quit retries it.
+    func stop(machineName: String) async
+
     /// Removes a machine for good.
     func destroy(machineName: String) async throws
 

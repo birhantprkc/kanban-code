@@ -733,6 +733,9 @@ public struct ConversationTurn: Sendable, Equatable {
 /// what to expect from a resume.
 public enum RemotePausedReason: String, Codable, Sendable, Equatable {
     case sessionStopped
+    /// The machine was stopped, not put in standby: the work on the card is
+    /// over, so nothing of it has to stay in memory.
+    case stopped
     case inactivity
     case appQuit
     case systemSleep

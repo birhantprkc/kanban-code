@@ -624,6 +624,10 @@ public enum Effect: Sendable {
 
     // Remote machines (boxd)
     case pauseRemoteMachine(machineName: String, reason: RemotePausedReason)
+    /// Stops the machine of a card whose work is over: the tab was closed,
+    /// or the card was archived. Cheaper than standby, and the card resumes
+    /// with a cold start.
+    case stopRemoteMachine(machineName: String)
     case destroyRemoteMachine(machineName: String)
 
     // Channels
@@ -729,7 +733,7 @@ public enum Reducer {
         guard others.isEmpty else { return [] }
         return destroy
             ? [.destroyRemoteMachine(machineName: remote.machineName)]
-            : [.pauseRemoteMachine(machineName: remote.machineName, reason: .sessionStopped)]
+            : [.stopRemoteMachine(machineName: remote.machineName)]
     }
 
     public static func reduce(state: inout AppState, action: Action) -> [Effect] {
@@ -1519,7 +1523,7 @@ public enum Reducer {
                 } else {
                     // No extras — full teardown. A boxd card keeps its machine
                     // record so a later resume finds it; the machine itself
-                    // is paused when no other card runs on it.
+                    // is stopped when no other card runs on it.
                     link.tmuxLink = nil
                     link.isLaunching = nil
                     if link.remote == nil { link.isRemote = false }
@@ -1527,7 +1531,9 @@ public enum Reducer {
                     state.links[cardId] = link
                     var effects: [Effect] = [.killTmuxSession(sessionName), .upsertLink(link), .cleanupTerminalCache(sessionNames: [sessionName])]
                     if let remote = link.remote, remote.mode == .boxd, !machineHasLiveSessions(remote.machineName, in: state) {
-                        effects.append(.pauseRemoteMachine(machineName: remote.machineName, reason: .sessionStopped))
+                        // The tab was closed: the work on this card is over,
+                        // so the machine is stopped, not kept in standby.
+                        effects.append(.stopRemoteMachine(machineName: remote.machineName))
                     }
                     return effects
                 }

@@ -34,6 +34,8 @@ public enum RemoteMachineState: Sendable, Equatable {
         switch self {
         case .connecting: "Connecting"
         case .connected: "Connected"
+        // A stopped machine is off, not in standby: it says so on its own.
+        case .paused(.stopped): "Stopped"
         case .paused(let reason): "Paused (\(reason.label))"
         case .unreachable: "Unreachable"
         case .destroyed: "Destroyed"
@@ -45,6 +47,7 @@ extension RemotePausedReason {
     public var label: String {
         switch self {
         case .sessionStopped: "session stopped"
+        case .stopped: "stopped"
         case .inactivity: "inactivity"
         case .appQuit: "app quit"
         case .systemSleep: "system sleep"

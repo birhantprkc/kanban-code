@@ -174,6 +174,13 @@ Feature: Boxd Remote Mode
     And the machine is resumed and the terminal attaches again
     But a machine that does not come back says so, and the click can be repeated
 
+  Scenario: Closing the tab stops the machine
+    Given a card that runs on a machine no other card uses
+    When I close the terminal tab of the session
+    Then the machine is stopped, not put in standby
+    And the card keeps its machine record, and the pill says "Stopped"
+    And a resume of the card starts the machine again
+
   Scenario: A look at a paused card costs only the look
     Given a card whose machine I brought back with a click
     When I open another card, with no work done on the machine meanwhile
