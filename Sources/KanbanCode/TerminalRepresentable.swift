@@ -885,17 +885,19 @@ final class TerminalCache {
         guard let readyMarker else {
             return "m=\(fallback); for i in $(seq 1 30); do \(attach) && break; sleep 2; done; echo 'Session ended.'"
         }
-        // `boxd machine connect` wakes a paused machine, so a retry while the
-        // app holds the machine paused would undo the pause. The pause marker
-        // stops the retries until the app takes it away. The machine is read
-        // from the marker on every try: a resume may move the session.
+        // `boxd machine connect` wakes a paused machine, so the pause marker
+        // is read before every try, not after: a connect that succeeds takes
+        // the machine out of standby and the loop never comes back to look.
+        // The machine name is read from the marker on every try as well: a
+        // resume may move the session.
         let marker = quote(readyMarker)
         let paused = quote(readyMarker + Self.pausedMarkerSuffix)
         return "for i in $(seq 1 2400); do [ -e \(marker) ] && break; sleep 0.5; done; "
             + "n=0; while [ $n -lt 30 ]; do "
+            + "if [ -e \(paused) ]; then echo 'Machine paused.'; while [ -e \(paused) ]; do sleep 1; done; n=0; fi; "
             + "m=\"$(cat \(marker) 2>/dev/null)\"; [ -n \"$m\" ] || m=\(fallback); "
             + "\(attach) && break; "
-            + "if [ -e \(paused) ]; then echo 'Machine paused.'; while [ -e \(paused) ]; do sleep 1; done; n=0; continue; fi; "
+            + "if [ -e \(paused) ]; then continue; fi; "
             + "n=$((n+1)); sleep 2; done; echo 'Session ended.'"
     }
 

@@ -161,12 +161,25 @@ Feature: Boxd Remote Mode
     When the app resumes the machine
     Then the terminal attaches again on its own
 
+  Scenario: The terminal reads the pause marker before it connects
+    Given a terminal whose attach dropped when the app paused the machine
+    When the loop starts its next try
+    Then it reads the pause marker first and waits
+    And it does not connect, which would take the machine out of standby
+
   Scenario: The app follows a machine resumed elsewhere
     Given a machine the app paused
     When `boxd machine resume` runs in a shell
     Then within a minute the bridge reconnects
     And the card leaves its paused state
     And a `kanban` command waiting inside the machine gets its answer
+
+  Scenario: A machine that comes back with no work goes to standby again
+    Given a machine the app paused for inactivity
+    When something outside the app takes it out of standby
+    Then the app reconnects and keeps the activity clock of the machine
+    And the machine is paused again within 5 minutes when no work arrives
+    But work on the machine gives it the full inactivity timeout again
 
   Scenario: Resume attaches to the existing tmux session
     Given a card with a paused machine whose tmux session is still there

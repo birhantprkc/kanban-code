@@ -210,7 +210,10 @@ struct TerminalHyperlinkTests {
     }
 }
 
-@Suite("Terminal hyperlink parsing")
+/// The tests feed a real `Terminal`. SwiftTerm keeps the OSC 8 payloads in a
+/// global atom table with no lock, so two terminals that parse a hyperlink at
+/// the same time can crash the process. They run one after the other.
+@Suite("Terminal hyperlink parsing", .serialized)
 struct TerminalHyperlinkFeedTests {
 
     /// A terminal that answers nothing, which is all a parsing test needs.

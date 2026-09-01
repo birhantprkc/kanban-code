@@ -149,6 +149,24 @@ struct BoxdMachineSupervisorTests {
         #expect(!boxd.calls.contains { $0.name == "resume" })
     }
 
+    @Test("A machine that comes back without a person keeps its activity clock")
+    func activityClockAfterOutsideResume() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let timeout: TimeInterval = 3600
+        let grace: TimeInterval = 300
+
+        // Woken by something else, with no work since: the next check pauses
+        // it again in a few minutes, not in another full hour.
+        let idle = BoxdMachineSupervisor.activityAfterOutsideResume(
+            previous: now.addingTimeInterval(-7200), now: now, timeout: timeout, grace: grace)
+        #expect(now.timeIntervalSince(idle) == timeout - grace)
+
+        // Recent work stays as it is, so the machine keeps its full timeout.
+        let busy = now.addingTimeInterval(-60)
+        #expect(BoxdMachineSupervisor.activityAfterOutsideResume(
+            previous: busy, now: now, timeout: timeout, grace: grace) == busy)
+    }
+
     @Test("The CLI stamp of a machine follows the content of the bundle")
     func bundleStampFollowsContent() throws {
         let root = NSTemporaryDirectory() + "boxd-stamp-\(UUID().uuidString)"

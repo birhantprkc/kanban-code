@@ -833,9 +833,11 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         localProjectPath: String,
         remoteProjectPath: String?,
         remoteHome: String,
+        keepActivityClock: Bool = false,
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws {
         if machines[machineName]?.bridge != nil { return }
+        let previousActivity = machines[machineName]?.lastActivity
         var runtime = machines[machineName] ?? makeRuntime(
             machineName: machineName, localProjectPath: localProjectPath,
             remoteProjectPath: remoteProjectPath, remoteHome: remoteHome)
@@ -851,11 +853,19 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         let bridge = try BoxdBridge.spawn(machineName: machineName, remoteHome: remoteHome)
         try await bridge.start()
         runtime.bridge = bridge
-        runtime.lastActivity = now()
         runtime.reconnectAttempts = 0
         if let home = await bridge.remoteHome, !home.isEmpty, !home.hasSuffix("/.kanban-code"), home != runtime.remoteHome {
             runtime = makeRuntime(machineName: machineName, localProjectPath: localProjectPath, remoteProjectPath: remoteProjectPath, remoteHome: home)
             runtime.bridge = bridge
+        }
+        if keepActivityClock, let previousActivity {
+            runtime.lastActivity = Self.activityAfterOutsideResume(
+                previous: previousActivity,
+                now: now(),
+                timeout: TimeInterval(await settingsProvider().inactivityTimeoutSeconds),
+                grace: Self.outsideResumeGrace)
+        } else {
+            runtime.lastActivity = now()
         }
         machines[machineName] = runtime
 
@@ -1172,7 +1182,8 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
                 machineName: machineName,
                 localProjectPath: target.localProjectPath,
                 remoteProjectPath: target.remoteProjectPath,
-                remoteHome: target.remoteHome)
+                remoteHome: target.remoteHome,
+                keepActivityClock: true)
         } catch {
             KanbanCodeLog.warn(Self.subsystem, "\(machineName): reconnect failed: \(error.localizedDescription)")
         }
@@ -1283,6 +1294,19 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         timerTicks += 1
         guard timerTicks % Self.sweepIntervalMinutes == 0 else { return }
         _ = await sweepIfPossible()
+    }
+
+    /// How long a machine that came back without the app keeps running when
+    /// no work arrives. A machine somebody resumed gets these minutes to show
+    /// activity; a machine that woke by itself goes back to standby at the
+    /// next tick instead of buying another full timeout.
+    public static let outsideResumeGrace: TimeInterval = 300
+
+    /// The activity stamp of a machine that is running again outside the app.
+    public nonisolated static func activityAfterOutsideResume(
+        previous: Date, now: Date, timeout: TimeInterval, grace: TimeInterval
+    ) -> Date {
+        max(previous, now.addingTimeInterval(grace - timeout))
     }
 
     public func checkInactivity() async {
