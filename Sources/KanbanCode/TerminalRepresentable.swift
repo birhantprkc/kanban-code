@@ -960,6 +960,15 @@ final class TerminalCache {
     }
 
     /// Remove and terminate a specific terminal (e.g., when user kills a session).
+    /// Writes a line of the app into the terminals of the given sessions, in
+    /// dim text, so a person who clicks a paused terminal sees an answer at
+    /// once. The next tmux repaint takes it away.
+    func showNotice(_ text: String, sessions: some Sequence<String>) {
+        for session in sessions {
+            terminals[session]?.feed(text: "\r\n\u{1b}[2m" + text + "\u{1b}[0m\r\n")
+        }
+    }
+
     func remove(_ sessionName: String) {
         startedSessions.remove(sessionName)
         if let terminal = terminals.removeValue(forKey: sessionName) {

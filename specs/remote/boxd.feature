@@ -170,7 +170,9 @@ Feature: Boxd Remote Mode
   Scenario: A click brings a paused machine back
     Given a card in focus whose machine was paused while I read it
     When I click in the terminal, or type in it
-    Then the machine is resumed and the terminal attaches again
+    Then the terminal says "Resuming machine <name>" at once
+    And the machine is resumed and the terminal attaches again
+    But a machine that does not come back says so, and the click can be repeated
 
   Scenario: The idle window is the same for every machine
     Given a machine with no work on it

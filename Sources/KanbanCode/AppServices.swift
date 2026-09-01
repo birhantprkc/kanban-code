@@ -79,15 +79,42 @@ enum AppServices {
         remoteRegistry?.machine(forSession: sessionName)
     }
 
+    /// Machines with a resume in flight, so a second click does not start a
+    /// second one, or print the line twice.
+    nonisolated(unsafe) private static var resumingMachines: Set<String> = []
+    private static let resumingLock = NSLock()
+
     /// Takes a machine the app holds as paused out of standby, because a
     /// person asked for it. A machine that is not paused is left as it is,
-    /// so this costs nothing on the common path.
+    /// so this costs nothing on the common path. The terminals of the
+    /// machine say what is happening while it comes back.
     @discardableResult
     static func resumeMachineIfPaused(_ machineName: String) -> Bool {
         guard remoteRegistry?.state(of: machineName)?.isPaused == true,
               let supervisor = boxdSupervisor else { return false }
-        Task { _ = await supervisor.resume(machineName: machineName) }
+        guard markResuming(machineName) else { return true }
+        let sessions = remoteRegistry?.sessionNames(on: machineName) ?? []
+        Task { @MainActor in
+            TerminalCache.shared.showNotice("Resuming machine \(machineName)…", sessions: sessions)
+            let resumed = await supervisor.resume(machineName: machineName)
+            if !resumed {
+                TerminalCache.shared.showNotice(
+                    "Machine \(machineName) did not come back. Click to try again.", sessions: sessions)
+            }
+            clearResuming(machineName)
+        }
         return true
+    }
+
+    /// True when this call is the one that starts the resume.
+    private static func markResuming(_ machineName: String) -> Bool {
+        resumingLock.lock(); defer { resumingLock.unlock() }
+        return resumingMachines.insert(machineName).inserted
+    }
+
+    private static func clearResuming(_ machineName: String) {
+        resumingLock.lock(); defer { resumingLock.unlock() }
+        resumingMachines.remove(machineName)
     }
 
     /// The same, for the machine that hosts a tmux session.
