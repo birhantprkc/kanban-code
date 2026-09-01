@@ -98,7 +98,7 @@ On the Mac the app runs the bundled CLI with the same arguments and `KANBAN_CARD
 
 Only a person takes a machine out of standby. The card that comes into focus gets its machine back, and a click or a key in the terminal of a paused card does the same, so "Machine paused. Click here to bring it back." is one click away from the session. Nothing else resumes a machine: cards nobody has open stay in standby.
 
-The idle window depends on the card in focus. The open card keeps the window of the settings (60 minutes by default), so a session that is read, or one that waits for a prompt, stays reachable. Every other machine goes back to standby after 5 minutes without activity. A machine with work on it is never paused, focused or not: the check asks the board first and any card that is actively working keeps its machine.
+Every machine gets the same idle window, the one in the settings (30 minutes by default), whether its card is open or not: an agent can be waiting on a watcher, a subagent or a review, with nothing on the screen to show for it. A machine with work on it is never paused: the check asks the board first and any card that is actively working keeps its machine.
 
 Machines are created with `--auto-suspend-timeout` equal to the inactivity timeout. If the Mac disappears without pausing the machine, boxd suspends it when the bridge traffic stops.
 

@@ -97,9 +97,6 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     private var linksProvider: LinksProvider?
     private var machines: [String: MachineRuntime] = [:]
     private var inactivityTask: Task<Void, Never>?
-    /// Machine of the card a person has open. It keeps the configured idle
-    /// window; the other machines get the shorter one.
-    private var focusedMachine: String?
     private var timerTicks = 0
     /// `accountUuid` of the Claude login seen on the last tick. A token
     /// rotation keeps it; an account switch changes it.
@@ -144,12 +141,6 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
 
     public func setLinksProvider(_ provider: @escaping LinksProvider) {
         self.linksProvider = provider
-    }
-
-    /// The card a person has open, by machine. Nil when the open card has no
-    /// machine.
-    public func setFocusedMachine(_ machineName: String?) {
-        focusedMachine = machineName
     }
 
     // MARK: - Queries
@@ -1343,32 +1334,19 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         max(previous, now.addingTimeInterval(grace - timeout))
     }
 
-    /// Idle window of a machine nobody has open. A machine with work on it
-    /// is never paused, whatever the window says.
-    public static let unfocusedInactivitySeconds: TimeInterval = 300
-
-    /// The idle window of one machine. The card a person has open keeps the
-    /// window of the settings, so a session that is read, or one that waits
-    /// for a prompt, stays reachable. Every other machine goes back to
-    /// standby after a few minutes.
-    public nonisolated static func inactivityWindow(
-        focused: Bool, timeout: TimeInterval, unfocused: TimeInterval
-    ) -> TimeInterval {
-        focused ? timeout : min(timeout, unfocused)
-    }
-
+    /// Every machine gets the same idle window, whether its card is open or
+    /// not: an agent can be waiting on a watcher, a subagent or a review,
+    /// with nothing on the screen to show for it.
     public func checkInactivity() async {
         let timeout = TimeInterval(await settingsProvider().inactivityTimeoutSeconds)
         let current = now()
         for (name, runtime) in machines where runtime.bridge != nil {
-            let window = Self.inactivityWindow(
-                focused: name == focusedMachine, timeout: timeout, unfocused: Self.unfocusedInactivitySeconds)
-            guard current.timeIntervalSince(runtime.lastActivity) > window else { continue }
+            guard current.timeIntervalSince(runtime.lastActivity) > timeout else { continue }
             if let busyCheck, await busyCheck(name) {
                 touch(name)
                 continue
             }
-            KanbanCodeLog.info(Self.subsystem, "\(name): no activity for \(Int(window))s, pausing")
+            KanbanCodeLog.info(Self.subsystem, "\(name): no activity for \(Int(timeout))s, pausing")
             await pause(machineName: name, reason: .inactivity)
         }
     }

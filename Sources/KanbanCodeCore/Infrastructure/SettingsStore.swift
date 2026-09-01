@@ -202,7 +202,7 @@ public struct BoxdSettings: Codable, Sendable, Equatable {
     public static let defaultSourceMachine = "good-wolf"
     public static let defaultFolderTemplate = "~/${repo_name}"
     public static let defaultCopyGlobs = ["**/.env"]
-    public static let defaultInactivityTimeoutSeconds = 3600
+    public static let defaultInactivityTimeoutSeconds = 1800
     /// Shortest timeout the app accepts. A smaller value pauses a machine
     /// while it is still starting up.
     public static let minimumInactivityTimeoutSeconds = 60

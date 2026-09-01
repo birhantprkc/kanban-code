@@ -149,22 +149,6 @@ struct BoxdMachineSupervisorTests {
         #expect(!boxd.calls.contains { $0.name == "resume" })
     }
 
-    @Test("The open card keeps the full idle window, the others a short one")
-    func inactivityWindowFollowsFocus() {
-        let timeout: TimeInterval = 3600
-        let unfocused: TimeInterval = 300
-
-        #expect(BoxdMachineSupervisor.inactivityWindow(
-            focused: true, timeout: timeout, unfocused: unfocused) == timeout)
-        #expect(BoxdMachineSupervisor.inactivityWindow(
-            focused: false, timeout: timeout, unfocused: unfocused) == unfocused)
-
-        // A timeout below the short window wins: the setting is the longest
-        // a machine ever waits.
-        #expect(BoxdMachineSupervisor.inactivityWindow(
-            focused: false, timeout: 120, unfocused: unfocused) == 120)
-    }
-
     @Test("A machine that comes back without a person keeps its activity clock")
     func activityClockAfterOutsideResume() {
         let now = Date(timeIntervalSince1970: 10_000)

@@ -23,7 +23,7 @@ Feature: Boxd Remote Mode
       | Project folder         | ~/${repo_name}                           |
       | Initialization command | clone the repository or pull it          |
       | Files to copy          | **/.env                                  |
-      | Pause after inactivity | 60 minutes                               |
+      | Pause after inactivity | 30 minutes                               |
     And "Create snapshot now" saves a snapshot of the source machine
 
   Scenario: Assistant launch command template
@@ -172,12 +172,9 @@ Feature: Boxd Remote Mode
     When I click in the terminal, or type in it
     Then the machine is resumed and the terminal attaches again
 
-  Scenario: The idle window follows the card in focus
+  Scenario: The idle window is the same for every machine
     Given a machine with no work on it
-    When its card is the one I have open
-    Then it is paused after the timeout of the settings
-    When its card is not the one I have open
-    Then it is paused after 5 minutes
+    Then it is paused after the timeout of the settings, open card or not
     But a machine with a card that is actively working is never paused
 
   Scenario: The terminal reads the pause marker before it connects

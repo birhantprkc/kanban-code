@@ -26,7 +26,7 @@ struct BoxdSettingsTests {
         #expect(boxd.sourceMachine == "good-wolf")
         #expect(boxd.folderTemplate == "~/${repo_name}")
         #expect(boxd.copyGlobs == ["**/.env"])
-        #expect(boxd.inactivityTimeoutSeconds == 3600)
+        #expect(boxd.inactivityTimeoutSeconds == 1800)
         #expect(boxd.initCommand == BoxdSettings.defaultInitCommand)
         #expect(boxd.claudeOAuthToken == "")
         #expect(boxd.initCommand.contains("${repo_dir}"))
@@ -95,7 +95,7 @@ struct BoxdSettingsTests {
         #expect(boxd.sourceMachine == "good-wolf")
         #expect(boxd.copyGlobs == ["**/.env"])
         #expect(boxd.folderTemplate == "~/code/${repo_name}")
-        #expect(boxd.inactivityTimeoutSeconds == 3600)
+        #expect(boxd.inactivityTimeoutSeconds == 1800)
     }
 
     @Test("Garbage in the boxd block does not drop the rest of the settings")
