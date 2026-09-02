@@ -34,6 +34,8 @@ Feature: Headless runtime engine (no macOS app)
     When usage crosses the hard threshold (750k)
     Then the current turn is interrupted with Escape and "/compact" is sent
     And a stale self-compact warning is dropped if context already dropped back below its threshold
+    And the context is read again right before the paste, so a warning that stopped being true is not sent
+    And a warning that is still unsent when the context falls back under its threshold is cleared out of the composer
 
   Scenario: The session runs forever across compactions
     Given the agent has compacted multiple times

@@ -3239,8 +3239,12 @@ struct ContentView: View {
                 continue
             }
             if usedTokens < firstThreshold {
+                let hadCrossed = !(selfCompactTriggeredThresholds[candidate.sessionId] ?? []).isEmpty
                 selfCompactTriggeredThresholds.removeValue(forKey: candidate.sessionId)
                 removeQueuedSelfCompactWarnings(cardId: candidate.cardId, rules: rules)
+                if hadCrossed {
+                    await clearUnsentSelfCompactWarning(sessionName: candidate.sessionName, rules: rules)
+                }
                 continue
             }
 
@@ -3251,7 +3255,14 @@ struct ContentView: View {
             var updatedSeen = seen
             updatedSeen.formUnion(rules.filter { $0.thresholdTokens <= rule.thresholdTokens }.map(\.thresholdTokens))
             selfCompactTriggeredThresholds[candidate.sessionId] = updatedSeen
-            await triggerSelfCompactRule(rule, allRules: rules, cardId: candidate.cardId, sessionName: candidate.sessionName, usedTokens: usedTokens)
+            await triggerSelfCompactRule(
+                rule,
+                allRules: rules,
+                cardId: candidate.cardId,
+                sessionId: candidate.sessionId,
+                sessionName: candidate.sessionName,
+                usedTokens: usedTokens
+            )
         }
 
         selfCompactTriggeredThresholds = selfCompactTriggeredThresholds.filter { liveSessionIds.contains($0.key) }
@@ -3280,7 +3291,7 @@ struct ContentView: View {
         }
     }
 
-    private func triggerSelfCompactRule(_ rule: SelfCompactRule, allRules: [SelfCompactRule], cardId: String, sessionName: String, usedTokens: Int) async {
+    private func triggerSelfCompactRule(_ rule: SelfCompactRule, allRules: [SelfCompactRule], cardId: String, sessionId: String, sessionName: String, usedTokens: Int) async {
         switch rule.action {
         case .queuePrompt:
             let body = rule.message.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3298,13 +3309,57 @@ struct ContentView: View {
             ))
 
         case .steer:
+            guard Self.selfCompactRuleStillApplies(rule, sessionId: sessionId) else {
+                KanbanCodeLog.info("self-compact", "Dropping steer for \(cardId.prefix(12)): context is under \(rule.thresholdTokens) again")
+                return
+            }
             KanbanCodeLog.warn("self-compact", "Steering \(cardId.prefix(12)) at \(usedTokens) tokens")
-            try? await tmuxAdapter.pastePrompt(to: sessionName, text: SelfCompactPolicy.command(for: rule))
+            try? await tmuxAdapter.pastePrompt(
+                to: sessionName,
+                text: SelfCompactPolicy.command(for: rule),
+                abortIf: Self.selfCompactAbortCheck(rule, sessionId: sessionId)
+            )
 
         case .interrupt:
+            guard Self.selfCompactRuleStillApplies(rule, sessionId: sessionId) else {
+                KanbanCodeLog.info("self-compact", "Dropping interrupt for \(cardId.prefix(12)): context is under \(rule.thresholdTokens) again")
+                return
+            }
             KanbanCodeLog.warn("self-compact", "Interrupting \(cardId.prefix(12)) at \(usedTokens) tokens")
-            try? await tmuxAdapter.interruptPrompt(to: sessionName, text: SelfCompactPolicy.command(for: rule))
+            try? await tmuxAdapter.interruptPrompt(
+                to: sessionName,
+                text: SelfCompactPolicy.command(for: rule),
+                abortIf: Self.selfCompactAbortCheck(rule, sessionId: sessionId)
+            )
         }
+    }
+
+    /// A fresh context read for the moment of the send. The read that picked the
+    /// rule can be one poll old, and the agent can compact in between.
+    nonisolated static func selfCompactRuleStillApplies(_ rule: SelfCompactRule, sessionId: String) -> Bool {
+        SelfCompactPolicy.shouldSend(
+            rule: rule,
+            currentContextTokens: ContextUsageReader.read(sessionId: sessionId)?.currentContextTokens
+        )
+    }
+
+    /// Stops the Enter retries of a pasted warning as soon as the context is
+    /// small again, so a message that took a compact to be read is not pressed
+    /// into the composer of a session that no longer needs it.
+    nonisolated static func selfCompactAbortCheck(_ rule: SelfCompactRule, sessionId: String) -> PromptAbortCheck {
+        { !selfCompactRuleStillApplies(rule, sessionId: sessionId) }
+    }
+
+    /// A warning pasted while the agent was busy can still sit unsent in the
+    /// composer after the compact. Clearing it stops the agent from reading an
+    /// old limit at its next Enter.
+    private func clearUnsentSelfCompactWarning(sessionName: String, rules: [SelfCompactRule]) async {
+        let messages = rules.map { SelfCompactPolicy.command(for: $0) }
+        guard let pane = try? await tmuxAdapter.capturePane(sessionName: sessionName),
+              SelfCompactPolicy.paneHasUnsentMessage(pane, messages: messages)
+        else { return }
+        KanbanCodeLog.info("self-compact", "Clearing unsent context warning in \(sessionName)")
+        _ = try? await tmuxAdapter.clearComposer(sessionName: sessionName)
     }
 
     private func removeQueuedSelfCompactWarnings(cardId: String, rules: [SelfCompactRule], throughThreshold: Int? = nil) {

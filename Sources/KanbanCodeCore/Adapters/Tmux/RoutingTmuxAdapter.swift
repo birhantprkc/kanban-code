@@ -87,8 +87,21 @@ public final class RoutingTmuxAdapter: TmuxManagerPort, @unchecked Sendable {
         try await adapter(for: sessionName).pastePrompt(to: sessionName, text: text)
     }
 
+    public func pastePrompt(to sessionName: String, text: String, abortIf: PromptAbortCheck?) async throws {
+        try await adapter(for: sessionName).pastePrompt(to: sessionName, text: text, abortIf: abortIf)
+    }
+
     public func interruptPrompt(to sessionName: String, text: String) async throws {
         try await adapter(for: sessionName).interruptPrompt(to: sessionName, text: text)
+    }
+
+    public func interruptPrompt(to sessionName: String, text: String, abortIf: PromptAbortCheck?) async throws {
+        try await adapter(for: sessionName).interruptPrompt(to: sessionName, text: text, abortIf: abortIf)
+    }
+
+    @discardableResult
+    public func clearComposer(sessionName: String) async throws -> Bool {
+        try await adapter(for: sessionName).clearComposer(sessionName: sessionName)
     }
 
     public func pasteText(to sessionName: String, text: String) async throws {

@@ -109,6 +109,20 @@ Feature: First-class subagents
       | spawn     |
       | fork      |
 
+  Scenario: A context warning is dropped when the agent compacts first
+    Given a card is above its steer threshold
+    And the app pastes the warning while the agent is busy with a compaction
+    When the context falls back under the threshold before the warning is submitted
+    Then the app stops pressing Enter on that warning
+    And it clears the text out of the composer
+    And the agent does not read a context limit that is not true any more
+
+  Scenario: Text that was never submitted does not stay in the composer
+    Given the app pastes a prompt and the agent does not accept it
+    When the app gives up after its retry window
+    Then it clears the composer before it reports the prompt as unsent
+    And a later Enter does not submit the old text
+
   Scenario: Context threshold input is explicit and validated
     When an agent passes `--context-threshold 300k`
     Then the CLI should preserve the value as 300000 tokens without rounding

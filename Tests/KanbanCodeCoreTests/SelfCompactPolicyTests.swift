@@ -34,6 +34,47 @@ struct SelfCompactPolicyTests {
         #expect(actions.dropLast(2).allSatisfy { $0 == .queuePrompt })
     }
 
+    @Test("A rule is dropped when the context is under its threshold again")
+    func shouldSendChecksTheFreshContext() {
+        let rule = SelfCompactPolicy.cardRules(thresholdTokens: 250_000)[1]
+
+        #expect(SelfCompactPolicy.shouldSend(rule: rule, currentContextTokens: 360_000))
+        #expect(SelfCompactPolicy.shouldSend(rule: rule, currentContextTokens: 350_000))
+        #expect(!SelfCompactPolicy.shouldSend(rule: rule, currentContextTokens: 100_000))
+    }
+
+    @Test("An unknown context keeps the message")
+    func shouldSendWithoutUsage() {
+        let rule = SelfCompactPolicy.cardRules(thresholdTokens: 250_000)[1]
+
+        #expect(SelfCompactPolicy.shouldSend(rule: rule, currentContextTokens: nil))
+    }
+
+    @Test("A warning wrapped in the composer box is found")
+    func paneHasUnsentWrappedWarning() {
+        let rules = SelfCompactPolicy.cardRules(thresholdTokens: 250_000)
+        let messages = rules.map { SelfCompactPolicy.command(for: $0) }
+        let pane = """
+        > Compacting conversation...
+
+        \u{276F} You are above the 350k context limit. Compact yourself now with the
+        │ kanban CLI self-compact command, passing an argument for the post-compact
+        │ message on how to continue.
+        """
+
+        #expect(SelfCompactPolicy.paneHasUnsentMessage(pane, messages: messages))
+    }
+
+    @Test("An empty composer and other text are left alone")
+    func paneWithoutUnsentWarning() {
+        let rules = SelfCompactPolicy.cardRules(thresholdTokens: 250_000)
+        let messages = rules.map { SelfCompactPolicy.command(for: $0) }
+
+        #expect(!SelfCompactPolicy.paneHasUnsentMessage("\u{276F} ", messages: messages))
+        #expect(!SelfCompactPolicy.paneHasUnsentMessage("\u{276F} fix the failing test", messages: messages))
+        #expect(!SelfCompactPolicy.paneHasUnsentMessage("no prompt line here", messages: messages))
+    }
+
     @Test("Settings saved before the split decode compactNow as steer")
     func legacyActionDecodesAsSteer() throws {
         let legacy = Data(#"{"id":"ctx-750k","thresholdTokens":750000,"action":"compactNow","message":"/compact"}"#.utf8)

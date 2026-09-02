@@ -1,5 +1,9 @@
 import Foundation
 
+/// Answers true when a prompt that is waiting to be submitted is not wanted
+/// any more, for example a context warning after the agent compacted itself.
+public typealias PromptAbortCheck = @Sendable () async -> Bool
+
 /// Manages tmux sessions via the tmux CLI.
 public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
     private let transport: any TmuxTransport
@@ -134,6 +138,21 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
         try await ensurePromptSent(sessionName: sessionName)
     }
 
+    /// Erases what is waiting in the composer. Claude and Codex both map Ctrl+U
+    /// to "clear the input line", so text that was pasted but never submitted
+    /// does not stay there for a later stray Enter. Returns false when the pane
+    /// still shows unsent text after `attempts` tries.
+    @discardableResult
+    public func clearComposer(sessionName: String, attempts: Int = 3) async throws -> Bool {
+        for _ in 0..<max(1, attempts) {
+            let _ = try await runTmux(["send-keys", "-t", sessionName, "C-u"])
+            try await Task.sleep(for: .milliseconds(150))
+            let output = try await capturePane(sessionName: sessionName)
+            if !Self.paneHasUnsentPrompt(output) { return true }
+        }
+        return false
+    }
+
     /// Poll pane output to verify the prompt was accepted, pressing Enter again
     /// while it is still sitting in the composer. A cold assistant can take
     /// several seconds to attach its input handler and silently drops keystrokes
@@ -142,7 +161,8 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
     /// requeue the prompt instead of leaving a card parked on unsent text.
     private func ensurePromptSent(
         sessionName: String,
-        timeout: Duration = .seconds(30)
+        timeout: Duration = .seconds(30),
+        abortIf: PromptAbortCheck? = nil
     ) async throws {
         let start = ContinuousClock.now
         var delay = Duration.milliseconds(300)
@@ -152,11 +172,20 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
             delay = min(delay * 3 / 2, .seconds(2))
             let output = try await capturePane(sessionName: sessionName)
             if !Self.paneHasUnsentPrompt(output) { return }
+            if let abortIf, await abortIf() {
+                KanbanCodeLog.info("send", "Prompt no longer wanted for \(sessionName), clearing the composer")
+                let _ = try? await clearComposer(sessionName: sessionName)
+                return
+            }
             attempts += 1
             KanbanCodeLog.info("send", "Unsent text detected on attempt \(attempts), pressing Enter again")
             let _ = try await runTmux(["send-keys", "-t", sessionName, "Enter"])
         }
-        KanbanCodeLog.warn("send", "ensurePromptSent gave up after \(attempts) attempts for \(sessionName)")
+        KanbanCodeLog.warn("send", "ensurePromptSent gave up after \(attempts) attempts for \(sessionName), clearing the composer")
+        let cleared = (try? await clearComposer(sessionName: sessionName)) ?? false
+        if !cleared {
+            KanbanCodeLog.warn("send", "Composer of \(sessionName) still holds unsent text after the clear")
+        }
         throw TmuxError.promptNotSubmitted(sessionName: sessionName)
     }
 
@@ -172,8 +201,21 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
     }
 
     public func pastePrompt(to sessionName: String, text: String) async throws {
+        try await pastePrompt(to: sessionName, text: text, abortIf: nil)
+    }
+
+    /// Pastes and submits `text`, and gives up on it when `abortIf` turns true
+    /// while the assistant is still busy. A context warning is only true for as
+    /// long as the context is big: when the agent compacts mid-retry the text is
+    /// cleared instead of pressed into the composer again.
+    public func pastePrompt(
+        to sessionName: String,
+        text: String,
+        timeout: Duration = .seconds(30),
+        abortIf: PromptAbortCheck?
+    ) async throws {
         try await pasteText(to: sessionName, text: text)
-        try await submitPrompt(to: sessionName)
+        try await submitPrompt(to: sessionName, timeout: timeout, abortIf: abortIf)
     }
 
     /// Stop whatever the assistant is doing, then submit `text`. Steering waits
@@ -181,9 +223,18 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
     /// context threshold needs when a runaway turn is the thing burning tokens.
     /// Escape leaves the composer usable again after a short beat.
     public func interruptPrompt(to sessionName: String, text: String) async throws {
+        try await interruptPrompt(to: sessionName, text: text, abortIf: nil)
+    }
+
+    public func interruptPrompt(
+        to sessionName: String,
+        text: String,
+        timeout: Duration = .seconds(30),
+        abortIf: PromptAbortCheck?
+    ) async throws {
         try await sendEscape(sessionName: sessionName)
         try await Task.sleep(for: .milliseconds(400))
-        try await pastePrompt(to: sessionName, text: text)
+        try await pastePrompt(to: sessionName, text: text, timeout: timeout, abortIf: abortIf)
     }
 
     public func pasteText(to sessionName: String, text: String) async throws {
@@ -203,9 +254,17 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
     }
 
     public func submitPrompt(to sessionName: String) async throws {
+        try await submitPrompt(to: sessionName, abortIf: nil)
+    }
+
+    public func submitPrompt(
+        to sessionName: String,
+        timeout: Duration = .seconds(30),
+        abortIf: PromptAbortCheck?
+    ) async throws {
         // Press Enter to submit
         let _ = try await runTmux(["send-keys", "-t", sessionName, "Enter"])
-        try await ensurePromptSent(sessionName: sessionName)
+        try await ensurePromptSent(sessionName: sessionName, timeout: timeout, abortIf: abortIf)
     }
 
     public func capturePane(sessionName: String) async throws -> String {

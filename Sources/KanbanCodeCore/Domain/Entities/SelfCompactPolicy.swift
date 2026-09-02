@@ -172,6 +172,42 @@ public enum SelfCompactPolicy {
         return trimmed.isEmpty ? "/compact" : rule.message
     }
 
+    /// Whether a threshold message is still true. The context read that picked
+    /// the rule can be a poll old, and a compact in between makes the message
+    /// wrong, so the send path checks again with a fresh read. An unknown usage
+    /// keeps the message, because the reason to send it has not been disproved.
+    public static func shouldSend(rule: SelfCompactRule, currentContextTokens: Int?) -> Bool {
+        guard let currentContextTokens else { return true }
+        return currentContextTokens >= rule.thresholdTokens
+    }
+
+    /// Whether one of `messages` is waiting unsent in the composer of `pane`.
+    /// The composer wraps the text inside a box, so both sides are compared
+    /// without whitespace and box characters, and only by the start of the
+    /// message.
+    public static func paneHasUnsentMessage(_ pane: String, messages: [String]) -> Bool {
+        guard let promptRange = pane.range(of: "\u{276F}", options: .backwards) else { return false }
+        let composer = paneFingerprint(String(pane[promptRange.upperBound...]))
+        guard !composer.isEmpty else { return false }
+        for message in messages {
+            let fingerprint = String(paneFingerprint(message).prefix(30))
+            guard fingerprint.count >= 8 else { continue }
+            if composer.contains(fingerprint) { return true }
+        }
+        return false
+    }
+
+    /// Lowercased text without whitespace and without the box characters the
+    /// composer draws around it, so a wrapped line matches the original.
+    static func paneFingerprint(_ text: String) -> String {
+        let dropped = CharacterSet.whitespacesAndNewlines.union(
+            CharacterSet(charactersIn: "\u{2502}\u{2500}\u{256D}\u{256E}\u{2570}\u{256F}\u{2503}|>")
+        )
+        return String(
+            text.lowercased().unicodeScalars.filter { !dropped.contains($0) }.map(Character.init)
+        )
+    }
+
     public static func tokenLabel(_ tokens: Int) -> String {
         if tokens.isMultiple(of: 1_000) {
             return "\(tokens / 1_000)k"
