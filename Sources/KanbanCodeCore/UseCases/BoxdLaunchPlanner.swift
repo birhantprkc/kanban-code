@@ -320,14 +320,27 @@ public enum BoxdLaunchPlanner {
 
     // MARK: - Resume
 
-    /// What the app has to do to bring a card back on its machine.
+    /// What the app has to do to bring a card back on its machine. The
+    /// transcripts are compared by lines: the path rewrite changes the byte
+    /// size of a copy, the number of lines stays.
     public static func resumeDecision(
         tmuxAlive: Bool,
-        localTranscriptBytes: Int,
-        remoteTranscriptBytes: Int
+        localTranscriptLines: Int,
+        remoteTranscriptLines: Int
     ) -> ResumeDecision {
         if tmuxAlive { return .attach }
-        return localTranscriptBytes > remoteTranscriptBytes ? .pushThenResume : .resume
+        return localTranscriptLines > remoteTranscriptLines ? .pushThenResume : .resume
+    }
+
+    /// The number of newline characters in a file, read in blocks.
+    public static func lineCount(ofFileAt path: String) -> Int {
+        guard let handle = FileHandle(forReadingAtPath: path) else { return 0 }
+        defer { try? handle.close() }
+        var count = 0
+        while let block = try? handle.read(upToCount: 4 * 1024 * 1024), !block.isEmpty {
+            count += block.reduce(0) { $0 + ($1 == 0x0a ? 1 : 0) }
+        }
+        return count
     }
 
     // MARK: - Private

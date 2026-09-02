@@ -249,8 +249,34 @@ Feature: Boxd Remote Mode
   Scenario: Resume after the tmux session is gone
     Given a card with a machine whose tmux session no longer exists
     When I resume the card on that machine
-    Then the local transcript is pushed to the machine when it is newer
+    Then the local transcript is pushed to the machine when it has more lines than the copy there
     And the assistant starts with --resume on the machine
+
+  Scenario: A transcript already on the machine is not pushed again
+    Given a card whose transcript has the same lines on the Mac and on the machine
+    And the copy on the machine is smaller in bytes because its paths are shorter
+    When I resume the card on that machine
+    Then no transcript is pushed
+    And the assistant starts with --resume on the machine
+
+  Scenario: A pushed transcript does not come back over the bridge
+    Given a card with a transcript of a hundred megabytes
+    When the app pushes it to the machine
+    Then the agent holds the file while it is written and takes the pushed bytes as already on the Mac
+    And the tmux commands of the launch are answered while the push runs
+    And the card shows "Pushing transcript (107 MB)" under the spinner
+
+  Scenario: A large file crosses the bridge in chunks
+    Given a file on the machine that grows by many megabytes at once
+    When the agent streams it to the Mac
+    Then every message carries at most 4 MB, cut at a newline
+    And an exec answer is not delayed by the file
+
+  Scenario: A machine whose bridge is open stays connected during a launch
+    Given a card whose machine is connected
+    When I resume the card on that machine
+    Then the machine is not reported as connecting
+    And the tmux commands of the resume reach the machine
 
   Scenario: Resume on another machine
     Given a card with a machine

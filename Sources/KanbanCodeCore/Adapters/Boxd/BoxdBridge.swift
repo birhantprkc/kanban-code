@@ -301,6 +301,21 @@ public actor BoxdBridge: RemoteCommandRunner {
         try send(message)
     }
 
+    /// Tells the agent that the Mac writes `path` itself: its bytes are not
+    /// streamed back while the hold lasts.
+    public func hold(path: String) throws {
+        try send(["type": "hold", "path": path])
+    }
+
+    /// Ends a hold. The agent takes `offset` as what the Mac already has and
+    /// streams only what the machine appends after it. Without an offset the
+    /// agent continues from where it was.
+    public func release(path: String, offset: Int?) throws {
+        var message: [String: Any] = ["type": "release", "path": path]
+        if let offset { message["offset"] = offset }
+        try send(message)
+    }
+
     public func remove(path: String) async throws {
         _ = try await exec(["rm", "-f", path], stdin: nil, cwd: nil, timeout: 20)
     }

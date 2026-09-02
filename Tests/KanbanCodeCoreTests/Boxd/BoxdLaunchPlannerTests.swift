@@ -290,18 +290,28 @@ struct BoxdLaunchPlannerTests {
 
     @Test("A live tmux session is only attached to")
     func resumeAttaches() {
-        #expect(BoxdLaunchPlanner.resumeDecision(tmuxAlive: true, localTranscriptBytes: 10, remoteTranscriptBytes: 0) == .attach)
-        #expect(BoxdLaunchPlanner.resumeDecision(tmuxAlive: true, localTranscriptBytes: 0, remoteTranscriptBytes: 99) == .attach)
+        #expect(BoxdLaunchPlanner.resumeDecision(tmuxAlive: true, localTranscriptLines: 10, remoteTranscriptLines: 0) == .attach)
+        #expect(BoxdLaunchPlanner.resumeDecision(tmuxAlive: true, localTranscriptLines: 0, remoteTranscriptLines: 99) == .attach)
     }
 
-    @Test("A local transcript that is ahead is pushed first")
+    @Test("A local transcript with more lines is pushed first")
     func resumePushes() {
-        #expect(BoxdLaunchPlanner.resumeDecision(tmuxAlive: false, localTranscriptBytes: 200, remoteTranscriptBytes: 100) == .pushThenResume)
+        #expect(BoxdLaunchPlanner.resumeDecision(tmuxAlive: false, localTranscriptLines: 200, remoteTranscriptLines: 100) == .pushThenResume)
     }
 
-    @Test("A machine that already has the newest transcript resumes as it is")
+    @Test("A machine with the same lines resumes as it is, whatever the byte sizes")
     func resumePlain() {
-        #expect(BoxdLaunchPlanner.resumeDecision(tmuxAlive: false, localTranscriptBytes: 100, remoteTranscriptBytes: 100) == .resume)
-        #expect(BoxdLaunchPlanner.resumeDecision(tmuxAlive: false, localTranscriptBytes: 0, remoteTranscriptBytes: 100) == .resume)
+        #expect(BoxdLaunchPlanner.resumeDecision(tmuxAlive: false, localTranscriptLines: 100, remoteTranscriptLines: 100) == .resume)
+        #expect(BoxdLaunchPlanner.resumeDecision(tmuxAlive: false, localTranscriptLines: 0, remoteTranscriptLines: 100) == .resume)
+    }
+
+    @Test("The line count reads the file in blocks and counts newlines")
+    func lineCount() throws {
+        let path = (NSTemporaryDirectory() as NSString).appendingPathComponent("kanban-lines-\(UUID().uuidString).jsonl")
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        try "{}\n{}\n{\"partial\":true}".write(toFile: path, atomically: true, encoding: .utf8)
+
+        #expect(BoxdLaunchPlanner.lineCount(ofFileAt: path) == 2)
+        #expect(BoxdLaunchPlanner.lineCount(ofFileAt: path + ".missing") == 0)
     }
 }

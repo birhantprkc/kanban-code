@@ -49,6 +49,14 @@ The Mac keeps one mapping table per machine, longest prefix first:
 
 Every `.jsonl` line under `~/.claude/projects/` and `~/.codex/sessions/` is rewritten when it crosses the bridge: each string value in the JSON is walked and mapped prefixes are replaced. The mirror on the Mac is written to `~/.claude/projects/<encoded local cwd>/<sessionId>.jsonl`, so a local `claude --resume` works at any moment. Before a remote resume the Mac rewrites the local transcript to machine paths and uploads it.
 
+### Pushing a transcript to the machine
+
+Before a remote resume without a live tmux session the Mac compares the transcript on both sides by line count (`wc -l` on the machine). The rewrite changes the byte size of a copy, a Mac path is longer than a machine path, so a byte comparison would push the same file on every resume. The push happens only when the Mac has more lines.
+
+The push itself sends `hold {path}` to the agent first, then the file (`put` under 2 MB, `boxd machine cp` above), then `release {path, offset}` with the byte count written. A held path is skipped by the watcher, and the release sets the offset the agent streams from, so a transcript of a hundred megabytes does not come back over the bridge as one message. The sidecar files and the statusline context go through the same hold. The rewrite runs off the supervisor actor, and the launch progress shows "Preparing transcript (107 MB)" and "Pushing transcript (105 MB)".
+
+Every `file` message the agent sends carries at most 4 MB, cut at a newline, and the next chunk goes out on the next tick of the event loop. An `exec` answer never waits behind a large file.
+
 ## Messages from the machine to the Mac
 
 | Type | Fields | Meaning |
@@ -92,7 +100,7 @@ On the Mac the app runs the bundled CLI with the same arguments and `KANBAN_CARD
 | No activity for the idle window | `boxd machine pause`, the card shows the reason |
 | A card comes into focus, or a click or a key reaches its terminal | The machine is resumed and the bridge connects again |
 | App quit, system sleep | The machines keep running; killing the sessions from the quit sheet puts their machines in standby |
-| Resume | `boxd machine get`, then `resume`, `wake` or `start` by status. If the tmux session still exists the app attaches to it. Otherwise it uploads the transcript and starts `claude --resume`. |
+| Resume | `boxd machine get`, then `resume`, `wake` or `start` by status. If the tmux session still exists the app attaches to it. Otherwise it pushes the transcript when the Mac has more lines than the machine (see below) and starts `claude --resume`. |
 | Archive or delete with a machine | The app asks before it runs `boxd machine remove`. |
 
 ### Which machine runs, and for how long

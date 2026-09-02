@@ -805,19 +805,23 @@ extension ContentView {
                         try? await tmuxAdapter.killSession(name: resumeSessionName)
                     }
                     if let localTranscript = store.state.links[cardId]?.sessionLink?.sessionPath,
-                       let localSize = try? FileManager.default.attributesOfItem(atPath: localTranscript)[.size] as? Int {
-                        let remoteSize = await boxdSupervisor.remoteTranscriptSize(
+                       FileManager.default.fileExists(atPath: localTranscript) {
+                        let localLines = BoxdLaunchPlanner.lineCount(ofFileAt: localTranscript)
+                        let remoteLines = await boxdSupervisor.remoteTranscriptLines(
                             machineName: preparation.machineName, localPath: localTranscript, remoteCwd: preparation.remoteCwd)
                         let decision = BoxdLaunchPlanner.resumeDecision(
-                            tmuxAlive: false, localTranscriptBytes: localSize, remoteTranscriptBytes: remoteSize)
+                            tmuxAlive: false, localTranscriptLines: localLines, remoteTranscriptLines: remoteLines)
                         if decision == .pushThenResume {
-                            KanbanCodeLog.info("resume", "Pushing transcript \(sessionId.prefix(8)) to \(preparation.machineName) (\(localSize) > \(remoteSize) bytes)")
+                            KanbanCodeLog.info("resume", "Pushing transcript \(sessionId.prefix(8)) to \(preparation.machineName) (\(localLines) > \(remoteLines) lines)")
                             try await boxdSupervisor.pushTranscript(
                                 machineName: preparation.machineName,
                                 localPath: localTranscript,
                                 sessionId: sessionId,
-                                remoteCwd: preparation.remoteCwd
+                                remoteCwd: preparation.remoteCwd,
+                                log: { progress.report($0) }
                             )
+                        } else {
+                            KanbanCodeLog.info("resume", "Transcript \(sessionId.prefix(8)) already on \(preparation.machineName) (\(remoteLines) lines)")
                         }
                     }
                 } else if runRemotely, let remote = globalRemote, projectPath.hasPrefix(remote.localPath) {

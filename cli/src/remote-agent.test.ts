@@ -116,6 +116,65 @@ describe("remote agent protocol", () => {
     await harness.end();
   });
 
+  test("a held file is not sent back, and release sends only what came after it", async () => {
+    const events = join(process.env.KANBAN_CODE_HOME!, "hook-events.jsonl");
+    const harness = startAgent();
+    harness.send({ type: "watch", roots: [{ path: events }] });
+    harness.send({ type: "hold", path: events });
+    await harness.waitFor((m) => m.type === "hello", "hello");
+    const pushed = '{"event":"pushed by the mac"}\n';
+    writeFileSync(events, pushed);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal(harness.messages.some((m) => m.type === "file"), false, "the pushed bytes came back");
+
+    harness.send({ type: "release", path: events, offset: Buffer.byteLength(pushed) });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(harness.messages.some((m) => m.type === "file"), false, "release sent the held bytes");
+
+    appendFileSync(events, '{"event":"from the machine"}\n');
+    const chunk = await harness.waitFor((m) => m.type === "file", "appended chunk");
+    assert.equal(chunk.offset, Buffer.byteLength(pushed));
+    assert.equal(Buffer.from(String(chunk.data), "base64").toString("utf-8"), '{"event":"from the machine"}\n');
+    await harness.end();
+  });
+
+  test("a large file crosses the bridge in chunks cut at a newline", async () => {
+    const events = join(process.env.KANBAN_CODE_HOME!, "hook-events.jsonl");
+    const lines = Array.from({ length: 50 }, (_, i) => `{"event":"${String(i).padStart(3, "0")}"}\n`);
+    writeFileSync(events, lines.join(""));
+    const harness = startAgent();
+    harness.agent.chunkBytes = 100;
+    harness.send({ type: "watch", roots: [{ path: events }] });
+    await harness.waitFor((m) => m.type === "file" && m.eof === true, "last chunk");
+    const chunks = harness.messages.filter((m) => m.type === "file");
+    assert.ok(chunks.length > 1, "expected more than one chunk");
+    for (const chunk of chunks) {
+      const text = Buffer.from(String(chunk.data), "base64").toString("utf-8");
+      assert.ok(text.endsWith("\n"), `chunk cut inside a line: ${text}`);
+      assert.ok(Buffer.byteLength(text) <= 100);
+    }
+    assert.equal(chunks.filter((m) => m.eof === true).length, 1);
+    const joined = chunks.map((m) => Buffer.from(String(m.data), "base64").toString("utf-8")).join("");
+    assert.equal(joined, lines.join(""));
+    await harness.end();
+  });
+
+  test("a line longer than a chunk is sent whole", async () => {
+    const events = join(process.env.KANBAN_CODE_HOME!, "hook-events.jsonl");
+    const long = `{"event":"${"x".repeat(300)}"}\n`;
+    writeFileSync(events, `{"event":"short"}\n${long}{"event":"tail"}\n`);
+    const harness = startAgent();
+    harness.agent.chunkBytes = 100;
+    harness.send({ type: "watch", roots: [{ path: events }] });
+    await harness.waitFor((m) => m.type === "file" && m.eof === true, "last chunk");
+    const joined = harness.messages
+      .filter((m) => m.type === "file")
+      .map((m) => Buffer.from(String(m.data), "base64").toString("utf-8"))
+      .join("");
+    assert.equal(joined, `{"event":"short"}\n${long}{"event":"tail"}\n`);
+    await harness.end();
+  });
+
   test("holds a partial jsonl line until its newline arrives", async () => {
     const events = join(process.env.KANBAN_CODE_HOME!, "hook-events.jsonl");
     writeFileSync(events, "");

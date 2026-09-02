@@ -267,7 +267,12 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
             folderTemplate: settings.folderTemplate, repoName: repoName, remoteHome: remoteHome)
 
         for name in sessionNames { registry.assign(sessionName: name, to: machineName) }
-        await report(machineName, state: .connecting)
+        // A machine whose bridge is open stays connected: connect() returns
+        // at once and would leave a `.connecting` report in the registry,
+        // where it blocks every tmux command.
+        if machines[machineName]?.bridge == nil {
+            await report(machineName, state: .connecting)
+        }
 
         log("Preparing machine \(machineName)")
         let machine = try await ensureRunning(machineName: machineName, settings: settings, log: log)
@@ -539,12 +544,15 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     }
 
     /// Copies a local transcript to the machine, rewritten to machine paths,
-    /// together with its sidecar directory and statusline context.
+    /// together with its sidecar directory and statusline context. The agent
+    /// holds every pushed file while it is written, so the bytes do not come
+    /// back over the bridge.
     public func pushTranscript(
         machineName: String,
         localPath: String,
         sessionId: String,
-        remoteCwd: String
+        remoteCwd: String,
+        log: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws {
         guard let runtime = machines[machineName], let bridge = runtime.bridge else {
             throw BoxdSupervisorError.notConnected(machineName)
@@ -554,8 +562,15 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         let reversed = await mirror.rewriter.reversed
         let temporary = (NSTemporaryDirectory() as NSString).appendingPathComponent("kanban-push-\(UUID().uuidString).jsonl")
         defer { try? FileManager.default.removeItem(atPath: temporary) }
-        try reversed.rewriteFile(at: localPath, to: temporary)
+        let localSize = (try? FileManager.default.attributesOfItem(atPath: localPath)[.size] as? Int) ?? 0
+        log("Preparing transcript (\(Self.sizeText(localSize)))")
+        // The rewrite reads the whole file line by line: off the actor, so
+        // the bridge events of the other machines keep flowing meanwhile.
+        try await Task.detached(priority: .userInitiated) {
+            try reversed.rewriteFile(at: localPath, to: temporary)
+        }.value
         let data = try Data(contentsOf: URL(fileURLWithPath: temporary))
+        log("Pushing transcript (\(Self.sizeText(data.count)))")
         await mirror.suspend(remotePath: remotePath)
         defer { Task { await mirror.resume(remotePath: remotePath) } }
         try await upload(machineName: machineName, bridge: bridge, remotePath: remotePath, data: data)
@@ -589,12 +604,18 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         }
     }
 
-    /// Size of a transcript on the machine, or zero when it is not there.
-    public func remoteTranscriptSize(machineName: String, localPath: String, remoteCwd: String) async -> Int {
+    /// Lines of a transcript on the machine, or zero when it is not there.
+    public func remoteTranscriptLines(machineName: String, localPath: String, remoteCwd: String) async -> Int {
         guard let runtime = machines[machineName], let bridge = runtime.bridge,
               let remotePath = await runtime.mirror.remotePath(forLocal: localPath, remoteCwd: remoteCwd) else { return 0 }
-        let result = try? await bridge.exec(["stat", "-c", "%s", remotePath], stdin: nil, cwd: nil, timeout: 20)
+        let result = try? await bridge.exec(["sh", "-c", "wc -l < \"$1\"", "sh", remotePath], stdin: nil, cwd: nil, timeout: 20)
         return Int(result?.stdout.trimmingCharacters(in: .whitespacesAndNewlines) ?? "") ?? 0
+    }
+
+    nonisolated static func sizeText(_ bytes: Int) -> String {
+        if bytes >= 1024 * 1024 { return "\(bytes / (1024 * 1024)) MB" }
+        if bytes >= 1024 { return "\(bytes / 1024) KB" }
+        return "\(bytes) bytes"
     }
 
     // MARK: - RemoteMachineControl
@@ -1440,14 +1461,22 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     // MARK: - Uploads
 
     /// Small payloads ride the bridge; large ones go through `boxd machine cp`
-    /// so one JSON line never carries megabytes.
+    /// so one JSON line never carries megabytes. The agent holds the path
+    /// while the bytes land, and takes them as already on the Mac after.
     private func upload(machineName: String, bridge: BoxdBridge, remotePath: String, data: Data) async throws {
-        if data.count <= 2 * 1024 * 1024 {
-            try await bridge.put(path: remotePath, data: data, mode: nil)
-        } else {
-            _ = try await bridge.exec(["mkdir", "-p", (remotePath as NSString).deletingLastPathComponent], stdin: nil, cwd: nil, timeout: 20)
-            try await boxd.upload(name: machineName, remotePath: remotePath, data: data)
+        try await bridge.hold(path: remotePath)
+        do {
+            if data.count <= 2 * 1024 * 1024 {
+                try await bridge.put(path: remotePath, data: data, mode: nil)
+            } else {
+                _ = try await bridge.exec(["mkdir", "-p", (remotePath as NSString).deletingLastPathComponent], stdin: nil, cwd: nil, timeout: 20)
+                try await boxd.upload(name: machineName, remotePath: remotePath, data: data)
+            }
+        } catch {
+            try? await bridge.release(path: remotePath, offset: nil)
+            throw error
         }
+        try? await bridge.release(path: remotePath, offset: data.count)
     }
 
     private nonisolated static func rewrite(_ data: Data, with rewriter: TranscriptPathRewriter) -> Data {

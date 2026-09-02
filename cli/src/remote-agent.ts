@@ -151,6 +151,10 @@ export class RemoteAgent {
   private readonly offsets = new Map<string, number>();
   /** Content of the files sent whole, to send each one only when it changes. */
   private readonly digests = new Map<string, string>();
+  /** Files the Mac is writing itself right now: their bytes are not sent back. */
+  private readonly held = new Set<string>();
+  /** Upper bound of one `file` message, cut at a newline. */
+  chunkBytes = 4 * 1024 * 1024;
   private readonly watchers: FSWatcher[] = [];
   private readonly lastActivity = new Map<string, number>();
   private stopped = false;
@@ -212,6 +216,12 @@ export class RemoteAgent {
         return;
       case "put":
         this.put(message as { path: string; data: string; mode?: number });
+        return;
+      case "hold":
+        if (typeof message.path === "string") this.held.add(message.path);
+        return;
+      case "release":
+        this.release(message as { path: string; offset?: number });
         return;
       case "exec":
         await this.exec(
@@ -281,8 +291,30 @@ export class RemoteAgent {
     this.pump(path);
   }
 
+  /**
+   * The Mac wrote `path` itself and holds `offset` bytes of it. Only what the
+   * machine appends after that crosses the bridge.
+   */
+  private release(message: { path: string; offset?: number }): void {
+    const { path, offset } = message;
+    if (typeof path !== "string") return;
+    this.held.delete(path);
+    if (typeof offset === "number" && Number.isFinite(offset)) {
+      this.offsets.set(path, Math.max(0, offset));
+      if (!path.endsWith(".jsonl")) {
+        try {
+          this.digests.set(path, createHash("sha1").update(readFileSync(path)).digest("base64"));
+        } catch {
+          this.digests.delete(path);
+        }
+      }
+    }
+    this.pump(path);
+  }
+
   /** Send everything appended to `path` since the offset the Mac already has. */
   pump(path: string): void {
+    if (this.held.has(path)) return;
     // Only `.jsonl` files grow by appending. The others, such as the
     // statusline context, are rewritten in place, so their new content has
     // nothing to do with the bytes the Mac already holds.
@@ -301,10 +333,12 @@ export class RemoteAgent {
     if (offset > size) offset = 0;
     if (size === offset) return;
 
+    // One message carries at most `chunkBytes`, so an exec answer never
+    // waits behind a transcript of a hundred megabytes.
     let chunk: Buffer;
     try {
       const fd = openSync(path, "r");
-      const buffer = Buffer.alloc(size - offset);
+      const buffer = Buffer.alloc(Math.min(size - offset, this.chunkBytes));
       const read = readSync(fd, buffer, 0, buffer.length, offset);
       closeSync(fd);
       chunk = buffer.subarray(0, read);
@@ -314,10 +348,15 @@ export class RemoteAgent {
     }
     if (chunk.length === 0) return;
 
-    if (path.endsWith(".jsonl")) {
-      const lastNewline = chunk.lastIndexOf(0x0a);
+    const lastNewline = chunk.lastIndexOf(0x0a);
+    if (lastNewline < 0) {
       // A partial last line stays on the machine until its newline arrives.
-      if (lastNewline < 0) return;
+      // A single line longer than a chunk is sent whole.
+      if (offset + chunk.length >= size) return;
+      const line = this.readLine(path, offset, size);
+      if (!line) return;
+      chunk = line;
+    } else {
       chunk = chunk.subarray(0, lastNewline + 1);
     }
 
@@ -334,6 +373,23 @@ export class RemoteAgent {
     if (cwd) message.cwd = cwd;
     this.send(message);
     this.reportActivity(path);
+    if (next < size) setImmediate(() => this.pump(path));
+  }
+
+  /** The bytes of one line starting at `offset`, up to `size`. */
+  private readLine(path: string, offset: number, size: number): Buffer | undefined {
+    try {
+      const fd = openSync(path, "r");
+      const buffer = Buffer.alloc(size - offset);
+      const read = readSync(fd, buffer, 0, buffer.length, offset);
+      closeSync(fd);
+      const lastNewline = buffer.subarray(0, read).lastIndexOf(0x0a);
+      if (lastNewline < 0) return undefined;
+      return buffer.subarray(0, lastNewline + 1);
+    } catch (error) {
+      this.log(`could not read ${path}: ${String(error)}`);
+      return undefined;
+    }
   }
 
   /**
