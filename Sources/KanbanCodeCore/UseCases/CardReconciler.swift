@@ -117,8 +117,11 @@ public enum CardReconciler {
                 // If session is in a worktree dir, update or set worktreeLink.
                 // Handles both initial launch (worktreeLink == nil) and worktree switches
                 // (Claude called EnterWorktree → session moved to a different worktree).
-                if let pp = session.projectPath,
-                   pp.contains("/.claude/worktrees/") {
+                // The cwd of a session can be a directory inside the
+                // worktree (a temp folder, a package). The card points at
+                // the worktree itself; the deep path would fail the
+                // liveness check and flip the link on every pass.
+                if let pp = session.projectPath.flatMap(Self.worktreeRoot(of:)) {
                     let needsUpdate = link.worktreeLink == nil
                         || (link.worktreeLink?.path != pp && link.sessionLink?.sessionId == session.id)
                     let shouldUpdate = needsUpdate && (link.isLaunching == true || link.worktreeLink != nil)
@@ -413,11 +416,15 @@ public enum CardReconciler {
                     // User dismissed this PR — don't re-add
                     if link.manualOverrides.isPRDismissed(pr.number) { continue }
                     if let idx = link.prLinks.firstIndex(where: { $0.number == pr.number }) {
-                        KanbanCodeLog.info("reconciler", "Updating PR #\(pr.number) on card \(cardId.prefix(12)): status=\(pr.status)")
-                        link.prLinks[idx].status = pr.status
-                        link.prLinks[idx].url = pr.url
-                        link.prLinks[idx].title = pr.title
-                        link.prLinks[idx].mergeStateStatus = pr.mergeStateStatus
+                        let current = link.prLinks[idx]
+                        if current.status != pr.status || current.url != pr.url
+                            || current.title != pr.title || current.mergeStateStatus != pr.mergeStateStatus {
+                            KanbanCodeLog.info("reconciler", "Updating PR #\(pr.number) on card \(cardId.prefix(12)): status=\(pr.status)")
+                            link.prLinks[idx].status = pr.status
+                            link.prLinks[idx].url = pr.url
+                            link.prLinks[idx].title = pr.title
+                            link.prLinks[idx].mergeStateStatus = pr.mergeStateStatus
+                        }
                     } else {
                         KanbanCodeLog.info("reconciler", "Adding PR #\(pr.number) to card \(cardId.prefix(12)): status=\(pr.status)")
                         link.prLinks.append(PRLink(number: pr.number, url: pr.url, status: pr.status, title: pr.title, mergeStateStatus: pr.mergeStateStatus))
@@ -488,6 +495,15 @@ public enum CardReconciler {
         guard tmux != link.tmuxLink else { return false }
         link.tmuxLink = tmux
         return true
+    }
+
+    /// The root of the worktree a path sits in: everything up to the segment
+    /// after ".claude/worktrees". Nothing for a path outside a worktree.
+    public static func worktreeRoot(of path: String) -> String? {
+        guard let range = path.range(of: "/.claude/worktrees/") else { return nil }
+        let name = path[range.upperBound...].components(separatedBy: "/").first ?? ""
+        guard !name.isEmpty else { return nil }
+        return String(path[..<range.upperBound]) + name
     }
 
     // MARK: - Private

@@ -1539,3 +1539,38 @@ struct CardReconcilerTests {
         #expect(result[0].tmuxLink?.sessionName == "claude-s1", "Merged card should keep tmux link")
     }
 }
+@Suite("Worktree root from a session path")
+struct WorktreeRootTests {
+    @Test("A cwd inside the worktree points the card at the worktree itself")
+    func deepPathNormalizes() {
+        let root = "/repo/.claude/worktrees/my-branch"
+        #expect(CardReconciler.worktreeRoot(of: root + "/.claude/tmp/skill-tests/x") == root)
+        #expect(CardReconciler.worktreeRoot(of: root) == root)
+        #expect(CardReconciler.worktreeRoot(of: "/repo/src") == nil)
+    }
+
+    @Test("A session in a temp folder under a gone worktree does not flip the link")
+    func noFlipForDeadWorktree() {
+        // The worktree was removed from disk: the scan lists none, and the
+        // session's cwd still names a folder inside it. One pass must give
+        // the same answer as the next: the link stays cleared.
+        var link = Link(id: "card_flip")
+        link.projectPath = "/repo"
+        link.sessionLink = SessionLink(sessionId: "s1", sessionPath: "/tmp/s1.jsonl")
+        let session = Session(
+            id: "s1",
+            projectPath: "/repo/.claude/worktrees/gone/.claude/tmp/deep",
+            modifiedTime: Date(),
+            jsonlPath: "/tmp/s1.jsonl"
+        )
+        let snapshot = CardReconciler.DiscoverySnapshot(
+            sessions: [session], didScanTmux: false, worktrees: ["/repo": []]
+        )
+
+        let first = CardReconciler.reconcile(existing: [link], snapshot: snapshot)
+        let second = CardReconciler.reconcile(existing: first, snapshot: snapshot)
+
+        #expect(first.first { $0.id == "card_flip" }?.worktreeLink == nil)
+        #expect(first == second)
+    }
+}
