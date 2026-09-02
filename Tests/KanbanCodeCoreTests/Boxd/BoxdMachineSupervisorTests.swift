@@ -88,6 +88,22 @@ struct BoxdMachineSupervisorTests {
         #expect(boxd.calls.contains(FakeBoxdPort.Call(name: "pause", argument: "kanban-repo-1")))
     }
 
+    @Test("A parked machine past the idle window is stopped exactly once")
+    func parkedMachineIsStoppedOnce() {
+        let hour: TimeInterval = 3600
+        #expect(BoxdMachineSupervisor.shouldStopParked(
+            pausedReason: .inactivity, machineHalted: false, idleFor: hour + 1, timeout: hour))
+        // Already stopped this spell: the sweep must not issue another stop.
+        #expect(!BoxdMachineSupervisor.shouldStopParked(
+            pausedReason: .inactivity, machineHalted: true, idleFor: hour + 1, timeout: hour))
+        #expect(!BoxdMachineSupervisor.shouldStopParked(
+            pausedReason: .stopped, machineHalted: false, idleFor: hour + 1, timeout: hour))
+        #expect(!BoxdMachineSupervisor.shouldStopParked(
+            pausedReason: .inactivity, machineHalted: false, idleFor: hour - 1, timeout: hour))
+        #expect(!BoxdMachineSupervisor.shouldStopParked(
+            pausedReason: nil, machineHalted: false, idleFor: hour + 1, timeout: hour))
+    }
+
     @Test("Paused machines boxd reports as running are reconnected, in name order")
     func machinesToReconnect() {
         let listed = [

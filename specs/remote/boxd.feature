@@ -153,6 +153,7 @@ Feature: Boxd Remote Mode
     Then the machine is stopped, so it costs its disk only
     And the card shows "Machine <name> was stopped after 1h without activity" with a Resume button
     And a machine sitting in standby past the same window is stopped as well
+    And a machine the sweep already stopped is not stopped again on later ticks
 
   Scenario: The transcript push sends only what the machine misses
     Given a card with a transcript of hundreds of megabytes that already ran on its machine

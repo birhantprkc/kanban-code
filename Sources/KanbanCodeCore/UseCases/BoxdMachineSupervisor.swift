@@ -82,6 +82,11 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         /// first work arrives on it. A peek that ends with nothing done
         /// pauses the machine again at once.
         var resumedForPeek = false
+        /// True once `boxd machine stop` succeeded for the current paused
+        /// spell. The idle sweep keeps the original paused reason for the
+        /// UI, so this flag is what stops it from issuing a new stop on
+        /// every tick.
+        var machineHalted = false
     }
 
     private let boxd: any BoxdPort
@@ -711,6 +716,7 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         registry.disconnectMachine(machineName, state: .paused(reason))
         do {
             try await boxd.stop(name: machineName)
+            machines[machineName]?.machineHalted = true
             KanbanCodeLog.info(Self.subsystem, "\(machineName): stopped")
         } catch {
             KanbanCodeLog.warn(Self.subsystem, "\(machineName): stop failed: \(error.localizedDescription)")
@@ -941,6 +947,7 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
             runtime = makeRuntime(machineName: machineName, localProjectPath: localProjectPath, remoteProjectPath: remoteProjectPath, remoteHome: remoteHome, pausedReason: runtime.pausedReason)
         }
         runtime.pausedReason = nil
+        runtime.machineHalted = false
         machines[machineName] = runtime
 
         try await bootstrapIfNeeded(machineName: machineName, remoteHome: remoteHome, log: log)
@@ -1494,11 +1501,27 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
             await stop(machineName: name, reason: .inactivity)
         }
         for (name, runtime) in machines where runtime.bridge == nil {
-            guard let reason = runtime.pausedReason, reason != .stopped,
-                  current.timeIntervalSince(runtime.lastActivity) > timeout else { continue }
+            guard Self.shouldStopParked(
+                pausedReason: runtime.pausedReason,
+                machineHalted: runtime.machineHalted,
+                idleFor: current.timeIntervalSince(runtime.lastActivity),
+                timeout: timeout) else { continue }
             KanbanCodeLog.info(Self.subsystem, "\(name): in standby past the idle window, stopping")
-            await stop(machineName: name, reason: reason)
+            await stop(machineName: name, reason: runtime.pausedReason ?? .stopped)
         }
+    }
+
+    /// A parked machine (standby after a pause) past the idle window gets
+    /// one stop. The stop keeps the original paused reason for the UI, so
+    /// `machineHalted` is the marker that the stop already happened.
+    nonisolated public static func shouldStopParked(
+        pausedReason: RemotePausedReason?,
+        machineHalted: Bool,
+        idleFor: TimeInterval,
+        timeout: TimeInterval
+    ) -> Bool {
+        guard let pausedReason, pausedReason != .stopped, !machineHalted else { return false }
+        return idleFor > timeout
     }
 
     // MARK: - Reporting

@@ -2529,6 +2529,12 @@ public final class BoardStore: @unchecked Sendable {
     /// wait on it: they apply `cachedPRsByBranch`/`cachedPRsByRepoAndNumber`
     /// from the last completed fetch and move on.
     private var prFetchTask: Task<Void, Never>?
+
+    /// Session names seen by the previous reconcile pass, nil before the
+    /// first scan. Sudden disappearances point at an outside kill and get
+    /// captured by SessionDeathRecorder while the unified log still has
+    /// the evidence.
+    private var lastTmuxSessionNames: Set<String>?
     private var cachedPRsByBranch: [String: PullRequest] = [:]
     private var cachedPRsByRepoAndNumber: [String: [Int: PullRequest]] = [:]
     /// "host/owner/name" → number → PR, for pull requests routed by the
@@ -2934,6 +2940,20 @@ public final class BoardStore: @unchecked Sendable {
             let t2 = ContinuousClock.now
             let tmuxSessions = (try? await tmuxAdapter?.listSessions()) ?? []
             KanbanCodeLog.info("reconcile", "tmux: \(t2.duration(to: .now)) (\(tmuxSessions.count) sessions)")
+            if tmuxAdapter != nil {
+                let currentNames = Set(tmuxSessions.map(\.name))
+                if let previous = lastTmuxSessionNames {
+                    let vanished = previous.subtracting(currentNames).sorted()
+                    if !vanished.isEmpty {
+                        KanbanCodeLog.warn("reconcile", "tmux sessions gone since the last pass: \(vanished.joined(separator: ", "))")
+                    }
+                    if vanished.count >= 2 {
+                        let home = (NSHomeDirectory() as NSString).appendingPathComponent(".kanban-code")
+                        SessionDeathRecorder.capture(vanished: vanished, kanbanHome: home)
+                    }
+                }
+                lastTmuxSessionNames = currentNames
+            }
 
             // Reconcile — pullRequests map feeds branch→PR matching in the reconciler
             let t3 = ContinuousClock.now
