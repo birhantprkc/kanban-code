@@ -24,6 +24,10 @@ struct RemoteLaunchOptions {
     /// Machine the card already has.
     var cardMachine: String?
     var cardMachineState: RemoteMachineState?
+    /// Where the last session of the card ran, when it ran at all. A card
+    /// that was moved to the Mac must not offer its machine again by
+    /// itself: the choice of the last run is the one that is offered.
+    var lastRunRemote: Bool?
     /// Other machines in the org the user may pick.
     var availableMachines: [String] = []
     /// True when the boxd CLI is installed.
@@ -48,6 +52,16 @@ struct RemoteLaunchOptions {
         case .mutagen:
             return UserDefaults.standard.object(forKey: "runRemotely_\(projectPath)") as? Bool ?? true
         }
+    }
+
+    /// State of the "run remotely" box when a dialog opens. The last run of
+    /// the card wins, then the machine of the card, then the project.
+    static func initialRunRemotely(
+        lastRunRemote: Bool?, cardMachine: String?, mode: RemoteMode, projectPath: String
+    ) -> Bool {
+        if let lastRunRemote { return lastRunRemote }
+        if cardMachine != nil { return true }
+        return defaultRunRemotely(mode: mode, projectPath: projectPath)
     }
 
     static func rememberRunRemotely(_ value: Bool, mode: RemoteMode, projectPath: String) {

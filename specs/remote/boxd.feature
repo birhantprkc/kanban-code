@@ -174,6 +174,13 @@ Feature: Boxd Remote Mode
     And the machine is resumed and the terminal attaches again
     But a machine that does not come back says so, and the click can be repeated
 
+  Scenario: The dialog offers the choice of the last run
+    Given a card that ran on a machine and then ran on the Mac
+    When I stop the session and open the resume dialog
+    Then "Run on boxd" is off, and the machine of the card is still in the picker
+    When I resume it on the machine again
+    Then the next resume dialog opens with "Run on boxd" on, and that machine chosen
+
   Scenario: Closing the tab stops the machine
     Given a card that runs on a machine no other card uses
     When I close the terminal tab of the session

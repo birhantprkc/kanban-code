@@ -1275,6 +1275,8 @@ struct ContentView: View {
             cardMachine: machine,
             cardMachineState: machine.flatMap { store.state.remoteMachineStates[$0] }
                 ?? link?.remote?.pausedReason.map { RemoteMachineState.paused($0) },
+            // Only a card that has run before has a last run to follow.
+            lastRunRemote: link?.sessionLink != nil ? link?.isRemote : nil,
             availableMachines: boxdMachineNames,
             boxdAvailable: boxdAvailable
         )

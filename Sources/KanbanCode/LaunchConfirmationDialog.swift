@@ -88,8 +88,10 @@ struct LaunchConfirmationDialog: View {
         let cardMachine = remoteOptions?.cardMachine
         let remoteDefault = remoteOptions == nil
             ? (UserDefaults.standard.object(forKey: "runRemotely_\(projectPath)") as? Bool ?? true)
-            : RemoteLaunchOptions.defaultRunRemotely(mode: mode, projectPath: projectPath)
-        self._runRemotely = State(initialValue: cardMachine != nil ? true : remoteDefault)
+            : RemoteLaunchOptions.initialRunRemotely(
+                lastRunRemote: remoteOptions?.lastRunRemote, cardMachine: cardMachine,
+                mode: mode, projectPath: projectPath)
+        self._runRemotely = State(initialValue: remoteDefault)
         self._machineChoice = State(initialValue: cardMachine.map { BoxdMachineChoice.existing($0) } ?? .newMachine)
         self._createWorktree = State(initialValue: UserDefaults.standard.object(forKey: "createWorktree_\(projectPath)") as? Bool ?? true)
     }

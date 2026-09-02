@@ -113,6 +113,8 @@ A reconnection of this kind keeps the activity clock of the machine: the machine
 
 Quit and Mac sleep leave the machines running: the work continues there while the Mac is off, and the bridges reconnect after wake. The quit sheet lists the sessions on machines with a cloud icon; "Kill managed sessions on quit" kills them and puts their machines in standby, bounded to 10 seconds ("Stopping boxd machines" panel meanwhile). A card whose session runs on a machine does not keep the Mac awake: the active-session helper that Amphetamine watches only runs for sessions on the Mac itself.
 
+The launch dialog of a card offers the choice of its last run: a card whose last session ran on the Mac opens with "Run on boxd" off, even though it keeps its machine, and a card whose last session ran on a machine opens with the box on and that machine chosen. A card that never ran follows its machine, and a card with no machine follows the project default.
+
 A card that resumes locally after it ran on a machine gets its worktree created on the Mac at that moment, tracking `origin/<branch>` when the branch was pushed and starting a new branch otherwise. While a machine is paused the card is never shown as working, whatever the last hook event said.
 
 ### Embedded terminal
