@@ -213,7 +213,19 @@ public final class BoxdCliAdapter: BoxdPort, @unchecked Sendable {
             .appendingPathComponent("kanban-boxd-upload-\(UUID().uuidString)")
         try data.write(to: URL(fileURLWithPath: temporaryPath))
         defer { try? FileManager.default.removeItem(atPath: temporaryPath) }
-        _ = try await run(["machine", "cp", temporaryPath, "\(name):\(remotePath)"], timeout: 300)
+        // `boxd machine cp` stages the upload in `<target>.boxd-upload.tmp`
+        // on the machine: two uploads to the same target destroy each other
+        // at the rename. Each upload lands on its own name and is moved into
+        // place in a second step.
+        let incoming = "\(remotePath).incoming-\(UUID().uuidString.prefix(8))"
+        KanbanCodeLog.info(Self.subsystem, "Uploading \(data.count) bytes to \(name):\(remotePath)")
+        do {
+            _ = try await run(["machine", "cp", temporaryPath, "\(name):\(incoming)"], timeout: 600)
+            _ = try await run(["machine", "exec", name, "--", "mv", "-f", incoming, remotePath], timeout: 30)
+        } catch {
+            _ = try? await run(["machine", "exec", name, "--", "rm", "-f", incoming], timeout: 30)
+            throw error
+        }
     }
 
     public func isAvailable() async -> Bool {

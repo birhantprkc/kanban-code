@@ -6,6 +6,18 @@ import KanbanCodeCore
 /// embedded terminal, the app delegate, chat views) reach tmux and the boxd
 /// supervisor through here instead of building their own adapters.
 enum AppServices {
+    /// Cards with a resume in flight. A resume is long (machine creation,
+    /// a transcript push); a second one for the same card must not start.
+    @MainActor private static var resumingCards: Set<String> = []
+
+    @MainActor static func beginResume(cardId: String) -> Bool {
+        resumingCards.insert(cardId).inserted
+    }
+
+    @MainActor static func endResume(cardId: String) {
+        resumingCards.remove(cardId)
+    }
+
     nonisolated(unsafe) static var tmux = RoutingTmuxAdapter()
     nonisolated(unsafe) static var remoteRegistry: RemoteSessionRegistry?
     nonisolated(unsafe) static var boxdSupervisor: BoxdMachineSupervisor?

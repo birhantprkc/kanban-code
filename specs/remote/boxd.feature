@@ -147,11 +147,23 @@ Feature: Boxd Remote Mode
     When the machine is paused
     Then the card stops its spinner
 
-  Scenario: Machine paused after inactivity
+  Scenario: Machine stopped after inactivity
     Given a card runs on a machine
     When no transcript bytes and no hook events arrive for the configured timeout
-    Then the machine is paused
-    And the card shows "Machine <name> was paused due to inactivity for over 1h" with a Continue button
+    Then the machine is stopped, so it costs its disk only
+    And the card shows "Machine <name> was stopped after 1h without activity" with a Resume button
+    And a machine sitting in standby past the same window is stopped as well
+
+  Scenario: The transcript push sends only what the machine misses
+    Given a card with a transcript of hundreds of megabytes that already ran on its machine
+    When I resume it there after more local work
+    Then the Mac compares the first lines by hash and appends only the new tail
+    And a prefix that differs is pushed whole
+
+  Scenario: A failed resume does not leave the machine on the bill
+    Given a resume that fails after the machine came back
+    Then the machine is paused instead of sitting in standby at full price
+    And a second resume clicked during the first is ignored
 
   Scenario: The terminal does not wake a paused machine
     Given a terminal attached to a session on a machine

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// What a resume has to do before the card is back on its machine.
@@ -330,6 +331,31 @@ public enum BoxdLaunchPlanner {
     ) -> ResumeDecision {
         if tmuxAlive { return .attach }
         return localTranscriptLines > remoteTranscriptLines ? .pushThenResume : .resume
+    }
+
+    /// Byte length and SHA-256 of the first `lineCount` lines of a file,
+    /// read in blocks. Nothing when the file holds fewer lines.
+    public static func transcriptPrefix(fileAt path: String, lineCount: Int) -> (bytes: Int, sha256: String)? {
+        guard lineCount > 0, let handle = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        var remaining = lineCount
+        var bytes = 0
+        while let block = try? handle.read(upToCount: 4 * 1024 * 1024), !block.isEmpty {
+            for (index, byte) in block.enumerated() where byte == 0x0a {
+                remaining -= 1
+                if remaining == 0 {
+                    let cut = block.prefix(index + 1)
+                    hasher.update(data: cut)
+                    bytes += cut.count
+                    let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+                    return (bytes, digest)
+                }
+            }
+            hasher.update(data: block)
+            bytes += block.count
+        }
+        return nil
     }
 
     /// The number of newline characters in a file, read in blocks.

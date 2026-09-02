@@ -93,6 +93,17 @@ struct TerminalTranscriptTests {
         #expect(rows == [.thinking(id: "10:0", excerpt: TerminalTranscript.Excerpt(text: "a\nb\nc", hiddenLines: 2))])
     }
 
+    @Test("A message of thousands of lines is cut, a normal one is whole")
+    func hugeMessageIsCut() {
+        let huge = (1...500).map { "line \($0)" }.joined(separator: "\n")
+
+        let cut = TerminalTranscript.messageText(huge)
+
+        #expect(cut.components(separatedBy: "\n").count == TerminalTranscript.messageLineLimit + 1)
+        #expect(cut.hasSuffix("… +300 lines"))
+        #expect(TerminalTranscript.messageText("short\nmessage") == "short\nmessage")
+    }
+
     @Test("An excerpt cuts a very long line")
     func excerptCutsLongLines() {
         let long = String(repeating: "x", count: TerminalTranscript.outputLineWidth + 5)

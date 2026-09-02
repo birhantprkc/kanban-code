@@ -62,7 +62,7 @@ struct RemoteMachineOverlayTests {
 
         let text = RemoteMachineOverlay.text(for: .paused(.inactivity), remote: paused, lastActivity: lastActivity)
 
-        #expect(text == "Machine kanban-langwatch-3ii7zfnu was paused due to inactivity for over 45 min")
+        #expect(text == "Machine kanban-langwatch-3ii7zfnu was stopped after 45 min without activity")
         #expect(RemoteMachineOverlay.text(for: .paused(.stopped), remote: remote, lastActivity: nil)
             == "Machine kanban-langwatch-3ii7zfnu was stopped. Resume starts it again.")
     }

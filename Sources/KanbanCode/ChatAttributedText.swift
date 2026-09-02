@@ -404,11 +404,19 @@ enum ChatAttributedText {
 
 /// A dictionary that evicts what was used least recently.
 ///
-/// Dropping everything at once instead would stall a long conversation on the
-/// pass right after the cache filled up.
+/// The keys of these caches are whole messages, so every touch has to be
+/// O(1): an ordering array walked with `firstIndex` compared megabytes of
+/// text on each cache hit, in the middle of layout. Recency is a counter
+/// per entry instead, and eviction drops the older half in one sweep, so a
+/// long conversation never stalls on the pass right after the cache fills.
 struct LRUCache<Key: Hashable, Value> {
-    private var storage: [Key: Value] = [:]
-    private var order: [Key] = []
+    private struct Entry {
+        var value: Value
+        var use: Int
+    }
+
+    private var storage: [Key: Entry] = [:]
+    private var tick = 0
     private let limit: Int
 
     init(limit: Int) {
@@ -417,28 +425,26 @@ struct LRUCache<Key: Hashable, Value> {
 
     subscript(key: Key) -> Value? {
         mutating get {
-            guard let value = self.storage[key] else { return nil }
-            self.touch(key)
-            return value
+            guard var entry = self.storage[key] else { return nil }
+            self.tick += 1
+            entry.use = self.tick
+            self.storage[key] = entry
+            return entry.value
         }
         set {
             guard let newValue else {
                 self.storage[key] = nil
-                self.order.removeAll { $0 == key }
                 return
             }
-            self.storage[key] = newValue
-            self.touch(key)
-            while self.order.count > self.limit {
-                self.storage[self.order.removeFirst()] = nil
+            self.tick += 1
+            self.storage[key] = Entry(value: newValue, use: self.tick)
+            if self.storage.count > self.limit {
+                let uses = self.storage.values.map(\.use).sorted()
+                let cutoff = uses[uses.count / 2]
+                self.storage = self.storage.filter { $0.value.use > cutoff }
             }
         }
     }
 
-    private mutating func touch(_ key: Key) {
-        if let index = self.order.firstIndex(of: key) {
-            self.order.remove(at: index)
-        }
-        self.order.append(key)
-    }
+    var count: Int { self.storage.count }
 }

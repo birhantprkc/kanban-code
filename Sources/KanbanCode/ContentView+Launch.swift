@@ -741,11 +741,21 @@ extension ContentView {
         } else {
             shouldFocusTerminal = true
         }
+        // A second click while a resume runs would race the first one on the
+        // machine: two transcript pushes to the same file corrupted each
+        // other before this guard existed.
+        guard AppServices.beginResume(cardId: cardId) else {
+            KanbanCodeLog.info("resume", "Resume already running for card=\(cardId.prefix(12)), ignoring")
+            return
+        }
         KanbanCodeLog.info("resume", "Starting resume for card=\(cardId.prefix(12)) session=\(sessionId.prefix(8))")
         let progress = LaunchProgress(cardId: cardId, store: store)
 
         Task {
-            defer { progress.finish() }
+            defer {
+                progress.finish()
+                AppServices.endResume(cardId: cardId)
+            }
             do {
                 let settings = try? await settingsStore.read()
 
@@ -818,6 +828,7 @@ extension ContentView {
                                 localPath: localTranscript,
                                 sessionId: sessionId,
                                 remoteCwd: preparation.remoteCwd,
+                                remoteLines: remoteLines,
                                 log: { progress.report($0) }
                             )
                         } else {
@@ -907,8 +918,17 @@ extension ContentView {
 
                 store.dispatch(.resumeCompleted(cardId: cardId, tmuxName: actualTmuxName, isRemote: isRemote))
             } catch {
-                KanbanCodeLog.info("resume", "Resume failed for card=\(cardId.prefix(12)): \(error.localizedDescription)")
+                KanbanCodeLog.warn("resume", "Resume failed for card=\(cardId.prefix(12)): \(error.localizedDescription)")
                 store.dispatch(.resumeFailed(cardId: cardId, error: error.localizedDescription))
+                // The machine would sit running, billed by the hour, waiting
+                // for a retry that may never come. Standby keeps its memory
+                // and the next resume brings it back in a second.
+                if runRemotely, store.state.remoteMode == .boxd,
+                   let remote = store.state.links[cardId]?.remote,
+                   await boxdSupervisor.isConnected(remote.machineName) {
+                    KanbanCodeLog.info("resume", "Pausing \(remote.machineName) after the failed resume")
+                    await boxdSupervisor.pause(machineName: remote.machineName, reason: .manual)
+                }
             }
         }
     }

@@ -305,6 +305,22 @@ struct BoxdLaunchPlannerTests {
         #expect(BoxdLaunchPlanner.resumeDecision(tmuxAlive: false, localTranscriptLines: 0, remoteTranscriptLines: 100) == .resume)
     }
 
+    @Test("The prefix of a transcript hashes exactly its first lines")
+    func transcriptPrefix() throws {
+        let path = (NSTemporaryDirectory() as NSString).appendingPathComponent("kanban-prefix-\(UUID().uuidString).jsonl")
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        try "{\"a\":1}\n{\"b\":2}\n{\"c\":3}\n".write(toFile: path, atomically: true, encoding: .utf8)
+
+        let prefix = BoxdLaunchPlanner.transcriptPrefix(fileAt: path, lineCount: 2)
+
+        // The bytes of the first two lines, and the digest `sha256sum` gives
+        // for them on the machine.
+        #expect(prefix?.bytes == 16)
+        #expect(prefix?.sha256 == "3881dc2ee848fe04d776737c86afbc783e482e7c5be6431d3aab36fa8fa2c928")
+        #expect(BoxdLaunchPlanner.transcriptPrefix(fileAt: path, lineCount: 9) == nil)
+        #expect(BoxdLaunchPlanner.transcriptPrefix(fileAt: path, lineCount: 0) == nil)
+    }
+
     @Test("The line count reads the file in blocks and counts newlines")
     func lineCount() throws {
         let path = (NSTemporaryDirectory() as NSString).appendingPathComponent("kanban-lines-\(UUID().uuidString).jsonl")

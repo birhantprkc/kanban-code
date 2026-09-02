@@ -75,6 +75,19 @@ enum TerminalTranscript {
         text.hasPrefix("✓ ") || text.hasPrefix("⏳ ") || text.contains("[Request interrupted by user")
     }
 
+    /// The most lines a message row shows. A pasted log of thousands of
+    /// lines would otherwise be measured whole, and the layout of the skin
+    /// froze the app on such transcripts.
+    static let messageLineLimit = 200
+
+    /// A message cut to `messageLineLimit` lines, with a note for the rest.
+    static func messageText(_ text: String) -> String {
+        let lines = text.components(separatedBy: "\n")
+        guard lines.count > messageLineLimit else { return text }
+        return lines.prefix(messageLineLimit).joined(separator: "\n")
+            + "\n… +\(lines.count - messageLineLimit) lines"
+    }
+
     static func rows(from turns: [ConversationTurn]) -> [TerminalTranscriptRow] {
         // Tool results live in the user turn after the call. They are paired
         // by id so a call shows the start of what it got back.
@@ -93,7 +106,7 @@ enum TerminalTranscript {
                 let id = "\(turn.lineNumber):\(index)"
                 switch block.kind {
                 case .text:
-                    let text = block.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let text = messageText(block.text.trimmingCharacters(in: .whitespacesAndNewlines))
                     guard !text.isEmpty else { continue }
                     if turn.role == "user" {
                         rows.append(isSystemNote(text) ? .system(id: id, text: text) : .user(id: id, text: text))

@@ -64,7 +64,7 @@ enum RemoteMachineOverlay {
                 if let pausedAt = remote.pausedAt, let lastActivity, pausedAt > lastActivity {
                     minutes = max(1, Int(pausedAt.timeIntervalSince(lastActivity) / 60))
                 }
-                return "Machine \(machine) was paused due to inactivity for over \(durationText(minutes: minutes))"
+                return "Machine \(machine) was stopped after \(durationText(minutes: minutes)) without activity"
             case .sessionStopped:
                 return "Machine \(machine) paused after the session stopped"
             case .stopped:

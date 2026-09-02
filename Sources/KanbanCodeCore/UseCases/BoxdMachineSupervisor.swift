@@ -543,6 +543,10 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         return alive
     }
 
+    /// Transcript pushes in flight, so two resumes of the same card never
+    /// write the same file on the machine at once.
+    private var transcriptPushes: Set<String> = []
+
     /// Copies a local transcript to the machine, rewritten to machine paths,
     /// together with its sidecar directory and statusline context. The agent
     /// holds every pushed file while it is written, so the bytes do not come
@@ -552,8 +556,16 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         localPath: String,
         sessionId: String,
         remoteCwd: String,
+        remoteLines: Int = 0,
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws {
+        let pushKey = "\(machineName):\(sessionId)"
+        guard !transcriptPushes.contains(pushKey) else {
+            KanbanCodeLog.warn(Self.subsystem, "Transcript \(sessionId.prefix(8)) is already being pushed to \(machineName), skipping")
+            return
+        }
+        transcriptPushes.insert(pushKey)
+        defer { transcriptPushes.remove(pushKey) }
         guard let runtime = machines[machineName], let bridge = runtime.bridge else {
             throw BoxdSupervisorError.notConnected(machineName)
         }
@@ -570,10 +582,35 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
             try reversed.rewriteFile(at: localPath, to: temporary)
         }.value
         let data = try Data(contentsOf: URL(fileURLWithPath: temporary))
-        log("Pushing transcript (\(Self.sizeText(data.count)))")
         await mirror.suspend(remotePath: remotePath)
         defer { Task { await mirror.resume(remotePath: remotePath) } }
-        try await upload(machineName: machineName, bridge: bridge, remotePath: remotePath, data: data)
+
+        // The transcript only ever grows, so when the machine already holds
+        // its first lines, byte for byte, only the tail crosses the wire.
+        // The rewrite is deterministic, which makes the comparison a hash of
+        // the prefix on each side.
+        var pushed = false
+        if remoteLines > 0,
+           let prefix = BoxdLaunchPlanner.transcriptPrefix(fileAt: temporary, lineCount: remoteLines),
+           prefix.bytes < data.count {
+            let result = try? await bridge.exec(
+                ["sh", "-c", "head -n \"$1\" \"$2\" | shasum -a 256 2>/dev/null || head -n \"$1\" \"$2\" | sha256sum", "sh", String(remoteLines), remotePath],
+                stdin: nil, cwd: nil, timeout: 60)
+            let remoteHash = result?.stdout.components(separatedBy: .whitespaces).first ?? ""
+            if remoteHash == prefix.sha256 {
+                let delta = data.subdata(in: prefix.bytes..<data.count)
+                log("Appending to the transcript on the machine (\(Self.sizeText(delta.count)) of \(Self.sizeText(data.count)))")
+                KanbanCodeLog.info(Self.subsystem, "Transcript \(sessionId.prefix(8)): appending \(delta.count) bytes after \(remoteLines) matching lines on \(machineName)")
+                try await append(machineName: machineName, bridge: bridge, remotePath: remotePath, data: delta)
+                pushed = true
+            } else {
+                KanbanCodeLog.info(Self.subsystem, "Transcript \(sessionId.prefix(8)): prefix on \(machineName) differs (\(remoteHash.prefix(12)) vs \(prefix.sha256.prefix(12))), pushing whole")
+            }
+        }
+        if !pushed {
+            log("Pushing transcript (\(Self.sizeText(data.count)))")
+            try await upload(machineName: machineName, bridge: bridge, remotePath: remotePath, data: data)
+        }
         await mirror.recordPushed(
             remotePath: remotePath,
             bytes: data.count,
@@ -649,13 +686,18 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         await report(machineName, state: .paused(reason))
     }
 
-    /// Stops a machine: the work on its card is over, so nothing of it has
-    /// to stay in memory. It costs its disk only, and comes back with a cold
-    /// start when the card is resumed.
+    /// Stops a machine: nothing of it has to stay in memory. It costs its
+    /// disk only, and comes back with a cold start when the card is resumed.
+    /// The reason tells the card why: over from the work being done, or idle
+    /// for the whole window.
     public func stop(machineName: String) async {
+        await stop(machineName: machineName, reason: .stopped)
+    }
+
+    public func stop(machineName: String, reason: RemotePausedReason) async {
         setPausedMarkers(machineName: machineName, paused: true)
         if var runtime = machines[machineName] {
-            runtime.pausedReason = .stopped
+            runtime.pausedReason = reason
             runtime.resumedForPeek = false
             runtime.eventTask?.cancel()
             runtime.keepaliveTask?.cancel()
@@ -666,14 +708,14 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
             machines[machineName] = runtime
         }
         peekPauseRequested.remove(machineName)
-        registry.disconnectMachine(machineName, state: .paused(.stopped))
+        registry.disconnectMachine(machineName, state: .paused(reason))
         do {
             try await boxd.stop(name: machineName)
             KanbanCodeLog.info(Self.subsystem, "\(machineName): stopped")
         } catch {
             KanbanCodeLog.warn(Self.subsystem, "\(machineName): stop failed: \(error.localizedDescription)")
         }
-        await report(machineName, state: .paused(.stopped))
+        await report(machineName, state: .paused(reason))
     }
 
     public func destroy(machineName: String) async throws {
@@ -1434,7 +1476,11 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
 
     /// Every machine gets the same idle window, whether its card is open or
     /// not: an agent can be waiting on a watcher, a subagent or a review,
-    /// with nothing on the screen to show for it.
+    /// with nothing on the screen to show for it. An idle machine is
+    /// stopped, not paused: standby keeps its memory on the bill, and a
+    /// card left for hours costs its disk only. Machines a quick pause put
+    /// in standby (a peek, sleep) get the same treatment once the window
+    /// passes them by.
     public func checkInactivity() async {
         let timeout = TimeInterval(await settingsProvider().inactivityTimeoutSeconds)
         let current = now()
@@ -1444,8 +1490,14 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
                 touch(name)
                 continue
             }
-            KanbanCodeLog.info(Self.subsystem, "\(name): no activity for \(Int(timeout))s, pausing")
-            await pause(machineName: name, reason: .inactivity)
+            KanbanCodeLog.info(Self.subsystem, "\(name): no activity for \(Int(timeout))s, stopping")
+            await stop(machineName: name, reason: .inactivity)
+        }
+        for (name, runtime) in machines where runtime.bridge == nil {
+            guard let reason = runtime.pausedReason, reason != .stopped,
+                  current.timeIntervalSince(runtime.lastActivity) > timeout else { continue }
+            KanbanCodeLog.info(Self.subsystem, "\(name): in standby past the idle window, stopping")
+            await stop(machineName: name, reason: reason)
         }
     }
 
@@ -1469,7 +1521,7 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
             if data.count <= 2 * 1024 * 1024 {
                 try await bridge.put(path: remotePath, data: data, mode: nil)
             } else {
-                _ = try await bridge.exec(["mkdir", "-p", (remotePath as NSString).deletingLastPathComponent], stdin: nil, cwd: nil, timeout: 20)
+                _ = try await bridge.exec(["mkdir", "-p", (remotePath as NSString).deletingLastPathComponent], stdin: nil, cwd: nil, timeout: 60)
                 try await boxd.upload(name: machineName, remotePath: remotePath, data: data)
             }
         } catch {
@@ -1477,6 +1529,31 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
             throw error
         }
         try? await bridge.release(path: remotePath, offset: data.count)
+    }
+
+    /// Adds bytes to the end of a file on the machine: the delta lands on its
+    /// own name and one `cat` folds it in, so a broken transfer never leaves
+    /// a half-written transcript.
+    private func append(machineName: String, bridge: BoxdBridge, remotePath: String, data: Data) async throws {
+        let incoming = "\(remotePath).delta-\(UUID().uuidString.prefix(8))"
+        try await bridge.hold(path: remotePath)
+        do {
+            if data.count <= 2 * 1024 * 1024 {
+                try await bridge.put(path: incoming, data: data, mode: nil)
+            } else {
+                try await boxd.upload(name: machineName, remotePath: incoming, data: data)
+            }
+            _ = try await bridge.exec(
+                ["sh", "-c", "cat \"$1\" >> \"$2\" && rm -f \"$1\"", "sh", incoming, remotePath],
+                stdin: nil, cwd: nil, timeout: 60)
+        } catch {
+            _ = try? await bridge.exec(["rm", "-f", incoming], stdin: nil, cwd: nil, timeout: 30)
+            try? await bridge.release(path: remotePath, offset: nil)
+            throw error
+        }
+        let size = try? await bridge.exec(["stat", "-c", "%s", remotePath], stdin: nil, cwd: nil, timeout: 30)
+        let total = Int(size?.stdout.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
+        try? await bridge.release(path: remotePath, offset: total ?? 0)
     }
 
     private nonisolated static func rewrite(_ data: Data, with rewriter: TranscriptPathRewriter) -> Data {
