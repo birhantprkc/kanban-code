@@ -26,6 +26,10 @@ private struct TabManagementNotifications: ViewModifier {
 struct CardDetailView: View {
     let card: KanbanCodeCard
     var onResume: () -> Void = {}
+    /// What the app knows about the boxd machine of the card, for the bar
+    /// that brings a paused machine back.
+    var remoteMachineState: RemoteMachineState?
+    var onResumeMachine: () -> Void = {}
     var onRename: (String) -> Void = { _ in }
     let onSetPinned: (_ isPinned: Bool) -> Void
     let onSetSelfCompactContextThreshold: (_ thresholdTokens: Int?) -> Void
@@ -197,11 +201,13 @@ struct CardDetailView: View {
 
     let sessionStore: SessionStore
 
-    init(card: KanbanCodeCard, sessionStore: SessionStore = ClaudeCodeSessionStore(), selectedTab: Binding<DetailTab>, pendingTerminalSession: Binding<String?> = .constant(nil), onResume: @escaping () -> Void = {}, onRename: @escaping (String) -> Void = { _ in }, onSetPinned: @escaping (_ isPinned: Bool) -> Void, onSetSelfCompactContextThreshold: @escaping (_ thresholdTokens: Int?) -> Void, subagentCount: Int, onShowSubagents: @escaping () -> Void, onFork: @escaping (_ keepWorktree: Bool) -> Void = { _ in }, onDismiss: @escaping () -> Void = {}, onUnlink: @escaping (Action.LinkType) -> Void = { _ in }, onAddBranch: @escaping (String) -> Void = { _ in }, onAddIssue: @escaping (Int) -> Void = { _ in }, onAddPR: @escaping (Int) -> Void = { _ in }, onCleanupWorktree: @escaping () -> Void = {}, canCleanupWorktree: Bool = true, onDeleteCard: @escaping () -> Void = {}, onCreateTerminal: @escaping () -> Void = {}, onKillTerminal: @escaping (String) -> Void = { _ in }, onRenameTerminal: @escaping (String, String) -> Void = { _, _ in }, onReorderTerminal: @escaping (String, String?) -> Void = { _, _ in }, onPRMerged: @escaping (Int) -> Void = { _ in }, onCancelLaunch: @escaping () -> Void = {}, onAddQueuedPrompt: @escaping (QueuedPrompt) -> Void = { _ in }, onUpdateQueuedPrompt: @escaping (String, String, Bool) -> Void = { _, _, _ in }, onRemoveQueuedPrompt: @escaping (String) -> Void = { _ in }, onSendQueuedPrompt: @escaping (String) -> Void = { _ in }, onReorderQueuedPrompts: @escaping ([String]) -> Void = { _ in }, onEditingQueuedPrompt: @escaping (String?) -> Void = { _ in }, onAddBrowserTab: @escaping (String, String) -> Void = { _, _ in }, onRemoveBrowserTab: @escaping (String) -> Void = { _ in }, onUpdateBrowserTab: @escaping (String, String?, String?) -> Void = { _, _, _ in }, onDiscover: @escaping () -> Void = {}, onUpdatePrompt: @escaping (String, [String]?) -> Void = { _, _ in }, availableProjects: [(name: String, path: String)] = [], onMoveToProject: @escaping (String) -> Void = { _ in }, onMoveToFolder: @escaping () -> Void = {}, enabledAssistants: [CodingAssistant] = [], onMigrateAssistant: @escaping (CodingAssistant) -> Void = { _ in }, onTrimSession: @escaping () -> Void = {}, actionsMenuProvider: ActionsMenuProvider? = nil, focusTerminal: Binding<Bool> = .constant(false), isExpanded: Binding<Bool> = .constant(false), isDroppingImage: Binding<Bool> = .constant(false), launchStatus: String? = nil) {
+    init(card: KanbanCodeCard, sessionStore: SessionStore = ClaudeCodeSessionStore(), selectedTab: Binding<DetailTab>, pendingTerminalSession: Binding<String?> = .constant(nil), onResume: @escaping () -> Void = {}, remoteMachineState: RemoteMachineState? = nil, onResumeMachine: @escaping () -> Void = {}, onRename: @escaping (String) -> Void = { _ in }, onSetPinned: @escaping (_ isPinned: Bool) -> Void, onSetSelfCompactContextThreshold: @escaping (_ thresholdTokens: Int?) -> Void, subagentCount: Int, onShowSubagents: @escaping () -> Void, onFork: @escaping (_ keepWorktree: Bool) -> Void = { _ in }, onDismiss: @escaping () -> Void = {}, onUnlink: @escaping (Action.LinkType) -> Void = { _ in }, onAddBranch: @escaping (String) -> Void = { _ in }, onAddIssue: @escaping (Int) -> Void = { _ in }, onAddPR: @escaping (Int) -> Void = { _ in }, onCleanupWorktree: @escaping () -> Void = {}, canCleanupWorktree: Bool = true, onDeleteCard: @escaping () -> Void = {}, onCreateTerminal: @escaping () -> Void = {}, onKillTerminal: @escaping (String) -> Void = { _ in }, onRenameTerminal: @escaping (String, String) -> Void = { _, _ in }, onReorderTerminal: @escaping (String, String?) -> Void = { _, _ in }, onPRMerged: @escaping (Int) -> Void = { _ in }, onCancelLaunch: @escaping () -> Void = {}, onAddQueuedPrompt: @escaping (QueuedPrompt) -> Void = { _ in }, onUpdateQueuedPrompt: @escaping (String, String, Bool) -> Void = { _, _, _ in }, onRemoveQueuedPrompt: @escaping (String) -> Void = { _ in }, onSendQueuedPrompt: @escaping (String) -> Void = { _ in }, onReorderQueuedPrompts: @escaping ([String]) -> Void = { _ in }, onEditingQueuedPrompt: @escaping (String?) -> Void = { _ in }, onAddBrowserTab: @escaping (String, String) -> Void = { _, _ in }, onRemoveBrowserTab: @escaping (String) -> Void = { _ in }, onUpdateBrowserTab: @escaping (String, String?, String?) -> Void = { _, _, _ in }, onDiscover: @escaping () -> Void = {}, onUpdatePrompt: @escaping (String, [String]?) -> Void = { _, _ in }, availableProjects: [(name: String, path: String)] = [], onMoveToProject: @escaping (String) -> Void = { _ in }, onMoveToFolder: @escaping () -> Void = {}, enabledAssistants: [CodingAssistant] = [], onMigrateAssistant: @escaping (CodingAssistant) -> Void = { _ in }, onTrimSession: @escaping () -> Void = {}, actionsMenuProvider: ActionsMenuProvider? = nil, focusTerminal: Binding<Bool> = .constant(false), isExpanded: Binding<Bool> = .constant(false), isDroppingImage: Binding<Bool> = .constant(false), launchStatus: String? = nil) {
         self.card = card
         self.launchStatus = launchStatus
         self.sessionStore = sessionStore
         self.onResume = onResume
+        self.remoteMachineState = remoteMachineState
+        self.onResumeMachine = onResumeMachine
         self.onRename = onRename
         self.onSetPinned = onSetPinned
         self.onSetSelfCompactContextThreshold = onSetSelfCompactContextThreshold
@@ -568,6 +574,16 @@ struct CardDetailView: View {
         return tmux.sessionName
     }
 
+    /// A live session whose machine is not connected shows the transcript
+    /// with a resume bar instead of a terminal that cannot attach.
+    private var machineOverlay: RemoteMachineOverlayState {
+        RemoteMachineOverlay.state(
+            remote: card.link.remote,
+            machineState: remoteMachineState,
+            hasLiveSession: claudeTmuxSession != nil
+        )
+    }
+
     /// Reorder a tab by moving `movedId` before `beforeId`. If `beforeId` is nil, move to end.
     private func reorderTab(_ movedId: String, before beforeId: String?) {
         var order = unifiedExtraTabs.map(\.id)
@@ -708,6 +724,7 @@ struct CardDetailView: View {
         if showTabBar {
             let isLaunching = card.link.isLaunching == true && !isLaunchStale
             let showOverlay = isClaudeTabSelected && effectiveActiveSession == nil
+            let showMachineOverlay = isClaudeTabSelected && !isLaunching && machineOverlay != .none
 
             VStack(spacing: 0) {
                 // Finder-style tab bar — single row
@@ -857,6 +874,8 @@ struct CardDetailView: View {
                             // Dead session overlay in chat mode
                             if showOverlay && !isLaunching && card.link.sessionLink != nil {
                                 chatModeResumeOverlay
+                            } else if showMachineOverlay, let remote = card.link.remote {
+                                chatModeMachineBar(remote: remote)
                             } else if showOverlay && isLaunching {
                                 VStack(spacing: 12) {
                                     ProgressView().controlSize(.large)
@@ -884,7 +903,7 @@ struct CardDetailView: View {
                         )
                         .equatable()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .opacity(allLiveSessions.isEmpty || showOverlay || selectedBrowserTabId != nil ? 0 : 1)
+                        .opacity(allLiveSessions.isEmpty || showOverlay || showMachineOverlay || selectedBrowserTabId != nil ? 0 : 1)
                         .onChange(of: githubBaseURL) {
                             for session in allLiveSessions {
                                 TerminalCache.shared.terminal(for: session, frame: .zero).githubBaseURL = githubBaseURL
@@ -903,7 +922,7 @@ struct CardDetailView: View {
                         // Overlay for non-terminal Claude tab states
                         // A remote launch reports its steps while the
                         // terminal below already waits for the machine.
-                        if (showOverlay || (isLaunching && launchStatus != nil)) && selectedBrowserTabId == nil {
+                        if (showOverlay || showMachineOverlay || (isLaunching && launchStatus != nil)) && selectedBrowserTabId == nil {
                             assistantTabOverlay(isLaunching: isLaunching)
                         }
 
@@ -1104,23 +1123,53 @@ struct CardDetailView: View {
         .onHover { hoveredTab = $0 ? tabId : (hoveredTab == tabId ? nil : hoveredTab) }
     }
 
-    /// Overlay shown on the assistant tab when there's no live terminal.
-    @ViewBuilder
-    /// Resume overlay shown at the bottom of chat mode when session is dead.
+    /// Resume bar at the bottom of chat mode when the session is dead.
     private var chatModeResumeOverlay: some View {
-        let assistant = card.link.effectiveAssistant
+        resumeBar(
+            text: sessionEndedText(assistant: card.link.effectiveAssistant),
+            buttonTitle: "Resume",
+            action: onResume
+        )
+    }
+
+    /// Resume bar at the bottom of chat mode when the machine of the live
+    /// session is paused, or still coming back.
+    private func chatModeMachineBar(remote: RemoteLink) -> some View {
+        let state = machineOverlay
+        return resumeBar(
+            text: RemoteMachineOverlay.text(for: state, remote: remote, lastActivity: card.link.lastActivity),
+            buttonTitle: state.canResume ? "Resume" : nil,
+            isWorking: state == .resuming,
+            action: onResumeMachine
+        )
+    }
+
+    /// The bar that carries the way back to a session: a line that says
+    /// where it stands, and the button with its shortcut. With no button the
+    /// bar reports work in flight.
+    private func resumeBar(
+        text: String,
+        buttonTitle: String?,
+        isWorking: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
         HStack(spacing: 8) {
-            Text(sessionEndedText(assistant: assistant))
+            if isWorking {
+                ProgressView().controlSize(.small)
+            }
+            Text(text)
                 .font(.app(.callout))
                 .foregroundStyle(.secondary)
-            Button(action: onResume) {
-                HStack(spacing: 8) {
-                    Label("Resume", systemImage: "play.fill")
-                    resumeShortcutLabel
+            if let buttonTitle {
+                Button(action: action) {
+                    HStack(spacing: 8) {
+                        Label(buttonTitle, systemImage: "play.fill")
+                        resumeShortcutLabel
+                    }
                 }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
         }
         .padding(.vertical, 10)
         .padding(.horizontal, 16)
@@ -1134,36 +1183,11 @@ struct CardDetailView: View {
         guard let remote = card.link.remote, remote.mode == .boxd, let reason = remote.pausedReason else {
             return "\(assistant.displayName) session ended"
         }
-        switch reason {
-        case .inactivity:
-            // How long the machine sat idle: from the last activity of the
-            // card to the moment it was paused.
-            var minutes = 60
-            if let pausedAt = remote.pausedAt, let lastActivity = card.link.lastActivity, pausedAt > lastActivity {
-                minutes = max(1, Int(pausedAt.timeIntervalSince(lastActivity) / 60))
-            }
-            return "Machine \(remote.machineName) was paused due to inactivity for over \(Self.durationText(minutes: minutes))"
-        case .sessionStopped:
-            return "Machine \(remote.machineName) paused after the session stopped"
-        case .stopped:
-            return "Machine \(remote.machineName) was stopped. Resume starts it again."
-        case .appQuit:
-            return "Machine \(remote.machineName) paused when the app quit"
-        case .systemSleep:
-            return "Machine \(remote.machineName) paused when the Mac went to sleep"
-        case .manual:
-            return "Machine \(remote.machineName) paused"
-        }
+        return RemoteMachineOverlay.text(for: .paused(reason), remote: remote, lastActivity: card.link.lastActivity)
     }
 
-    private static func durationText(minutes: Int) -> String {
-        if minutes % 60 == 0 {
-            let hours = minutes / 60
-            return hours == 1 ? "1h" : "\(hours)h"
-        }
-        return "\(minutes) min"
-    }
-
+    /// Overlay shown on the assistant tab when there's no live terminal, or
+    /// when the live session sits on a machine that is not connected.
     @ViewBuilder
     private func assistantTabOverlay(isLaunching: Bool) -> some View {
         let assistant = card.link.effectiveAssistant
@@ -1188,28 +1212,27 @@ struct CardDetailView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color.black, ignoresSafeAreaEdges: [])
+        } else if machineOverlay != .none, let remote = card.link.remote {
+            let state = machineOverlay
+            let text = RemoteMachineOverlay.text(for: state, remote: remote, lastActivity: card.link.lastActivity)
+            transcriptBehind(
+                title: text,
+                subtitle: nil,
+                buttonTitle: state.canResume ? "Resume machine" : nil,
+                isWorking: state == .resuming,
+                action: onResumeMachine
+            )
         } else if card.link.sessionLink != nil {
-            VStack(spacing: 12) {
-                AssistantIcon(assistant: assistant)
-                    .frame(width: CGFloat(32).scaled, height: CGFloat(32).scaled)
-                    .foregroundStyle(Color.primary.opacity(0.3))
-                Text(sessionEndedText(assistant: assistant))
-                    .font(.app(.body))
-                    .foregroundStyle(.secondary)
-                if let remote = card.link.remote, remote.mode == .boxd, remote.pausedReason == nil {
-                    Text("Machine \(remote.machineName) is kept. Resume attaches to it.")
-                        .font(.app(.caption))
-                        .foregroundStyle(.tertiary)
-                }
-                Button(action: onResume) {
-                    HStack(spacing: 8) {
-                        Label("Resume \(assistant.displayName)", systemImage: "play.fill")
-                        resumeShortcutLabel
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            let keptMachine: String? = {
+                guard let remote = card.link.remote, remote.mode == .boxd, remote.pausedReason == nil else { return nil }
+                return "Machine \(remote.machineName) is kept. Resume attaches to it."
+            }()
+            transcriptBehind(
+                title: sessionEndedText(assistant: assistant),
+                subtitle: keptMachine,
+                buttonTitle: "Resume \(assistant.displayName)",
+                action: onResume
+            )
         } else {
             VStack(spacing: 12) {
                 AssistantIcon(assistant: assistant)
@@ -1220,6 +1243,83 @@ struct CardDetailView: View {
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    /// The transcript in the skin of the terminal with the resume bar under
+    /// it, so the last steps of the agent are on the screen before the
+    /// session comes back. Before the transcript is read, or when there is
+    /// none, the bar stands alone in the middle.
+    @ViewBuilder
+    private func transcriptBehind(
+        title: String,
+        subtitle: String?,
+        buttonTitle: String?,
+        isWorking: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        let assistant = card.link.effectiveAssistant
+        if turns.isEmpty {
+            VStack(spacing: 12) {
+                AssistantIcon(assistant: assistant)
+                    .frame(width: CGFloat(32).scaled, height: CGFloat(32).scaled)
+                    .foregroundStyle(Color.primary.opacity(0.3))
+                if isWorking {
+                    ProgressView().controlSize(.small)
+                }
+                Text(title)
+                    .font(.app(.body))
+                    .foregroundStyle(.secondary)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.app(.caption))
+                        .foregroundStyle(.tertiary)
+                }
+                if let buttonTitle {
+                    Button(action: action) {
+                        HStack(spacing: 8) {
+                            Label(buttonTitle, systemImage: "play.fill")
+                            resumeShortcutLabel
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .task(id: "transcript-\(card.id)") { await loadHistory() }
+        } else {
+            TranscriptTerminalView(turns: turns, githubBaseURL: githubBaseURL) {
+                HStack(spacing: 8) {
+                    if isWorking {
+                        ProgressView().controlSize(.small)
+                    }
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(title)
+                            .font(.app(.callout))
+                            .foregroundStyle(.secondary)
+                        if let subtitle {
+                            Text(subtitle)
+                                .font(.app(.caption))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    if let buttonTitle {
+                        Button(action: action) {
+                            HStack(spacing: 8) {
+                                Label(buttonTitle, systemImage: "play.fill")
+                                resumeShortcutLabel
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                    }
+                }
+                .padding(.vertical, 10)
+                .padding(.horizontal, 16)
+                .frame(maxWidth: .infinity)
+                .background(.ultraThinMaterial)
+            }
+            .task(id: "transcript-\(card.id)") { await loadHistory() }
         }
     }
 

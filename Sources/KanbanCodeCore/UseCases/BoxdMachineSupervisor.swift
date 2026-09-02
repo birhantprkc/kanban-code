@@ -1205,6 +1205,19 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         return machines[machineName]?.bridge != nil
     }
 
+    /// Brings the machine of a session back for a prompt. The prompt is work,
+    /// so the machine is not on approval afterwards: it keeps the normal idle
+    /// window. Returns true when the machine is connected, or when the
+    /// session is not on a machine at all.
+    public func resumeMachine(forSession sessionName: String) async -> Bool {
+        guard let machineName = registry.machine(forSession: sessionName) else { return true }
+        if machines[machineName]?.bridge != nil { return true }
+        KanbanCodeLog.info(Self.subsystem, "\(machineName): resuming for a prompt to \(sessionName)")
+        guard await resume(machineName: machineName) else { return false }
+        touch(machineName)
+        return true
+    }
+
     /// Pauses a machine a person brought back but did nothing with. The card
     /// that leaves focus calls it, so a quick look at a session costs the
     /// seconds it took, not the whole idle window. A machine with work on it,

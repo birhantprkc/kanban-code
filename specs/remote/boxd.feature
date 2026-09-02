@@ -188,8 +188,28 @@ Feature: Boxd Remote Mode
     And the card keeps its machine record, and the pill says "Stopped"
     And a resume of the card starts the machine again
 
+  Scenario: Opening a paused card does not resume its machine
+    Given a card whose live session sits on a paused machine
+    When I open the card, click in its terminal or press a key
+    Then the machine stays in standby
+    And the assistant tab shows the transcript of the session in the skin of the terminal
+    And a bar at the bottom says why the machine was paused, with a "Resume machine" button
+
+  Scenario: Resume machine is one action
+    Given a card whose live session sits on a paused machine
+    When I click "Resume machine", or press Cmd+Enter on the card
+    Then the bar says "Resuming machine <name>…" and offers no button meanwhile
+    And the terminal attaches again once the machine is connected
+    And a machine that does not come back gets a "did not answer" line and the button again
+
+  Scenario: A prompt brings the machine back first
+    Given a card whose live session sits on a paused machine
+    When I send a message from chat mode, or send a queued prompt
+    Then the machine is resumed before the prompt is pasted
+    And the prompt counts as work, so the machine keeps its idle window
+
   Scenario: A look at a paused card costs only the look
-    Given a card whose machine I brought back with a click
+    Given a card whose machine I brought back with "Resume machine"
     When I open another card, with no work done on the machine meanwhile
     Then the machine goes back to standby at once
     But a prompt, or any work on the machine, keeps it running for the idle window

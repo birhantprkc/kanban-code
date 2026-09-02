@@ -190,6 +190,12 @@ public actor EffectHandler {
 
         case .sendPromptToTmux(let sessionName, let promptBody, let assistant):
             do {
+                // A prompt to a session on a paused machine brings the
+                // machine back first; the prompt itself never wakes it.
+                guard await remoteMachines?.resumeMachine(forSession: sessionName) != false else {
+                    KanbanCodeLog.warn("effect", "sendPromptToTmux: the machine of \(sessionName) did not come back")
+                    return
+                }
                 if assistant.submitsPromptWithPaste {
                     try await tmuxAdapter?.pastePrompt(to: sessionName, text: promptBody)
                 } else {
@@ -202,6 +208,10 @@ public actor EffectHandler {
         case .sendPromptWithImagesToTmux(let sessionName, let promptBody, let imagePaths, let assistant):
             do {
                 guard let tmux = tmuxAdapter else { return }
+                guard await remoteMachines?.resumeMachine(forSession: sessionName) != false else {
+                    KanbanCodeLog.warn("effect", "sendPromptWithImagesToTmux: the machine of \(sessionName) did not come back")
+                    return
+                }
                 let images = assistant.supportsImageUpload
                     ? imagePaths.compactMap { ImageAttachment.fromPath($0) }
                     : []

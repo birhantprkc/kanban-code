@@ -55,6 +55,14 @@ Feature: Embedded Terminal Emulator
       | Resume Claude    | play.fill     | borderedProminent| Resumes claude session in tmux   |
       | New Terminal     | terminal      | bordered         | Creates a plain shell in tmux    |
 
+  Scenario: An ended session shows where the agent was
+    Given a card whose Claude Code session ended
+    When I open its assistant tab in terminal mode
+    Then I see the transcript drawn like Claude Code draws it: terminal font, terminal background, full width, no markdown
+    And each tool call shows its first lines of output behind "⎿" with "+N lines" for the rest
+    And I can scroll it, select its text, and click its URLs and "repo#123" references
+    And a bar at the bottom says "Claude Code session ended" with a "Resume Claude Code" button and its shortcut
+
   Scenario: Resume Claude from no-tmux state
     Given a card has sessionLink (sessionId = "abc-123") but no tmuxLink
     When I click "Resume Claude"

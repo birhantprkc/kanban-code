@@ -30,6 +30,12 @@ public protocol RemoteMachineControl: Sendable {
     /// its card leaves focus.
     func pauseIfPeek(machineName: String) async
 
+    /// Takes the machine of a session out of standby before a prompt is
+    /// sent to it, and counts the prompt as work on the machine. Returns
+    /// false when the machine did not come back. A session that is not on
+    /// a machine returns true.
+    func resumeMachine(forSession sessionName: String) async -> Bool
+
     /// Reconnects a machine the app holds as paused when boxd reports it
     /// running. Returns whether the machine is connected afterwards.
     func reconnectIfRunning(machineName: String) async -> Bool

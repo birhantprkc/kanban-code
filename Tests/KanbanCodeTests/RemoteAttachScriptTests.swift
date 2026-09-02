@@ -37,7 +37,7 @@ struct RemoteAttachScriptTests {
             boxd: "boxd", machine: "kanban-repo-1", session: "s", readyMarker: "/tmp/marker")
         // The pause marker is read before the connect, because a connect
         // that succeeds wakes the machine and leaves the loop for good.
-        #expect(script.contains("while [ $n -lt 30 ]; do if [ -e '/tmp/marker.paused' ]; then echo 'Machine paused. Click here to bring it back.'; while [ -e '/tmp/marker.paused' ]; do sleep 1; done; n=0; fi; "))
+        #expect(script.contains("while [ $n -lt 30 ]; do if [ -e '/tmp/marker.paused' ]; then echo 'Machine paused.'; while [ -e '/tmp/marker.paused' ]; do sleep 1; done; n=0; fi; "))
         // The machine is read from the marker on every try.
         #expect(script.contains("m=\"$(cat '/tmp/marker' 2>/dev/null)\"; [ -n \"$m\" ] || m='kanban-repo-1'; KANBAN_MACHINE=\"$m\" /usr/bin/expect -c '"))
         #expect(script.contains("' && break; if [ -e '/tmp/marker.paused' ]; then continue; fi; n=$((n+1)); sleep 2; done; echo 'Session ended.'"))

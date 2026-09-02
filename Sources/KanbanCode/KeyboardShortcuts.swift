@@ -39,9 +39,15 @@ struct AppShortcutContext {
         self.promptEditorFocused = state.promptEditorFocused
         self.hasSelectedCard = state.selectedCardId != nil
         let selectedLink = state.selectedCard?.link
-        self.canResumeAssistant = selectedLink?.sessionLink != nil
-            && selectedLink?.tmuxLink == nil
-            && selectedLink?.isLaunching != true
+        let sessionEnded = selectedLink?.tmuxLink == nil && selectedLink?.isLaunching != true
+        // A live session on a paused machine takes the same key: the resume
+        // bar of the card offers the machine, not the assistant.
+        let machinePaused = RemoteMachineOverlay.state(
+            remote: selectedLink?.remote,
+            machineState: selectedLink?.remote.flatMap { state.remoteMachineStates[$0.machineName] },
+            hasLiveSession: selectedLink?.tmuxLink != nil
+        ).canResume
+        self.canResumeAssistant = selectedLink?.sessionLink != nil && (sessionEnded || machinePaused)
     }
 }
 

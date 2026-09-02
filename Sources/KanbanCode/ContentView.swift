@@ -507,6 +507,25 @@ struct ContentView: View {
             }
     }
 
+    /// The state of the machine of a card, for the resume bar of its detail.
+    private func machineState(of card: KanbanCodeCard) -> RemoteMachineState? {
+        card.link.remote.flatMap { store.state.remoteMachineStates[$0.machineName] }
+    }
+
+    /// Cmd+Enter on a card: the machine when a live session waits on a
+    /// paused one, the assistant otherwise.
+    func resumeCardOrMachine(cardId: String) {
+        if let card = store.state.cards.first(where: { $0.id == cardId }),
+           let remote = card.link.remote,
+           RemoteMachineOverlay.state(
+               remote: remote, machineState: machineState(of: card), hasLiveSession: card.link.tmuxLink != nil
+           ).canResume {
+            AppServices.resumeMachineIfPaused(remote.machineName)
+            return
+        }
+        resumeCard(cardId: cardId)
+    }
+
     /// Shared factory for CardDetailView — used by both the inspector and expanded mode.
     private func makeCardDetailView(card: KanbanCodeCard) -> CardDetailView {
         CardDetailView(
@@ -519,6 +538,12 @@ struct ContentView: View {
                     resumeCard(cardId: card.id)
                 } else {
                     startCard(cardId: card.id)
+                }
+            },
+            remoteMachineState: machineState(of: card),
+            onResumeMachine: {
+                if let remote = card.link.remote {
+                    AppServices.resumeMachineIfPaused(remote.machineName)
                 }
             },
             onRename: { name in
@@ -776,12 +801,6 @@ struct ContentView: View {
                     // Covers Cmd+K, arrow nav, notification taps, url deep-links.
                     if card.link.tmuxLink != nil {
                         shouldFocusTerminal = true
-                    }
-                    // The card a person opens gets its machine back. Cards
-                    // nobody opens stay in standby: only a person takes a
-                    // machine out of it.
-                    if let remote = card.link.remote, remote.mode == .boxd {
-                        AppServices.resumeMachineIfPaused(remote.machineName)
                     }
                 }
                 selectedCardIdPersisted = store.state.selectedCardId ?? ""
@@ -2096,7 +2115,7 @@ struct ContentView: View {
                 deepSearchTrigger.toggle()
             } else if AppShortcut.resumeAssistant.isActive(in: ctx),
                       let cardId = store.state.selectedCardId {
-                resumeCard(cardId: cardId)
+                resumeCardOrMachine(cardId: cardId)
             }
         }
         .keyboardShortcut(AppShortcut.resumeAssistant.key, modifiers: AppShortcut.resumeAssistant.modifiers)

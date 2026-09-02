@@ -85,12 +85,13 @@ enum AppServices {
     private static let resumingLock = NSLock()
 
     /// Takes a machine the app holds as paused out of standby, because a
-    /// person asked for it. A machine that is not paused is left as it is,
-    /// so this costs nothing on the common path. The terminals of the
-    /// machine say what is happening while it comes back.
+    /// person asked for it from the resume bar of a card. A connected
+    /// machine, or one already coming back, is left as it is. The terminals
+    /// of the machine say what is happening while it comes back.
     @discardableResult
     static func resumeMachineIfPaused(_ machineName: String) -> Bool {
-        guard remoteRegistry?.state(of: machineName)?.isPaused == true,
+        let state = remoteRegistry?.state(of: machineName)
+        guard state?.isConnected != true, state != .connecting,
               let supervisor = boxdSupervisor else { return false }
         guard markResuming(machineName) else { return true }
         let sessions = remoteRegistry?.sessionNames(on: machineName) ?? []
@@ -98,8 +99,7 @@ enum AppServices {
             TerminalCache.shared.showNotice("Resuming machine \(machineName)…", sessions: sessions)
             let resumed = await supervisor.resume(machineName: machineName)
             if !resumed {
-                TerminalCache.shared.showNotice(
-                    "Machine \(machineName) did not come back. Click to try again.", sessions: sessions)
+                TerminalCache.shared.showNotice("Machine \(machineName) did not come back.", sessions: sessions)
             }
             clearResuming(machineName)
         }
@@ -115,13 +115,6 @@ enum AppServices {
     private static func clearResuming(_ machineName: String) {
         resumingLock.lock(); defer { resumingLock.unlock() }
         resumingMachines.remove(machineName)
-    }
-
-    /// The same, for the machine that hosts a tmux session.
-    @discardableResult
-    static func resumeMachineIfPaused(forSession sessionName: String) -> Bool {
-        guard let machine = machine(forSession: sessionName) else { return false }
-        return resumeMachineIfPaused(machine)
     }
 
     /// Runs the bundled kanban CLI on the Mac for a command proxied from a
