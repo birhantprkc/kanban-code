@@ -198,7 +198,9 @@ struct TranscriptTerminalView<Bar: View>: View {
             .defaultScrollAnchor(.bottom)
             bar()
         }
-        .background(Self.background)
+        // Kept inside the detail: a background that spreads into the safe
+        // area shows under the sidebar next to it.
+        .background(Self.background, ignoresSafeAreaEdges: [])
         .colorScheme(.dark)
     }
 }
