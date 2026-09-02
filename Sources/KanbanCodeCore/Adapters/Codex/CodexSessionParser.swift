@@ -397,7 +397,8 @@ public enum CodexSessionParser {
                 textPreview: last.textPreview == "(empty)" ? preview : last.textPreview,
                 timestamp: last.timestamp ?? timestamp,
                 contentBlocks: mergedBlocks,
-                imageCount: last.imageCount
+                imageCount: last.imageCount,
+                endLineNumber: max(last.endLineNumber, lineNumber)
             )
             return
         }

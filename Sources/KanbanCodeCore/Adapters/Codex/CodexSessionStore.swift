@@ -113,7 +113,9 @@ public final class CodexSessionStore: SessionStore, @unchecked Sendable {
         // through the end of the record at that offset.
         let url = URL(fileURLWithPath: sessionPath)
         let data = try Data(contentsOf: url)
-        let targetOffset = afterTurn.lineNumber
+        // The turn on the screen is often several records merged into one
+        // (thinking, then the text): the cut keeps through the last of them.
+        let targetOffset = max(afterTurn.lineNumber, afterTurn.endLineNumber)
         guard targetOffset >= 0, targetOffset < data.count else {
             throw SessionStoreError.fileNotFound("Invalid byte offset \(targetOffset)")
         }

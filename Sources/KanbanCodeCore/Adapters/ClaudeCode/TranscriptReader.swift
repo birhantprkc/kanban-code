@@ -505,7 +505,8 @@ public enum TranscriptReader {
                                 textPreview: pending.textPreview == "(empty)" ? textPreview : pending.textPreview,
                                 timestamp: pending.timestamp ?? timestamp,
                                 contentBlocks: pending.contentBlocks + blocks,
-                                imageCount: pending.imageCount + turn.imageCount
+                                imageCount: pending.imageCount + turn.imageCount,
+                                endLineNumber: turn.endLineNumber
                             )
                             pendingAssistant = pending
                         } else {
@@ -731,7 +732,8 @@ public enum TranscriptReader {
                     timestamp: current.timestamp ?? next.timestamp,
                     contentBlocks: current.contentBlocks + next.contentBlocks,
                     imageCount: current.imageCount + next.imageCount,
-                    modelName: current.modelName ?? next.modelName
+                    modelName: current.modelName ?? next.modelName,
+                    endLineNumber: next.endLineNumber
                 )
             }
             result.append(current)

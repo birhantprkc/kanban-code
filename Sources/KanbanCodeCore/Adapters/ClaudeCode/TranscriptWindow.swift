@@ -100,7 +100,8 @@ public enum TranscriptWindow {
                 timestamp: turn.timestamp,
                 contentBlocks: turn.contentBlocks,
                 imageCount: turn.imageCount,
-                modelName: turn.modelName
+                modelName: turn.modelName,
+                endLineNumber: turn.endLineNumber
             )
         }
     }

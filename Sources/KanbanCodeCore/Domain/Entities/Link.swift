@@ -705,6 +705,11 @@ public struct ContentBlock: Sendable, Equatable {
 public struct ConversationTurn: Sendable, Equatable {
     public let index: Int
     public let lineNumber: Int
+    /// Byte offset of the last transcript record merged into this turn. A
+    /// turn drawn as one bubble is often several records (thinking, then the
+    /// text); a checkpoint keeps the file through this record, not only
+    /// through the first.
+    public let endLineNumber: Int
     public let role: String // "user" or "assistant"
     public let textPreview: String
     public let timestamp: String?
@@ -715,9 +720,10 @@ public struct ConversationTurn: Sendable, Equatable {
     /// lines, so migration writers persist this (or a fallback marker).
     public let modelName: String?
 
-    public init(index: Int, lineNumber: Int, role: String, textPreview: String, timestamp: String? = nil, contentBlocks: [ContentBlock] = [], imageCount: Int = 0, modelName: String? = nil) {
+    public init(index: Int, lineNumber: Int, role: String, textPreview: String, timestamp: String? = nil, contentBlocks: [ContentBlock] = [], imageCount: Int = 0, modelName: String? = nil, endLineNumber: Int? = nil) {
         self.index = index
         self.lineNumber = lineNumber
+        self.endLineNumber = max(lineNumber, endLineNumber ?? lineNumber)
         self.role = role
         self.textPreview = textPreview
         self.timestamp = timestamp

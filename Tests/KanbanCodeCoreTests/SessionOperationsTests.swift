@@ -70,6 +70,33 @@ struct SessionOperationsTests {
         #expect(!content.contains("Second"))
     }
 
+    @Test("Checkpoint keeps every record of a turn stitched from several")
+    func checkpointMergedTurn() async throws {
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+
+        // The way Claude Code writes a reply: thinking on one line, the text
+        // on the next. The chat shows them as one bubble.
+        let path = (dir as NSString).appendingPathComponent("sess.jsonl")
+        try [
+            #"{"type":"user","sessionId":"s1","message":{"content":"First"},"cwd":"/test"}"#,
+            #"{"type":"assistant","sessionId":"s1","message":{"content":[{"type":"thinking","thinking":"hm"}]}}"#,
+            #"{"type":"assistant","sessionId":"s1","message":{"content":[{"type":"text","text":"Reply 1"}]}}"#,
+            #"{"type":"user","sessionId":"s1","message":{"content":"Second"},"cwd":"/test"}"#,
+        ].joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+
+        let result = try await TranscriptReader.readTail(from: path, maxTurns: 10)
+        let reply = result.turns.first { $0.role == "assistant" }
+        #expect(reply != nil)
+        #expect((reply?.endLineNumber ?? 0) > (reply?.lineNumber ?? 0))
+
+        try await store.truncateSession(sessionPath: path, afterTurn: reply!)
+
+        let content = try String(contentsOfFile: path, encoding: .utf8)
+        #expect(content.contains("Reply 1"))
+        #expect(!content.contains("Second"))
+    }
+
     @Test("Checkpoint backup preserves original")
     func checkpointBackup() async throws {
         let dir = try makeTempDir()

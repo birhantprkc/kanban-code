@@ -265,7 +265,9 @@ public final class ClaudeCodeSessionStore: SessionStore, @unchecked Sendable {
         let data = try Data(contentsOf: url)
 
         // Find the end of the line that starts at the byte offset
-        let targetOffset = afterTurn.lineNumber
+        // The turn on the screen is often several records merged into one
+        // (thinking, then the text): the cut keeps through the last of them.
+        let targetOffset = max(afterTurn.lineNumber, afterTurn.endLineNumber)
         guard targetOffset >= 0, targetOffset < data.count else {
             throw SessionStoreError.fileNotFound("Invalid byte offset \(targetOffset)")
         }

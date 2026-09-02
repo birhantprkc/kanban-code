@@ -78,6 +78,12 @@ Feature: Session Operations (Fork, Checkpoint, Rename)
       | 3    | Write truncated content back to .jsonl           |
     And the session card should refresh with updated message count
 
+  Scenario: Checkpoint keeps the whole clicked message
+    Given an assistant reply written to the transcript as several records, thinking first and the text after
+    When I restore to that reply from the chat or the history
+    Then the file keeps every record of the reply, through the last one
+    And only what came after the reply is removed
+
   Scenario: Checkpoint overwrites existing backup
     Given a .bkp file already exists for this session
     When I create a new checkpoint
