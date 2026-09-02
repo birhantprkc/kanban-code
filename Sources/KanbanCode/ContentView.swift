@@ -1655,11 +1655,14 @@ struct ContentView: View {
 
                 if tbVis.showExpandedCardInfo, let card = store.state.selectedCard {
                     ToolbarItemGroup(placement: .navigation) {
+                        // The tabs of the card live in the "..." menu: a
+                        // picker here pushed the title and the pull request
+                        // buttons into the overflow of the toolbar.
                         HStack {
                             Text("⠀⠀" + card.displayTitle)
                                 .lineLimit(1)
                                 .truncationMode(.tail)
-                                .frame(maxWidth: 200)
+                                .frame(maxWidth: 480)
 
                             if card.link.cardLabel == .session {
                                 Text(card.relativeTime)
@@ -1667,17 +1670,6 @@ struct ContentView: View {
                                     .foregroundStyle(.tertiary)
                                     .fixedSize()
                             }
-
-                            Picker("", selection: $detailTab) {
-                                Text("Terminal").tag(DetailTab.terminal)
-                                Text("History").tag(DetailTab.history)
-                                if card.link.issueLink != nil { Text("Issue").tag(DetailTab.issue) }
-                                if !card.link.prLinks.isEmpty { Text("Pull Request").tag(DetailTab.pullRequest) }
-                                if card.link.promptBody != nil && card.link.issueLink == nil { Text("Prompt").tag(DetailTab.prompt) }
-                            }
-                            .pickerStyle(.segmented)
-                            .labelsHidden()
-                            .fixedSize()
                         }
                     }
 
@@ -2388,6 +2380,20 @@ struct ContentView: View {
 
     private func expandedActionsMenu(for card: KanbanCodeCard) -> some View {
         Menu {
+            Section("Show") {
+                ForEach(DetailTab.available(for: card), id: \.self) { tab in
+                    Button {
+                        detailTab = tab
+                    } label: {
+                        if detailTab == tab {
+                            Label(tab.title, systemImage: "checkmark")
+                        } else {
+                            Text(tab.title)
+                        }
+                    }
+                }
+            }
+            Divider()
             CardActionsMenu(
                 card: card,
                 actions: CardActionsMenuActions(

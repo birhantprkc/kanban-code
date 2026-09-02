@@ -51,6 +51,7 @@ Feature: Card Lifecycle and Automation
       | promptBody only   | Prompt (markdown-rendered text)           |
     And a card with all links has Terminal + History + Issue + Pull Request tabs
     And the tab priority for default selection is: Terminal > History > Issue > PR > Prompt
+    And in the expanded layout the tabs live in the "..." menu of the toolbar, under "Show", so the card title and the pull request buttons keep their room
 
   Scenario: Backlog issue card shows Issue tab with Start button in header
     Given a card has only an issueLink (backlog GitHub issue)

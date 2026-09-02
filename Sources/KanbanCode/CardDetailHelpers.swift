@@ -444,8 +444,29 @@ struct CardActionsMenu: View {
     }
 }
 
-enum DetailTab: String {
+enum DetailTab: String, CaseIterable {
     case terminal, history, issue, pullRequest, prompt
+
+    var title: String {
+        switch self {
+        case .terminal: "Terminal"
+        case .history: "History"
+        case .issue: "Issue"
+        case .pullRequest: "Pull Request"
+        case .prompt: "Prompt"
+        }
+    }
+
+    /// The tabs a card offers: the terminal and the history always, the
+    /// others when the card has the link behind them. The prompt tab stands
+    /// aside for the issue, which carries the same text.
+    static func available(for card: KanbanCodeCard) -> [DetailTab] {
+        var tabs: [DetailTab] = [.terminal, .history]
+        if card.link.issueLink != nil { tabs.append(.issue) }
+        if !card.link.prLinks.isEmpty { tabs.append(.pullRequest) }
+        if card.link.promptBody != nil && card.link.issueLink == nil { tabs.append(.prompt) }
+        return tabs
+    }
 
     static func initialTab(for card: KanbanCodeCard) -> DetailTab {
         if card.link.tmuxLink != nil { return .terminal }

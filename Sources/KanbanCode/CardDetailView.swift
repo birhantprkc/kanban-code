@@ -1730,15 +1730,12 @@ struct CardDetailView: View {
         // Tab bar
         HStack {
             Picker("", selection: $selectedTab) {
-                Text("Terminal").tag(DetailTab.terminal)
-                Text("History").tag(DetailTab.history)
-                if card.link.issueLink != nil { Text("Issue").tag(DetailTab.issue) }
-                if !card.link.prLinks.isEmpty { Text("Pull Request").tag(DetailTab.pullRequest) }
-                if card.link.promptBody != nil && card.link.issueLink == nil { Text("Prompt").tag(DetailTab.prompt) }
+                ForEach(DetailTab.available(for: card), id: \.self) { tab in
+                    Text(tab.title).tag(tab)
+                }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
