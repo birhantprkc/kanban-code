@@ -21,7 +21,7 @@ struct RemoteAttachScriptTests {
         let waitIndex = script.range(of: "[ -e '/Users/me/.kanban-code/remote-ready/repo-card_1' ] && break")
         let attachIndex = script.range(of: "KANBAN_MACHINE=\"$m\" /usr/bin/expect -c '")
         #expect(script.contains("machine connect $env(KANBAN_MACHINE)"))
-        #expect(script.contains("send \" exec tmux -u -T hyperlinks attach-session -t repo-card_1\\r\""))
+        #expect(script.contains("send \" tmux -u -T hyperlinks attach-session -t repo-card_1 2>/dev/null; echo KANBAN_TMUX_EXIT:$?; exit\\r\""))
         #expect(script.contains("m=\"$(cat '/Users/me/.kanban-code/remote-ready/repo-card_1' 2>/dev/null)\"; [ -n \"$m\" ] || m='kanban-repo-1'"))
         #expect(waitIndex != nil)
         #expect(attachIndex != nil)
@@ -37,7 +37,7 @@ struct RemoteAttachScriptTests {
             boxd: "boxd", machine: "kanban-repo-1", session: "s", readyMarker: "/tmp/marker")
         // The pause marker is read before the connect, because a connect
         // that succeeds wakes the machine and leaves the loop for good.
-        #expect(script.contains("while [ $n -lt 30 ]; do if [ -e '/tmp/marker.paused' ]; then echo 'Machine paused.'; while [ -e '/tmp/marker.paused' ]; do sleep 1; done; n=0; fi; "))
+        #expect(script.contains("while [ $n -lt 150 ]; do if [ -e '/tmp/marker.paused' ]; then echo 'Machine paused.'; while [ -e '/tmp/marker.paused' ]; do sleep 1; done; n=0; fi; "))
         // The machine is read from the marker on every try.
         #expect(script.contains("m=\"$(cat '/tmp/marker' 2>/dev/null)\"; [ -n \"$m\" ] || m='kanban-repo-1'; KANBAN_MACHINE=\"$m\" /usr/bin/expect -c '"))
         #expect(script.contains("' && break; if [ -e '/tmp/marker.paused' ]; then continue; fi; n=$((n+1)); sleep 2; done; echo 'Session ended.'"))
@@ -67,20 +67,28 @@ struct RemoteAttachScriptTests {
     func noMarker() {
         let script = TerminalCache.remoteAttachScript(boxd: "boxd", machine: "kanban-repo-1", session: "s")
         #expect(!script.contains("remote-ready"))
-        #expect(script.hasPrefix("m='kanban-repo-1'; for i in $(seq 1 30); do KANBAN_MACHINE=\"$m\" /usr/bin/expect -c '"))
+        #expect(script.hasPrefix("m='kanban-repo-1'; for i in $(seq 1 150); do KANBAN_MACHINE=\"$m\" /usr/bin/expect -c '"))
     }
 
     @Test("expect waits for the prompt, types the attach, and hands the pty over")
     func expectProgram() {
         let program = TerminalCache.expectProgram(boxd: "/opt/boxd", session: "repo-card_1")
-        let steps = program.components(separatedBy: "; ")
-        #expect(steps[0] == "set timeout 20")
-        #expect(steps[1] == "spawn -noecho {/opt/boxd} machine connect $env(KANBAN_MACHINE)")
-        #expect(steps[2] == "trap {stty rows [stty rows] columns [stty columns] < $spawn_out(slave,name)} WINCH")
-        #expect(steps[3] == "expect -re {\\$ $} {send \" exec tmux -u -T hyperlinks attach-session -t repo-card_1\\r\"} timeout {send \" exec tmux -u -T hyperlinks attach-session -t repo-card_1\\r\"} eof {exit 1}")
-        #expect(steps[4] == "interact")
-        #expect(steps[5] == "catch wait result")
-        #expect(steps[6] == "exit [lindex $result 3]")
+        let attach = " tmux -u -T hyperlinks attach-session -t repo-card_1 2>/dev/null; echo KANBAN_TMUX_EXIT:$?; exit\\r"
+        #expect(program == [
+            "set timeout 20",
+            "spawn -noecho {/opt/boxd} machine connect $env(KANBAN_MACHINE)",
+            "trap {stty rows [stty rows] columns [stty columns] < $spawn_out(slave,name)} WINCH",
+            "expect -re {\\$ $} {send \"\(attach)\"} timeout {send \"\(attach)\"} eof {exit 1}",
+            "interact -o -re {KANBAN_TMUX_EXIT:([0-9]+)} {exit $interact_out(1,string)} eof {exit 1}",
+        ].joined(separator: "; "))
+    }
+
+    @Test("a tmux session that is not there yet is tried again for 10 minutes")
+    func attachTriesLongEnough() {
+        let script = TerminalCache.remoteAttachScript(
+            boxd: "boxd", machine: "kanban-repo-1", session: "s", readyMarker: "/tmp/marker")
+        #expect(script.contains("while [ $n -lt 150 ]; do "))
+        #expect(TerminalCache.attachTries * 2 >= 300)
     }
 
     @Test("the attach retries when connect fails and stops when it ends cleanly")

@@ -877,17 +877,24 @@ final class TerminalCache {
     /// follows resizes, and the session lives as long as the shell. (`exec
     /// --tty` does none of that and hangs up a full-screen program after a
     /// few seconds.) `connect` takes no command, so `expect` drives it: it
-    /// waits for the prompt, types `exec tmux attach-session` and hands the
-    /// pty over with `interact`. `exec` replaces the shell, so a detach ends
-    /// the connection. The tmux client runs with `-u` so it writes UTF-8
-    /// whatever the locale of the machine.
+    /// waits for the prompt, types the tmux attach and hands the pty over
+    /// with `interact`. The shell on the machine prints the exit status of
+    /// tmux behind a sentinel and exits, so a detach ends the connection and
+    /// a failed attach is retried. `connect` itself exits 0 whatever the
+    /// command did, so the sentinel is the only word on the outcome. The
+    /// tmux client runs with `-u` so it writes UTF-8 whatever the locale of
+    /// the machine.
+    ///
+    /// The attach is tried for 10 minutes: a resume creates the tmux session
+    /// a few seconds after the bridge connects, and a push of a large
+    /// transcript before it can take a while.
     static func remoteAttachScript(boxd: String, machine: String?, session: String, readyMarker: String? = nil) -> String {
         let quote = { (value: String) in "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
         let fallback = quote(machine ?? "")
         let program = expectProgram(boxd: boxd, session: session)
         let attach = "KANBAN_MACHINE=\"$m\" /usr/bin/expect -c \(quote(program))"
         guard let readyMarker else {
-            return "m=\(fallback); for i in $(seq 1 30); do \(attach) && break; sleep 2; done; echo 'Session ended.'"
+            return "m=\(fallback); for i in $(seq 1 \(attachTries)); do \(attach) && break; sleep 2; done; echo 'Session ended.'"
         }
         // `boxd machine connect` wakes a paused machine, so the pause marker
         // is read before every try, not after: a connect that succeeds takes
@@ -897,7 +904,7 @@ final class TerminalCache {
         let marker = quote(readyMarker)
         let paused = quote(readyMarker + Self.pausedMarkerSuffix)
         return "for i in $(seq 1 2400); do [ -e \(marker) ] && break; sleep 0.5; done; "
-            + "n=0; while [ $n -lt 30 ]; do "
+            + "n=0; while [ $n -lt \(attachTries) ]; do "
             + "if [ -e \(paused) ]; then echo 'Machine paused.'; while [ -e \(paused) ]; do sleep 1; done; n=0; fi; "
             + "m=\"$(cat \(marker) 2>/dev/null)\"; [ -n \"$m\" ] || m=\(fallback); "
             + "\(attach) && break; "
@@ -909,22 +916,32 @@ final class TerminalCache {
     /// the app has the machine paused.
     static let pausedMarkerSuffix = BoxdMachineSupervisor.pausedMarkerSuffix
 
+    /// How many times the remote attach is tried, 2 seconds and a connect
+    /// apart, before the terminal gives up on the session.
+    static let attachTries = 150
+
+    /// The word the shell on the machine prints when tmux exits, followed by
+    /// the exit status of tmux.
+    static let attachExitSentinel = "KANBAN_TMUX_EXIT"
+
     /// The Tcl program `expect` runs for one attach. The machine comes in
     /// through `KANBAN_MACHINE`, because `expect -c` takes no arguments. A
     /// prompt that never shows (a machine still resuming) sends the command
-    /// after the timeout anyway; the exit status of `connect` then decides
-    /// the retry. The WINCH trap copies the size of the local pty to the pty
-    /// of `connect`, which forwards it to the machine.
+    /// after the timeout anyway. The shell on the machine runs tmux, prints
+    /// the sentinel with the exit status of tmux and exits; `interact`
+    /// watches the output for the sentinel, swallows it, and ends with that
+    /// status, so a session that is not there yet (status 1) is retried and
+    /// a detach (status 0) ends the terminal. A connection that drops before
+    /// the sentinel exits 1 as well. The WINCH trap copies the size of the
+    /// local pty to the pty of `connect`, which forwards it to the machine.
     static func expectProgram(boxd: String, session: String) -> String {
-        let attach = " exec tmux -u -T hyperlinks attach-session -t \(session)\\r"
+        let attach = " tmux -u -T hyperlinks attach-session -t \(session) 2>/dev/null; echo \(attachExitSentinel):$?; exit\\r"
         return [
             "set timeout 20",
             "spawn -noecho {\(boxd)} machine connect $env(KANBAN_MACHINE)",
             "trap {stty rows [stty rows] columns [stty columns] < $spawn_out(slave,name)} WINCH",
             "expect -re {\\$ $} {send \"\(attach)\"} timeout {send \"\(attach)\"} eof {exit 1}",
-            "interact",
-            "catch wait result",
-            "exit [lindex $result 3]",
+            "interact -o -re {\(attachExitSentinel):([0-9]+)} {exit $interact_out(1,string)} eof {exit 1}",
         ].joined(separator: "; ")
     }
 

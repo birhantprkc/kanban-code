@@ -176,3 +176,12 @@ Claude Code keeps its OAuth tokens in the Keychain on macOS (`Claude Code-creden
 The supervisor keeps the copies equal. When a bridge connects, and then once a minute, it reads the login files of the machine with one `exec` and compares each with the Mac's copy. The newest copy wins: `claudeAiOauth.expiresAt` for Claude, `last_refresh` for Codex. A newer local copy is written to the machine (`put`, mode 600) together with the `oauthAccount` block of `~/.claude.json`; a newer remote copy is written to the Keychain (`security add-generic-password -U`) or to `~/.codex/auth.json`, and reaches the other machines on their next tick. Running assistants read the shared copy before they refresh, so an account switch on the Mac reaches every session, local and remote. A token rotation stays quiet. An account switch on the Mac (the `accountUuid` of `~/.claude.json` changed) and a login taken from a machine show a notice with the time.
 
 Two machines that refresh the same token in the same minute leave one of them with a rejected refresh until the next tick. A long-lived token from `claude setup-token`, set in Settings, Assistants, is exported as `CLAUDE_CODE_OAUTH_TOKEN` in every remote session and takes precedence over the synced login.
+
+## What the machines cost
+
+`scripts/boxd-spend.py` tracks the spend outside the app. `install` writes the LaunchAgent `ai.langwatch.boxd-spend`, which runs `sample` every 5 minutes; `report [--days N]` prints the result.
+
+Every sample stores one line in `~/.kanban-code/boxd-spend/samples.jsonl`: the credit balance and the accruing amount of the org from `boxd manage billing --json`, and for every machine of the org its status and the cost of the interval from the rate card (vCPU while running, memory in use while running or in standby, disk in use always). The spend boxd counts is the drop of the balance plus the rise of the accruing amount between two samples. The rate card gives the split per machine, per owner and per Kanban card (from `~/.kanban-code/links.json`).
+
+`boxd machine get` does not report the size or the memory use of a machine. The script reads `nproc`, `free` and `df` with `boxd machine exec` on the machines of this account while they run, never on a paused one (an exec wakes it), and keeps the last values for the standby hours. A machine never seen running is priced with the org default size and an assumed memory use, and the report marks it.
+

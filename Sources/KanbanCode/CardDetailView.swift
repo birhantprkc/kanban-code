@@ -78,6 +78,10 @@ struct CardDetailView: View {
 
     @State private var turns: [ConversationTurn] = []
     @State private var isLoadingHistory = false
+    /// The card whose transcript the last read finished for. Before that the
+    /// transcript skin stays on the screen, empty, so the card does not open
+    /// on the centered fallback for the frames the read takes.
+    @State private var historyReadCardId: String?
     @State private var isReloadingHistory = false
     /// The card.id of the in-flight history load. Used to stale-check results
     /// when the user switches cards mid-load — see loadHistory().
@@ -1259,7 +1263,7 @@ struct CardDetailView: View {
         action: @escaping () -> Void
     ) -> some View {
         let assistant = card.link.effectiveAssistant
-        if turns.isEmpty {
+        if turns.isEmpty, historyReadCardId == card.id {
             VStack(spacing: 12) {
                 AssistantIcon(assistant: assistant)
                     .frame(width: CGFloat(32).scaled, height: CGFloat(32).scaled)
@@ -1832,6 +1836,7 @@ struct CardDetailView: View {
         defer {
             // Only the load that owns the slot clears the flag.
             if historyLoadCardId == myCardId { isReloadingHistory = false }
+            if card.id == myCardId { historyReadCardId = myCardId }
         }
 
         guard let path = card.link.sessionLink?.sessionPath ?? card.session?.jsonlPath else { return }
