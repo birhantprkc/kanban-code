@@ -45,7 +45,8 @@ struct AppShortcutContext {
         let machinePaused = RemoteMachineOverlay.state(
             remote: selectedLink?.remote,
             machineState: selectedLink?.remote.flatMap { state.remoteMachineStates[$0.machineName] },
-            hasLiveSession: selectedLink?.tmuxLink != nil
+            hasLiveSession: selectedLink?.tmuxLink != nil,
+            isRemote: selectedLink?.isRemote == true
         ).canResume
         self.canResumeAssistant = selectedLink?.sessionLink != nil && (sessionEnded || machinePaused)
     }

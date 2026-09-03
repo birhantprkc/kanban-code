@@ -518,7 +518,8 @@ struct ContentView: View {
         if let card = store.state.cards.first(where: { $0.id == cardId }),
            let remote = card.link.remote,
            RemoteMachineOverlay.state(
-               remote: remote, machineState: machineState(of: card), hasLiveSession: card.link.tmuxLink != nil
+               remote: remote, machineState: machineState(of: card), hasLiveSession: card.link.tmuxLink != nil,
+               isRemote: card.link.isRemote
            ).canResume {
             AppServices.resumeMachineIfPaused(remote.machineName)
             return

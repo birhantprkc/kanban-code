@@ -138,6 +138,25 @@ describe("remote agent protocol", () => {
     await harness.end();
   });
 
+  test("upload staging files never cross the bridge", async () => {
+    const home = process.env.KANBAN_CODE_HOME!;
+    const staged = [
+      join(home, "transcript.jsonl.boxd-upload.tmp"),
+      join(home, "transcript.jsonl.incoming-ab12cd34"),
+      join(home, "transcript.jsonl.delta-ab12cd34"),
+    ];
+    const real = join(home, "hook-events.jsonl");
+    const harness = startAgent();
+    harness.send({ type: "watch", roots: [{ path: home }] });
+    await harness.waitFor((m) => m.type === "hello", "hello");
+    for (const path of staged) writeFileSync(path, '{"event":"half-written upload"}\n');
+    writeFileSync(real, '{"event":"real"}\n');
+    const chunk = await harness.waitFor((m) => m.type === "file", "the real file");
+    assert.equal(chunk.path, real);
+    assert.equal(harness.messages.filter((m) => m.type === "file").length, 1, "a staging file crossed");
+    await harness.end();
+  });
+
   test("a large file crosses the bridge in chunks cut at a newline", async () => {
     const events = join(process.env.KANBAN_CODE_HOME!, "hook-events.jsonl");
     const lines = Array.from({ length: 50 }, (_, i) => `{"event":"${String(i).padStart(3, "0")}"}\n`);

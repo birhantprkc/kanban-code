@@ -272,6 +272,12 @@ export class RemoteAgent {
     // Proxy requests have their own watcher, which answers them instead of
     // streaming their bytes.
     if (dirname(path) === proxyRequestsDir()) return false;
+    // Upload staging files (`boxd machine cp` writes `*.boxd-upload.tmp`,
+    // the app stages `*.incoming-<id>` and `*.delta-<id>`) are half-written
+    // copies of files the Mac already has. Mirroring one back sends
+    // megabytes for nothing and a crashed upload leaves it behind forever.
+    const base = path.slice(path.lastIndexOf("/") + 1);
+    if (base.endsWith(".tmp") || /\.(incoming|delta)-[A-Za-z0-9-]+$/.test(base)) return false;
     const globs = root.globs ?? [];
     if (globs.length === 0) return true;
     if (path === root.path) return true;

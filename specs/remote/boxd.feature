@@ -119,6 +119,7 @@ Feature: Boxd Remote Mode
     When I resume the card with "Run on boxd" unchecked
     Then the assistant resumes on the Mac from the mirrored transcript
     And the terminal shows the local session, and the machine stays paused
+    And the stopped-machine banner does not cover the local session
     And a later resume on the machine starts from the newer transcript instead of the old session left there
 
   Scenario: kanban CLI inside the machine

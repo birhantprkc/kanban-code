@@ -584,7 +584,8 @@ struct CardDetailView: View {
         RemoteMachineOverlay.state(
             remote: card.link.remote,
             machineState: remoteMachineState,
-            hasLiveSession: claudeTmuxSession != nil
+            hasLiveSession: claudeTmuxSession != nil,
+            isRemote: card.link.isRemote
         )
     }
 
@@ -1184,7 +1185,8 @@ struct CardDetailView: View {
 
     /// "Session ended", or why the boxd machine of the card was paused.
     private func sessionEndedText(assistant: CodingAssistant) -> String {
-        guard let remote = card.link.remote, remote.mode == .boxd, let reason = remote.pausedReason else {
+        guard card.link.isRemote, let remote = card.link.remote, remote.mode == .boxd,
+              let reason = remote.pausedReason else {
             return "\(assistant.displayName) session ended"
         }
         return RemoteMachineOverlay.text(for: .paused(reason), remote: remote, lastActivity: card.link.lastActivity)

@@ -29,9 +29,12 @@ enum RemoteMachineOverlay {
     static func state(
         remote: RemoteLink?,
         machineState: RemoteMachineState?,
-        hasLiveSession: Bool
+        hasLiveSession: Bool,
+        isRemote: Bool
     ) -> RemoteMachineOverlayState {
-        guard hasLiveSession, let remote, remote.mode == .boxd else { return .none }
+        // A card that owns a machine but runs its session locally (boxd was
+        // deselected on resume) gets its terminal, not the machine banner.
+        guard hasLiveSession, isRemote, let remote, remote.mode == .boxd else { return .none }
         switch machineState {
         case .paused(let reason): return .paused(reason)
         case .unreachable: return .unreachable

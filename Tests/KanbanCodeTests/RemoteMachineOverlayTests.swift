@@ -12,7 +12,7 @@ struct RemoteMachineOverlayTests {
 
     @Test("A paused machine under a live session offers a resume")
     func pausedMachine() {
-        let state = RemoteMachineOverlay.state(remote: remote, machineState: .paused(.inactivity), hasLiveSession: true)
+        let state = RemoteMachineOverlay.state(remote: remote, machineState: .paused(.inactivity), hasLiveSession: true, isRemote: true)
 
         #expect(state == .paused(.inactivity))
         #expect(state.canResume)
@@ -20,7 +20,7 @@ struct RemoteMachineOverlayTests {
 
     @Test("A resume in flight shows work, not a button")
     func resuming() {
-        let state = RemoteMachineOverlay.state(remote: remote, machineState: .connecting, hasLiveSession: true)
+        let state = RemoteMachineOverlay.state(remote: remote, machineState: .connecting, hasLiveSession: true, isRemote: true)
 
         #expect(state == .resuming)
         #expect(!state.canResume)
@@ -30,7 +30,7 @@ struct RemoteMachineOverlayTests {
 
     @Test("A machine that did not answer can be tried again")
     func unreachable() {
-        let state = RemoteMachineOverlay.state(remote: remote, machineState: .unreachable, hasLiveSession: true)
+        let state = RemoteMachineOverlay.state(remote: remote, machineState: .unreachable, hasLiveSession: true, isRemote: true)
 
         #expect(state == .unreachable)
         #expect(state.canResume)
@@ -38,11 +38,19 @@ struct RemoteMachineOverlayTests {
 
     @Test("A connected machine, a dead session or a local card show nothing")
     func nothingToShow() {
-        #expect(RemoteMachineOverlay.state(remote: remote, machineState: .connected, hasLiveSession: true) == .none)
-        #expect(RemoteMachineOverlay.state(remote: remote, machineState: .paused(.inactivity), hasLiveSession: false) == .none)
-        #expect(RemoteMachineOverlay.state(remote: nil, machineState: nil, hasLiveSession: true) == .none)
+        #expect(RemoteMachineOverlay.state(remote: remote, machineState: .connected, hasLiveSession: true, isRemote: true) == .none)
+        #expect(RemoteMachineOverlay.state(remote: remote, machineState: .paused(.inactivity), hasLiveSession: false, isRemote: true) == .none)
+        #expect(RemoteMachineOverlay.state(remote: nil, machineState: nil, hasLiveSession: true, isRemote: true) == .none)
         let mutagen = RemoteLink(mode: .mutagen, machineName: "host")
-        #expect(RemoteMachineOverlay.state(remote: mutagen, machineState: .paused(.manual), hasLiveSession: true) == .none)
+        #expect(RemoteMachineOverlay.state(remote: mutagen, machineState: .paused(.manual), hasLiveSession: true, isRemote: true) == .none)
+    }
+
+    @Test("A card that kept its machine but resumed locally gets its terminal")
+    func localSessionWithKeptMachine() {
+        var paused = remote
+        paused.pausedReason = .sessionStopped
+        #expect(RemoteMachineOverlay.state(
+            remote: paused, machineState: .paused(.sessionStopped), hasLiveSession: true, isRemote: false) == .none)
     }
 
     @Test("Before the supervisor reports, the pause stored on the link counts")
@@ -50,8 +58,8 @@ struct RemoteMachineOverlayTests {
         var paused = remote
         paused.pausedReason = .appQuit
 
-        #expect(RemoteMachineOverlay.state(remote: paused, machineState: nil, hasLiveSession: true) == .paused(.appQuit))
-        #expect(RemoteMachineOverlay.state(remote: remote, machineState: nil, hasLiveSession: true) == .none)
+        #expect(RemoteMachineOverlay.state(remote: paused, machineState: nil, hasLiveSession: true, isRemote: true) == .paused(.appQuit))
+        #expect(RemoteMachineOverlay.state(remote: remote, machineState: nil, hasLiveSession: true, isRemote: true) == .none)
     }
 
     @Test("The inactivity line says how long the machine sat idle")
