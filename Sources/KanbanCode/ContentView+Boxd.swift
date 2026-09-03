@@ -66,7 +66,7 @@ extension ContentView {
                         store.dispatch(.selectCard(cardId: cardId))
                     } label: {
                         HStack(spacing: 8) {
-                            Image(systemName: state.isConnected ? "cloud.fill" : state.isPaused ? "pause.circle" : "exclamationmark.icloud")
+                            Image(systemName: state.isConnected ? "cloud.fill" : state.isPaused ? "stop.circle" : "exclamationmark.icloud")
                                 .foregroundStyle(state.isConnected ? Color.teal : Color.secondary)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(name).font(.app(.callout))

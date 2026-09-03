@@ -436,10 +436,10 @@ struct CardBadgesRow: View {
 
         // Remote execution indicator
         if let remote = card.link.remote, remote.mode == .boxd {
-            Image(systemName: remote.pausedReason == nil ? "cloud.fill" : "pause.circle")
+            Image(systemName: remote.pausedReason == nil ? "cloud.fill" : "stop.circle")
                 .font(.app(.caption2))
                 .foregroundStyle(remote.pausedReason == nil ? Color.teal : Color.secondary)
-                .help(remote.pausedReason.map { "Machine \(remote.machineName): paused (\($0.label))" } ?? "Machine \(remote.machineName)")
+                .help(remote.pausedReason.map { "Machine \(remote.machineName): stopped (\($0.label))" } ?? "Machine \(remote.machineName)")
         } else if card.link.isRemote {
             Image(systemName: "cloud")
                 .font(.app(.caption2))
