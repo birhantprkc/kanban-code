@@ -413,15 +413,19 @@ struct BoxdReducerTests {
 
     // MARK: - pauseRemoteMachine(cardId:)
 
-    @Test("pauseRemoteMachine turns a card id into a machine effect")
+    @Test("A manual park stops the machine, a transient reason pauses it")
     func pauseRemoteMachineByCard() {
         var state = stateWith([remoteCard(id: "card_1", sessionName: "repo-card_1")])
 
-        let effects = Reducer.reduce(state: &state, action: .pauseRemoteMachine(cardId: "card_1", reason: .manual))
+        let manual = Reducer.reduce(state: &state, action: .pauseRemoteMachine(cardId: "card_1", reason: .manual))
+        #expect(manual.stoppedMachines == ["kanban-repo-1"])
+        #expect(manual.pausedMachines.isEmpty)
 
-        #expect(effects.pausedMachines.count == 1)
-        #expect(effects.pausedMachines[0].machine == "kanban-repo-1")
-        #expect(effects.pausedMachines[0].reason == .manual)
+        let transient = Reducer.reduce(state: &state, action: .pauseRemoteMachine(cardId: "card_1", reason: .sessionStopped))
+        #expect(transient.pausedMachines.count == 1)
+        #expect(transient.pausedMachines[0].machine == "kanban-repo-1")
+        #expect(transient.pausedMachines[0].reason == .sessionStopped)
+        #expect(transient.stoppedMachines.isEmpty)
     }
 
     // MARK: - tmuxLivenessScanned

@@ -121,6 +121,18 @@ describe("remoteMachineForSession", () => {
   test("says nothing when there is no links file", () => {
     assert.equal(remoteMachineForSession("kc-remote"), undefined);
   });
+
+  test("a card that kept its machine but runs locally routes locally", () => {
+    seedLinks([
+      link({
+        id: "card-kept",
+        tmuxLink: { sessionName: "kc-kept" },
+        isRemote: false,
+        remote: { mode: "boxd", machineName: "vm-1" },
+      }),
+    ]);
+    assert.equal(remoteMachineForSession("kc-kept"), undefined);
+  });
 });
 
 describe("remoteTmuxSessionNames", () => {

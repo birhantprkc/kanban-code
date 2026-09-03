@@ -141,7 +141,7 @@ struct CardActionsMenu: View {
                 Button {
                     AppServices.pauseMachine?(card.id)
                 } label: {
-                    Label("Pause Machine \(remote.machineName)", systemImage: "pause.circle")
+                    Label("Stop Machine \(remote.machineName)", systemImage: "stop.circle")
                 }
             }
             if card.link.tmuxLink == nil || remote.pausedReason != nil {

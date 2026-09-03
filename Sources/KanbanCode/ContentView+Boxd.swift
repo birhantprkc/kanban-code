@@ -51,7 +51,7 @@ extension ContentView {
     var boxdStatusPopover: some View {
         let states = store.state.remoteMachineStates.sorted { $0.key < $1.key }
         VStack(alignment: .leading, spacing: 10) {
-            Text("Boxd machines of the cards on this board. Machines bill while they run and are paused when a session stops, after inactivity, and when the app quits.")
+            Text("Boxd machines of the cards on this board. Machines bill while they run and are stopped when a session stops, after inactivity, and when the app quits.")
                 .font(.app(.callout))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -84,7 +84,7 @@ extension ContentView {
                     .help(cardIds.isEmpty ? "No card uses this machine" : "Open the card of this machine")
                     Spacer()
                     if state.isConnected, let cardId = cardIds.first {
-                        Button("Pause") {
+                        Button("Stop") {
                             store.dispatch(.pauseRemoteMachine(cardId: cardId, reason: .manual))
                         }
                         .controlSize(.small)

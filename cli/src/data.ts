@@ -82,7 +82,9 @@ export function remoteMachineForSession(sessionName: string): string | undefined
     return undefined;
   }
   for (const link of links) {
-    if (link.remote?.mode !== "boxd") continue;
+    // A card can own a machine while its session runs on the Mac (boxd was
+    // deselected on resume): only isRemote says where the tmux really is.
+    if (link.remote?.mode !== "boxd" || !link.isRemote) continue;
     if (!link.remote.machineName) continue;
     if (
       link.tmuxLink?.sessionName === sessionName ||
@@ -106,7 +108,7 @@ export function remoteTmuxSessionNames(): string[] {
   }
   const names: string[] = [];
   for (const link of links) {
-    if (link.remote?.mode !== "boxd") continue;
+    if (link.remote?.mode !== "boxd" || !link.isRemote) continue;
     if (link.tmuxLink?.sessionName) names.push(link.tmuxLink.sessionName);
     for (const extra of link.tmuxLink?.extraSessions ?? []) names.push(extra);
   }

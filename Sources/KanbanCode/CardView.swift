@@ -436,10 +436,20 @@ struct CardBadgesRow: View {
 
         // Remote execution indicator
         if let remote = card.link.remote, remote.mode == .boxd {
-            Image(systemName: remote.pausedReason == nil ? "cloud.fill" : "stop.circle")
+            // The filled cloud means the session runs on the machine right
+            // now. A card that owns a machine but runs locally shows it as
+            // parked, whatever the machine happens to be doing.
+            let runningThere = card.link.isRemote && remote.pausedReason == nil
+            Image(systemName: runningThere ? "cloud.fill" : "stop.circle")
                 .font(.app(.caption2))
-                .foregroundStyle(remote.pausedReason == nil ? Color.teal : Color.secondary)
-                .help(remote.pausedReason.map { "Machine \(remote.machineName): stopped (\($0.label))" } ?? "Machine \(remote.machineName)")
+                .foregroundStyle(runningThere ? Color.teal : Color.secondary)
+                .help(
+                    runningThere
+                        ? "Machine \(remote.machineName)"
+                        : card.link.isRemote
+                            ? "Machine \(remote.machineName): stopped (\(remote.pausedReason?.label ?? ""))"
+                            : "Machine \(remote.machineName) is kept. The session runs on this Mac."
+                )
         } else if card.link.isRemote {
             Image(systemName: "cloud")
                 .font(.app(.caption2))

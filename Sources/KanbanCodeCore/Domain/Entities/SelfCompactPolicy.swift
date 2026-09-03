@@ -181,6 +181,17 @@ public enum SelfCompactPolicy {
         return currentContextTokens >= rule.thresholdTokens
     }
 
+    /// The statusline repaints within seconds while the session does
+    /// anything, so a context file that sat still while the transcript moved
+    /// on holds a number from before the latest turn — right after a
+    /// /compact most of all. A threshold acted on from such a reading steers
+    /// a session that already compacted, so the monitor skips the poll and
+    /// reads again once the statusline caught up.
+    public static func readingIsStale(contextModifiedAt: Date?, transcriptModifiedAt: Date?) -> Bool {
+        guard let contextModifiedAt, let transcriptModifiedAt else { return false }
+        return transcriptModifiedAt.timeIntervalSince(contextModifiedAt) > 120
+    }
+
     /// Whether one of `messages` is waiting unsent in the composer of `pane`.
     /// The composer wraps the text inside a box, so both sides are compared
     /// without whitespace and box characters, and only by the start of the

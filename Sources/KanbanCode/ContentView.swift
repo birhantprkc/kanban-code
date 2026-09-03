@@ -3224,7 +3224,7 @@ struct ContentView: View {
         let config = settings.selfCompact
         let interval = max(10, config.pollIntervalSeconds)
 
-        let candidates = store.state.cards.compactMap { card -> (cardId: String, sessionId: String, sessionName: String, rules: [SelfCompactRule])? in
+        let candidates = store.state.cards.compactMap { card -> (cardId: String, sessionId: String, sessionName: String, sessionPath: String?, rules: [SelfCompactRule])? in
             let link = card.link
             guard !link.manuallyArchived,
                   link.effectiveAssistant.supportsContextThresholdSelfCompact,
@@ -3236,7 +3236,7 @@ struct ContentView: View {
                 cardThresholdTokens: link.selfCompactContextThresholdTokens,
                 globalSettings: config
             )
-            return (card.id, sessionId, sessionName, rules)
+            return (card.id, sessionId, sessionName, link.sessionLink?.sessionPath, rules)
         }
 
         var liveSessionIds = Set<String>()
@@ -3247,6 +3247,11 @@ struct ContentView: View {
             let previousSignature = selfCompactPolicySignatures[candidate.sessionId]
 
             guard let usage = ContextUsageReader.read(sessionId: candidate.sessionId) else { continue }
+            if Self.contextReadingIsStale(sessionId: candidate.sessionId, transcriptPath: candidate.sessionPath) {
+                // Nothing is marked as seen: the next poll re-reads once the
+                // statusline caught up with the transcript.
+                continue
+            }
             let usedTokens = usage.currentContextTokens
 
             if let previousSignature, previousSignature != signature {
@@ -3358,6 +3363,22 @@ struct ContentView: View {
                 abortIf: Self.selfCompactAbortCheck(rule, sessionId: sessionId)
             )
         }
+    }
+
+    /// Compares the context file of a session with its transcript: a context
+    /// file that stood still while the transcript moved holds a pre-compact
+    /// number and must not drive a steer.
+    nonisolated static func contextReadingIsStale(sessionId: String, transcriptPath: String?) -> Bool {
+        guard let transcriptPath else { return false }
+        let contextPath = (NSHomeDirectory() as NSString)
+            .appendingPathComponent(".kanban-code/context/\(sessionId).json")
+        let modified = { (path: String) -> Date? in
+            (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date
+        }
+        return SelfCompactPolicy.readingIsStale(
+            contextModifiedAt: modified(contextPath),
+            transcriptModifiedAt: modified(transcriptPath)
+        )
     }
 
     /// A fresh context read for the moment of the send. The read that picked the

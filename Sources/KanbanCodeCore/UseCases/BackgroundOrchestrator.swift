@@ -481,6 +481,22 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
         guard let usage = ContextUsageReader.read(sessionId: sessionId) else {
             return true
         }
+        // A context file older than the transcript can hold a pre-compact
+        // count. Dropping is the safe direction: the monitor queues the
+        // warning again if the session really is still over the threshold.
+        if let transcriptPath = link.sessionLink?.sessionPath {
+            let modified = { (path: String) -> Date? in
+                (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date
+            }
+            let contextPath = (NSHomeDirectory() as NSString)
+                .appendingPathComponent(".kanban-code/context/\(sessionId).json")
+            if SelfCompactPolicy.readingIsStale(
+                contextModifiedAt: modified(contextPath),
+                transcriptModifiedAt: modified(transcriptPath)
+            ) {
+                return true
+            }
+        }
         return usage.currentContextTokens < threshold
     }
 

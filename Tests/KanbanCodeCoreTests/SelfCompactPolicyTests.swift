@@ -34,6 +34,22 @@ struct SelfCompactPolicyTests {
         #expect(actions.dropLast(2).allSatisfy { $0 == .queuePrompt })
     }
 
+    @Test("A context reading older than the moving transcript is stale")
+    func staleReading() {
+        let now = Date()
+        // The transcript moved 3 minutes past the context file: stale.
+        #expect(SelfCompactPolicy.readingIsStale(
+            contextModifiedAt: now.addingTimeInterval(-180), transcriptModifiedAt: now))
+        // Statusline repainted moments after the transcript: fresh.
+        #expect(!SelfCompactPolicy.readingIsStale(
+            contextModifiedAt: now, transcriptModifiedAt: now.addingTimeInterval(-30)))
+        // Both idle for an hour: fresh, the reading still describes the session.
+        #expect(!SelfCompactPolicy.readingIsStale(
+            contextModifiedAt: now.addingTimeInterval(-3600), transcriptModifiedAt: now.addingTimeInterval(-3590)))
+        // Unknown dates never block a warning.
+        #expect(!SelfCompactPolicy.readingIsStale(contextModifiedAt: nil, transcriptModifiedAt: now))
+    }
+
     @Test("A rule is dropped when the context is under its threshold again")
     func shouldSendChecksTheFreshContext() {
         let rule = SelfCompactPolicy.cardRules(thresholdTokens: 250_000)[1]

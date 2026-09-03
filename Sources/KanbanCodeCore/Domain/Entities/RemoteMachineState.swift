@@ -34,9 +34,10 @@ public enum RemoteMachineState: Sendable, Equatable {
         switch self {
         case .connecting: "Connecting"
         case .connected: "Connected"
-        // A stopped machine is off, not in standby: it says so on its own.
+        // A parked machine is stopped, or on its way there: the brief
+        // standby before the sweep is not worth a separate word in a badge.
         case .paused(.stopped): "Stopped"
-        case .paused(let reason): "Paused (\(reason.label))"
+        case .paused(let reason): "Stopped (\(reason.label))"
         case .unreachable: "Unreachable"
         case .destroyed: "Destroyed"
         }

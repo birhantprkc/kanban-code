@@ -2398,6 +2398,12 @@ public enum Reducer {
 
         case .pauseRemoteMachine(let cardId, let reason):
             guard let remote = state.links[cardId]?.remote, remote.mode == .boxd else { return [] }
+            // A person asking for the machine to be parked means stop (disk
+            // only); the transient reasons keep the quick standby pause and
+            // the idle sweep turns them into a stop later.
+            if reason == .manual {
+                return [.stopRemoteMachine(machineName: remote.machineName)]
+            }
             return [.pauseRemoteMachine(machineName: remote.machineName, reason: reason)]
 
         case .destroyRemoteMachine(let cardId):
