@@ -33,11 +33,11 @@ struct SelectableMarkdownTextTests {
     }
 
     /// The view is configured before SwiftUI has given it a frame, so its first
-    /// `configure` runs at width zero. Table columns are sized against the
-    /// available width, so rendering at that point collapses every column to a
-    /// single character and draws the message over its neighbours.
-    @Test("renders at the proposed width even before it has a frame")
-    func rendersAtProposedWidthWithoutAFrame() {
+    /// `configure` runs at width zero. Sizing probes measure off screen and
+    /// leave the view alone — a probe width is usually not the width the row
+    /// ends up with — so the columns take their shape when the frame lands.
+    @Test("measures at the proposed width and renders when the frame lands")
+    func rendersWhenTheFrameLands() {
         let view = SelectableMarkdownText.WrappingTextView.make()
         view.configure(
             content: .markdown(Self.tableMarkdown), appearance: Self.appearance, highlight: nil)
@@ -47,6 +47,7 @@ struct SelectableMarkdownTextTests {
         #expect(size.width > 200)
         #expect(size.height > 40)
 
+        view.setFrameSize(NSSize(width: 690, height: size.height))
         let origins = Self.columnOrigins(view)
         #expect(origins.count == 3)
         if origins.count == 3 {
@@ -54,6 +55,22 @@ struct SelectableMarkdownTextTests {
             #expect(origins[1] - origins[0] > 40)
             #expect(origins[2] - origins[1] > 40)
         }
+    }
+
+    /// Stack layout probes a row at many candidate widths per pass, and the
+    /// probes multiply through nested stacks. A probe that re-lays the live
+    /// text view out each time turns a long feed's layout pass into minutes of
+    /// blocked main thread, so measuring must leave the view alone.
+    @Test("a sizing probe does not render the live view")
+    func sizingProbeLeavesTheViewAlone() {
+        let view = SelectableMarkdownText.WrappingTextView.make()
+        view.configure(
+            content: .markdown(Self.tableMarkdown), appearance: Self.appearance, highlight: nil)
+
+        for width in [300, 500, 690, 500, 300] {
+            _ = view.fittingSize(forWidth: CGFloat(width))
+        }
+        #expect(view.textStorage?.length == 0)
     }
 
     /// System notices sit inside a centring `HStack`. A row that reports the
@@ -93,7 +110,7 @@ struct SelectableMarkdownTextTests {
             """
         let view = SelectableMarkdownText.WrappingTextView.make()
         view.configure(content: .markdown(wideTable), appearance: Self.appearance, highlight: nil)
-        _ = view.fittingSize(forWidth: 400)
+        view.setFrameSize(NSSize(width: 400, height: 400))
         let narrow = Self.columnOrigins(view)
 
         view.setFrameSize(NSSize(width: 900, height: 400))

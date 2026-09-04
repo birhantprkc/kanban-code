@@ -93,6 +93,19 @@ struct SelectableMarkdownText: NSViewRepresentable {
         private var lineLimit: Int?
         private var renderedWidth: CGFloat = 0
 
+        /// Per-width memos for this view's own text. Stack layout negotiates a
+        /// row's width by probing it at many candidate widths, and the probes
+        /// multiply through nested stacks: answering each one through the
+        /// global caches means hashing the whole message per call, which a
+        /// long feed turns into a multi-minute layout pass. A view holds one
+        /// message, so keying by width alone makes a repeat probe a plain
+        /// dictionary hit.
+        private var attributedByWidth: [CGFloat: NSAttributedString] = [:]
+        private var sizeByWidth: [CGFloat: CGSize] = [:]
+        /// A live width drag can visit many widths; past this the older
+        /// entries are worthless, so the memo starts over.
+        private static let widthMemoLimit = 12
+
         func configure(
             content: ChatTextContent,
             appearance: ChatTextAppearance,
@@ -112,6 +125,8 @@ struct SelectableMarkdownText: NSViewRepresentable {
             if changed {
                 self.renderedWidth = 0
                 self.reportedOverflow = nil
+                self.attributedByWidth.removeAll(keepingCapacity: true)
+                self.sizeByWidth.removeAll(keepingCapacity: true)
             }
             self.textContainer?.maximumNumberOfLines = lineLimit ?? 0
             self.textContainer?.lineBreakMode = lineLimit == nil ? .byWordWrapping : .byTruncatingTail
@@ -145,29 +160,47 @@ struct SelectableMarkdownText: NSViewRepresentable {
             NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
         }
 
+        /// A pure measurement: it must never touch the live text view. This is
+        /// the answer to a sizing probe, and stack layout probes a row many
+        /// times per pass at widths it will not use — rendering here re-lays
+        /// the text out per probe and turns one pass into minutes. The view
+        /// itself is rendered from `setFrameSize`, at the width that won.
         func fittingSize(forWidth width: CGFloat) -> CGSize {
-            self.render(width: width)
+            let width = width.rounded()
+            if let cached = self.sizeByWidth[width] { return cached }
             let attributed = self.attributedText(width: width)
             let size = ChatTextMeasurement.size(
                 of: attributed, width: width, lineLimit: self.lineLimit)
-            guard self.content.shrinksToFit else {
-                return CGSize(width: width, height: size.height)
-            }
             // Report the text's own width, not the whole proposal. A short row
             // that claims the full width cannot be centred by its container,
             // which is how system notices are laid out, and it stretches a user
             // bubble across the whole column.
-            return CGSize(width: min(width, size.width), height: size.height)
+            let fitting = self.content.shrinksToFit
+                ? CGSize(width: min(width, size.width), height: size.height)
+                : CGSize(width: width, height: size.height)
+            if self.sizeByWidth.count >= Self.widthMemoLimit {
+                self.sizeByWidth.removeAll(keepingCapacity: true)
+            }
+            self.sizeByWidth[width] = fitting
+            return fitting
         }
 
         private func attributedText(width: CGFloat) -> NSAttributedString {
-            ChatAttributedText.make(
+            let width = width.rounded()
+            if let cached = self.attributedByWidth[width] { return cached }
+            let built = ChatAttributedText.make(
                 content: self.content, appearance: self.textAppearance,
                 highlight: self.highlight, links: self.links, width: width
             )
+            if self.attributedByWidth.count >= Self.widthMemoLimit {
+                self.attributedByWidth.removeAll(keepingCapacity: true)
+            }
+            self.attributedByWidth[width] = built
+            return built
         }
 
         private func render(width: CGFloat) {
+            let width = width.rounded()
             guard width > 1, abs(width - self.renderedWidth) > 0.5 else { return }
             self.renderedWidth = width
             self.textContainer?.size = CGSize(
