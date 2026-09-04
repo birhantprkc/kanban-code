@@ -364,4 +364,23 @@ struct BoxdLaunchPlannerTests {
         // The heredoc terminator has to sit alone at line start.
         #expect(script.contains("\nKANBAN_WATCHDOG\n"))
     }
+
+    @Test("Both watchdog scripts parse under sh")
+    func watchdogScriptsParse() throws {
+        let dir = (NSTemporaryDirectory() as NSString).appendingPathComponent("kanban-watchdog-gen")
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let files = [
+            (dir + "/install.sh", BoxdLaunchPlanner.watchdogStartScript(remoteHome: "/home/boxd", idleSeconds: 1800)),
+            (dir + "/check.sh", BoxdLaunchPlanner.watchdogScript(remoteHome: "/home/boxd", idleSeconds: 1800)),
+        ]
+        for (path, script) in files {
+            try script.write(toFile: path, atomically: true, encoding: .utf8)
+            let sh = Process()
+            sh.executableURL = URL(fileURLWithPath: "/bin/sh")
+            sh.arguments = ["-n", path]
+            try sh.run()
+            sh.waitUntilExit()
+            #expect(sh.terminationStatus == 0, "sh -n failed for \(path)")
+        }
+    }
 }
