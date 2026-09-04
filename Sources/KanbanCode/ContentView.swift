@@ -1589,7 +1589,7 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView(columnVisibility: $sidebarVisibility) {
             sidebarContent
-                .navigationSplitViewColumnWidth(min: 280, ideal: 320, max: 420)
+                .navigationSplitViewColumnWidth(min: 280, ideal: 320, max: 720)
         } detail: {
         boardWithHandlers
             .toolbar {
