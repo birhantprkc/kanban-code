@@ -366,10 +366,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         stopMachinesThenTerminate(remoteSessions: remoteSessions, supervisor: supervisor)
     }
 
-    /// Kills the sessions on the machines and puts the machines in standby,
-    /// with a panel that says so, then lets the app terminate. The pause is
-    /// bounded: a machine that does not answer in time is left to its
-    /// auto-suspend timeout, the quit never hangs on it.
+    /// Kills the sessions on the machines and stops the machines (disk-only
+    /// billing, immune to wake-on-traffic), with a panel that says so, then
+    /// lets the app terminate. The stop is bounded: a machine that does not
+    /// answer in time is left to its auto-suspend timeout, the quit never
+    /// hangs on it.
     @MainActor
     private func stopMachinesThenTerminate(
         remoteSessions: [(session: TmuxSession, machine: String)],
@@ -384,7 +385,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                 }
             }
             CoordinationStore.clearTmuxSessionsSnapshot(Set(remoteSessions.map(\.session.name)))
-            await supervisor.pauseAll(reason: .appQuit, deadline: .seconds(10))
+            await supervisor.stopAll(reason: .appQuit, deadline: .seconds(10))
             self?.dismissPausingMachinesPanel()
             self?.replyToTermination(true)
         }

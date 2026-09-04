@@ -1570,8 +1570,12 @@ struct ContentView: View {
                 // timer every few minutes and each pass spawns gh subprocesses.
                 // The boxd machines keep working: their sessions run there,
                 // not here. The bridges drop with the network and come back
-                // through the reconnect path after wake.
+                // through the reconnect path after wake. Parked machines are
+                // the exception: standby wakes on any inbound traffic and no
+                // sweep runs while the Mac sleeps, so they are halted now.
                 store.isSystemSleeping = true
+                let supervisor = boxdSupervisor
+                Task { await supervisor.stopParked() }
             }
             .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification).receive(on: RunLoop.main)) { _ in
                 store.isSystemSleeping = false

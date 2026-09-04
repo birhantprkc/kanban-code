@@ -342,12 +342,14 @@ Feature: Boxd Remote Mode
     Given sessions on machines
     When I quit with "Kill managed sessions on quit" checked
     Then the sessions on the machines are killed
-    And their machines go to standby before the process ends
+    And their machines are stopped before the process ends, not left in standby
 
-  Scenario: Sleep leaves the machines working
+  Scenario: Sleep leaves the working machines working and halts the parked ones
     When the Mac goes to sleep
-    Then no machine is paused and the sessions keep working
+    Then no machine with a live session is paused and those sessions keep working
     And the bridges reconnect after wake
+    And a parked machine still in standby is stopped, because standby wakes on
+      any inbound traffic and no sweep runs while the Mac sleeps
     And a card on a machine does not keep the Mac awake through Amphetamine
 
   Scenario: The card shows what the launch is doing

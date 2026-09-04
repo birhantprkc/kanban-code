@@ -29,7 +29,7 @@ struct PausingMachinesView: View {
                 .controlSize(.large)
             Text("Stopping boxd machines…")
                 .font(.app(.headline))
-            Text("The sessions were killed; the machines go to standby.")
+            Text("The sessions were killed; the machines are stopped, disk only.")
                 .font(.app(.caption))
                 .foregroundStyle(.secondary)
         }
@@ -78,7 +78,7 @@ struct QuitConfirmationView: View {
                     .font(.app(.subheadline))
                     .foregroundStyle(.secondary)
                 if sessions.contains(where: { $0.machineName != nil }) {
-                    Text("Sessions on a machine keep running unless killed; killing them puts their machine in standby.")
+                    Text("Sessions on a machine keep running unless killed; killing them stops their machine.")
                         .font(.app(.caption))
                         .foregroundStyle(.tertiary)
                 }

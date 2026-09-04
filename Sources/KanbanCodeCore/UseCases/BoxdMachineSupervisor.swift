@@ -231,6 +231,9 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
                         remoteHome: remote.remoteHome ?? Self.defaultRemoteHome,
                         pausedReason: reason
                     )
+                    // A machine already off disk-only billing must not be
+                    // stopped again by the sweep or the sleep hook.
+                    machines[remote.machineName]?.machineHalted = machine.status == .stopped
                     setPausedMarkers(machineName: remote.machineName, paused: true)
                     await report(remote.machineName, state: .paused(reason))
                 }
@@ -752,23 +755,58 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     /// whichever comes first. A `boxd machine pause` that hangs keeps
     /// running on its own; the caller (the quit path) must not wait for it.
     public func pauseAll(reason: RemotePausedReason, deadline: Duration = .seconds(8)) async {
+        await parkAll(reason: reason, deadline: deadline, halt: false)
+    }
+
+    /// Stops every running machine, in parallel, within `deadline`. For the
+    /// quit path, which kills the sessions first: nothing warm is left to
+    /// keep, and a stopped machine cannot be woken by stray traffic to its
+    /// public URL the way a standby machine can.
+    public func stopAll(reason: RemotePausedReason, deadline: Duration = .seconds(8)) async {
+        await parkAll(reason: reason, deadline: deadline, halt: true)
+    }
+
+    private func parkAll(reason: RemotePausedReason, deadline: Duration, halt: Bool) async {
         let running = machines.filter { $0.value.bridge != nil }.map(\.key)
         guard !running.isEmpty else { return }
-        let pauses = running.map { name in
-            Task { await self.pause(machineName: name, reason: reason) }
+        let parks = running.map { name in
+            Task {
+                if halt {
+                    await self.stop(machineName: name, reason: reason)
+                } else {
+                    await self.pause(machineName: name, reason: reason)
+                }
+            }
         }
         let gate = FirstToFinish()
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             Task {
-                for pause in pauses { await pause.value }
+                for park in parks { await park.value }
                 if gate.claim() { continuation.resume() }
             }
             Task {
                 try? await Task.sleep(for: deadline)
                 if gate.claim() {
-                    KanbanCodeLog.warn(Self.subsystem, "pauseAll: deadline passed with machines still pausing")
+                    KanbanCodeLog.warn(Self.subsystem, "parkAll: deadline passed with machines still parking")
                     continuation.resume()
                 }
+            }
+        }
+    }
+
+    /// Halts machines that are parked but still in standby. The Mac calls it
+    /// when it goes to sleep: a standby machine wakes on any inbound traffic
+    /// to its public URL, and with the Mac asleep no sweep is around to stop
+    /// it again, so one stray packet can leave it billing all night.
+    /// Machines with a live bridge keep working through the night untouched.
+    public func stopParked() async {
+        let parked = machines.filter { $0.value.pausedReason != nil && !$0.value.machineHalted }
+        guard !parked.isEmpty else { return }
+        KanbanCodeLog.info(Self.subsystem, "halting parked machines before sleep: \(parked.keys.sorted().joined(separator: ", "))")
+        await withTaskGroup(of: Void.self) { group in
+            for (name, runtime) in parked {
+                let reason = runtime.pausedReason ?? .stopped
+                group.addTask { await self.stop(machineName: name, reason: reason) }
             }
         }
     }

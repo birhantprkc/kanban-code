@@ -104,6 +104,22 @@ struct BoxdMachineSupervisorTests {
             pausedReason: nil, machineHalted: false, idleFor: hour + 1, timeout: hour))
     }
 
+    @Test("Mac sleep halts standby machines and leaves stopped ones alone")
+    func stopParkedHaltsStandbyOnly() async {
+        let boxd = FakeBoxdPort()
+        boxd.setMachine(BoxdMachine(name: "kanban-repo-standby", status: .standby))
+        boxd.setMachine(BoxdMachine(name: "kanban-repo-halted", status: .stopped))
+        let supervisor = makeSupervisor(boxd: boxd)
+        await supervisor.restore(links: [
+            link(id: "card_1", machine: "kanban-repo-standby", session: "repo-card_1"),
+            link(id: "card_2", machine: "kanban-repo-halted", session: "repo-card_2"),
+        ])
+
+        await supervisor.stopParked()
+
+        #expect(boxd.callNames("stop") == ["kanban-repo-standby"])
+    }
+
     @Test("Paused machines boxd reports as running are reconnected, in name order")
     func machinesToReconnect() {
         let listed = [
