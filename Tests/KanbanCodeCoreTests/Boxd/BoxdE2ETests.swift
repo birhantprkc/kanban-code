@@ -153,14 +153,14 @@ struct BoxdE2ETests {
             #expect(proxied.stdout.contains("proxied-ok card=\(Self.cardId)"), "stdout: \(proxied.stdout) stderr: \(proxied.stderr)")
             #expect(collected.proxyRequests.first?.request.argv.contains("list") == true)
 
-            // 5. Pause keeps the tmux session; resume attaches to it.
-            await supervisor.pause(machineName: machineName, reason: .sessionStopped)
-            let pausedMachine = try await boxd.getMachine(name: machineName)
-            #expect(pausedMachine.status == .standby, "status after pause: \(pausedMachine.status)")
+            // 5. Stop parks the machine on disk; resume brings it back cold.
+            await supervisor.stop(machineName: machineName, reason: .sessionStopped)
+            let stoppedMachine = try await boxd.getMachine(name: machineName)
+            #expect(stoppedMachine.status == .stopped, "status after stop: \(stoppedMachine.status)")
             #expect(!(await supervisor.isConnected(machineName)))
             #expect(registry.state(of: machineName) == .paused(.sessionStopped))
             let keptNames = try await tmux.listSessions().map(\.name)
-            #expect(keptNames.contains(sessionName), "paused machine keeps its known sessions in the list")
+            #expect(keptNames.contains(sessionName), "stopped machine keeps its known sessions in the list")
             await #expect(throws: RemoteMachineUnavailable.self) {
                 try await tmux.capturePane(sessionName: sessionName)
             }
@@ -176,9 +176,9 @@ struct BoxdE2ETests {
                 log: { line in collected.log(line) }
             )
             #expect(again.machineName == machineName)
-            #expect(await supervisor.hasSession(machineName: machineName, sessionName: sessionName))
-            let pane = try await tmux.capturePane(sessionName: sessionName)
-            #expect(!pane.isEmpty)
+            // The stop was cold: the machine is back, the session is not,
+            // and the launch flow would start it again from the transcript.
+            #expect(!(await supervisor.hasSession(machineName: machineName, sessionName: sessionName)))
 
             let states = collected.states.map(\.1)
             #expect(states.contains(.connected))

@@ -106,7 +106,7 @@ final class AppComposition {
             boardStore?.dispatch(action)
         }
         AppServices.pauseMachine = { [weak boardStore] cardId in
-            boardStore?.dispatch(.pauseRemoteMachine(cardId: cardId, reason: .manual))
+            boardStore?.dispatch(.stopRemoteMachine(cardId: cardId, reason: .manual))
         }
         AppServices.destroyMachine = { [weak boardStore] cardId in
             boardStore?.dispatch(.showDialog(.confirmDestroyMachine(cardId: cardId)))

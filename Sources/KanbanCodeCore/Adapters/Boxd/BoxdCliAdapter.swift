@@ -102,7 +102,6 @@ public protocol BoxdPort: Sendable {
     func createMachine(name: String, snapshot: String?, autoSuspendSeconds: Int?) async throws -> BoxdMachine
     func getMachine(name: String) async throws -> BoxdMachine
     func listMachines() async throws -> [BoxdMachine]
-    func pause(name: String) async throws
     func resume(name: String) async throws
     func wake(name: String) async throws
     func start(name: String) async throws
@@ -156,10 +155,6 @@ public final class BoxdCliAdapter: BoxdPort, @unchecked Sendable {
     public func listMachines() async throws -> [BoxdMachine] {
         let output = try await runJSON(["machine", "list", "--json"], timeout: 60)
         return try Self.decodeMachines(output)
-    }
-
-    public func pause(name: String) async throws {
-        _ = try await runJSON(["machine", "pause", name, "--json"], timeout: 120)
     }
 
     public func resume(name: String) async throws {

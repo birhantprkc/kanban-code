@@ -313,9 +313,9 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
                 worktreeName: worktreeName, existingWorktree: existingWorktree, runInit: runInit, log: log)
         } catch {
             // A card with no session must not keep a running machine. The
-            // machine is kept in standby, so a retry resumes it.
-            log("Preparation failed, pausing \(machineName)")
-            await pause(machineName: machineName, reason: .sessionStopped)
+            // machine keeps its disk, so a retry starts it again.
+            log("Preparation failed, stopping \(machineName)")
+            await stop(machineName: machineName, reason: .sessionStopped)
             throw error
         }
     }
@@ -665,35 +665,6 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
 
     // MARK: - RemoteMachineControl
 
-    public func pause(machineName: String, reason: RemotePausedReason) async {
-        // Before the connection drops, so the attach loop of the terminal
-        // finds the marker when it does.
-        setPausedMarkers(machineName: machineName, paused: true)
-        guard var runtime = machines[machineName] else {
-            try? await boxd.pause(name: machineName)
-            await report(machineName, state: .paused(reason))
-            return
-        }
-        runtime.pausedReason = reason
-        runtime.eventTask?.cancel()
-        runtime.keepaliveTask?.cancel()
-        runtime.eventTask = nil
-        runtime.keepaliveTask = nil
-        if let bridge = runtime.bridge {
-            await bridge.stop()
-        }
-        runtime.bridge = nil
-        machines[machineName] = runtime
-        registry.disconnectMachine(machineName, state: .paused(reason))
-        do {
-            try await boxd.pause(name: machineName)
-            KanbanCodeLog.info(Self.subsystem, "\(machineName): paused (\(reason.rawValue))")
-        } catch {
-            KanbanCodeLog.warn(Self.subsystem, "\(machineName): pause failed: \(error.localizedDescription)")
-        }
-        await report(machineName, state: .paused(reason))
-    }
-
     /// Stops a machine: nothing of it has to stay in memory. It costs its
     /// disk only, and comes back with a cold start when the card is resumed.
     /// The reason tells the card why: over from the work being done, or idle
@@ -750,63 +721,30 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         KanbanCodeLog.info(Self.subsystem, "\(machineName): destroyed")
     }
 
-    /// Pauses every running machine, in parallel, within `deadline`.
-    /// Returns when every machine is paused or when `deadline` passes,
-    /// whichever comes first. A `boxd machine pause` that hangs keeps
-    /// running on its own; the caller (the quit path) must not wait for it.
-    public func pauseAll(reason: RemotePausedReason, deadline: Duration = .seconds(8)) async {
-        await parkAll(reason: reason, deadline: deadline, halt: false)
-    }
-
     /// Stops every running machine, in parallel, within `deadline`. For the
     /// quit path, which kills the sessions first: nothing warm is left to
     /// keep, and a stopped machine cannot be woken by stray traffic to its
-    /// public URL the way a standby machine can.
+    /// public URL the way a standby machine can. Returns when every machine
+    /// is stopped or when `deadline` passes, whichever comes first; a stop
+    /// that hangs keeps running on its own, the quit must not wait for it.
     public func stopAll(reason: RemotePausedReason, deadline: Duration = .seconds(8)) async {
-        await parkAll(reason: reason, deadline: deadline, halt: true)
-    }
-
-    private func parkAll(reason: RemotePausedReason, deadline: Duration, halt: Bool) async {
         let running = machines.filter { $0.value.bridge != nil }.map(\.key)
         guard !running.isEmpty else { return }
-        let parks = running.map { name in
-            Task {
-                if halt {
-                    await self.stop(machineName: name, reason: reason)
-                } else {
-                    await self.pause(machineName: name, reason: reason)
-                }
-            }
+        let stops = running.map { name in
+            Task { await self.stop(machineName: name, reason: reason) }
         }
         let gate = FirstToFinish()
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             Task {
-                for park in parks { await park.value }
+                for stop in stops { await stop.value }
                 if gate.claim() { continuation.resume() }
             }
             Task {
                 try? await Task.sleep(for: deadline)
                 if gate.claim() {
-                    KanbanCodeLog.warn(Self.subsystem, "parkAll: deadline passed with machines still parking")
+                    KanbanCodeLog.warn(Self.subsystem, "stopAll: deadline passed with machines still stopping")
                     continuation.resume()
                 }
-            }
-        }
-    }
-
-    /// Halts machines that are parked but still in standby. The Mac calls it
-    /// when it goes to sleep: a standby machine wakes on any inbound traffic
-    /// to its public URL, and with the Mac asleep no sweep is around to stop
-    /// it again, so one stray packet can leave it billing all night.
-    /// Machines with a live bridge keep working through the night untouched.
-    public func stopParked() async {
-        let parked = machines.filter { $0.value.pausedReason != nil && !$0.value.machineHalted }
-        guard !parked.isEmpty else { return }
-        KanbanCodeLog.info(Self.subsystem, "halting parked machines before sleep: \(parked.keys.sorted().joined(separator: ", "))")
-        await withTaskGroup(of: Void.self) { group in
-            for (name, runtime) in parked {
-                let reason = runtime.pausedReason ?? .stopped
-                group.addTask { await self.stop(machineName: name, reason: reason) }
             }
         }
     }
@@ -816,10 +754,10 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     /// What the sweep did to the machines it found.
     public struct SweepReport: Sendable, Equatable {
         public var destroyed: [String] = []
-        public var paused: [String] = []
-        public init(destroyed: [String] = [], paused: [String] = []) {
+        public var stopped: [String] = []
+        public init(destroyed: [String] = [], stopped: [String] = []) {
             self.destroyed = destroyed
-            self.paused = paused
+            self.stopped = stopped
         }
     }
 
@@ -850,9 +788,9 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
             let liveHolders = holders.filter { !$0.manuallyArchived }
             if liveHolders.isEmpty {
                 if machine.status == .running || machine.status == .booting {
-                    KanbanCodeLog.info(Self.subsystem, "sweep: \(name) has no card, pausing")
-                    try? await boxd.pause(name: name)
-                    report.paused.append(name)
+                    KanbanCodeLog.info(Self.subsystem, "sweep: \(name) has no card, stopping")
+                    try? await boxd.stop(name: name)
+                    report.stopped.append(name)
                 } else {
                     KanbanCodeLog.info(Self.subsystem, "sweep: \(name) has no card, destroying")
                     do {
@@ -868,9 +806,9 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
 
             let hasSession = liveHolders.contains { $0.tmuxLink != nil }
             if !hasSession, machine.status == .running {
-                KanbanCodeLog.info(Self.subsystem, "sweep: \(name) has no session, pausing")
-                await pause(machineName: name, reason: .sessionStopped)
-                report.paused.append(name)
+                KanbanCodeLog.info(Self.subsystem, "sweep: \(name) has no session, stopping")
+                await stop(machineName: name, reason: .sessionStopped)
+                report.stopped.append(name)
             }
         }
         return report
@@ -989,6 +927,7 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         machines[machineName] = runtime
 
         try await bootstrapIfNeeded(machineName: machineName, remoteHome: remoteHome, log: log)
+        await startWatchdog(machineName: machineName, remoteHome: runtime.remoteHome)
 
         log("Connecting to \(machineName)")
         let bridge = try BoxdBridge.spawn(machineName: machineName, remoteHome: remoteHome)
@@ -1110,6 +1049,24 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         KanbanCodeLog.info(Self.subsystem, "\(machineName): kanban CLI \(appVersion) installed")
     }
 
+    /// Installs and restarts the machine's self-park watchdog and restores
+    /// its suspend timers. Every connect runs it: a watchdog park shortens
+    /// the timers, and a machine that comes back to work needs them back.
+    private func startWatchdog(machineName: String, remoteHome: String) async {
+        let idle = await settingsProvider().inactivityTimeoutSeconds
+        let script = BoxdLaunchPlanner.watchdogStartScript(remoteHome: remoteHome, idleSeconds: idle)
+        do {
+            let result = try await boxd.exec(name: machineName, command: "bash -c \(Self.shellEscape(script))", timeout: 60)
+            guard result.succeeded else {
+                KanbanCodeLog.warn(Self.subsystem, "\(machineName): watchdog start failed: \(result.stderr.isEmpty ? result.stdout : result.stderr)")
+                return
+            }
+            KanbanCodeLog.info(Self.subsystem, "\(machineName): self-park watchdog running (idle \(idle)s)")
+        } catch {
+            KanbanCodeLog.warn(Self.subsystem, "\(machineName): watchdog start failed: \(error.localizedDescription)")
+        }
+    }
+
     // MARK: - Events
 
     private func handle(_ event: BridgeEvent, from machineName: String) async {
@@ -1174,11 +1131,15 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
                     remoteProjectPath: current.remoteProjectPath,
                     remoteHome: current.remoteHome
                 )
-            case .standby, .hibernated, .stopped:
-                // boxd paused it on its own (auto-suspend): keep it that way.
+            case .stopped:
                 machines[machineName]?.pausedReason = .inactivity
+                machines[machineName]?.machineHalted = true
                 registry.disconnectMachine(machineName, state: .paused(.inactivity))
                 await report(machineName, state: .paused(.inactivity))
+            case .standby, .hibernated:
+                // boxd parked it on its own (auto-suspend). Standby still
+                // bills RAM and wakes on stray traffic: stop it for real.
+                await stop(machineName: machineName, reason: .inactivity)
             case .destroyed:
                 machines[machineName] = nil
                 registry.removeMachine(machineName)
@@ -1326,13 +1287,13 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         return true
     }
 
-    /// Pauses a machine a person brought back but did nothing with. The card
+    /// Stops a machine a person brought back but did nothing with. The card
     /// that leaves focus calls it, so a quick look at a session costs the
     /// seconds it took, not the whole idle window. A machine with work on it,
     /// or one that was already running before the look, is left alone.
     public func pauseIfPeek(machineName: String) async {
         guard let runtime = machines[machineName], runtime.resumedForPeek else {
-            // Still coming back: pause it as soon as it is here.
+            // Still coming back: stop it as soon as it is here.
             if machines[machineName]?.pausedReason == nil, machines[machineName]?.bridge == nil {
                 peekPauseRequested.insert(machineName)
             }
@@ -1343,8 +1304,8 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
             machines[machineName]?.resumedForPeek = false
             return
         }
-        KanbanCodeLog.info(Self.subsystem, "\(machineName): looked at with no work, pausing again")
-        await pause(machineName: machineName, reason: .inactivity)
+        KanbanCodeLog.info(Self.subsystem, "\(machineName): looked at with no work, stopping again")
+        await stop(machineName: machineName, reason: .inactivity)
     }
 
     /// Reconnects one machine without a bridge when boxd reports it running,

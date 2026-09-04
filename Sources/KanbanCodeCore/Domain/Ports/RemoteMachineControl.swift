@@ -3,13 +3,12 @@ import Foundation
 /// Machine operations the reducer asks for through effects. The boxd
 /// supervisor implements it; tests use a fake.
 public protocol RemoteMachineControl: Sendable {
-    /// Pauses a machine. Never throws: a pause that fails is logged and the
-    /// inactivity timer or the next quit retries it.
-    func pause(machineName: String, reason: RemotePausedReason) async
-
     /// Stops a machine, for a card whose work is over. Never throws: a stop
     /// that fails is logged, and the next sweep or quit retries it.
     func stop(machineName: String) async
+
+    /// Stops a machine and keeps the reason for the card's banner.
+    func stop(machineName: String, reason: RemotePausedReason) async
 
     /// Removes a machine for good.
     func destroy(machineName: String) async throws
@@ -26,7 +25,7 @@ public protocol RemoteMachineControl: Sendable {
     /// is connected afterwards.
     func resume(machineName: String) async -> Bool
 
-    /// Pauses a machine a person brought back but did nothing with, when
+    /// Stops a machine a person brought back but did nothing with, when
     /// its card leaves focus.
     func pauseIfPeek(machineName: String) async
 

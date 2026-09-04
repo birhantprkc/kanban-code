@@ -123,11 +123,8 @@ public actor EffectHandler {
                 try? await tmuxAdapter?.killSession(name: name)
             }
 
-        case .pauseRemoteMachine(let machineName, let reason):
-            await remoteMachines?.pause(machineName: machineName, reason: reason)
-
-        case .stopRemoteMachine(let machineName):
-            await remoteMachines?.stop(machineName: machineName)
+        case .stopRemoteMachine(let machineName, let reason):
+            await remoteMachines?.stop(machineName: machineName, reason: reason)
 
         case .destroyRemoteMachine(let machineName):
             do {

@@ -376,4 +376,63 @@ public enum BoxdLaunchPlanner {
         while value.count > 1, value.hasSuffix("/") { value.removeLast() }
         return value
     }
+
+    // MARK: - Self-park watchdog
+
+    /// The check that runs on the machine itself, from cron, and parks the
+    /// machine when its sessions go quiet. The Mac cannot do this while
+    /// asleep, and a standby machine wakes on any inbound traffic to its
+    /// public URL, so without this check one stray packet at night leaves
+    /// the machine running until morning. Activity is transcript (`.jsonl`)
+    /// and hook writes, plus the grace file the Mac touches on every
+    /// connect, plus someone attached to a terminal. Parking kills the idle
+    /// sessions (the same loss a stop has), shortens the machine's own
+    /// suspend timers so boxd suspends it within a minute, and leaves a
+    /// marker that silences every later tick: a parked tick makes zero
+    /// network traffic, so a stray wake re-suspends on its own instead of
+    /// being kept up by the watchdog's own calls. The next connect restores
+    /// the timers and clears the marker.
+    public static func watchdogScript(remoteHome: String, idleSeconds: Int) -> String {
+        """
+        #!/bin/sh
+        # kanban-watchdog: parks this machine when its sessions go quiet.
+        # Written by Kanban Code at connect; do not edit, it is overwritten.
+        IDLE=\(idleSeconds)
+        KC="\(remoteHome)/.kanban-code"
+        [ -f "$KC/watchdog-parked" ] && exit 0
+        # A person attached to a terminal counts as activity on its own.
+        [ -n "$(tmux list-clients 2>/dev/null)" ] && exit 0
+        newest=$( { find "\(remoteHome)/.claude/projects" "\(remoteHome)/.codex/sessions" -name '*.jsonl' -printf '%T@\\n' 2>/dev/null; stat -c '%Y' "$KC/hook-events.jsonl" "$KC/watchdog-grace" 2>/dev/null; } | sort -rn | head -1)
+        [ -z "$newest" ] && exit 0
+        idlefor=$(( $(date +%s) - ${newest%.*} ))
+        [ "$idlefor" -lt "$IDLE" ] && exit 0
+        echo "$(date -u +%FT%TZ) parking after ${idlefor}s idle" >> "$KC/watchdog.log"
+        tmux kill-server 2>/dev/null
+        boxd machine config set auto-suspend.timeout 60 >/dev/null 2>&1
+        boxd machine config set auto-hibernate.timeout 300 >/dev/null 2>&1
+        touch "$KC/watchdog-parked"
+        """
+    }
+
+    /// Installs the watchdog under cron, restores the machine's suspend
+    /// timers to their working values, clears the parked marker of an
+    /// earlier park, and touches the grace file so a fresh connect always
+    /// has `idleSeconds` before a tick can park anything. Cron survives
+    /// reboots and suspends, and a tick after a stray wake is what puts the
+    /// machine back to sleep.
+    public static func watchdogStartScript(remoteHome: String, idleSeconds: Int) -> String {
+        """
+        KC="\(remoteHome)/.kanban-code"
+        mkdir -p "$KC"
+        touch "$KC/watchdog-grace"
+        rm -f "$KC/watchdog-parked"
+        boxd machine config set auto-suspend.timeout \(idleSeconds) >/dev/null 2>&1
+        boxd machine config set auto-hibernate.timeout 14400 >/dev/null 2>&1
+        cat > "$KC/kanban-watchdog.sh" << 'KANBAN_WATCHDOG'
+        \(watchdogScript(remoteHome: remoteHome, idleSeconds: idleSeconds))
+        KANBAN_WATCHDOG
+        chmod +x "$KC/kanban-watchdog.sh"
+        { crontab -l 2>/dev/null | grep -v kanban-watchdog; echo "*/5 * * * * /bin/sh $KC/kanban-watchdog.sh"; } | crontab -
+        """
+    }
 }

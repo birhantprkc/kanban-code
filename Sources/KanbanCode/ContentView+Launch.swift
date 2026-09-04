@@ -865,13 +865,14 @@ extension ContentView {
                     isRemote = false
                     preamble = nil
                     // A card that leaves its machine continues from the local
-                    // mirror. The machine is kept, paused, and its tmux name is
-                    // released so the local tmux server can own it. A worktree
-                    // that only existed on the machine is created here first.
+                    // mirror. The machine is kept, stopped, and its tmux name
+                    // is released so the local tmux server can own it. A
+                    // worktree that only existed on the machine is created
+                    // here first.
                     if let remote = card.link.remote, remote.mode == .boxd {
                         await boxdSupervisor.releaseSessions([resumeSessionName])
                         if await boxdSupervisor.isConnected(remote.machineName) {
-                            await boxdSupervisor.pause(machineName: remote.machineName, reason: .manual)
+                            await boxdSupervisor.stop(machineName: remote.machineName, reason: .manual)
                         }
                         if let worktree = card.link.worktreeLink,
                            let repoRoot = card.link.projectPath,
@@ -921,13 +922,13 @@ extension ContentView {
                 KanbanCodeLog.warn("resume", "Resume failed for card=\(cardId.prefix(12)): \(error.localizedDescription)")
                 store.dispatch(.resumeFailed(cardId: cardId, error: error.localizedDescription))
                 // The machine would sit running, billed by the hour, waiting
-                // for a retry that may never come. Standby keeps its memory
-                // and the next resume brings it back in a second.
+                // for a retry that may never come. A stop keeps its disk and
+                // the next resume brings it back with a cold start.
                 if runRemotely, store.state.remoteMode == .boxd,
                    let remote = store.state.links[cardId]?.remote,
                    await boxdSupervisor.isConnected(remote.machineName) {
-                    KanbanCodeLog.info("resume", "Pausing \(remote.machineName) after the failed resume")
-                    await boxdSupervisor.pause(machineName: remote.machineName, reason: .manual)
+                    KanbanCodeLog.info("resume", "Stopping \(remote.machineName) after the failed resume")
+                    await boxdSupervisor.stop(machineName: remote.machineName, reason: .manual)
                 }
             }
         }

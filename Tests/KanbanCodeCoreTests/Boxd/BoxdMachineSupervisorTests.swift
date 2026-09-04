@@ -2,6 +2,24 @@ import Testing
 import Foundation
 @testable import KanbanCodeCore
 
+/// A clock the tests can move forward.
+final class MutableClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _now: Date
+
+    init(_ start: Date) { _now = start }
+
+    var now: Date {
+        lock.lock(); defer { lock.unlock() }
+        return _now
+    }
+
+    func advance(by seconds: TimeInterval) {
+        lock.lock(); defer { lock.unlock() }
+        _now = _now.addingTimeInterval(seconds)
+    }
+}
+
 /// Collects the actions the supervisor dispatches.
 final class ActionRecorder: @unchecked Sendable {
     private let lock = NSLock()
@@ -66,8 +84,8 @@ struct BoxdMachineSupervisorTests {
 
     // MARK: - Pause markers and external resumes
 
-    @Test("A pause writes the pause marker of every session on the machine")
-    func pauseWritesMarkers() async throws {
+    @Test("A stop writes the pause marker of every session on the machine")
+    func stopWritesMarkers() async throws {
         let boxd = FakeBoxdPort()
         let registry = RemoteSessionRegistry()
         registry.setMachine("kanban-repo-1", state: .connected)
@@ -79,13 +97,13 @@ struct BoxdMachineSupervisorTests {
             boxd: boxd, registry: registry, settingsProvider: { BoxdSettings() }, cliBundlePath: nil,
             appVersion: "1.0.0-test", localHome: home, localKanbanHome: home + "/.kanban-code")
 
-        await supervisor.pause(machineName: "kanban-repo-1", reason: .inactivity)
+        await supervisor.stop(machineName: "kanban-repo-1", reason: .inactivity)
 
         let markers = home + "/.kanban-code/remote-ready/"
         #expect(FileManager.default.fileExists(atPath: markers + "repo-card_1.paused"))
         #expect(FileManager.default.fileExists(atPath: markers + "claude-abcdef12.paused"))
         #expect(!FileManager.default.fileExists(atPath: markers + "repo-card_9.paused"))
-        #expect(boxd.calls.contains(FakeBoxdPort.Call(name: "pause", argument: "kanban-repo-1")))
+        #expect(boxd.calls.contains(FakeBoxdPort.Call(name: "stop", argument: "kanban-repo-1")))
     }
 
     @Test("A parked machine past the idle window is stopped exactly once")
@@ -104,18 +122,25 @@ struct BoxdMachineSupervisorTests {
             pausedReason: nil, machineHalted: false, idleFor: hour + 1, timeout: hour))
     }
 
-    @Test("Mac sleep halts standby machines and leaves stopped ones alone")
-    func stopParkedHaltsStandbyOnly() async {
+    @Test("The parked-stop sweep halts restored standby machines, not stopped ones")
+    func parkedSweepAfterRestore() async {
         let boxd = FakeBoxdPort()
         boxd.setMachine(BoxdMachine(name: "kanban-repo-standby", status: .standby))
         boxd.setMachine(BoxdMachine(name: "kanban-repo-halted", status: .stopped))
-        let supervisor = makeSupervisor(boxd: boxd)
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_700_000_000))
+        let home = NSTemporaryDirectory() + "boxd-parked-\(UUID().uuidString)"
+        let supervisor = BoxdMachineSupervisor(
+            boxd: boxd, registry: RemoteSessionRegistry(), settingsProvider: { BoxdSettings() },
+            cliBundlePath: nil, appVersion: "1.0.0-test",
+            localHome: home, localKanbanHome: home + "/.kanban-code",
+            now: { clock.now })
         await supervisor.restore(links: [
             link(id: "card_1", machine: "kanban-repo-standby", session: "repo-card_1"),
             link(id: "card_2", machine: "kanban-repo-halted", session: "repo-card_2"),
         ])
 
-        await supervisor.stopParked()
+        clock.advance(by: 7200)
+        await supervisor.checkInactivity()
 
         #expect(boxd.callNames("stop") == ["kanban-repo-standby"])
     }
@@ -322,19 +347,19 @@ struct BoxdMachineSupervisorTests {
         #expect(BoxdMachineSupervisor.shellEscape("a b; rm -rf /") == "'a b; rm -rf /'")
     }
 
-    // MARK: - pause
+    // MARK: - stop
 
-    @Test("Pausing a machine the supervisor never opened still pauses it and reports the state")
-    func pauseUnknownMachine() async {
+    @Test("Stopping a machine the supervisor never opened still stops it and reports the state")
+    func stopUnknownMachine() async {
         let boxd = FakeBoxdPort()
         let registry = RemoteSessionRegistry()
         let supervisor = makeSupervisor(boxd: boxd, registry: registry)
         let recorder = ActionRecorder()
         await supervisor.setDispatch { @MainActor action in recorder.append(action) }
 
-        await supervisor.pause(machineName: "kanban-repo-1", reason: .manual)
+        await supervisor.stop(machineName: "kanban-repo-1", reason: .manual)
 
-        #expect(boxd.callNames("pause") == ["kanban-repo-1"])
+        #expect(boxd.callNames("stop") == ["kanban-repo-1"])
         #expect(registry.state(of: "kanban-repo-1") == .paused(.manual))
         let reported = recorder.machineStates
         #expect(reported.count == 1)
@@ -342,18 +367,18 @@ struct BoxdMachineSupervisorTests {
         #expect(reported[0].state == .paused(.manual))
     }
 
-    @Test("A pause that the boxd CLI refuses is still reported to the board")
-    func pauseToleratesACliFailure() async {
+    @Test("A stop that the boxd CLI refuses is still reported to the board")
+    func stopToleratesACliFailure() async {
         let boxd = FakeBoxdPort()
-        boxd.fail("pause", with: .commandFailed(command: "boxd machine stop", exitCode: 1, message: "busy"))
+        boxd.fail("stop", with: .commandFailed(command: "boxd machine stop", exitCode: 1, message: "busy"))
         let registry = RemoteSessionRegistry()
         let supervisor = makeSupervisor(boxd: boxd, registry: registry)
         let recorder = ActionRecorder()
         await supervisor.setDispatch { @MainActor action in recorder.append(action) }
 
-        await supervisor.pause(machineName: "kanban-repo-1", reason: .systemSleep)
+        await supervisor.stop(machineName: "kanban-repo-1", reason: .systemSleep)
 
-        #expect(boxd.callNames("pause") == ["kanban-repo-1"])
+        #expect(boxd.callNames("stop") == ["kanban-repo-1"])
         #expect(recorder.machineStates.map(\.state) == [.paused(.systemSleep)])
     }
 
@@ -438,7 +463,7 @@ struct BoxdMachineSupervisorTests {
         return link
     }
 
-    @Test("sweep destroys idle orphans, pauses running ones and leaves used machines alone")
+    @Test("sweep destroys idle orphans, stops running ones and leaves used machines alone")
     func sweepCleansOrphans() async {
         let boxd = FakeBoxdPort()
         boxd.setMachine(BoxdMachine(name: "kanban-repo-orphan", status: .standby))
@@ -460,9 +485,9 @@ struct BoxdMachineSupervisorTests {
         ])
 
         #expect(Set(report.destroyed) == ["kanban-repo-orphan", "kanban-repo-archived"])
-        #expect(Set(report.paused) == ["kanban-repo-orphan-run", "kanban-repo-idle"])
+        #expect(Set(report.stopped) == ["kanban-repo-orphan-run", "kanban-repo-idle"])
         #expect(Set(boxd.callNames("remove")) == ["kanban-repo-orphan", "kanban-repo-archived"])
-        #expect(Set(boxd.callNames("pause")) == ["kanban-repo-orphan-run", "kanban-repo-idle"])
+        #expect(Set(boxd.callNames("stop")) == ["kanban-repo-orphan-run", "kanban-repo-idle"])
     }
 
     @Test("sweep never touches the source machine even when it matches the pattern")

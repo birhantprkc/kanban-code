@@ -249,7 +249,6 @@ final class FakeBoxdPort: BoxdPort, @unchecked Sendable {
         return withLock(lock) { Array(_machines.values) }
     }
 
-    func pause(name: String) async throws { try record("pause", name) }
     func resume(name: String) async throws { try record("resume", name) }
     func wake(name: String) async throws { try record("wake", name) }
     func start(name: String) async throws { try record("start", name) }

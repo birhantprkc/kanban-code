@@ -5,17 +5,10 @@ import Foundation
 /// `Effect` is not `Equatable`, so the tests read the remote effects out of
 /// the returned list by pattern.
 extension Array where Element == Effect {
-    var pausedMachines: [(machine: String, reason: RemotePausedReason)] {
+    var stoppedMachines: [(machine: String, reason: RemotePausedReason)] {
         compactMap {
-            guard case .pauseRemoteMachine(let machine, let reason) = $0 else { return nil }
+            guard case .stopRemoteMachine(let machine, let reason) = $0 else { return nil }
             return (machine, reason)
-        }
-    }
-
-    var stoppedMachines: [String] {
-        compactMap {
-            guard case .stopRemoteMachine(let machine) = $0 else { return nil }
-            return machine
         }
     }
 
@@ -176,8 +169,7 @@ struct BoxdReducerTests {
         #expect(link.isRemote == true)
         // The tab was closed: the work is over, so the machine is stopped,
         // not kept in standby.
-        #expect(effects.stoppedMachines == ["kanban-repo-1"])
-        #expect(effects.pausedMachines.isEmpty)
+        #expect(effects.stoppedMachines.map(\.machine) == ["kanban-repo-1"])
         #expect(effects.destroyedMachines.isEmpty)
     }
 
@@ -191,7 +183,6 @@ struct BoxdReducerTests {
         let effects = Reducer.reduce(state: &state, action: .killTerminal(cardId: "card_1", sessionName: "repo-card_1"))
 
         #expect(effects.stoppedMachines.isEmpty)
-        #expect(effects.pausedMachines.isEmpty)
         #expect(state.links["card_1"]?.remote != nil)
         #expect(state.links["card_2"]?.tmuxLink != nil)
     }
@@ -203,7 +194,6 @@ struct BoxdReducerTests {
         let effects = Reducer.reduce(state: &state, action: .killTerminal(cardId: "card_1", sessionName: "repo-card_1"))
 
         #expect(effects.stoppedMachines.isEmpty)
-        #expect(effects.pausedMachines.isEmpty)
         #expect(state.links["card_1"]?.isRemote == false)
     }
 
@@ -411,21 +401,21 @@ struct BoxdReducerTests {
         #expect(effects.count == 1)
     }
 
-    // MARK: - pauseRemoteMachine(cardId:)
+    // MARK: - stopRemoteMachine(cardId:)
 
-    @Test("A manual park stops the machine, a transient reason pauses it")
-    func pauseRemoteMachineByCard() {
+    @Test("Any park stops the machine, keeping the reason for the banner")
+    func stopRemoteMachineByCard() {
         var state = stateWith([remoteCard(id: "card_1", sessionName: "repo-card_1")])
 
-        let manual = Reducer.reduce(state: &state, action: .pauseRemoteMachine(cardId: "card_1", reason: .manual))
-        #expect(manual.stoppedMachines == ["kanban-repo-1"])
-        #expect(manual.pausedMachines.isEmpty)
+        let manual = Reducer.reduce(state: &state, action: .stopRemoteMachine(cardId: "card_1", reason: .manual))
+        #expect(manual.stoppedMachines.count == 1)
+        #expect(manual.stoppedMachines[0].machine == "kanban-repo-1")
+        #expect(manual.stoppedMachines[0].reason == .manual)
 
-        let transient = Reducer.reduce(state: &state, action: .pauseRemoteMachine(cardId: "card_1", reason: .sessionStopped))
-        #expect(transient.pausedMachines.count == 1)
-        #expect(transient.pausedMachines[0].machine == "kanban-repo-1")
-        #expect(transient.pausedMachines[0].reason == .sessionStopped)
-        #expect(transient.stoppedMachines.isEmpty)
+        let transient = Reducer.reduce(state: &state, action: .stopRemoteMachine(cardId: "card_1", reason: .sessionStopped))
+        #expect(transient.stoppedMachines.count == 1)
+        #expect(transient.stoppedMachines[0].machine == "kanban-repo-1")
+        #expect(transient.stoppedMachines[0].reason == .sessionStopped)
     }
 
     // MARK: - tmuxLivenessScanned

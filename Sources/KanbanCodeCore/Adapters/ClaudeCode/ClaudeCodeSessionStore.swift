@@ -253,6 +253,9 @@ public final class ClaudeCodeSessionStore: SessionStore, @unchecked Sendable {
         guard fileManager.fileExists(atPath: sessionPath) else {
             throw SessionStoreError.fileNotFound(sessionPath)
         }
+        KanbanCodeLog.info(
+            "checkpoint",
+            "Truncating \((sessionPath as NSString).lastPathComponent) after byte \(max(afterTurn.lineNumber, afterTurn.endLineNumber)); the full transcript stays in .bkp")
 
         // Backup
         let backupPath = sessionPath + ".bkp"

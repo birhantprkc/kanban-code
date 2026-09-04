@@ -1415,11 +1415,11 @@ struct ContentView: View {
                         await supervisor.restore(links: [])
                     }
                     // Machines left behind by a failed launch or a killed app
-                    // are paused or destroyed once the known ones are back.
+                    // are stopped or destroyed once the known ones are back.
                     if sweepsMachines {
                         let report = await supervisor.sweepIfPossible()
-                        if !report.destroyed.isEmpty || !report.paused.isEmpty {
-                            KanbanCodeLog.info("boxd", "startup sweep: destroyed \(report.destroyed), paused \(report.paused)")
+                        if !report.destroyed.isEmpty || !report.stopped.isEmpty {
+                            KanbanCodeLog.info("boxd", "startup sweep: destroyed \(report.destroyed), stopped \(report.stopped)")
                         }
                     }
                 }
@@ -1569,13 +1569,10 @@ struct ContentView: View {
                 // Stop periodic work for the night: dark wakes fire the refresh
                 // timer every few minutes and each pass spawns gh subprocesses.
                 // The boxd machines keep working: their sessions run there,
-                // not here. The bridges drop with the network and come back
-                // through the reconnect path after wake. Parked machines are
-                // the exception: standby wakes on any inbound traffic and no
-                // sweep runs while the Mac sleeps, so they are halted now.
+                // not here, and each carries a watchdog that parks it when its
+                // sessions go quiet. The bridges drop with the network and
+                // come back through the reconnect path after wake.
                 store.isSystemSleeping = true
-                let supervisor = boxdSupervisor
-                Task { await supervisor.stopParked() }
             }
             .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification).receive(on: RunLoop.main)) { _ in
                 store.isSystemSleeping = false

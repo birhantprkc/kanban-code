@@ -344,12 +344,26 @@ Feature: Boxd Remote Mode
     Then the sessions on the machines are killed
     And their machines are stopped before the process ends, not left in standby
 
-  Scenario: Sleep leaves the working machines working and halts the parked ones
+  Scenario: Sleep leaves the machines working
     When the Mac goes to sleep
-    Then no machine with a live session is paused and those sessions keep working
+    Then no machine is stopped and the sessions keep working
     And the bridges reconnect after wake
-    And a parked machine still in standby is stopped, because standby wakes on
-      any inbound traffic and no sweep runs while the Mac sleeps
+
+  Scenario: There is no pause, only stop
+    When any policy parks a machine: the manual button, the idle sweep,
+      a closed tab, a failed launch, the quit path
+    Then the machine is stopped (disk only), never left in standby
+    And the reason still shows on the card banner
+
+  Scenario: The machine parks itself when its sessions go quiet
+    Given every connect installs a watchdog loop on the machine
+    When nothing writes a transcript or hook event for the idle window
+      and no terminal is attached
+    Then the watchdog kills the idle sessions and shortens the machine's own
+      suspend timers, so boxd suspends it within a minute
+    And a stray packet that wakes the machine at night loops straight back
+      into that park, instead of leaving it running until morning
+    And a connect restores the timers and the grace window
     And a card on a machine does not keep the Mac awake through Amphetamine
 
   Scenario: The card shows what the launch is doing

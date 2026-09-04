@@ -330,4 +330,38 @@ struct BoxdLaunchPlannerTests {
         #expect(BoxdLaunchPlanner.lineCount(ofFileAt: path) == 2)
         #expect(BoxdLaunchPlanner.lineCount(ofFileAt: path + ".missing") == 0)
     }
+
+    @Test("The watchdog parks on stale transcripts and spares attached terminals")
+    func watchdogScript() {
+        let script = BoxdLaunchPlanner.watchdogScript(remoteHome: "/home/boxd", idleSeconds: 1800)
+
+        #expect(script.contains("IDLE=1800"))
+        #expect(script.contains("/home/boxd/.claude/projects"))
+        #expect(script.contains("/home/boxd/.codex/sessions"))
+        #expect(script.contains("hook-events.jsonl"))
+        #expect(script.contains("watchdog-grace"))
+        #expect(script.contains("tmux list-clients"))
+        #expect(script.contains("tmux kill-server"))
+        #expect(script.contains("auto-suspend.timeout 60"))
+        #expect(script.contains("auto-hibernate.timeout 300"))
+        // A parked tick must make zero traffic, or its own calls keep the
+        // machine awake after a stray wake.
+        #expect(script.contains("[ -f \"$KC/watchdog-parked\" ] && exit 0"))
+        #expect(script.contains("touch \"$KC/watchdog-parked\""))
+    }
+
+    @Test("The watchdog installer restores the timers and wires the cron tick")
+    func watchdogStartScript() {
+        let script = BoxdLaunchPlanner.watchdogStartScript(remoteHome: "/home/boxd", idleSeconds: 2400)
+
+        #expect(script.contains("touch \"$KC/watchdog-grace\""))
+        #expect(script.contains("rm -f \"$KC/watchdog-parked\""))
+        #expect(script.contains("auto-suspend.timeout 2400"))
+        #expect(script.contains("auto-hibernate.timeout 14400"))
+        #expect(script.contains("IDLE=2400"))
+        #expect(script.contains("| crontab -"))
+        #expect(script.contains("*/5 * * * * /bin/sh $KC/kanban-watchdog.sh"))
+        // The heredoc terminator has to sit alone at line start.
+        #expect(script.contains("\nKANBAN_WATCHDOG\n"))
+    }
 }

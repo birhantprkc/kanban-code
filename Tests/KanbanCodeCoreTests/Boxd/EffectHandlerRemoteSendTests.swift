@@ -29,8 +29,8 @@ private final class RecordingRemoteControl: RemoteMachineControl, @unchecked Sen
         _resumedSessions.append(sessionName)
     }
 
-    func pause(machineName: String, reason: RemotePausedReason) async {}
     func stop(machineName: String) async {}
+    func stop(machineName: String, reason: RemotePausedReason) async {}
     func destroy(machineName: String) async throws {}
     func assignSession(_ sessionName: String, to machineName: String) async {}
     func markSessionReady(_ sessionName: String, on machineName: String) async {}

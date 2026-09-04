@@ -502,8 +502,8 @@ public enum Action: Sendable {
     case remoteMachineAssigned(cardId: String, remote: RemoteLink)
     /// The supervisor reports the state of a machine.
     case remoteMachineStateChanged(machineName: String, state: RemoteMachineState)
-    /// The user or a policy asks to pause the machine of a card.
-    case pauseRemoteMachine(cardId: String, reason: RemotePausedReason)
+    /// The user or a policy asks to stop the machine of a card.
+    case stopRemoteMachine(cardId: String, reason: RemotePausedReason)
     /// The user confirmed the destruction of the machine of a card.
     case destroyRemoteMachine(cardId: String)
     /// The machine no longer exists; every card that used it forgets it.
@@ -623,11 +623,11 @@ public enum Effect: Sendable {
     case deleteFiles([String])
 
     // Remote machines (boxd)
-    case pauseRemoteMachine(machineName: String, reason: RemotePausedReason)
     /// Stops the machine of a card whose work is over: the tab was closed,
-    /// or the card was archived. Cheaper than standby, and the card resumes
-    /// with a cold start.
-    case stopRemoteMachine(machineName: String)
+    /// or the card was archived. Cheaper than standby, immune to stray
+    /// wake-on-traffic, and the card resumes with a cold start. The reason
+    /// tells the card's banner why.
+    case stopRemoteMachine(machineName: String, reason: RemotePausedReason)
     case destroyRemoteMachine(machineName: String)
 
     // Channels
@@ -733,7 +733,7 @@ public enum Reducer {
         guard others.isEmpty else { return [] }
         return destroy
             ? [.destroyRemoteMachine(machineName: remote.machineName)]
-            : [.stopRemoteMachine(machineName: remote.machineName)]
+            : [.stopRemoteMachine(machineName: remote.machineName, reason: .sessionStopped)]
     }
 
     public static func reduce(state: inout AppState, action: Action) -> [Effect] {
@@ -1533,7 +1533,7 @@ public enum Reducer {
                     if let remote = link.remote, remote.mode == .boxd, !machineHasLiveSessions(remote.machineName, in: state) {
                         // The tab was closed: the work on this card is over,
                         // so the machine is stopped, not kept in standby.
-                        effects.append(.stopRemoteMachine(machineName: remote.machineName))
+                        effects.append(.stopRemoteMachine(machineName: remote.machineName, reason: .sessionStopped))
                     }
                     return effects
                 }
@@ -2396,15 +2396,9 @@ public enum Reducer {
             }
             return effects
 
-        case .pauseRemoteMachine(let cardId, let reason):
+        case .stopRemoteMachine(let cardId, let reason):
             guard let remote = state.links[cardId]?.remote, remote.mode == .boxd else { return [] }
-            // A person asking for the machine to be parked means stop (disk
-            // only); the transient reasons keep the quick standby pause and
-            // the idle sweep turns them into a stop later.
-            if reason == .manual {
-                return [.stopRemoteMachine(machineName: remote.machineName)]
-            }
-            return [.pauseRemoteMachine(machineName: remote.machineName, reason: reason)]
+            return [.stopRemoteMachine(machineName: remote.machineName, reason: reason)]
 
         case .destroyRemoteMachine(let cardId):
             guard var link = state.links[cardId], let remote = link.remote, remote.mode == .boxd else { return [] }

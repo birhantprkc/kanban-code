@@ -5,7 +5,7 @@ import KanbanCodeCore
 
 extension ContentView {
     /// One pill for every boxd machine the app knows: how many run, how
-    /// many are paused, with a popover to pause or destroy each one.
+    /// many are stopped, with a popover to stop or destroy each one.
     @ViewBuilder
     var boxdStatusView: some View {
         let states = store.state.remoteMachineStates
@@ -34,7 +34,7 @@ extension ContentView {
 
     private func boxdPillLabel(connected: Int, paused: Int, total: Int) -> String {
         if connected > 0 { return connected == 1 ? "1 machine running" : "\(connected) machines running" }
-        if paused > 0 { return paused == 1 ? "1 machine paused" : "\(paused) machines paused" }
+        if paused > 0 { return paused == 1 ? "1 machine stopped" : "\(paused) machines stopped" }
         return total == 1 ? "1 machine" : "\(total) machines"
     }
 
@@ -85,7 +85,7 @@ extension ContentView {
                     Spacer()
                     if state.isConnected, let cardId = cardIds.first {
                         Button("Stop") {
-                            store.dispatch(.pauseRemoteMachine(cardId: cardId, reason: .manual))
+                            store.dispatch(.stopRemoteMachine(cardId: cardId, reason: .manual))
                         }
                         .controlSize(.small)
                     }

@@ -350,7 +350,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
 
         UserDefaults.standard.set(killManagedSessions, forKey: "killTmuxOnQuit")
         guard killManagedSessions else {
-            // The machines keep running; boxd suspends an idle one on its own.
+            // The machines keep running; the watchdog on each parks it when
+            // its sessions go quiet.
             replyToTermination(true)
             return
         }
