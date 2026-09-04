@@ -360,6 +360,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             Self.killTmuxSessionSync(name: sessionName)
         }
         CoordinationStore.clearTmuxSessionsSnapshot(sessionNames)
+        SessionDeathRecorder.removeFromSnapshot(
+            sessionNames, kanbanHome: (NSHomeDirectory() as NSString).appendingPathComponent(".kanban-code"))
         guard !remoteSessions.isEmpty, let supervisor = AppServices.boxdSupervisor else {
             replyToTermination(true)
             return
@@ -386,6 +388,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                 }
             }
             CoordinationStore.clearTmuxSessionsSnapshot(Set(remoteSessions.map(\.session.name)))
+            SessionDeathRecorder.removeFromSnapshot(
+                Set(remoteSessions.map(\.session.name)),
+                kanbanHome: (NSHomeDirectory() as NSString).appendingPathComponent(".kanban-code"))
             await supervisor.stopAll(reason: .appQuit, deadline: .seconds(10))
             self?.dismissPausingMachinesPanel()
             self?.replyToTermination(true)

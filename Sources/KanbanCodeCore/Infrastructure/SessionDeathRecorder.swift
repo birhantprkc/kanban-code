@@ -13,6 +13,40 @@ public enum SessionDeathRecorder {
         "\(kanbanHome)/logs/session-deaths"
     }
 
+    /// Session names that die by design and never warrant a capture:
+    /// the CLI test suites create and kill their own tmux sessions.
+    public static func isExpectedDeath(_ name: String) -> Bool {
+        name.hasPrefix("kanban-e2e-")
+    }
+
+    // MARK: - Last-known-sessions snapshot
+
+    /// The listing survives app restarts on disk, so sessions that die while
+    /// the app is closed (or take the app with them) are still noticed on
+    /// the first pass of the next run.
+    private static func snapshotPath(kanbanHome: String) -> String {
+        "\(kanbanHome)/tmux-sessions-snapshot.txt"
+    }
+
+    public static func readSnapshot(kanbanHome: String) -> Set<String>? {
+        guard let text = try? String(contentsOfFile: snapshotPath(kanbanHome: kanbanHome), encoding: .utf8) else { return nil }
+        let names = text.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+        return Set(names)
+    }
+
+    public static func writeSnapshot(_ names: Set<String>, kanbanHome: String) {
+        let path = snapshotPath(kanbanHome: kanbanHome)
+        try? FileManager.default.createDirectory(atPath: kanbanHome, withIntermediateDirectories: true)
+        try? names.sorted().joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+    }
+
+    /// Takes deliberately killed sessions out of the snapshot, so a quit
+    /// that kills them is not reported as a death on the next launch.
+    public static func removeFromSnapshot(_ names: Set<String>, kanbanHome: String) {
+        guard let current = readSnapshot(kanbanHome: kanbanHome) else { return }
+        writeSnapshot(current.subtracting(names), kanbanHome: kanbanHome)
+    }
+
     /// Fire-and-forget: writes `<dir>/<timestamp>.txt` with the vanished
     /// session names, the kernel/kill lines of the last minutes of the
     /// unified log, and the biggest processes still alive.

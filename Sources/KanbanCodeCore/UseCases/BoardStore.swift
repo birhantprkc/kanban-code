@@ -2942,15 +2942,23 @@ public final class BoardStore: @unchecked Sendable {
             KanbanCodeLog.info("reconcile", "tmux: \(t2.duration(to: .now)) (\(tmuxSessions.count) sessions)")
             if tmuxAdapter != nil {
                 let currentNames = Set(tmuxSessions.map(\.name))
-                if let previous = lastTmuxSessionNames {
-                    let vanished = previous.subtracting(currentNames).sorted()
+                let home = (NSHomeDirectory() as NSString).appendingPathComponent(".kanban-code")
+                // The disk snapshot covers the first pass of a fresh app run:
+                // sessions that died while the app was closed (or died with
+                // it) would otherwise vanish with no diff to notice them.
+                let previous = lastTmuxSessionNames ?? SessionDeathRecorder.readSnapshot(kanbanHome: home)
+                if let previous {
+                    let vanished = previous.subtracting(currentNames)
+                        .filter { !SessionDeathRecorder.isExpectedDeath($0) }.sorted()
                     if !vanished.isEmpty {
                         KanbanCodeLog.warn("reconcile", "tmux sessions gone since the last pass: \(vanished.joined(separator: ", "))")
                     }
                     if vanished.count >= 2 {
-                        let home = (NSHomeDirectory() as NSString).appendingPathComponent(".kanban-code")
                         SessionDeathRecorder.capture(vanished: vanished, kanbanHome: home)
                     }
+                }
+                if previous != currentNames {
+                    SessionDeathRecorder.writeSnapshot(currentNames, kanbanHome: home)
                 }
                 lastTmuxSessionNames = currentNames
             }
