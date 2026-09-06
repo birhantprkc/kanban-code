@@ -156,6 +156,9 @@ extension ContentView {
                    let url = svc.baseURL, !url.isEmpty {
                     serviceExtraEnv[envKey] = url
                 }
+                if let parentEnv = Self.subagentCacheEnv(parentCardId: cardLink?.parentCardId, assistant: assistant) {
+                    serviceExtraEnv.merge(parentEnv) { _, new in new }
+                }
 
                 // Snapshot existing session files for detection
                 let sessionFileExt = ".\(assistant.sessionFileExtension)"
@@ -445,6 +448,16 @@ extension ContentView {
     }
 
     /// Build a shell preamble that flushes mutagen and shows remote uname before launching claude.
+    /// Subagents run on the 5-minute prompt cache tier. Their turns come in
+    /// short bursts, and the default 1-hour cache bills every cache write at
+    /// a higher rate, which makes a fleet of children far more expensive than
+    /// plain Claude Code subagents. Claude Code reads this env var since
+    /// v2.1.242; the other assistants ignore it, so it is only set for Claude.
+    static func subagentCacheEnv(parentCardId: String?, assistant: CodingAssistant) -> [String: String]? {
+        guard assistant == .claude, parentCardId != nil else { return nil }
+        return ["CLAUDE_CODE_PROMPT_CACHE_TTL": "5m"]
+    }
+
     static func remotePreamble(host: String) -> String {
         // Use ; instead of && so a flush failure doesn't block claude from starting
         "printf '\\e[2mSyncing files...\\e[0m' && mutagen sync flush --label-selector kanban=true 2>/dev/null; printf '\\e[2mRemote: %s\\e[0m\\n' \"$(ssh -o ConnectTimeout=5 \(host) uname -snr 2>/dev/null || echo 'unavailable')\""
@@ -895,6 +908,9 @@ extension ContentView {
                    let envKey = assistant.baseURLEnvKey,
                    let url = svc.baseURL, !url.isEmpty {
                     serviceExtraEnv[envKey] = url
+                }
+                if let parentEnv = Self.subagentCacheEnv(parentCardId: card.link.parentCardId, assistant: assistant) {
+                    serviceExtraEnv.merge(parentEnv) { _, new in new }
                 }
 
                 let actualTmuxName = try await launcher.resume(

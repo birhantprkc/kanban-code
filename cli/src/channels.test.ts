@@ -334,3 +334,63 @@ describe("direct messages", () => {
     assert.equal(fwd[0].body, "hi bob");
   });
 });
+
+describe("subagents and channels", () => {
+  let prevHome: string | undefined;
+
+  beforeEach(() => {
+    base = newTmpBase();
+    prevHome = process.env.KANBAN_CODE_HOME;
+    process.env.KANBAN_CODE_HOME = base;
+    writeFileSync(
+      join(base, "links.json"),
+      JSON.stringify({
+        links: [
+          { id: "card_parent", name: "parent" },
+          { id: "card_child", name: "child", parentCardId: "card_parent" },
+        ],
+      })
+    );
+    createChannel("room", { createdBy: { cardId: "card_parent", handle: "parent" } }, base);
+  });
+  afterEach(() => {
+    if (prevHome === undefined) delete process.env.KANBAN_CODE_HOME;
+    else process.env.KANBAN_CODE_HOME = prevHome;
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  test("a subagent cannot join a channel", () => {
+    assert.throws(
+      () => joinChannel("room", { cardId: "card_child", handle: "child" }, base),
+      /Subagents can't join kanban channels.*only communicate with your parent/
+    );
+    const room = getChannel("room", base);
+    assert.ok(room);
+    assert.equal(isMember(room, "card_child"), false);
+  });
+
+  test("its parent still can", () => {
+    const { alreadyMember } = joinChannel("room", { cardId: "card_parent", handle: "parent" }, base);
+    assert.equal(alreadyMember, false);
+  });
+
+  test("a subagent already in the room is left alone", () => {
+    // Joined before it became a subagent (or before the rule existed).
+    writeFileSync(
+      join(base, "links.json"),
+      JSON.stringify({ links: [{ id: "card_parent", name: "parent" }, { id: "card_child", name: "child" }] })
+    );
+    joinChannel("room", { cardId: "card_child", handle: "child" }, base);
+    writeFileSync(
+      join(base, "links.json"),
+      JSON.stringify({
+        links: [
+          { id: "card_parent", name: "parent" },
+          { id: "card_child", name: "child", parentCardId: "card_parent" },
+        ],
+      })
+    );
+    const { alreadyMember } = joinChannel("room", { cardId: "card_child", handle: "child" }, base);
+    assert.equal(alreadyMember, true);
+  });
+});

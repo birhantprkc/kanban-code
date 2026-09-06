@@ -22,6 +22,7 @@ import {
   unlinkSync,
 } from "node:fs";
 import { join, dirname } from "node:path";
+import { readLinks } from "./data.js";
 import { homedir } from "node:os";
 import { randomBytes } from "node:crypto";
 
@@ -304,6 +305,18 @@ export function joinChannel(
   const existing = ch.members.find((m) => sameMember(m, member));
   if (existing) {
     return { channel: ch, alreadyMember: true };
+  }
+
+  // Subagents stay out of channels by design: children chatting to each
+  // other in a room burns tokens on chatter. Members who already sit in the
+  // channel are left alone (the returns above), only new joins are refused.
+  if (member.cardId) {
+    const link = readLinks().find((l) => l.id === member.cardId);
+    if (link?.parentCardId) {
+      throw new Error(
+        "Subagents can't join kanban channels, this is by design: only communicate with your parent (kanban parent dm, kanban parent report) and don't try to circumvent it."
+      );
+    }
   }
 
   ch.members.push({
