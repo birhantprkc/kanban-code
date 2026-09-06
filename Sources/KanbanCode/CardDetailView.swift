@@ -86,6 +86,14 @@ struct CardDetailView: View {
     /// The card.id of the in-flight history load. Used to stale-check results
     /// when the user switches cards mid-load — see loadHistory().
     @State private var historyLoadCardId: String?
+    /// The card this view currently shows, read through live @State storage.
+    /// An async load captures the view value it was created from, so checking
+    /// `card.id` inside one compares the old card against itself and passes
+    /// after a switch — which is how a slow transcript read used to replace
+    /// the new card's history with the previous card's. Guards compare
+    /// against this instead: it is written synchronously on every switch, and
+    /// a read inside a task closure always sees the current value.
+    @State private var displayedCardId = ""
     @State private var hasMoreTurns = false
     // Per-card chat drafts (keyed by card ID, persisted to disk). Drafts are
     // loaded one card at a time so terminal-only card switches do not scan
@@ -325,6 +333,7 @@ struct CardDetailView: View {
             selectedBrowserTabId = saved?.browser
             // Clear stale state synchronously so the new card never renders
             // with the previous card's turns or chat state.
+            displayedCardId = card.id
             turns = []
             historyRawLoadLimit = 0
             resetHistoryWindow()
@@ -335,6 +344,7 @@ struct CardDetailView: View {
             knownShellCount = card.link.tmuxLink?.extraSessions?.count ?? 0
         }
         .task(id: card.id) {
+            displayedCardId = card.id
             // actionsMenuProvider is no longer used — the Menu is built directly in actionsMenuButton
             isLoadingHistory = false
             isLoadingMore = false
@@ -1816,12 +1826,22 @@ struct CardDetailView: View {
     private static let pageSize = 80
     private static let chatPageSize = 80
 
+    /// Whether the load that captured `id` is still for the card on screen.
+    /// Reads live @State, so it stays correct inside a task that outlived a
+    /// card switch — the captured view value's own `card` does not. Empty
+    /// means no switch has stamped it yet; the view value is current then.
+    private func stillShowing(_ id: String) -> Bool {
+        displayedCardId.isEmpty ? card.id == id : displayedCardId == id
+    }
+
     private func loadHistory() async {
         // Capture which card this load is for. If the user switches cards
         // mid-load, the in-flight transcript read still resolves — but the
         // result belongs to the old card and must not stomp on the new card's
-        // (possibly empty) `turns`. Without this check, you'd see the previous
-        // card's chat content in the newly-opened card.
+        // (possibly empty) `turns`. The check goes through stillShowing, not
+        // `card.id`: this view value is a value copy, and after a switch a
+        // task created from the old copy would compare the old card against
+        // itself and pass.
         let myCardId = card.id
 
         // Within a single card, concurrent reloads race on lastLineNumber and
@@ -1835,7 +1855,7 @@ struct CardDetailView: View {
         defer {
             // Only the load that owns the slot clears the flag.
             if historyLoadCardId == myCardId { isReloadingHistory = false }
-            if card.id == myCardId { historyReadCardId = myCardId }
+            if stillShowing(myCardId) { historyReadCardId = myCardId }
         }
 
         guard let path = card.link.sessionLink?.sessionPath ?? card.session?.jsonlPath else { return }
@@ -1854,7 +1874,7 @@ struct CardDetailView: View {
                 let appended = try? await Task.detached {
                     try await TranscriptReader.readAppended(from: path, startOffset: start)
                 }.value
-                guard card.id == myCardId else { return }
+                guard stillShowing(myCardId) else { return }
                 if let appended {
                     let spliced = TranscriptWindow.splice(
                         turns: turns, reparsedFrom: start, with: appended.turns)
@@ -1915,7 +1935,7 @@ struct CardDetailView: View {
             }.value
 
             // Stale-check: discard if the user switched cards while we read.
-            guard card.id == myCardId else { return }
+            guard stillShowing(myCardId) else { return }
 
             // Back on main actor — update @State.
             // Always use the fresh tail — it picks up content changes from
@@ -1939,7 +1959,7 @@ struct CardDetailView: View {
             thresholdMs: 40,
             metadata: "card=\(myCardId.prefix(12)) assistant=\(assistant.rawValue) turns=\(turns.count) path=\((path as NSString).lastPathComponent)"
         )
-        if card.id == myCardId { isLoadingHistory = false }
+        if stillShowing(myCardId) { isLoadingHistory = false }
     }
 
     private func loadDraftForCurrentCard() async {
@@ -1950,7 +1970,7 @@ struct CardDetailView: View {
             ChatDraft.load(cardId: loadingCardId)
         }.value
 
-        guard card.id == loadingCardId else { return }
+        guard stillShowing(loadingCardId) else { return }
         if let draft {
             chatDrafts[loadingCardId] = draft
         }
@@ -2020,7 +2040,7 @@ struct CardDetailView: View {
                 )
             }.value
             // Stale-check — see loadHistory().
-            guard card.id == myCardId else { return }
+            guard stillShowing(myCardId) else { return }
             turns = result.turns
             hasMoreTurns = result.hasMore
             historyFileEnd = result.fileEnd
@@ -2033,7 +2053,7 @@ struct CardDetailView: View {
             thresholdMs: 40,
             metadata: "card=\(myCardId.prefix(12)) assistant=\(assistant.rawValue) targetTurns=\(newCount) path=\((path as NSString).lastPathComponent)"
         )
-        if card.id == myCardId { isLoadingMore = false }
+        if stillShowing(myCardId) { isLoadingMore = false }
     }
 
     /// Load the turns around a search match, merging them with what is already
@@ -2074,12 +2094,12 @@ struct CardDetailView: View {
                 }
             }
             // Stale-check — see loadHistory().
-            guard card.id == myCardId else { return }
+            guard stillShowing(myCardId) else { return }
             collapsedRanges = rebuilt.sorted { $0.startOffset < $1.startOffset }
             turns = TranscriptWindow.merge(turns: turns, inserting: around.turns)
             hasMoreTurns = !historyHeadExhausted && (historyTopOffset ?? 0) > 0
         } catch { }
-        if card.id == myCardId { isLoadingMore = false }
+        if stillShowing(myCardId) { isLoadingMore = false }
     }
 
     /// The byte offset of the topmost content the chat holds, loaded or
@@ -2113,7 +2133,7 @@ struct CardDetailView: View {
         else { return nil }
         let myCardId = card.id
         isLoadingMore = true
-        defer { if card.id == myCardId { isLoadingMore = false } }
+        defer { if stillShowing(myCardId) { isLoadingMore = false } }
         let loadStart = RenderDiagnostics.mark()
         defer {
             RenderDiagnostics.logIfSlow(
@@ -2135,13 +2155,13 @@ struct CardDetailView: View {
                     try await TranscriptReader.countVisibleTurns(
                         from: path, startOffset: 0, endOffset: top)
                 }.value
-                guard card.id == myCardId, historyTopOffset == top else { return nil }
+                guard stillShowing(myCardId), historyTopOffset == top else { return nil }
                 if count > 0, count <= Self.inlineSegmentThreshold {
                     let head = try await Task.detached {
                         try await TranscriptReader.readRange(
                             from: path, startOffset: 0, endOffset: top)
                     }.value
-                    guard card.id == myCardId else { return nil }
+                    guard stillShowing(myCardId) else { return nil }
                     turns = TranscriptWindow.merge(turns: turns, inserting: head.turns)
                 } else if count > 0 {
                     collapsedRanges =
@@ -2173,7 +2193,7 @@ struct CardDetailView: View {
                         startOffset: gapStart, endOffset: top, messageCount: count)
                 }
             }
-            guard card.id == myCardId, historyTopOffset == top else { return nil }
+            guard stillShowing(myCardId), historyTopOffset == top else { return nil }
             turns = TranscriptWindow.merge(turns: turns, inserting: [found.turn] + inline)
             if let newRange {
                 collapsedRanges = (collapsedRanges + [newRange])
@@ -2198,7 +2218,7 @@ struct CardDetailView: View {
                     from: path, startOffset: range.startOffset, endOffset: range.endOffset,
                     maxVisible: Self.expandPageVisible)
             }.value
-            guard card.id == myCardId, collapsedRanges.contains(range) else { return nil }
+            guard stillShowing(myCardId), collapsedRanges.contains(range) else { return nil }
             var rebuilt = collapsedRanges.filter { $0.id != range.id }
             if read.consumedEnd < range.endOffset {
                 let revealed = read.turns.count(where: { $0.hasVisibleChatContent })
@@ -2411,7 +2431,7 @@ struct CardDetailView: View {
 
         isCopyingConversationMarkdown = true
         defer {
-            if card.id == myCardId {
+            if stillShowing(myCardId) {
                 isCopyingConversationMarkdown = false
             }
         }
@@ -2427,7 +2447,7 @@ struct CardDetailView: View {
                 )
             }.value
 
-            guard card.id == myCardId else { return }
+            guard stillShowing(myCardId) else { return }
             copyToClipboard(markdown)
             showCopyToast("Conversation markdown copied to clipboard")
             RenderDiagnostics.logIfSlow(
@@ -2438,7 +2458,7 @@ struct CardDetailView: View {
             )
         } catch {
             KanbanCodeLog.error("conversation-export", "Failed to export markdown for card \(myCardId.prefix(12)): \(error)")
-            if card.id == myCardId {
+            if stillShowing(myCardId) {
                 showCopyToast("Failed to copy conversation markdown")
             }
         }
