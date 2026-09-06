@@ -133,13 +133,18 @@ extension ContentView {
             child.updatedAt = .now
             store.dispatch(.createManualTask(child))
             await Self.waitForPersistedLink(cardId: child.id, reaching: "unarchived") { !$0.manuallyArchived }
+            // A resumed child follows its parent's CURRENT location, not the
+            // one it was spawned in: a parent moved onto a boxd machine takes
+            // its children there, and a parent brought back local resumes
+            // them locally off the transcript mirror.
             executeResume(
                 cardId: child.id,
-                runRemotely: child.isRemote,
+                runRemotely: parent.isRemote,
                 commandOverride: nil,
                 assistant: child.effectiveAssistant,
                 serviceIdOverride: child.apiServiceId,
                 modelOverride: child.modelOverride,
+                machineChoice: parent.remote.map { .existing($0.machineName) },
                 focusCard: false
             )
             return child.id
@@ -382,6 +387,8 @@ extension ContentView {
         child.promptBody = deliveryPrompt
         child.sessionLink = sessionLink
         store.dispatch(.createManualTask(child))
+        // The fork lands beside its source: same machine when the source runs
+        // on boxd, local otherwise.
         executeResume(
             cardId: child.id,
             runRemotely: source.isRemote,
@@ -389,6 +396,7 @@ extension ContentView {
             assistant: targetAssistant,
             serviceIdOverride: child.apiServiceId,
             modelOverride: child.modelOverride,
+            machineChoice: source.remote.map { .existing($0.machineName) },
             focusCard: false
         )
         do {
