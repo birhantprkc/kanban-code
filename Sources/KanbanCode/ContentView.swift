@@ -1656,6 +1656,13 @@ struct ContentView: View {
                 }
 
                 if tbVis.showExpandedCardInfo, let card = store.state.selectedCard {
+                    // Open pull requests sit with the title on the left, where
+                    // the toolbar never folds them away; merged and closed ones
+                    // go right, free to compress into the overflow menu.
+                    let sortedPRs = card.link.prLinks.sortedByPRDisplayPriority
+                    let openPRs = sortedPRs.filter { $0.status != .merged && $0.status != .closed }
+                    let donePRs = sortedPRs.filter { $0.status == .merged || $0.status == .closed }
+
                     ToolbarItemGroup(placement: .navigation) {
                         // The tabs of the card live in the "..." menu: a
                         // picker here pushed the title and the pull request
@@ -1672,13 +1679,17 @@ struct ContentView: View {
                                     .foregroundStyle(.tertiary)
                                     .fixedSize()
                             }
+
+                            ForEach(openPRs, id: \.number) { pr in
+                                PRToolbarButton(pr: pr, projectPath: card.link.projectPath)
+                            }
                         }
                     }
 
-                    if !card.link.prLinks.isEmpty {
+                    if !donePRs.isEmpty {
                         ToolbarItem(placement: .primaryAction) {
                             HStack(spacing: 6) {
-                                ForEach(card.link.prLinks.sortedByPRDisplayPriority, id: \.number) { pr in
+                                ForEach(donePRs, id: \.number) { pr in
                                     PRToolbarButton(pr: pr, projectPath: card.link.projectPath)
                                 }
                             }
