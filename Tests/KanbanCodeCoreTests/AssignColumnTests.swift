@@ -28,11 +28,24 @@ struct AssignColumnTests {
         #expect(col == .allSessions)
     }
 
-    @Test("Manually archived + actively working with live work → inProgress")
+    @Test("Manually archived + actively working with a live session → inProgress")
     func manuallyArchivedButLiveActive() {
         let link = Link(column: .allSessions, manuallyArchived: true, sessionLink: SessionLink(sessionId: "s1"))
-        let col = AssignColumn.assign(link: link, activityState: .activelyWorking, hasWorktree: true)
+        let col = AssignColumn.assign(
+            link: link, activityState: .activelyWorking, hasWorktree: true, hasLiveSession: true)
         #expect(col == .inProgress)
+    }
+
+    /// The go-f case: a self-archived subagent's killed session still reads as
+    /// actively working for a few minutes (fresh transcript, trailing Stop
+    /// hook), and its worktree is shared so it always exists. Neither may
+    /// resurrect the card — only a running tmux session does.
+    @Test("Manually archived + active signal + worktree but no live session → stays archived")
+    func manuallyArchivedActiveButSessionDead() {
+        let link = Link(column: .allSessions, manuallyArchived: true, sessionLink: SessionLink(sessionId: "s1"))
+        let col = AssignColumn.assign(
+            link: link, activityState: .activelyWorking, hasWorktree: true, hasLiveSession: false)
+        #expect(col == .allSessions)
     }
 
     @Test("Manually archived + idle → allSessions (archive still wins when not active)")

@@ -190,7 +190,7 @@ struct SubagentActivityTests {
     func workingSessionMovesToInProgress() async {
         var link = Link(id: "card_1", column: .waiting)
 
-        UpdateCardColumn.update(link: &link, activityState: .activelyWorking, hasWorktree: true)
+        UpdateCardColumn.update(link: &link, activityState: .activelyWorking, hasWorktree: true, hasLiveSession: true)
 
         #expect(link.column == .inProgress)
     }

@@ -2260,7 +2260,8 @@ public enum Reducer {
                 UpdateCardColumn.update(
                     link: &link,
                     activityState: activity,
-                    hasWorktree: hasWorktree || hasTmux
+                    hasWorktree: hasWorktree || hasTmux,
+                    hasLiveSession: hasTmux
                 )
 
                 // Copy session's firstPrompt into link.promptBody
@@ -2320,8 +2321,14 @@ public enum Reducer {
                 guard let sessionId = link.sessionLink?.sessionId,
                       let activity = activityMap[sessionId] else { continue }
                 let hasWorktree = link.worktreeLink?.branch != nil
+                let hasLiveSession = link.tmuxLink.map { tmux in
+                    guard tmux.isShellOnly != true else { return false }
+                    return tmux.allSessionNames.contains(where: { state.tmuxSessions.contains($0) })
+                } ?? false
                 let oldColumn = link.column
-                UpdateCardColumn.update(link: &link, activityState: activity, hasWorktree: hasWorktree)
+                UpdateCardColumn.update(
+                    link: &link, activityState: activity,
+                    hasWorktree: hasWorktree, hasLiveSession: hasLiveSession)
                 if link.column != oldColumn {
                     state.links[id] = link
                     changed = true

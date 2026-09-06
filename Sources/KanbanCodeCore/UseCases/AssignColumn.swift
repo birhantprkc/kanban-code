@@ -5,12 +5,15 @@ import Foundation
 public enum AssignColumn {
 
     /// Assign a column to a link based on current state signals.
+    /// `hasLiveSession` is whether one of the card's tmux sessions is running
+    /// right now — the only signal strong enough to pull an archived card back.
     public static func assign(
         link: Link,
         activityState: ActivityState? = nil,
         hasPR: Bool = false,
         allPRsDone: Bool = false,
-        hasWorktree: Bool = false
+        hasWorktree: Bool = false,
+        hasLiveSession: Bool = false
     ) -> KanbanCodeColumn {
         // Manual backlog override is sticky — user explicitly parked this card.
         // Only resumeCard/launchCard (which clear manualOverrides.column) can move it out.
@@ -20,11 +23,14 @@ public enum AssignColumn {
             return .backlog
         }
 
-        // Archive is sticky for cards without a live work signal. Historical
-        // hook/activity data can be stale; don't let it resurrect old sessions.
-        // A legitimately restarted archived card still comes back below because
-        // `hasWorktree` is true for live tmux/worktree-backed work.
-        if link.manuallyArchived && !hasWorktree {
+        // Archive is sticky unless the card's own tmux session is running.
+        // A worktree is not enough: it can be shared and outlive the card,
+        // and archiving kills the session while its transcript and trailing
+        // hook events still read as fresh activity for minutes, which used
+        // to resurrect a just-self-archived subagent. A legitimately
+        // restarted archived card comes back because resume gives it a live
+        // session again.
+        if link.manuallyArchived && !hasLiveSession {
             return .allSessions
         }
 

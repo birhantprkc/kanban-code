@@ -551,7 +551,9 @@ public final class BoardState: @unchecked Sendable {
                     tmux.allSessionNames.contains(where: { liveTmuxNames.contains($0) })
                 } ?? false
                 let oldColumn = mergedLinks[i].column
-                UpdateCardColumn.update(link: &mergedLinks[i], activityState: activity, hasWorktree: hasWorktree || hasTmux)
+                UpdateCardColumn.update(
+                    link: &mergedLinks[i], activityState: activity,
+                    hasWorktree: hasWorktree || hasTmux, hasLiveSession: hasTmux)
                 if mergedLinks[i].column != oldColumn {
                     let sessionIdStr = mergedLinks[i].sessionLink.map { String($0.sessionId.prefix(8)) } ?? "nil"
                     KanbanCodeLog.info("refresh", "Column changed for \(mergedLinks[i].id.prefix(12)): \(oldColumn) → \(mergedLinks[i].column) (activity=\(activity.map { "\($0)" } ?? "nil"), hasWorktree=\(hasWorktree), hasTmux=\(hasTmux), source=\(mergedLinks[i].source), tmux=\(mergedLinks[i].tmuxLink?.sessionName ?? "nil"), session=\(sessionIdStr))")

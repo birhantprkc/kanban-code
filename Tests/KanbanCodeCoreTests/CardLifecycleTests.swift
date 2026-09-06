@@ -8,14 +8,14 @@ struct CardLifecycleTests {
     @Test("Active session moves to inProgress")
     func activeToInProgress() {
         var link = Link(column: .allSessions, sessionLink: SessionLink(sessionId: "s1"))
-        UpdateCardColumn.update(link: &link, activityState: .activelyWorking, hasWorktree: false)
+        UpdateCardColumn.update(link: &link, activityState: .activelyWorking, hasWorktree: false, hasLiveSession: false)
         #expect(link.column == .inProgress)
     }
 
     @Test("Stop with no follow-up moves to waiting")
     func stopToRequiresAttention() {
         var link = Link(column: .inProgress, sessionLink: SessionLink(sessionId: "s1"))
-        UpdateCardColumn.update(link: &link, activityState: .needsAttention, hasWorktree: false)
+        UpdateCardColumn.update(link: &link, activityState: .needsAttention, hasWorktree: false, hasLiveSession: false)
         #expect(link.column == .waiting)
     }
 
@@ -27,7 +27,7 @@ struct CardLifecycleTests {
             worktreeLink: WorktreeLink(path: "", branch: "feature-x"),
             prLinks: [PRLink(number: 42, url: "https://github.com/test/pr/42", status: .approved)]
         )
-        UpdateCardColumn.update(link: &link, activityState: .idleWaiting, hasWorktree: true)
+        UpdateCardColumn.update(link: &link, activityState: .idleWaiting, hasWorktree: true, hasLiveSession: true)
         #expect(link.column == .inReview)
     }
 
@@ -38,7 +38,7 @@ struct CardLifecycleTests {
             sessionLink: SessionLink(sessionId: "s1"),
             prLinks: [PRLink(number: 42, status: .merged)]
         )
-        UpdateCardColumn.update(link: &link, activityState: .ended, hasWorktree: false)
+        UpdateCardColumn.update(link: &link, activityState: .ended, hasWorktree: false, hasLiveSession: false)
         #expect(link.column == .done)
     }
 
@@ -52,7 +52,7 @@ struct CardLifecycleTests {
                 PRLink(number: 43, status: .approved),
             ]
         )
-        UpdateCardColumn.update(link: &link, activityState: .ended, hasWorktree: false)
+        UpdateCardColumn.update(link: &link, activityState: .ended, hasWorktree: false, hasLiveSession: false)
         #expect(link.column == .inReview)
     }
 
@@ -66,7 +66,7 @@ struct CardLifecycleTests {
                 PRLink(number: 43, status: .closed),
             ]
         )
-        UpdateCardColumn.update(link: &link, activityState: .ended, hasWorktree: false)
+        UpdateCardColumn.update(link: &link, activityState: .ended, hasWorktree: false, hasLiveSession: false)
         #expect(link.column == .done)
     }
 
@@ -74,7 +74,7 @@ struct CardLifecycleTests {
     func activelyWorkingOverridesManual() {
         var link = Link(column: .done, sessionLink: SessionLink(sessionId: "s1"))
         link.manualOverrides.column = true
-        UpdateCardColumn.update(link: &link, activityState: .activelyWorking, hasWorktree: true)
+        UpdateCardColumn.update(link: &link, activityState: .activelyWorking, hasWorktree: true, hasLiveSession: true)
         #expect(link.column == .inProgress)
     }
 
@@ -82,7 +82,7 @@ struct CardLifecycleTests {
     func manualOverrideWhenIdle() {
         var link = Link(column: .done, sessionLink: SessionLink(sessionId: "s1"))
         link.manualOverrides.column = true
-        UpdateCardColumn.update(link: &link, activityState: .idleWaiting, hasWorktree: true)
+        UpdateCardColumn.update(link: &link, activityState: .idleWaiting, hasWorktree: true, hasLiveSession: true)
         #expect(link.column == .done)
     }
 
@@ -93,21 +93,30 @@ struct CardLifecycleTests {
             sessionLink: SessionLink(sessionId: "s1"),
             worktreeLink: WorktreeLink(path: "", branch: "feature-x")
         )
-        UpdateCardColumn.update(link: &link, activityState: .ended, hasWorktree: true)
+        UpdateCardColumn.update(link: &link, activityState: .ended, hasWorktree: true, hasLiveSession: true)
         #expect(link.column == .waiting)
     }
 
     @Test("Stale session → allSessions")
     func staleToAllSessions() {
         var link = Link(column: .inProgress, sessionLink: SessionLink(sessionId: "s1"))
-        UpdateCardColumn.update(link: &link, activityState: .stale, hasWorktree: false)
+        UpdateCardColumn.update(link: &link, activityState: .stale, hasWorktree: false, hasLiveSession: false)
         #expect(link.column == .allSessions)
     }
 
     @Test("Archived card ignores stale active signal without live work")
     func archivedCardIgnoresStaleActiveSignal() {
         var link = Link(column: .allSessions, manuallyArchived: true, sessionLink: SessionLink(sessionId: "s1"))
-        UpdateCardColumn.update(link: &link, activityState: .activelyWorking, hasWorktree: false)
+        UpdateCardColumn.update(link: &link, activityState: .activelyWorking, hasWorktree: false, hasLiveSession: false)
+        #expect(link.column == .allSessions)
+        #expect(link.manuallyArchived == true)
+    }
+
+    @Test("Self-archived card with a shared worktree and trailing activity stays archived")
+    func selfArchivedCardSurvivesTrailingActivity() {
+        var link = Link(column: .allSessions, manuallyArchived: true, sessionLink: SessionLink(sessionId: "s1"))
+        UpdateCardColumn.update(
+            link: &link, activityState: .activelyWorking, hasWorktree: true, hasLiveSession: false)
         #expect(link.column == .allSessions)
         #expect(link.manuallyArchived == true)
     }
@@ -115,7 +124,7 @@ struct CardLifecycleTests {
     @Test("Archived card with live work clears manuallyArchived and moves to inProgress")
     func archivedCardRevivedByLiveWork() {
         var link = Link(column: .allSessions, manuallyArchived: true, sessionLink: SessionLink(sessionId: "s1"))
-        UpdateCardColumn.update(link: &link, activityState: .activelyWorking, hasWorktree: true)
+        UpdateCardColumn.update(link: &link, activityState: .activelyWorking, hasWorktree: true, hasLiveSession: true)
         #expect(link.column == .inProgress)
         #expect(link.manuallyArchived == false)
     }
@@ -123,7 +132,7 @@ struct CardLifecycleTests {
     @Test("Archived card stays archived when idle")
     func archivedCardStaysArchived() {
         var link = Link(column: .allSessions, manuallyArchived: true, sessionLink: SessionLink(sessionId: "s1"))
-        UpdateCardColumn.update(link: &link, activityState: .idleWaiting, hasWorktree: false)
+        UpdateCardColumn.update(link: &link, activityState: .idleWaiting, hasWorktree: false, hasLiveSession: false)
         #expect(link.column == .allSessions)
         #expect(link.manuallyArchived == true)
     }
@@ -132,11 +141,11 @@ struct CardLifecycleTests {
     func revivedCardGoesToWaiting() {
         var link = Link(column: .allSessions, manuallyArchived: true, sessionLink: SessionLink(sessionId: "s1"))
         // First: actively working clears archive
-        UpdateCardColumn.update(link: &link, activityState: .activelyWorking, hasWorktree: true)
+        UpdateCardColumn.update(link: &link, activityState: .activelyWorking, hasWorktree: true, hasLiveSession: true)
         #expect(link.column == .inProgress)
         #expect(link.manuallyArchived == false)
         // Then: work stops → goes to waiting (not back to allSessions)
-        UpdateCardColumn.update(link: &link, activityState: .needsAttention, hasWorktree: false)
+        UpdateCardColumn.update(link: &link, activityState: .needsAttention, hasWorktree: false, hasLiveSession: false)
         #expect(link.column == .waiting)
     }
 
@@ -144,7 +153,7 @@ struct CardLifecycleTests {
     func noUnnecessaryUpdate() {
         var link = Link(column: .inProgress, sessionLink: SessionLink(sessionId: "s1"))
         let originalUpdatedAt = link.updatedAt
-        UpdateCardColumn.update(link: &link, activityState: .activelyWorking, hasWorktree: false)
+        UpdateCardColumn.update(link: &link, activityState: .activelyWorking, hasWorktree: false, hasLiveSession: false)
         // Column is already inProgress, so updatedAt should not change
         #expect(link.updatedAt == originalUpdatedAt)
     }
