@@ -209,11 +209,28 @@ public struct BoxdSettings: Codable, Sendable, Equatable {
 
     public static let defaultInitCommand = """
     if [ -d "${repo_dir}" ]; then
-      cd "${repo_dir}" && git pull --ff-only
+      cd "${repo_dir}" || exit 1
+      git pull --ff-only || {
+        git stash push --include-untracked --message "kanban-code init $(date -u +%Y-%m-%dT%H:%M:%SZ)" || exit 1
+        git pull --ff-only
+      }
     else
-      git clone "${repo_url}" "${repo_dir}" && cd "${repo_dir}"
+      git clone "${repo_url}" "${repo_dir}"
     fi
     """
+
+    /// Init commands shipped by earlier versions. A stored command that still
+    /// matches one of them is replaced by the current default, so a checkout
+    /// with changed files does not block every launch.
+    static let supersededInitCommands = [
+        """
+        if [ -d "${repo_dir}" ]; then
+          cd "${repo_dir}" && git pull --ff-only
+        else
+          git clone "${repo_url}" "${repo_dir}" && cd "${repo_dir}"
+        fi
+        """
+    ]
 
     public init(
         snapshotName: String = BoxdSettings.defaultSnapshotName,
@@ -240,7 +257,8 @@ public struct BoxdSettings: Codable, Sendable, Equatable {
         snapshotName = (try? c.decodeIfPresent(String.self, forKey: .snapshotName)) ?? Self.defaultSnapshotName
         sourceMachine = (try? c.decodeIfPresent(String.self, forKey: .sourceMachine)) ?? Self.defaultSourceMachine
         folderTemplate = (try? c.decodeIfPresent(String.self, forKey: .folderTemplate)) ?? Self.defaultFolderTemplate
-        initCommand = (try? c.decodeIfPresent(String.self, forKey: .initCommand)) ?? Self.defaultInitCommand
+        let storedInit = (try? c.decodeIfPresent(String.self, forKey: .initCommand)) ?? Self.defaultInitCommand
+        initCommand = Self.supersededInitCommands.contains(storedInit) ? Self.defaultInitCommand : storedInit
         copyGlobs = (try? c.decodeIfPresent([String].self, forKey: .copyGlobs)) ?? Self.defaultCopyGlobs
         let seconds = (try? c.decodeIfPresent(Int.self, forKey: .inactivityTimeoutSeconds)) ?? Self.defaultInactivityTimeoutSeconds
         inactivityTimeoutSeconds = max(Self.minimumInactivityTimeoutSeconds, seconds)

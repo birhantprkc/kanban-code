@@ -120,7 +120,8 @@ struct BoxdLaunchPlannerTests {
             repoName: "langwatch",
             branch: "feat/boxd"
         )
-        #expect(script.contains(#"cd "/home/boxd/langwatch" && git pull --ff-only"#))
+        #expect(script.contains(#"cd "/home/boxd/langwatch""#))
+        #expect(script.contains("git pull --ff-only"))
         #expect(script.contains(#"git clone "git@github.com:langwatch/langwatch.git" "/home/boxd/langwatch""#))
         #expect(!script.contains("${"))
     }

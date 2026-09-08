@@ -33,6 +33,25 @@ struct BoxdSettingsTests {
         #expect(boxd.initCommand.contains("${repo_url}"))
     }
 
+    @Test("The default init command survives a checkout with changed files")
+    func initCommandStashes() {
+        let command = BoxdSettings.defaultInitCommand
+        #expect(command.contains("git stash push"))
+        #expect(command.contains("git pull --ff-only"))
+    }
+
+    @Test("A stored init command from an older version is replaced by the current default")
+    func legacyInitCommandUpgraded() throws {
+        let json = #"{"boxd": {"initCommand": "if [ -d \"${repo_dir}\" ]; then\n  cd \"${repo_dir}\" && git pull --ff-only\nelse\n  git clone \"${repo_url}\" \"${repo_dir}\" && cd \"${repo_dir}\"\nfi"}}"#
+        #expect(try decode(json).boxd?.initCommand == BoxdSettings.defaultInitCommand)
+    }
+
+    @Test("An edited init command is kept as it is")
+    func customInitCommandKept() throws {
+        let json = #"{"boxd": {"initCommand": "make bootstrap"}}"#
+        #expect(try decode(json).boxd?.initCommand == "make bootstrap")
+    }
+
     @Test("An inactivity timeout below the minimum is clamped")
     func timeoutClamped() throws {
         #expect(BoxdSettings(inactivityTimeoutSeconds: 5).inactivityTimeoutSeconds == 60)

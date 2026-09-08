@@ -364,8 +364,7 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
             let result = try await bridge.exec(["bash", "-lc", script], stdin: nil, cwd: remoteHome, timeout: 900)
             if !result.stdout.isEmpty { log(result.stdout.trimmingCharacters(in: .newlines)) }
             if !result.succeeded {
-                let message = result.stderr.isEmpty ? result.stdout : result.stderr
-                throw BoxdSupervisorError.initFailed(message.trimmingCharacters(in: .whitespacesAndNewlines))
+                throw BoxdSupervisorError.initFailed(Self.failureMessage(of: result))
             }
         }
 
@@ -377,7 +376,7 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
                 repo: remoteProjectPath, worktreePath: remoteWorktree, branch: branch, fetch: !worktreeIsNew)
             let result = try await bridge.exec(["bash", "-lc", script], stdin: nil, cwd: remoteHome, timeout: 300)
             if !result.succeeded {
-                throw BoxdSupervisorError.initFailed(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+                throw BoxdSupervisorError.initFailed(Self.failureMessage(of: result))
             }
             remoteCwd = remoteWorktree
         }
@@ -420,6 +419,20 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
             extraEnv: Self.sessionEnvironment(cardId: cardId, remoteHome: remoteHome, claudeOAuthToken: settings.claudeOAuthToken),
             remoteLink: remoteLink
         )
+    }
+
+    /// What a failed script says, in the words a user can act on. Git and the
+    /// package managers print their progress first and the reason last, so the
+    /// tail of the output carries the error.
+    static func failureMessage(of result: ShellCommand.Result, lines: Int = 6) -> String {
+        let text = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? result.stdout : result.stderr
+        let kept = text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .suffix(lines)
+        return kept.joined(separator: "\n")
     }
 
     /// Marks folders as trusted in the machine's `~/.claude.json`.

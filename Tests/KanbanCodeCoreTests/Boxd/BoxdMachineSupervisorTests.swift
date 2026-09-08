@@ -537,4 +537,34 @@ struct BoxdMachineSupervisorTests {
         let withToken = BoxdMachineSupervisor.sessionEnvironment(cardId: "card_1", remoteHome: "/home/boxd", claudeOAuthToken: " sk-ant-oat01-x \n")
         #expect(withToken["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-x")
     }
+
+    // MARK: - Failure messages
+
+    @Test("A failed script is reported with the last lines of its output")
+    func failureMessageKeepsTheTail() {
+        let git = ShellCommand.Result(
+            exitCode: 1,
+            stdout: "Updating 679c298bc5..06f8847e00",
+            stderr: """
+                From https://github.com/acme/acme
+                 679c298bc5..06f8847e00  main -> origin/main
+                 * [new tag] v1.2.3 -> v1.2.3
+                error: Your local changes to the following files would be overwritten by merge:
+                \tplatform/generated.json
+                Please commit your changes or stash them before you merge.
+                Aborting
+                """)
+        let message = BoxdMachineSupervisor.failureMessage(of: git, lines: 3)
+        #expect(message == """
+            platform/generated.json
+            Please commit your changes or stash them before you merge.
+            Aborting
+            """)
+    }
+
+    @Test("A script that only wrote to stdout is reported from stdout")
+    func failureMessageFallsBackToStdout() {
+        let result = ShellCommand.Result(exitCode: 2, stdout: "step one\n\nstep two failed\n", stderr: "  \n")
+        #expect(BoxdMachineSupervisor.failureMessage(of: result) == "step one\nstep two failed")
+    }
 }
