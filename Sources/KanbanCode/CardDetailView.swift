@@ -740,6 +740,8 @@ struct CardDetailView: View {
             let isLaunching = card.link.isLaunching == true && !isLaunchStale
             let showOverlay = isClaudeTabSelected && effectiveActiveSession == nil
             let showMachineOverlay = isClaudeTabSelected && !isLaunching && machineOverlay != .none
+                && !machineOverlay.keepsTerminal
+            let showReconnectBanner = isClaudeTabSelected && !isLaunching && machineOverlay.keepsTerminal
 
             VStack(spacing: 0) {
                 // Finder-style tab bar — single row
@@ -889,7 +891,7 @@ struct CardDetailView: View {
                             // Dead session overlay in chat mode
                             if showOverlay && !isLaunching && card.link.sessionLink != nil {
                                 chatModeResumeOverlay
-                            } else if showMachineOverlay, let remote = card.link.remote {
+                            } else if showMachineOverlay || showReconnectBanner, let remote = card.link.remote {
                                 chatModeMachineBar(remote: remote)
                             } else if showOverlay && isLaunching {
                                 VStack(spacing: 12) {
@@ -939,6 +941,11 @@ struct CardDetailView: View {
                         // terminal below already waits for the machine.
                         if (showOverlay || showMachineOverlay || (isLaunching && launchStatus != nil)) && selectedBrowserTabId == nil {
                             assistantTabOverlay(isLaunching: isLaunching)
+                        }
+
+                        // The session runs on; only the way to it is gone.
+                        if showReconnectBanner, selectedBrowserTabId == nil, let remote = card.link.remote {
+                            reconnectBanner(remote: remote)
                         }
 
                         // Browser tab content — use opacity to preserve WKWebView state
@@ -1148,15 +1155,40 @@ struct CardDetailView: View {
     }
 
     /// Resume bar at the bottom of chat mode when the machine of the live
-    /// session is paused, or still coming back.
+    /// session is paused, still coming back, or being reached again.
     private func chatModeMachineBar(remote: RemoteLink) -> some View {
         let state = machineOverlay
         return resumeBar(
             text: RemoteMachineOverlay.text(for: state, remote: remote, lastActivity: card.link.lastActivity),
             buttonTitle: state.canResume ? "Resume" : nil,
-            isWorking: state == .resuming,
+            isWorking: state == .resuming || state.keepsTerminal,
             action: onResumeMachine
         )
+    }
+
+    /// Sits over the top of the terminal while the bridge to the machine is
+    /// re-established. The terminal underneath keeps retrying its attach,
+    /// so the banner takes no clicks.
+    private func reconnectBanner(remote: RemoteLink) -> some View {
+        VStack {
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                    .colorScheme(.dark)
+                Text("✻ " + RemoteMachineOverlay.text(for: machineOverlay, remote: remote, lastActivity: card.link.lastActivity))
+                    .font(.app(.callout).monospaced())
+                    .foregroundStyle(Color.orange)
+                    .lineLimit(1)
+            }
+            .padding(.vertical, 8)
+            .padding(.horizontal, 14)
+            .background(Color.black.opacity(0.85), in: Capsule())
+            .overlay(Capsule().strokeBorder(Color.orange.opacity(0.6), lineWidth: 1))
+            .padding(.top, 12)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .allowsHitTesting(false)
     }
 
     /// The bar that carries the way back to a session: a line that says

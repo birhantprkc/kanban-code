@@ -19,6 +19,31 @@ struct CardReconcilerTests {
         #expect(result[0].column == .allSessions)
     }
 
+    @Test("An old session that lands on a card by project path does not age the card")
+    func orphanSessionDoesNotAgeCard() {
+        let today = Date.now
+        let threeDaysAgo = today.addingTimeInterval(-3 * 86400)
+        let card = Link(
+            projectPath: "/repo",
+            column: .inProgress,
+            lastActivity: today,
+            sessionLink: SessionLink(sessionId: "live", sessionPath: "/p/live.jsonl"),
+            tmuxLink: TmuxLink(sessionName: "repo-card_1")
+        )
+        // Newest first, the order discovery hands them over: the live session
+        // of the card, then a session from another worktree whose own card is
+        // gone, which rule 4 parks on this card so it does not become a new one.
+        let snapshot = CardReconciler.DiscoverySnapshot(sessions: [
+            Session(id: "live", projectPath: "/repo", messageCount: 5, modifiedTime: today),
+            Session(id: "orphan", projectPath: "/repo/.claude/worktrees/old", messageCount: 3, modifiedTime: threeDaysAgo),
+        ])
+
+        let result = CardReconciler.reconcile(existing: [card], snapshot: snapshot)
+
+        #expect(result.count == 1)
+        #expect(result[0].lastActivity == today)
+    }
+
     @Test("Existing card matched by sessionId is updated, not duplicated")
     func matchBySessionId() {
         let existing = [

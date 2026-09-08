@@ -382,6 +382,18 @@ struct BoxdReducerTests {
         #expect(state.links["card_1"]?.remote?.pausedReason == .systemSleep)
     }
 
+    @Test("A machine being reached again leaves the machine record of its cards alone")
+    func reconnectingStateLeavesTheCards() {
+        var state = stateWith([remoteCard(id: "card_1", sessionName: "repo-card_1", pausedReason: nil)])
+
+        _ = Reducer.reduce(state: &state, action: .remoteMachineStateChanged(machineName: "kanban-repo-1", state: .reconnecting(attempt: 2)))
+
+        #expect(state.remoteMachineStates["kanban-repo-1"] == .reconnecting(attempt: 2))
+        #expect(state.links["card_1"]?.remote?.pausedReason == nil)
+        #expect(state.remoteMachineStates["kanban-repo-1"]?.isConnected == false)
+        #expect(state.remoteMachineStates["kanban-repo-1"]?.label == "Reconnecting")
+    }
+
     // MARK: - remoteMachineAssigned
 
     @Test("remoteMachineAssigned puts the machine on the card and marks it remote")

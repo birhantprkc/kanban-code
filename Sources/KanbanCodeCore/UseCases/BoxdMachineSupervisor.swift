@@ -239,7 +239,22 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
                 }
             } catch {
                 KanbanCodeLog.warn(Self.subsystem, "restore \(remote.machineName): \(error.localizedDescription)")
-                await report(remote.machineName, state: .unreachable)
+                if remote.pausedReason == nil {
+                    // Nothing paused this machine, so it is running as far as
+                    // anyone knows: keep trying to reach it, as after a lost
+                    // bridge, instead of waiting for a click.
+                    machines[remote.machineName] = makeRuntime(
+                        machineName: remote.machineName,
+                        localProjectPath: projectPath,
+                        remoteProjectPath: remote.remoteProjectPath,
+                        remoteHome: remote.remoteHome ?? Self.defaultRemoteHome
+                    )
+                    registry.disconnectMachine(remote.machineName, state: .reconnecting(attempt: 1))
+                    await report(remote.machineName, state: .reconnecting(attempt: 1))
+                    Task { [weak self] in await self?.reconnect(machineName: remote.machineName) }
+                } else {
+                    await report(remote.machineName, state: .unreachable)
+                }
             }
         }
         startInactivityTimer()
@@ -1117,22 +1132,24 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
             registry.disconnectMachine(machineName, state: .paused(paused))
             return
         }
-        registry.disconnectMachine(machineName, state: .unreachable)
-        await report(machineName, state: .unreachable)
+        registry.disconnectMachine(machineName, state: .reconnecting(attempt: 1))
+        await report(machineName, state: .reconnecting(attempt: 1))
         KanbanCodeLog.warn(Self.subsystem, "\(machineName): bridge lost (\(reason)), reconnecting")
         Task { [weak self] in await self?.reconnect(machineName: machineName) }
     }
 
+    /// Tries to reach a machine the app did not pause, for as long as that
+    /// holds. The tries back off to one a minute; they end when the bridge
+    /// is back, when boxd reports the machine parked or gone, or when a
+    /// pause takes over. A Mac without network for hours costs one `boxd
+    /// machine get` a minute per machine, and the watchdog on the machine
+    /// stops it on its own when the work there dries up.
     private func reconnect(machineName: String) async {
         guard var runtime = machines[machineName], runtime.bridge == nil, runtime.pausedReason == nil else { return }
         runtime.reconnectAttempts += 1
         machines[machineName] = runtime
         let attempt = runtime.reconnectAttempts
-        guard attempt <= 6 else {
-            KanbanCodeLog.warn(Self.subsystem, "\(machineName): giving up after \(attempt - 1) reconnect attempts")
-            return
-        }
-        try? await Task.sleep(for: .seconds(min(60, 5 * attempt)))
+        try? await Task.sleep(for: .seconds(Self.reconnectDelay(attempt: attempt)))
         guard let current = machines[machineName], current.bridge == nil, current.pausedReason == nil else { return }
         do {
             let machine = try await boxd.getMachine(name: machineName)
@@ -1162,8 +1179,14 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
             }
         } catch {
             KanbanCodeLog.warn(Self.subsystem, "\(machineName): reconnect \(attempt) failed: \(error.localizedDescription)")
+            await report(machineName, state: .reconnecting(attempt: attempt + 1))
             Task { [weak self] in await self?.reconnect(machineName: machineName) }
         }
+    }
+
+    /// Seconds before reconnect try `attempt`: 5, 10, ... up to a minute.
+    nonisolated public static func reconnectDelay(attempt: Int) -> Int {
+        min(60, 5 * max(1, attempt))
     }
 
     private func runProxy(_ request: BridgeProxyRequest, on machineName: String) async {
@@ -1274,8 +1297,14 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
                 remoteHome: target.remoteHome)
         } catch {
             KanbanCodeLog.warn(Self.subsystem, "\(machineName): resume failed: \(error.localizedDescription)")
-            await report(machineName, state: .unreachable)
             peekPauseRequested.remove(machineName)
+            if machines[machineName]?.pausedReason == nil {
+                // The app never paused it: presumed running, keep trying.
+                await report(machineName, state: .reconnecting(attempt: 1))
+                Task { [weak self] in await self?.reconnect(machineName: machineName) }
+            } else {
+                await report(machineName, state: .unreachable)
+            }
             return false
         }
         machines[machineName]?.resumedForPeek = true

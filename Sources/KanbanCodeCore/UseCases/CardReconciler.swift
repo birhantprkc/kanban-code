@@ -109,8 +109,13 @@ public enum CardReconciler {
                     link.sessionLink?.sessionPath = session.jsonlPath
                 }
                 // Different sessionId (e.g., shell tab session) — just mark matched,
-                // don't overwrite the card's primary session.
-                link.lastActivity = session.modifiedTime
+                // don't overwrite the card's primary session. Activity only moves
+                // forward: a session from days ago that lost its own card lands
+                // on the newest card of its project by rule 4, and its age is
+                // not the card's.
+                if link.lastActivity.map({ session.modifiedTime > $0 }) ?? true {
+                    link.lastActivity = session.modifiedTime
+                }
                 if link.projectPath == nil, let pp = session.projectPath {
                     link.projectPath = pp
                 }

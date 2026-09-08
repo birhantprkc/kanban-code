@@ -11,6 +11,9 @@ public enum RemoteMachineState: Sendable, Equatable {
     case paused(RemotePausedReason)
     /// The machine exists but the bridge cannot reach it.
     case unreachable
+    /// The bridge dropped while the machine is presumed running. The app
+    /// keeps trying; `attempt` counts the tries so far.
+    case reconnecting(attempt: Int)
     /// The machine was removed.
     case destroyed
 
@@ -39,6 +42,7 @@ public enum RemoteMachineState: Sendable, Equatable {
         case .paused(.stopped): "Stopped"
         case .paused(let reason): "Stopped (\(reason.label))"
         case .unreachable: "Unreachable"
+        case .reconnecting: "Reconnecting"
         case .destroyed: "Destroyed"
         }
     }

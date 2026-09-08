@@ -2385,7 +2385,7 @@ public enum Reducer {
                     remote.pausedReason = nil
                     remote.pausedAt = nil
                     remote.lastStatus = "running"
-                case .unreachable:
+                case .unreachable, .reconnecting:
                     break
                 case .destroyed:
                     link.remote = nil

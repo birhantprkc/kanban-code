@@ -885,16 +885,22 @@ final class TerminalCache {
     /// tmux client runs with `-u` so it writes UTF-8 whatever the locale of
     /// the machine.
     ///
-    /// The attach is tried for 10 minutes: a resume creates the tmux session
-    /// a few seconds after the bridge connects, and a push of a large
-    /// transcript before it can take a while.
+    /// A session that is not there yet is tried for 10 minutes: a resume
+    /// creates the tmux session a few seconds after the bridge connects, and
+    /// a push of a large transcript before it can take a while. A connection
+    /// that fails or drops (no network, the machine still coming back) does
+    /// not use up those tries: the session is still running on the machine,
+    /// so the attach is retried for as long as the terminal is open.
     static func remoteAttachScript(boxd: String, machine: String?, session: String, readyMarker: String? = nil) -> String {
         let quote = { (value: String) in "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
         let fallback = quote(machine ?? "")
         let program = expectProgram(boxd: boxd, session: session)
-        let attach = "KANBAN_MACHINE=\"$m\" /usr/bin/expect -c \(quote(program))"
+        let attach = "KANBAN_MACHINE=\"$m\" /usr/bin/expect -c \(quote(program)); r=$?; [ $r -eq 0 ] && break"
+        // A missing session counts against the tries, a failed connection
+        // only waits a little longer.
+        let again = "if [ $r -eq \(noSessionStatus) ]; then n=$((n+1)); sleep 2; else sleep 3; fi"
         guard let readyMarker else {
-            return "m=\(fallback); for i in $(seq 1 \(attachTries)); do \(attach) && break; sleep 2; done; echo 'Session ended.'"
+            return "m=\(fallback); n=0; while [ $n -lt \(attachTries) ]; do \(attach); \(again); done; echo 'Session ended.'"
         }
         // `boxd machine connect` wakes a paused machine, so the pause marker
         // is read before every try, not after: a connect that succeeds takes
@@ -907,18 +913,22 @@ final class TerminalCache {
             + "n=0; while [ $n -lt \(attachTries) ]; do "
             + "if [ -e \(paused) ]; then echo 'Machine paused.'; while [ -e \(paused) ]; do sleep 1; done; n=0; fi; "
             + "m=\"$(cat \(marker) 2>/dev/null)\"; [ -n \"$m\" ] || m=\(fallback); "
-            + "\(attach) && break; "
+            + "\(attach); "
             + "if [ -e \(paused) ]; then continue; fi; "
-            + "n=$((n+1)); sleep 2; done; echo 'Session ended.'"
+            + "\(again); done; echo 'Session ended.'"
     }
 
     /// Suffix of the file next to the ready marker that tells the attach loop
     /// the app has the machine paused.
     static let pausedMarkerSuffix = BoxdMachineSupervisor.pausedMarkerSuffix
 
-    /// How many times the remote attach is tried, 2 seconds and a connect
-    /// apart, before the terminal gives up on the session.
+    /// How many times a session that is not on the machine is tried, 2
+    /// seconds and a connect apart, before the terminal gives up on it.
     static let attachTries = 150
+
+    /// The status the shell on the machine reports when the tmux session is
+    /// not there, as opposed to tmux ending or the connection dropping.
+    static let noSessionStatus = 9
 
     /// The word the shell on the machine prints when tmux exits, followed by
     /// the exit status of tmux.
@@ -927,15 +937,22 @@ final class TerminalCache {
     /// The Tcl program `expect` runs for one attach. The machine comes in
     /// through `KANBAN_MACHINE`, because `expect -c` takes no arguments. A
     /// prompt that never shows (a machine still resuming) sends the command
-    /// after the timeout anyway. The shell on the machine runs tmux, prints
-    /// the sentinel with the exit status of tmux and exits; `interact`
-    /// watches the output for the sentinel, swallows it, and ends with that
-    /// status, so a session that is not there yet (status 1) is retried and
-    /// a detach (status 0) ends the terminal. A connection that drops before
-    /// the sentinel exits 1 as well. The WINCH trap copies the size of the
-    /// local pty to the pty of `connect`, which forwards it to the machine.
+    /// after the timeout anyway. The shell on the machine first asks tmux
+    /// whether the session exists and reports `noSessionStatus` when it does
+    /// not; otherwise it runs tmux, prints the sentinel with the exit status
+    /// of tmux and exits. `interact` watches the output for the sentinel,
+    /// swallows it, and ends with that status, so a session that is not
+    /// there yet is retried a bounded number of times, a detach (status 0)
+    /// ends the terminal, and a connection that never opens or drops before
+    /// the sentinel (status 1) is retried for as long as the terminal is
+    /// open. The WINCH trap copies the size of the local pty to the pty of
+    /// `connect`, which forwards it to the machine.
     static func expectProgram(boxd: String, session: String) -> String {
-        let attach = " tmux -u -T hyperlinks attach-session -t \(session) 2>/dev/null; echo \(attachExitSentinel):$?; exit\\r"
+        // The status is typed in quotes so the echo of the command, which
+        // `interact` sees as well, never matches the sentinel pattern. Only
+        // what the shell prints after running it does.
+        let attach = " tmux has-session -t \(session) 2>/dev/null || { echo \(attachExitSentinel):\\\"\(noSessionStatus)\\\"; exit; }; "
+            + "tmux -u -T hyperlinks attach-session -t \(session) 2>/dev/null; echo \(attachExitSentinel):$?; exit\\r"
         return [
             "set timeout 20",
             "spawn -noecho {\(boxd)} machine connect $env(KANBAN_MACHINE)",

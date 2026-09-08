@@ -21,7 +21,7 @@ struct RemoteAttachScriptTests {
         let waitIndex = script.range(of: "[ -e '/Users/me/.kanban-code/remote-ready/repo-card_1' ] && break")
         let attachIndex = script.range(of: "KANBAN_MACHINE=\"$m\" /usr/bin/expect -c '")
         #expect(script.contains("machine connect $env(KANBAN_MACHINE)"))
-        #expect(script.contains("send \" tmux -u -T hyperlinks attach-session -t repo-card_1 2>/dev/null; echo KANBAN_TMUX_EXIT:$?; exit\\r\""))
+        #expect(script.contains("send \" tmux has-session -t repo-card_1 2>/dev/null || { echo KANBAN_TMUX_EXIT:\\\"9\\\"; exit; }; tmux -u -T hyperlinks attach-session -t repo-card_1 2>/dev/null; echo KANBAN_TMUX_EXIT:$?; exit\\r\""))
         #expect(script.contains("m=\"$(cat '/Users/me/.kanban-code/remote-ready/repo-card_1' 2>/dev/null)\"; [ -n \"$m\" ] || m='kanban-repo-1'"))
         #expect(waitIndex != nil)
         #expect(attachIndex != nil)
@@ -40,7 +40,7 @@ struct RemoteAttachScriptTests {
         #expect(script.contains("while [ $n -lt 150 ]; do if [ -e '/tmp/marker.paused' ]; then echo 'Machine paused.'; while [ -e '/tmp/marker.paused' ]; do sleep 1; done; n=0; fi; "))
         // The machine is read from the marker on every try.
         #expect(script.contains("m=\"$(cat '/tmp/marker' 2>/dev/null)\"; [ -n \"$m\" ] || m='kanban-repo-1'; KANBAN_MACHINE=\"$m\" /usr/bin/expect -c '"))
-        #expect(script.contains("' && break; if [ -e '/tmp/marker.paused' ]; then continue; fi; n=$((n+1)); sleep 2; done; echo 'Session ended.'"))
+        #expect(script.contains("'; r=$?; [ $r -eq 0 ] && break; if [ -e '/tmp/marker.paused' ]; then continue; fi; if [ $r -eq 9 ]; then n=$((n+1)); sleep 2; else sleep 3; fi; done; echo 'Session ended.'"))
         #expect(TerminalCache.pausedMarkerSuffix == ".paused")
         let pauseCheck = script.range(of: "if [ -e '/tmp/marker.paused' ]")
         let firstAttach = script.range(of: "KANBAN_MACHINE=\"$m\" /usr/bin/expect")
@@ -67,13 +67,13 @@ struct RemoteAttachScriptTests {
     func noMarker() {
         let script = TerminalCache.remoteAttachScript(boxd: "boxd", machine: "kanban-repo-1", session: "s")
         #expect(!script.contains("remote-ready"))
-        #expect(script.hasPrefix("m='kanban-repo-1'; for i in $(seq 1 150); do KANBAN_MACHINE=\"$m\" /usr/bin/expect -c '"))
+        #expect(script.hasPrefix("m='kanban-repo-1'; n=0; while [ $n -lt 150 ]; do KANBAN_MACHINE=\"$m\" /usr/bin/expect -c '"))
     }
 
     @Test("expect waits for the prompt, types the attach, and hands the pty over")
     func expectProgram() {
         let program = TerminalCache.expectProgram(boxd: "/opt/boxd", session: "repo-card_1")
-        let attach = " tmux -u -T hyperlinks attach-session -t repo-card_1 2>/dev/null; echo KANBAN_TMUX_EXIT:$?; exit\\r"
+        let attach = " tmux has-session -t repo-card_1 2>/dev/null || { echo KANBAN_TMUX_EXIT:\\\"9\\\"; exit; }; tmux -u -T hyperlinks attach-session -t repo-card_1 2>/dev/null; echo KANBAN_TMUX_EXIT:$?; exit\\r"
         #expect(program == [
             "set timeout 20",
             "spawn -noecho {/opt/boxd} machine connect $env(KANBAN_MACHINE)",
@@ -95,7 +95,21 @@ struct RemoteAttachScriptTests {
     func retryLoop() {
         let script = TerminalCache.remoteAttachScript(boxd: "boxd", machine: "kanban-repo-1", session: "s")
         #expect(script.contains("/usr/bin/expect -c 'set timeout 20; spawn -noecho {boxd} machine connect $env(KANBAN_MACHINE); "))
-        #expect(script.hasSuffix("' && break; sleep 2; done; echo 'Session ended.'"))
+        #expect(script.hasSuffix("'; r=$?; [ $r -eq 0 ] && break; if [ $r -eq 9 ]; then n=$((n+1)); sleep 2; else sleep 3; fi; done; echo 'Session ended.'"))
+    }
+
+    @Test("only a missing session uses up the tries, a lost connection is retried for as long as the terminal is open")
+    func connectionLossNeverGivesUp() {
+        let script = TerminalCache.remoteAttachScript(boxd: "boxd", machine: "kanban-repo-1", session: "s")
+        // The shell on the machine tells a missing session apart from a
+        // dropped connection with its own status.
+        #expect(TerminalCache.noSessionStatus == 9)
+        // Typed in quotes: the echo of the command must not look like the sentinel.
+        #expect(script.contains("tmux has-session -t s 2>/dev/null || { echo KANBAN_TMUX_EXIT:\\\"9\\\"; exit; }"))
+        #expect(!script.contains("KANBAN_TMUX_EXIT:9;"))
+        // The counter moves only on that status; every other failure just waits.
+        #expect(script.contains("if [ $r -eq 9 ]; then n=$((n+1)); sleep 2; else sleep 3; fi"))
+        #expect(!script.contains("&& break; sleep"))
     }
 
     @Test("a terminal that starts before the machine is known takes the machine from the marker")

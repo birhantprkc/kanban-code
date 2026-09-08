@@ -12,13 +12,23 @@ enum RemoteMachineOverlayState: Equatable {
     case unreachable
     /// A resume is in flight.
     case resuming
+    /// The bridge dropped while the machine keeps running. The terminal
+    /// stays, with a banner that counts the tries, and reattaches by itself.
+    case reconnecting(attempt: Int)
 
     /// Whether the overlay offers a resume.
     var canResume: Bool {
         switch self {
         case .paused, .unreachable: true
-        case .none, .resuming: false
+        case .none, .resuming, .reconnecting: false
         }
+    }
+
+    /// Whether the terminal stays on screen under a banner instead of
+    /// giving way to the transcript.
+    var keepsTerminal: Bool {
+        if case .reconnecting = self { return true }
+        return false
     }
 }
 
@@ -38,6 +48,7 @@ enum RemoteMachineOverlay {
         switch machineState {
         case .paused(let reason): return .paused(reason)
         case .unreachable: return .unreachable
+        case .reconnecting(let attempt): return .reconnecting(attempt: attempt)
         case .connecting: return .resuming
         case .connected, .destroyed: return .none
         case nil: return remote.pausedReason.map { .paused($0) } ?? .none
@@ -58,6 +69,8 @@ enum RemoteMachineOverlay {
             return "Resuming machine \(machine)…"
         case .unreachable:
             return "Machine \(machine) did not answer. Resume tries again."
+        case .reconnecting(let attempt):
+            return "Connection to \(machine) lost · Reconnecting… · attempt \(attempt)"
         case .paused(let reason):
             switch reason {
             case .inactivity:

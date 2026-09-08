@@ -538,6 +538,17 @@ struct BoxdMachineSupervisorTests {
         #expect(withToken["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-x")
     }
 
+    // MARK: - Reconnect pacing
+
+    @Test("Reconnect tries back off to one a minute and never run out")
+    func reconnectDelayBacksOff() {
+        #expect(BoxdMachineSupervisor.reconnectDelay(attempt: 1) == 5)
+        #expect(BoxdMachineSupervisor.reconnectDelay(attempt: 4) == 20)
+        #expect(BoxdMachineSupervisor.reconnectDelay(attempt: 12) == 60)
+        #expect(BoxdMachineSupervisor.reconnectDelay(attempt: 500) == 60)
+        #expect(BoxdMachineSupervisor.reconnectDelay(attempt: 0) == 5)
+    }
+
     // MARK: - Failure messages
 
     @Test("A failed script is reported with the last lines of its output")

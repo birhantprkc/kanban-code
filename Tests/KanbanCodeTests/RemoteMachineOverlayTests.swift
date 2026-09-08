@@ -36,6 +36,19 @@ struct RemoteMachineOverlayTests {
         #expect(state.canResume)
     }
 
+    @Test("A lost bridge keeps the terminal, with a banner that counts the tries")
+    func reconnecting() {
+        let state = RemoteMachineOverlay.state(remote: remote, machineState: .reconnecting(attempt: 3), hasLiveSession: true, isRemote: true)
+
+        #expect(state == .reconnecting(attempt: 3))
+        #expect(state.keepsTerminal)
+        #expect(!state.canResume)
+        #expect(RemoteMachineOverlay.text(for: state, remote: remote, lastActivity: nil)
+            == "Connection to kanban-langwatch-3ii7zfnu lost · Reconnecting… · attempt 3")
+        #expect(!RemoteMachineOverlayState.unreachable.keepsTerminal)
+        #expect(!RemoteMachineOverlayState.paused(.manual).keepsTerminal)
+    }
+
     @Test("A connected machine, a dead session or a local card show nothing")
     func nothingToShow() {
         #expect(RemoteMachineOverlay.state(remote: remote, machineState: .connected, hasLiveSession: true, isRemote: true) == .none)
