@@ -2132,14 +2132,17 @@ public enum Reducer {
                         // A card on a machine keeps the flag until its launch
                         // reports: its mirrored transcript looks active as
                         // soon as the bridge reconnects, long before the
-                        // session is back.
+                        // session is back. So does a launch that is still
+                        // reporting progress, and a resume whose old
+                        // transcript only says the session it replaces ended.
                         let activity = result.activityMap[existing.sessionLink?.sessionId ?? ""]
-                        if activity != nil, existing.remote == nil {
+                        let stillReporting = state.launchProgress[link.id] != nil
+                        if let activity, activity != .ended, activity != .stale, existing.remote == nil, !stillReporting {
                             // Activity detected — clear isLaunching, let column recomputation run
                             var cleared = existing
                             cleared.isLaunching = nil
                             mergedLinks[link.id] = cleared
-                            KanbanCodeLog.info("store", "Cleared isLaunching on card=\(link.id.prefix(12)) (activity=\(activity!))")
+                            KanbanCodeLog.info("store", "Cleared isLaunching on card=\(link.id.prefix(12)) (activity=\(activity))")
                             continue
                         }
                         // Stale launch timeout: clear isLaunching after 30s

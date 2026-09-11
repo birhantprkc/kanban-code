@@ -266,8 +266,9 @@ final class FakeBoxdPort: BoxdPort, @unchecked Sendable {
         return ShellCommand.Result(exitCode: 0, stdout: "", stderr: "")
     }
 
-    func upload(name: String, remotePath: String, data: Data) async throws {
+    func upload(name: String, remotePath: String, data: Data, onEvent: @escaping @Sendable (BoxdUploadEvent) -> Void) async throws {
         try record("upload", remotePath)
+        onEvent(.progress(sent: data.count, total: data.count))
     }
 
     func isAvailable() async -> Bool { true }

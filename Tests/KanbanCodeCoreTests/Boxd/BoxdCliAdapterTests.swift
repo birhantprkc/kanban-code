@@ -149,4 +149,27 @@ struct BoxdCliAdapterTests {
         // Only the resolution is checked here; no command is run against boxd.
         #expect(await adapter.isAvailable() == (ShellCommand.findExecutable("boxd") != nil))
     }
+
+    // MARK: - Uploads in parts
+
+    @Test("An upload is cut into parts of the configured size, empty data stays one part")
+    func uploadParts() {
+        let data = Data(repeating: 7, count: 2_500)
+        let parts = BoxdCliAdapter.parts(of: data, size: 1_000)
+        #expect(parts.map(\.count) == [1_000, 1_000, 500])
+        #expect(parts.reduce(Data(), +) == data)
+        #expect(BoxdCliAdapter.parts(of: Data(), size: 1_000) == [Data()])
+        #expect(BoxdCliAdapter.parts(of: Data(repeating: 1, count: 1_000), size: 1_000).count == 1)
+        #expect(BoxdCliAdapter.uploadPartBytes == 512 * 1024)
+        #expect(BoxdCliAdapter.uploadPartTries == 3)
+    }
+
+    @Test("A failed command is reported by its reason, not by the command line")
+    func shortMessage() {
+        let error = BoxdError.commandFailed(
+            command: "boxd machine cp /var/folders/x kanban-repo-1:/tmp/kanban-cli.tgz.incoming-1",
+            exitCode: 1, message: "error: http2 error\n")
+        #expect(BoxdCliAdapter.shortMessage(of: error) == "http2 error")
+        #expect(BoxdCliAdapter.shortMessage(of: BoxdError.notInstalled) == "The boxd CLI is not installed")
+    }
 }

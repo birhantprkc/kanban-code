@@ -299,13 +299,22 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
 
         log("Preparing machine \(machineName)")
         let machine = try await ensureRunning(machineName: machineName, settings: settings, log: log)
-        try await connect(
-            machineName: machineName,
-            localProjectPath: repoRoot,
-            remoteProjectPath: remoteProjectPath,
-            remoteHome: remoteHome,
-            log: log
-        )
+        do {
+            try await connect(
+                machineName: machineName,
+                localProjectPath: repoRoot,
+                remoteProjectPath: remoteProjectPath,
+                remoteHome: remoteHome,
+                log: log
+            )
+        } catch {
+            // The machine is up but the CLI or the bridge did not make it:
+            // it must not sit running with nothing on it. Its disk stays, so
+            // a retry starts it again.
+            log("Preparation failed, stopping \(machineName)")
+            await stop(machineName: machineName, reason: .sessionStopped)
+            throw error
+        }
         guard let bridge = machines[machineName]?.bridge else { throw BoxdSupervisorError.notConnected(machineName) }
 
         // The card remembers its machine from here on, so a failed step
@@ -738,9 +747,9 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         registry.removeMachine(machineName)
         do {
             try await boxd.remove(name: machineName)
-        } catch let error as BoxdError {
+        } catch {
             // A machine that is already gone is the state we want.
-            if case .commandFailed(_, _, let message) = error, message.lowercased().contains("not found") {
+            if Self.isNotFound(error) {
                 KanbanCodeLog.info(Self.subsystem, "\(machineName): already removed")
             } else {
                 throw error
@@ -1054,7 +1063,21 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         guard tar.succeeded, let data = FileManager.default.contents(atPath: archive) else {
             throw BoxdSupervisorError.bootstrapFailed(tar.stderr)
         }
-        try await boxd.upload(name: machineName, remotePath: "/tmp/kanban-cli.tgz", data: data)
+        let size = Self.megabytes(data.count)
+        log("Uploading the kanban CLI (\(size)) to \(machineName)")
+        do {
+            try await boxd.upload(name: machineName, remotePath: "/tmp/kanban-cli.tgz", data: data) { event in
+                switch event {
+                case .progress(let sent, let total):
+                    log("Uploading the kanban CLI: \(Self.megabytes(sent)) of \(Self.megabytes(total))")
+                case .retry(let attempt, let of, let reason):
+                    log("Upload interrupted (\(reason)), trying again \(attempt)/\(of)")
+                }
+            }
+        } catch {
+            throw BoxdSupervisorError.bootstrapFailed(
+                "the upload of the kanban CLI (\(size)) to \(machineName) failed: \(BoxdCliAdapter.shortMessage(of: error))")
+        }
         let bundleName = (cliBundlePath as NSString).lastPathComponent
         let script = """
         set -e
@@ -1178,10 +1201,30 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
                 Task { [weak self] in await self?.reconnect(machineName: machineName) }
             }
         } catch {
+            if Self.isNotFound(error) {
+                // Removed outside the app: nothing left to reach.
+                KanbanCodeLog.info(Self.subsystem, "\(machineName): no longer exists, reconnect ends")
+                machines[machineName] = nil
+                registry.removeMachine(machineName)
+                await report(machineName, state: .destroyed)
+                return
+            }
             KanbanCodeLog.warn(Self.subsystem, "\(machineName): reconnect \(attempt) failed: \(error.localizedDescription)")
             await report(machineName, state: .reconnecting(attempt: attempt + 1))
             Task { [weak self] in await self?.reconnect(machineName: machineName) }
         }
+    }
+
+    /// Whether boxd answered that the machine does not exist.
+    nonisolated static func isNotFound(_ error: Error) -> Bool {
+        if case .commandFailed(_, _, let message) = error as? BoxdError {
+            return message.lowercased().contains("not found")
+        }
+        return false
+    }
+
+    nonisolated static func megabytes(_ bytes: Int) -> String {
+        String(format: "%.1f MB", Double(bytes) / 1_048_576)
     }
 
     /// Seconds before reconnect try `attempt`: 5, 10, ... up to a minute.

@@ -470,6 +470,46 @@ struct LaunchFlowIntegrationTests {
 
     // MARK: - Reconciliation preserves launch state
 
+    @Test("A resume keeps its launching flag while the old transcript only says the session ended")
+    func reconKeepsLaunchingOnEndedActivity() {
+        let card = makeLink(
+            id: "card_resume", column: .inProgress,
+            sessionLink: SessionLink(sessionId: "sess-old", sessionPath: "/p/sess-old.jsonl"),
+            isLaunching: true)
+        var state = stateWith([card])
+        let snapshot = makeLink(id: "card_resume", column: .inProgress,
+            sessionLink: SessionLink(sessionId: "sess-old", sessionPath: "/p/sess-old.jsonl"),
+            updatedAt: .now.addingTimeInterval(-5))
+
+        _ = Reducer.reduce(state: &state, action: .reconciled(ReconciliationResult(
+            links: [snapshot], sessions: [], activityMap: ["sess-old": .ended], tmuxSessions: [])))
+        #expect(state.links["card_resume"]?.isLaunching == true)
+
+        // A running session is the signal that clears the flag.
+        _ = Reducer.reduce(state: &state, action: .reconciled(ReconciliationResult(
+            links: [snapshot], sessions: [], activityMap: ["sess-old": .activelyWorking], tmuxSessions: [])))
+        #expect(state.links["card_resume"]?.isLaunching == nil)
+    }
+
+    @Test("A launch that still reports progress keeps its flag whatever the transcript says")
+    func reconKeepsLaunchingWhileReporting() {
+        let card = makeLink(
+            id: "card_remote", column: .inProgress,
+            sessionLink: SessionLink(sessionId: "sess-r", sessionPath: "/p/sess-r.jsonl"),
+            isLaunching: true)
+        var state = stateWith([card])
+        _ = Reducer.reduce(state: &state, action: .launchProgress(cardId: "card_remote", message: "Uploading the kanban CLI: 1.0 MB of 2.9 MB"))
+        let snapshot = makeLink(id: "card_remote", column: .inProgress,
+            sessionLink: SessionLink(sessionId: "sess-r", sessionPath: "/p/sess-r.jsonl"),
+            updatedAt: .now.addingTimeInterval(-5))
+
+        _ = Reducer.reduce(state: &state, action: .reconciled(ReconciliationResult(
+            links: [snapshot], sessions: [], activityMap: ["sess-r": .activelyWorking], tmuxSessions: [])))
+
+        #expect(state.links["card_remote"]?.isLaunching == true)
+        #expect(state.launchProgress["card_remote"] == "Uploading the kanban CLI: 1.0 MB of 2.9 MB")
+    }
+
     @Test("Reconciliation does not reset a card that just completed launchTmuxReady")
     func reconDoesNotResetAfterTmuxReady() {
         // Timeline: launchCard → tmux started → launchTmuxReady → reconciliation fires with stale data

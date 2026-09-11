@@ -110,13 +110,27 @@ public protocol BoxdPort: Sendable {
     func saveSnapshot(machine: String, name: String) async throws
     func listSnapshots() async throws -> [BoxdSnapshot]
     func exec(name: String, command: String, timeout: TimeInterval) async throws -> ShellCommand.Result
-    func upload(name: String, remotePath: String, data: Data) async throws
+    /// Uploads bytes to a path on the machine, reporting what happens on the
+    /// way so a launch can show it.
+    func upload(name: String, remotePath: String, data: Data, onEvent: @escaping @Sendable (BoxdUploadEvent) -> Void) async throws
     func isAvailable() async -> Bool
+}
+
+/// What an upload reports while it runs.
+public enum BoxdUploadEvent: Sendable, Equatable {
+    /// Bytes that have landed on the machine so far.
+    case progress(sent: Int, total: Int)
+    /// A part failed and is being sent again.
+    case retry(attempt: Int, of: Int, reason: String)
 }
 
 extension BoxdPort {
     public func exec(name: String, command: String) async throws -> ShellCommand.Result {
         try await exec(name: name, command: command, timeout: 120)
+    }
+
+    public func upload(name: String, remotePath: String, data: Data) async throws {
+        try await upload(name: name, remotePath: remotePath, data: data, onEvent: { _ in })
     }
 }
 
@@ -198,29 +212,85 @@ public final class BoxdCliAdapter: BoxdPort, @unchecked Sendable {
         )
     }
 
-    /// Uploads bytes to a path on the machine.
+    /// Size of one part of an upload. The transfer behind `machine cp` is
+    /// cut after about a minute whatever is left to send, so one big file
+    /// never gets through a slow uplink; a part this size does in seconds.
+    static let uploadPartBytes = 512 * 1024
+    /// How often one part is sent before the upload fails.
+    static let uploadPartTries = 3
+
+    /// Uploads bytes to a path on the machine, in parts.
     ///
-    /// The bytes go through a temporary file rather than the stdin form of
+    /// Each part goes through a temporary file rather than the stdin form of
     /// `machine cp -`: `ShellCommand.run` writes its stdin before the child
     /// starts, which blocks forever once the payload passes the pipe buffer.
-    public func upload(name: String, remotePath: String, data: Data) async throws {
-        let temporaryPath = (NSTemporaryDirectory() as NSString)
-            .appendingPathComponent("kanban-boxd-upload-\(UUID().uuidString)")
-        try data.write(to: URL(fileURLWithPath: temporaryPath))
-        defer { try? FileManager.default.removeItem(atPath: temporaryPath) }
-        // `boxd machine cp` stages the upload in `<target>.boxd-upload.tmp`
-        // on the machine: two uploads to the same target destroy each other
-        // at the rename. Each upload lands on its own name and is moved into
-        // place in a second step.
+    /// `boxd machine cp` stages an upload in `<target>.boxd-upload.tmp` on
+    /// the machine, so two uploads to the same target destroy each other at
+    /// the rename: the parts land on their own names and one command on the
+    /// machine folds them into the target.
+    public func upload(name: String, remotePath: String, data: Data, onEvent: @escaping @Sendable (BoxdUploadEvent) -> Void) async throws {
         let incoming = "\(remotePath).incoming-\(UUID().uuidString.prefix(8))"
-        KanbanCodeLog.info(Self.subsystem, "Uploading \(data.count) bytes to \(name):\(remotePath)")
+        let parts = Self.parts(of: data, size: Self.uploadPartBytes)
+        let partPaths = parts.indices.map { "\(incoming).part-\($0)" }
+        KanbanCodeLog.info(Self.subsystem, "Uploading \(data.count) bytes to \(name):\(remotePath) in \(parts.count) part(s)")
         do {
-            _ = try await run(["machine", "cp", temporaryPath, "\(name):\(incoming)"], timeout: 600)
-            _ = try await run(["machine", "exec", name, "--", "mv", "-f", incoming, remotePath], timeout: 30)
+            var sent = 0
+            for (part, path) in zip(parts, partPaths) {
+                try await uploadPart(part, to: path, machine: name, onEvent: onEvent)
+                sent += part.count
+                onEvent(.progress(sent: sent, total: data.count))
+            }
+            let list = partPaths.map(Self.quote).joined(separator: " ")
+            let assemble = "cat \(list) > \(Self.quote(incoming)) && rm -f \(list) && mv -f \(Self.quote(incoming)) \(Self.quote(remotePath))"
+            _ = try await run(["machine", "exec", name, "--", "sh", "-c", assemble], timeout: 120)
         } catch {
-            _ = try? await run(["machine", "exec", name, "--", "rm", "-f", incoming], timeout: 30)
+            let list = ([incoming] + partPaths).map(Self.quote).joined(separator: " ")
+            _ = try? await run(["machine", "exec", name, "--", "sh", "-c", "rm -f \(list)"], timeout: 30)
             throw error
         }
+    }
+
+    private func uploadPart(_ part: Data, to remotePath: String, machine: String, onEvent: @escaping @Sendable (BoxdUploadEvent) -> Void) async throws {
+        let temporaryPath = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("kanban-boxd-upload-\(UUID().uuidString)")
+        try part.write(to: URL(fileURLWithPath: temporaryPath))
+        defer { try? FileManager.default.removeItem(atPath: temporaryPath) }
+        var attempt = 1
+        while true {
+            do {
+                _ = try await run(["machine", "cp", temporaryPath, "\(machine):\(remotePath)"], timeout: 180)
+                return
+            } catch {
+                guard attempt < Self.uploadPartTries else { throw error }
+                let reason = Self.shortMessage(of: error)
+                KanbanCodeLog.warn(Self.subsystem, "upload of \(remotePath) failed on try \(attempt) (\(reason)), retrying")
+                attempt += 1
+                onEvent(.retry(attempt: attempt, of: Self.uploadPartTries, reason: reason))
+                try? await Task.sleep(for: .seconds(2 * attempt))
+            }
+        }
+    }
+
+    /// The upload split into parts of `size` bytes; empty data is one empty
+    /// part, so the target file still gets created.
+    static func parts(of data: Data, size: Int) -> [Data] {
+        guard !data.isEmpty else { return [Data()] }
+        return stride(from: 0, to: data.count, by: size).map { start in
+            data.subdata(in: start..<min(start + size, data.count))
+        }
+    }
+
+    /// The reason of a failed command without the command itself.
+    public static func shortMessage(of error: Error) -> String {
+        if case .commandFailed(_, _, let message) = error as? BoxdError {
+            let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.hasPrefix("error: ") ? String(trimmed.dropFirst(7)) : trimmed
+        }
+        return error.localizedDescription
+    }
+
+    private static func quote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     public func isAvailable() async -> Bool {

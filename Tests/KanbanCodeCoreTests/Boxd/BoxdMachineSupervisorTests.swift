@@ -540,6 +540,16 @@ struct BoxdMachineSupervisorTests {
 
     // MARK: - Reconnect pacing
 
+    @Test("A machine boxd no longer knows ends the reconnect loop")
+    func notFoundEndsReconnect() {
+        let gone = BoxdError.commandFailed(command: "boxd machine get x --json", exitCode: 1, message: "error: VM 'x' not found")
+        let offline = BoxdError.commandFailed(command: "boxd machine get x --json", exitCode: 1, message: "error: cannot connect to https://boxd.sh:9443: transport error")
+        #expect(BoxdMachineSupervisor.isNotFound(gone))
+        #expect(!BoxdMachineSupervisor.isNotFound(offline))
+        #expect(!BoxdMachineSupervisor.isNotFound(BoxdError.notInstalled))
+        #expect(BoxdMachineSupervisor.megabytes(2_951_851) == "2.8 MB")
+    }
+
     @Test("Reconnect tries back off to one a minute and never run out")
     func reconnectDelayBacksOff() {
         #expect(BoxdMachineSupervisor.reconnectDelay(attempt: 1) == 5)
