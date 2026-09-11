@@ -646,7 +646,8 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
                 let delta = data.subdata(in: prefix.bytes..<data.count)
                 log("Appending to the transcript on the machine (\(Self.sizeText(delta.count)) of \(Self.sizeText(data.count)))")
                 KanbanCodeLog.info(Self.subsystem, "Transcript \(sessionId.prefix(8)): appending \(delta.count) bytes after \(remoteLines) matching lines on \(machineName)")
-                try await append(machineName: machineName, bridge: bridge, remotePath: remotePath, data: delta)
+                try await append(machineName: machineName, bridge: bridge, remotePath: remotePath, data: delta,
+                                 onEvent: Self.uploadReporter(prefix: "Appending to the transcript", log: log))
                 pushed = true
             } else {
                 KanbanCodeLog.info(Self.subsystem, "Transcript \(sessionId.prefix(8)): prefix on \(machineName) differs (\(remoteHash.prefix(12)) vs \(prefix.sha256.prefix(12))), pushing whole")
@@ -654,7 +655,8 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         }
         if !pushed {
             log("Pushing transcript (\(Self.sizeText(data.count)))")
-            try await upload(machineName: machineName, bridge: bridge, remotePath: remotePath, data: data)
+            try await upload(machineName: machineName, bridge: bridge, remotePath: remotePath, data: data,
+                             onEvent: Self.uploadReporter(prefix: "Pushing transcript", log: log))
         }
         await mirror.recordPushed(
             remotePath: remotePath,
@@ -666,14 +668,16 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         let remoteSidecar = ((remotePath as NSString).deletingLastPathComponent as NSString).appendingPathComponent(sessionId)
         if let enumerator = FileManager.default.enumerator(atPath: localSidecar) {
             let entries = enumerator.allObjects.compactMap { $0 as? String }
-            for relative in entries {
+            for (index, relative) in entries.enumerated() {
                 let path = "\(localSidecar)/\(relative)"
                 var isDirectory: ObjCBool = false
                 guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), !isDirectory.boolValue,
                       let bytes = FileManager.default.contents(atPath: path) else { continue }
                 let payload = path.hasSuffix(".jsonl") ? Self.rewrite(bytes, with: reversed) : bytes
                 let target = "\(remoteSidecar)/\(relative)"
-                try await upload(machineName: machineName, bridge: bridge, remotePath: target, data: payload)
+                log("Pushing session files (\(index + 1) of \(entries.count), \(Self.sizeText(payload.count)))")
+                try await upload(machineName: machineName, bridge: bridge, remotePath: target, data: payload,
+                                 onEvent: Self.uploadReporter(prefix: "Pushing session files (\(index + 1) of \(entries.count))", log: log))
                 await mirror.recordPushed(remotePath: target, bytes: payload.count)
             }
         }
@@ -692,6 +696,20 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
               let remotePath = await runtime.mirror.remotePath(forLocal: localPath, remoteCwd: remoteCwd) else { return 0 }
         let result = try? await bridge.exec(["sh", "-c", "wc -l < \"$1\"", "sh", remotePath], stdin: nil, cwd: nil, timeout: 20)
         return Int(result?.stdout.trimmingCharacters(in: .whitespacesAndNewlines) ?? "") ?? 0
+    }
+
+    /// Turns the events of an upload into launch status lines.
+    nonisolated static func uploadReporter(
+        prefix: String, log: @escaping @Sendable (String) -> Void
+    ) -> @Sendable (BoxdUploadEvent) -> Void {
+        { event in
+            switch event {
+            case .progress(let sent, let total):
+                log("\(prefix): \(sizeText(sent)) of \(sizeText(total))")
+            case .retry(let attempt, let of, let reason):
+                log("\(prefix) interrupted (\(reason)), trying again \(attempt)/\(of)")
+            }
+        }
     }
 
     nonisolated static func sizeText(_ bytes: Int) -> String {
@@ -1622,14 +1640,17 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     /// Small payloads ride the bridge; large ones go through `boxd machine cp`
     /// so one JSON line never carries megabytes. The agent holds the path
     /// while the bytes land, and takes them as already on the Mac after.
-    private func upload(machineName: String, bridge: BoxdBridge, remotePath: String, data: Data) async throws {
+    private func upload(
+        machineName: String, bridge: BoxdBridge, remotePath: String, data: Data,
+        onEvent: @escaping @Sendable (BoxdUploadEvent) -> Void = { _ in }
+    ) async throws {
         try await bridge.hold(path: remotePath)
         do {
             if data.count <= 2 * 1024 * 1024 {
                 try await bridge.put(path: remotePath, data: data, mode: nil)
             } else {
                 _ = try await bridge.exec(["mkdir", "-p", (remotePath as NSString).deletingLastPathComponent], stdin: nil, cwd: nil, timeout: 60)
-                try await boxd.upload(name: machineName, remotePath: remotePath, data: data)
+                try await boxd.upload(name: machineName, remotePath: remotePath, data: data, onEvent: onEvent)
             }
         } catch {
             try? await bridge.release(path: remotePath, offset: nil)
@@ -1641,14 +1662,17 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     /// Adds bytes to the end of a file on the machine: the delta lands on its
     /// own name and one `cat` folds it in, so a broken transfer never leaves
     /// a half-written transcript.
-    private func append(machineName: String, bridge: BoxdBridge, remotePath: String, data: Data) async throws {
+    private func append(
+        machineName: String, bridge: BoxdBridge, remotePath: String, data: Data,
+        onEvent: @escaping @Sendable (BoxdUploadEvent) -> Void = { _ in }
+    ) async throws {
         let incoming = "\(remotePath).delta-\(UUID().uuidString.prefix(8))"
         try await bridge.hold(path: remotePath)
         do {
             if data.count <= 2 * 1024 * 1024 {
                 try await bridge.put(path: incoming, data: data, mode: nil)
             } else {
-                try await boxd.upload(name: machineName, remotePath: incoming, data: data)
+                try await boxd.upload(name: machineName, remotePath: incoming, data: data, onEvent: onEvent)
             }
             _ = try await bridge.exec(
                 ["sh", "-c", "cat \"$1\" >> \"$2\" && rm -f \"$1\"", "sh", incoming, remotePath],

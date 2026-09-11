@@ -538,6 +538,29 @@ struct BoxdMachineSupervisorTests {
         #expect(withToken["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-x")
     }
 
+    // MARK: - Upload reporting
+
+    @Test("A transcript push reports the bytes that landed and every retry")
+    func uploadReporterLines() {
+        let lines = LineSink()
+        let report = BoxdMachineSupervisor.uploadReporter(prefix: "Pushing transcript") { lines.append($0) }
+        report(.progress(sent: 12 * 1024 * 1024, total: 47 * 1024 * 1024))
+        report(.retry(attempt: 2, of: 3, reason: "http2 error"))
+        report(.progress(sent: 47 * 1024 * 1024, total: 47 * 1024 * 1024))
+        #expect(lines.all == [
+            "Pushing transcript: 12 MB of 47 MB",
+            "Pushing transcript interrupted (http2 error), trying again 2/3",
+            "Pushing transcript: 47 MB of 47 MB",
+        ])
+    }
+
+    private final class LineSink: @unchecked Sendable {
+        private let lock = NSLock()
+        private var lines: [String] = []
+        func append(_ line: String) { lock.lock(); lines.append(line); lock.unlock() }
+        var all: [String] { lock.lock(); defer { lock.unlock() }; return lines }
+    }
+
     // MARK: - Reconnect pacing
 
     @Test("A machine boxd no longer knows ends the reconnect loop")
