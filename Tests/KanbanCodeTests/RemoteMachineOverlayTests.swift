@@ -36,6 +36,31 @@ struct RemoteMachineOverlayTests {
         #expect(state.canResume)
     }
 
+    @Test("After the machine is back, a session that survived is attached and one that is gone is resumed")
+    func followUpAfterMachineResume() {
+        var link = Link(projectPath: "/repo", column: .inProgress,
+                        sessionLink: SessionLink(sessionId: "b57eb285-4fd6-4c06-8c34-31105f3c67bc", sessionPath: "/p/b57eb285.jsonl"))
+        link.tmuxLink = TmuxLink(sessionName: "claude-b57eb285")
+
+        #expect(MachineResumeFollowUp.decide(link: link, sessionAlive: true) == .attach)
+        #expect(MachineResumeFollowUp.decide(link: link, sessionAlive: false)
+            == .resumeAssistant(sessionName: "claude-b57eb285"))
+
+        // The liveness scan may already have dropped the dead session; the
+        // name still comes from the session of the card.
+        link.tmuxLink = nil
+        #expect(MachineResumeFollowUp.sessionName(for: link) == "claude-b57eb285")
+        #expect(MachineResumeFollowUp.decide(link: link, sessionAlive: false)
+            == .resumeAssistant(sessionName: "claude-b57eb285"))
+
+        link.isLaunching = true
+        #expect(MachineResumeFollowUp.decide(link: link, sessionAlive: false) == .nothing)
+
+        link.isLaunching = nil
+        link.sessionLink = nil
+        #expect(MachineResumeFollowUp.decide(link: link, sessionAlive: false) == .nothing)
+    }
+
     @Test("A lost bridge keeps the terminal, with a banner that counts the tries")
     func reconnecting() {
         let state = RemoteMachineOverlay.state(remote: remote, machineState: .reconnecting(attempt: 3), hasLiveSession: true, isRemote: true)

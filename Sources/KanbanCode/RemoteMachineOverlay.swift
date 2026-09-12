@@ -32,6 +32,29 @@ enum RemoteMachineOverlayState: Equatable {
     }
 }
 
+/// What follows once "Resume machine" brought the machine of a card back.
+enum MachineResumeFollowUp: Equatable {
+    /// The tmux session survived the pause: the terminal attaches to it.
+    case attach
+    /// The session is gone, as after a stopped machine boots: the assistant
+    /// is resumed on the machine with the transcript of the card.
+    case resumeAssistant(sessionName: String)
+    /// Nothing to resume, or a resume is already running.
+    case nothing
+
+    static func decide(link: Link, sessionAlive: Bool) -> MachineResumeFollowUp {
+        if sessionAlive { return .attach }
+        guard link.sessionLink != nil, link.isLaunching != true else { return .nothing }
+        return .resumeAssistant(sessionName: sessionName(for: link))
+    }
+
+    /// The tmux session a resume of the card creates on its machine.
+    static func sessionName(for link: Link) -> String {
+        let sessionId = link.sessionLink?.sessionId ?? link.id
+        return "\(link.effectiveAssistant.cliCommand)-\(String(sessionId.prefix(8)))"
+    }
+}
+
 enum RemoteMachineOverlay {
     /// The overlay for a card, from what the app knows about its machine.
     /// The supervisor state wins; the pause reason stored on the link stands

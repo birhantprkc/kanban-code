@@ -521,10 +521,42 @@ struct ContentView: View {
                remote: remote, machineState: machineState(of: card), hasLiveSession: card.link.tmuxLink != nil,
                isRemote: card.link.isRemote
            ).canResume {
-            AppServices.resumeMachineIfPaused(remote.machineName)
+            resumeMachine(for: cardId)
             return
         }
         resumeCard(cardId: cardId)
+    }
+
+    /// "Resume machine" on a card. The machine comes back first. A paused
+    /// machine still has its tmux session, so the terminal attaches to it. A
+    /// machine that was stopped boots without it; the assistant is then
+    /// resumed on the machine right away, with the transcript pushed, instead
+    /// of the card dropping to a second resume screen.
+    func resumeMachine(for cardId: String) {
+        guard let card = store.state.cards.first(where: { $0.id == cardId }),
+              let remote = card.link.remote else { return }
+        let machineName = remote.machineName
+        let sessionName = MachineResumeFollowUp.sessionName(for: card.link)
+        Task {
+            guard await AppServices.resumeMachine(machineName),
+                  let current = store.state.links[cardId] else { return }
+            let alive = await boxdSupervisor.hasSession(machineName: machineName, sessionName: sessionName)
+            switch MachineResumeFollowUp.decide(link: current, sessionAlive: alive) {
+            case .attach, .nothing:
+                return
+            case .resumeAssistant(let sessionName):
+                KanbanCodeLog.info("resume", "\(sessionName) is gone from \(machineName), resuming \(current.effectiveAssistant.displayName) there")
+                executeResume(
+                    cardId: cardId,
+                    runRemotely: true,
+                    commandOverride: nil,
+                    assistant: current.effectiveAssistant,
+                    serviceIdOverride: current.apiServiceId,
+                    modelOverride: current.modelOverride,
+                    machineChoice: .existing(machineName)
+                )
+            }
+        }
     }
 
     /// Shared factory for CardDetailView — used by both the inspector and expanded mode.
@@ -542,11 +574,7 @@ struct ContentView: View {
                 }
             },
             remoteMachineState: machineState(of: card),
-            onResumeMachine: {
-                if let remote = card.link.remote {
-                    AppServices.resumeMachineIfPaused(remote.machineName)
-                }
-            },
+            onResumeMachine: { resumeMachine(for: card.id) },
             onRename: { name in
                 store.dispatch(.renameCard(cardId: card.id, name: name))
             },

@@ -216,6 +216,13 @@ Feature: Boxd Remote Mode
     And the terminal attaches again once the machine is connected
     And a machine that does not come back gets a "did not answer" line and the button again
 
+  Scenario: Resume machine resumes the assistant when the session did not survive
+    Given a card whose live session sits on a machine that was stopped, not paused
+    When I click "Resume machine"
+    Then the machine is started
+    And the transcript is pushed and the assistant resumed on it without a second click
+    And the card shows the launch steps meanwhile, never a "session ended" screen
+
   Scenario: A prompt brings the machine back first
     Given a card whose live session sits on a paused machine
     When I send a message from chat mode, or send a queued prompt

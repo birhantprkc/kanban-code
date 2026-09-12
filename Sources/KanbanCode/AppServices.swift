@@ -96,26 +96,29 @@ enum AppServices {
     nonisolated(unsafe) private static var resumingMachines: Set<String> = []
     private static let resumingLock = NSLock()
 
-    /// Takes a machine the app holds as paused out of standby, because a
-    /// person asked for it from the resume bar of a card. A connected
-    /// machine, or one already coming back, is left as it is. The terminals
-    /// of the machine say what is happening while it comes back.
-    @discardableResult
-    static func resumeMachineIfPaused(_ machineName: String) -> Bool {
+    /// Takes a machine the app holds as paused or stopped out of that state,
+    /// because a person asked for it from the resume bar of a card. Returns
+    /// once the bridge is connected: true when it is, false when the machine
+    /// did not come back or another resume of it is still running. A
+    /// connected machine returns true at once. The terminals of the machine
+    /// say what is happening while it comes back.
+    static func resumeMachine(_ machineName: String) async -> Bool {
         let state = remoteRegistry?.state(of: machineName)
-        guard state?.isConnected != true, state != .connecting,
-              let supervisor = boxdSupervisor else { return false }
-        guard markResuming(machineName) else { return true }
+        if state?.isConnected == true { return true }
+        guard state != .connecting, let supervisor = boxdSupervisor else { return false }
+        guard markResuming(machineName) else { return false }
+        defer { clearResuming(machineName) }
         let sessions = remoteRegistry?.sessionNames(on: machineName) ?? []
-        Task { @MainActor in
+        await MainActor.run {
             TerminalCache.shared.showNotice("Resuming machine \(machineName)…", sessions: sessions)
-            let resumed = await supervisor.resume(machineName: machineName)
-            if !resumed {
+        }
+        let resumed = await supervisor.resume(machineName: machineName)
+        if !resumed {
+            await MainActor.run {
                 TerminalCache.shared.showNotice("Machine \(machineName) did not come back.", sessions: sessions)
             }
-            clearResuming(machineName)
         }
-        return true
+        return resumed
     }
 
     /// True when this call is the one that starts the resume.
