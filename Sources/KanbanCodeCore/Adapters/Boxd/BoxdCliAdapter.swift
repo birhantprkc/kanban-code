@@ -214,8 +214,10 @@ public final class BoxdCliAdapter: BoxdPort, @unchecked Sendable {
 
     /// Size of one part of an upload. The transfer behind `machine cp` is
     /// cut after about a minute whatever is left to send, so one big file
-    /// never gets through a slow uplink; a part this size does in seconds.
-    static let uploadPartBytes = 512 * 1024
+    /// never gets through a slow uplink; a part this size takes a second or
+    /// two on the uplink boxd offers, and each part costs a process start
+    /// and a TLS handshake, so smaller parts only add overhead.
+    static let uploadPartBytes = 4 * 1024 * 1024
     /// How often one part is sent before the upload fails.
     static let uploadPartTries = 3
 
@@ -228,20 +230,27 @@ public final class BoxdCliAdapter: BoxdPort, @unchecked Sendable {
     /// the machine, so two uploads to the same target destroy each other at
     /// the rename: the parts land on their own names and one command on the
     /// machine folds them into the target.
+    ///
+    /// The bytes travel gzipped: a transcript shrinks about three times, and
+    /// the uplink is the slow part. Progress is reported in the bytes of the
+    /// payload, so the caller's total stays the size it knows.
     public func upload(name: String, remotePath: String, data: Data, onEvent: @escaping @Sendable (BoxdUploadEvent) -> Void) async throws {
         let incoming = "\(remotePath).incoming-\(UUID().uuidString.prefix(8))"
-        let parts = Self.parts(of: data, size: Self.uploadPartBytes)
+        let compressed = Self.gzip(data)
+        let payload = compressed ?? data
+        let parts = Self.parts(of: payload, size: Self.uploadPartBytes)
         let partPaths = parts.indices.map { "\(incoming).part-\($0)" }
-        KanbanCodeLog.info(Self.subsystem, "Uploading \(data.count) bytes to \(name):\(remotePath) in \(parts.count) part(s)")
+        KanbanCodeLog.info(Self.subsystem, "Uploading \(data.count) bytes (\(payload.count) on the wire) to \(name):\(remotePath) in \(parts.count) part(s)")
         do {
             var sent = 0
             for (part, path) in zip(parts, partPaths) {
                 try await uploadPart(part, to: path, machine: name, onEvent: onEvent)
                 sent += part.count
-                onEvent(.progress(sent: sent, total: data.count))
+                onEvent(.progress(sent: Self.scaled(sent, of: payload.count, to: data.count), total: data.count))
             }
             let list = partPaths.map(Self.quote).joined(separator: " ")
-            let assemble = "cat \(list) > \(Self.quote(incoming)) && rm -f \(list) && mv -f \(Self.quote(incoming)) \(Self.quote(remotePath))"
+            let unpack = compressed == nil ? "cat \(list)" : "cat \(list) | gunzip -c"
+            let assemble = "\(unpack) > \(Self.quote(incoming)) && rm -f \(list) && mv -f \(Self.quote(incoming)) \(Self.quote(remotePath))"
             _ = try await run(["machine", "exec", name, "--", "sh", "-c", assemble], timeout: 120)
         } catch {
             let list = ([incoming] + partPaths).map(Self.quote).joined(separator: " ")
@@ -269,6 +278,41 @@ public final class BoxdCliAdapter: BoxdPort, @unchecked Sendable {
                 try? await Task.sleep(for: .seconds(2 * attempt))
             }
         }
+    }
+
+    /// `data` in gzip form, through the system `gzip` at its fastest level;
+    /// nil when that is not possible, in which case the bytes go as they are.
+    static func gzip(_ data: Data) -> Data? {
+        let temporaryPath = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("kanban-boxd-gzip-\(UUID().uuidString)")
+        let compressedPath = temporaryPath + ".gz"
+        defer {
+            try? FileManager.default.removeItem(atPath: temporaryPath)
+            try? FileManager.default.removeItem(atPath: compressedPath)
+        }
+        do {
+            try data.write(to: URL(fileURLWithPath: temporaryPath))
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/gzip")
+            process.arguments = ["-1", "-n", temporaryPath]
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            try process.run()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else { return nil }
+            return try Data(contentsOf: URL(fileURLWithPath: compressedPath))
+        } catch {
+            KanbanCodeLog.warn(Self.subsystem, "gzip of an upload failed (\(error.localizedDescription)), sending it as it is")
+            return nil
+        }
+    }
+
+    /// `sent` bytes of a payload of `wire` bytes, as bytes of the `total`
+    /// they stand for.
+    static func scaled(_ sent: Int, of wire: Int, to total: Int) -> Int {
+        guard wire > 0 else { return total }
+        if sent >= wire { return total }
+        return Int(Double(sent) / Double(wire) * Double(total))
     }
 
     /// The upload split into parts of `size` bytes; empty data is one empty

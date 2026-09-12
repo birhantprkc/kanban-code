@@ -160,8 +160,40 @@ struct BoxdCliAdapterTests {
         #expect(parts.reduce(Data(), +) == data)
         #expect(BoxdCliAdapter.parts(of: Data(), size: 1_000) == [Data()])
         #expect(BoxdCliAdapter.parts(of: Data(repeating: 1, count: 1_000), size: 1_000).count == 1)
-        #expect(BoxdCliAdapter.uploadPartBytes == 512 * 1024)
+        #expect(BoxdCliAdapter.uploadPartBytes == 4 * 1024 * 1024)
         #expect(BoxdCliAdapter.uploadPartTries == 3)
+    }
+
+    @Test("An upload travels gzipped and its progress is reported in the bytes of the payload")
+    func uploadCompression() throws {
+        let line = Data("{\"type\":\"assistant\",\"message\":{\"content\":\"the same line over and over\"}}\n".utf8)
+        var data = Data()
+        for _ in 0..<2_000 { data.append(line) }
+
+        let compressed = try #require(BoxdCliAdapter.gzip(data))
+        #expect(compressed.count < data.count / 3)
+        #expect(Array(compressed.prefix(2)) == [0x1f, 0x8b])
+
+        // The machine unpacks it with gunzip, so the system gunzip must read it back.
+        let path = NSTemporaryDirectory() + "kanban-test-\(UUID().uuidString).gz"
+        try compressed.write(to: URL(fileURLWithPath: path))
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let gunzip = Process()
+        gunzip.executableURL = URL(fileURLWithPath: "/usr/bin/gunzip")
+        gunzip.arguments = ["-c", path]
+        let out = Pipe()
+        gunzip.standardOutput = out
+        try gunzip.run()
+        let restored = out.fileHandleForReading.readDataToEndOfFile()
+        gunzip.waitUntilExit()
+        #expect(restored == data)
+
+        #expect(BoxdCliAdapter.gzip(Data())?.isEmpty == false)
+
+        #expect(BoxdCliAdapter.scaled(0, of: 1_000, to: 3_000) == 0)
+        #expect(BoxdCliAdapter.scaled(500, of: 1_000, to: 3_000) == 1_500)
+        #expect(BoxdCliAdapter.scaled(1_000, of: 1_000, to: 3_000) == 3_000)
+        #expect(BoxdCliAdapter.scaled(0, of: 0, to: 0) == 0)
     }
 
     @Test("A failed command is reported by its reason, not by the command line")
