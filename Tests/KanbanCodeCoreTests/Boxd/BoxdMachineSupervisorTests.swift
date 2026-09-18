@@ -82,6 +82,65 @@ struct BoxdMachineSupervisorTests {
         }
     }
 
+    // MARK: - A machine that cannot start
+
+    private static let outOfCredits = BoxdError.commandFailed(
+        command: "boxd machine new", exitCode: 1,
+        message: "error: Out of credits, top up at the console billing page to create or start VMs.")
+
+    @Test("A machine that cannot be created is forgotten, so the card resumes locally afterwards")
+    func failedCreateLeavesNothingBehind() async {
+        let boxd = FakeBoxdPort()
+        boxd.fail("getMachine", with: .commandFailed(command: "boxd machine get", exitCode: 1, message: "error: VM 'kanban-repo-1' not found"))
+        boxd.fail("createMachine", with: Self.outOfCredits)
+        let registry = RemoteSessionRegistry()
+        let recorder = ActionRecorder()
+        let supervisor = makeSupervisor(boxd: boxd, registry: registry)
+        await supervisor.setDispatch { @MainActor action in recorder.append(action) }
+
+        await #expect(throws: BoxdError.self) {
+            _ = try await supervisor.prepare(
+                cardId: "card_1", localProjectPath: "/tmp/repo", existingMachine: "kanban-repo-1",
+                worktreeName: nil, existingWorktree: nil, sessionNames: ["claude-9262728b"])
+        }
+
+        #expect(registry.machine(forSession: "claude-9262728b") == nil)
+        #expect(registry.state(of: "kanban-repo-1") == nil)
+        #expect(recorder.machineStates.last?.state == .destroyed)
+        // Routed locally again: the adapter no longer throws for the name.
+        #expect(throws: Never.self) { _ = try RoutingTmuxAdapter(registry: registry).adapter(for: "claude-9262728b") }
+    }
+
+    @Test("A paused machine that cannot start stays paused with its sessions")
+    func failedStartKeepsPausedMachine() async {
+        let boxd = FakeBoxdPort()
+        boxd.setMachine(BoxdMachine(name: "kanban-repo-1", status: .stopped))
+        boxd.fail("start", with: Self.outOfCredits)
+        let registry = RemoteSessionRegistry()
+        registry.setMachine("kanban-repo-1", state: .paused(.inactivity))
+        registry.assign(sessionName: "claude-aaaaaaaa", to: "kanban-repo-1")
+        let recorder = ActionRecorder()
+        let supervisor = makeSupervisor(boxd: boxd, registry: registry)
+        await supervisor.setDispatch { @MainActor action in recorder.append(action) }
+
+        await #expect(throws: BoxdError.self) {
+            _ = try await supervisor.prepare(
+                cardId: "card_1", localProjectPath: "/tmp/repo", existingMachine: "kanban-repo-1",
+                worktreeName: nil, existingWorktree: nil, sessionNames: ["claude-aaaaaaaa", "claude-bbbbbbbb"])
+        }
+
+        #expect(registry.state(of: "kanban-repo-1") == .paused(.inactivity))
+        #expect(recorder.machineStates.last?.state == .paused(.inactivity))
+        #expect(registry.machine(forSession: "claude-aaaaaaaa") == "kanban-repo-1")
+        #expect(registry.machine(forSession: "claude-bbbbbbbb") == nil)
+    }
+
+    @Test("The toast of a failed boxd command says why, without the command line")
+    func outOfCreditsMessage() {
+        #expect(BoxdCliAdapter.shortMessage(of: Self.outOfCredits)
+            == "Out of credits, top up at the console billing page to create or start VMs.")
+    }
+
     // MARK: - Pause markers and external resumes
 
     @Test("A stop writes the pause marker of every session on the machine")

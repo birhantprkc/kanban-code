@@ -358,7 +358,7 @@ extension ContentView {
                 completion?(promptDeliveryError)
             } catch {
                 KanbanCodeLog.error("launch", "Launch failed for card=\(cardId.prefix(12)): \(error.localizedDescription)")
-                store.dispatch(.launchFailed(cardId: cardId, error: error.localizedDescription))
+                store.dispatch(.launchFailed(cardId: cardId, error: BoxdCliAdapter.shortMessage(of: error)))
                 completion?(error.localizedDescription)
             }
         }
@@ -742,7 +742,7 @@ extension ContentView {
         // The terminal of the resumed session mounts as soon as the card
         // resumes, so a card that leaves its machine routes its names
         // locally first; otherwise the terminal would connect to the machine.
-        if !runRemotely, card.link.remote?.mode == .boxd, let registry = AppServices.remoteRegistry {
+        if !runRemotely, let registry = AppServices.remoteRegistry {
             let names = (card.link.tmuxLink?.allSessionNames ?? []) + ["\(assistant.cliCommand)-\(String(sessionId.prefix(8)))"]
             for name in names { registry.unassign(sessionName: name) }
         }
@@ -936,7 +936,7 @@ extension ContentView {
                 store.dispatch(.resumeCompleted(cardId: cardId, tmuxName: actualTmuxName, isRemote: isRemote))
             } catch {
                 KanbanCodeLog.warn("resume", "Resume failed for card=\(cardId.prefix(12)): \(error.localizedDescription)")
-                store.dispatch(.resumeFailed(cardId: cardId, error: error.localizedDescription))
+                store.dispatch(.resumeFailed(cardId: cardId, error: BoxdCliAdapter.shortMessage(of: error)))
                 // The machine would sit running, billed by the hour, waiting
                 // for a retry that may never come. A stop keeps its disk and
                 // the next resume brings it back with a cold start.

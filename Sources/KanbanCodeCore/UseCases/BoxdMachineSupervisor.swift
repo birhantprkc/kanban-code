@@ -289,6 +289,8 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         let remoteProjectPath = BoxdLaunchPlanner.remoteProjectPath(
             folderTemplate: settings.folderTemplate, repoName: repoName, remoteHome: remoteHome)
 
+        let previousState = registry.state(of: machineName)
+        let newNames = sessionNames.filter { registry.machine(forSession: $0) != machineName }
         for name in sessionNames { registry.assign(sessionName: name, to: machineName) }
         // A machine whose bridge is open stays connected: connect() returns
         // at once and would leave a `.connecting` report in the registry,
@@ -298,7 +300,14 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         }
 
         log("Preparing machine \(machineName)")
-        let machine = try await ensureRunning(machineName: machineName, settings: settings, log: log)
+        let machine: BoxdMachine
+        do {
+            machine = try await ensureRunning(machineName: machineName, settings: settings, log: log)
+        } catch {
+            await abandonStart(
+                machineName: machineName, previousState: previousState, newSessionNames: newNames)
+            throw error
+        }
         do {
             try await connect(
                 machineName: machineName,
@@ -342,6 +351,24 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
             await stop(machineName: machineName, reason: .sessionStopped)
             throw error
         }
+    }
+
+    /// Undoes what `prepare` recorded before the machine was up, when it
+    /// could not be started or created (out of credits, offline). A machine
+    /// the app did not know before this call is forgotten with its session
+    /// names; a known one goes back to the state it had. Left as it was, the
+    /// machine would stay "connecting" and every tmux command of its
+    /// sessions, local resumes included, would be refused.
+    private func abandonStart(machineName: String, previousState: RemoteMachineState?, newSessionNames: [String]) async {
+        guard machines[machineName]?.bridge == nil else { return }
+        guard let previousState, previousState != .connecting else {
+            machines[machineName] = nil
+            await report(machineName, state: .destroyed)
+            registry.removeMachine(machineName)
+            return
+        }
+        for name in newSessionNames { registry.unassign(sessionName: name) }
+        await report(machineName, state: previousState)
     }
 
     private func prepareCheckout(

@@ -216,6 +216,14 @@ Feature: Boxd Remote Mode
     And the terminal attaches again once the machine is connected
     And a machine that does not come back gets a "did not answer" line and the button again
 
+  Scenario: A machine that cannot start leaves the card free to resume locally
+    Given boxd refuses to create or start a machine, for example out of credits
+    When I resume a card on that machine
+    Then the toast says why in one line, without the boxd command line
+    And a machine the app did not know before is dropped from the toolbar
+    And a paused machine goes back to paused, keeping its sessions
+    And resuming the card without "Run on boxd" starts it on the Mac
+
   Scenario: Resume machine resumes the assistant when the session did not survive
     Given a card whose live session sits on a machine that was stopped, not paused
     When I click "Resume machine"
