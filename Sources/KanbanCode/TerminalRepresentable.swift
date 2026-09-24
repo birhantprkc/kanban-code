@@ -50,6 +50,13 @@ final class BatchedTerminalView: LocalProcessTerminalView {
     /// When true, disables aggressive frame dropping (copy-mode, interactive scrolling).
     var passthroughMode = false
 
+    /// Never drops output. Set for programs that redraw only what changed
+    /// (agtop), where a dropped byte stays on screen as a broken line.
+    /// tmux repaints the whole screen, so its terminals can skip frames.
+    var lossless = false
+
+    private var dropsFrames: Bool { !passthroughMode && !lossless }
+
     // Stats collection
     private var statsReceiveCount = 0
     private var statsReceiveBytes = 0
@@ -75,7 +82,7 @@ final class BatchedTerminalView: LocalProcessTerminalView {
         // Enforce the hard cap up front so the buffer can't balloon no matter
         // how delayed the flush is. Cut on a newline boundary when one is
         // near, like the flush-time drop, to avoid splitting escape sequences.
-        let hardCap = passthroughMode ? Self.passthroughMaxPendingBytes : Self.normalMaxPendingBytes
+        let hardCap = dropsFrames ? Self.normalMaxPendingBytes : Self.passthroughMaxPendingBytes
         if pendingData.count - pendingOffset > hardCap {
             var cutPoint = pendingData.count - hardCap
             let scanLimit = min(cutPoint + 1024, pendingData.count)
@@ -157,7 +164,7 @@ final class BatchedTerminalView: LocalProcessTerminalView {
         // In normal mode, skip to the tail — only the final screen state matters.
         // In passthrough mode (copy-mode), render everything for smooth scrolling.
         let backlog = pendingData.count - pendingOffset
-        if !passthroughMode && backlog > Self.keepBytes {
+        if dropsFrames && backlog > Self.keepBytes {
             var cutPoint = pendingData.count - Self.keepBytes
             let scanLimit = min(cutPoint + 1024, pendingData.count)
             while cutPoint < scanLimit && pendingData[cutPoint] != 0x0A { cutPoint += 1 }
@@ -204,11 +211,11 @@ final class BatchedTerminalView: LocalProcessTerminalView {
         let elapsed = CACurrentMediaTime() - statsStartTime
         if elapsed > 10 {
             let avgFeedMs = statsFeedCalls > 0 ? statsFeedTimeMs / Double(statsFeedCalls) : 0
-            let line = String(format: "[TermStats] %.0fs | recv: %d calls %dKB | flush: %d | feed: %d calls %dKB avg:%.2fms max:%.1fms | yields: %d | maxBacklog: %dKB\n",
+            let line = String(format: "[TermStats] %.0fs | recv: %d calls %dKB | flush: %d | feed: %d calls %dKB avg:%.2fms max:%.1fms | yields: %d | maxBacklog: %dKB | dropped: %d %dKB\n",
                   elapsed, statsReceiveCount, statsReceiveBytes/1024,
                   statsFlushCount, statsFeedCalls, statsFeedBytes/1024,
                   avgFeedMs, statsMaxFeedMs, statsYieldCount,
-                  statsMaxBacklog/1024)
+                  statsMaxBacklog/1024, statsDropCount, statsDropBytes/1024)
             DispatchQueue.global(qos: .utility).async {
                 let logPath = (NSHomeDirectory() as NSString).appendingPathComponent(".kanban-code/logs/terminal-stats.log")
                 if let data = line.data(using: .utf8) {
@@ -790,6 +797,7 @@ final class TerminalCache {
         // wheel reaches tmux through the scroll monitor. agtop draws its own
         // scrollback, so its sessions get the mouse.
         terminal.allowMouseReporting = AgtopSessionName.isAgtop(sessionName)
+        terminal.lossless = AgtopSessionName.isAgtop(sessionName)
         // Dark terminal colors matching a real terminal
         terminal.nativeBackgroundColor = NSColor(red: 0.07, green: 0.07, blue: 0.07, alpha: 1.0)
         terminal.nativeForegroundColor = NSColor(red: 0.93, green: 0.93, blue: 0.93, alpha: 1.0)
