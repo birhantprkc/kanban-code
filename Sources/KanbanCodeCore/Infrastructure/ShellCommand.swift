@@ -217,6 +217,7 @@ public enum ShellCommand {
         var searchPaths = [
             "\(home)/.claude/local",   // Claude Code managed install
             "\(home)/.local/bin",      // XDG local bin / claude installer
+            "\(home)/go/bin",          // go install (agtop)
             "/opt/homebrew/bin",       // Homebrew (Apple Silicon)
             "/usr/local/bin",          // Homebrew (Intel) / npm global
             "/usr/bin",                // System binaries

@@ -115,6 +115,113 @@ export function remoteTmuxSessionNames(): string[] {
   return names;
 }
 
+// ── agtop routing ────────────────────────────────────────────────────
+
+/// A card whose Claude session runs on an agtop host names it
+/// `agtop-<8 hex>`, the id of the host. Its extra shells (`<name>-shN`) stay
+/// on tmux.
+export function agtopIdFromSessionName(sessionName: string): string | undefined {
+  const match = /^agtop-([0-9a-f]{8})$/.exec(sessionName);
+  return match?.[1];
+}
+
+let agtopPath: string | undefined;
+
+/// Test seam: pin the agtop binary. Pass undefined to look it up again.
+export function setAgtopPath(path?: string): void {
+  agtopPath = path;
+}
+
+export function findAgtop(): string {
+  if (agtopPath) return agtopPath;
+  const goBin = join(homedir(), "go", "bin", "agtop");
+  if (existsSync(goBin)) return (agtopPath = goBin);
+  try {
+    return (agtopPath = execSync("command -v agtop", { encoding: "utf-8", shell: "/bin/sh" }).trim() || "agtop");
+  } catch {
+    return (agtopPath = "agtop");
+  }
+}
+
+/// The shell script that plays a tmux command chain on an agtop host. The
+/// host has no composer to type into: pasted text and keys are gathered
+/// until an Enter, then sent as one message, which agtop queues while a turn
+/// runs. Escape and C-c interrupt the turn. Pane reads and copy-mode are
+/// tmux only, so they do nothing here.
+export function agtopScript(id: string, steps: TmuxStep[]): string {
+  const agtop = shellToken(findAgtop());
+  const idToken = shellToken(id);
+  const buffers = new Map<string, string>();
+  let composer = "";
+  const out: string[] = [];
+  const flush = () => {
+    if (composer.length === 0) return;
+    out.push(`printf '%s' ${shellEscape(composer)} | ${agtop} session send ${idToken}`);
+    composer = "";
+  };
+  for (const step of steps) {
+    if (!Array.isArray(step)) {
+      if ("sleep" in step) out.push(`sleep ${shellToken(String(step.sleep))}`);
+      continue;
+    }
+    const [command, ...args] = step;
+    switch (command) {
+      case "set-buffer": {
+        const b = args.indexOf("-b");
+        const dash = args.indexOf("--");
+        buffers.set(b >= 0 ? args[b + 1] : "", dash >= 0 ? args.slice(dash + 1).join(" ") : args[args.length - 1] ?? "");
+        break;
+      }
+      case "paste-buffer": {
+        const b = args.indexOf("-b");
+        composer += buffers.get(b >= 0 ? args[b + 1] : "") ?? "";
+        break;
+      }
+      case "send-keys": {
+        if (args.includes("-X")) break;
+        const keys = args.filter((_, i) => !(args[i] === "-t" || args[i - 1] === "-t") && args[i] !== "-l");
+        for (const key of keys) {
+          if (key === "Enter") flush();
+          else if (key === "Escape" || key === "C-c") {
+            composer = "";
+            out.push(`${agtop} session interrupt ${idToken}`);
+          } else if (key === "C-u") composer = "";
+          else composer += key;
+        }
+        break;
+      }
+      case "has-session":
+        out.push(`${agtop} session info ${idToken} --json | grep -q '"alive": *true'`);
+        break;
+      case "kill-session":
+        out.push(`${agtop} session stop ${idToken}`);
+        break;
+      default:
+        break;
+    }
+  }
+  return out.length > 0 ? out.join(" && ") : "true";
+}
+
+interface AgtopHost {
+  id: string;
+  cwd?: string;
+  alive?: boolean;
+}
+
+/// Live agtop hosts as tmux sessions, so liveness checks see them.
+export function listAgtopSessions(): TmuxSession[] {
+  try {
+    const out = execSync(`${shellToken(findAgtop())} session list --json 2>/dev/null`, { encoding: "utf-8" });
+    const hosts = JSON.parse(out.trim() || "[]") as AgtopHost[] | null;
+    return (hosts ?? [])
+      .filter((host) => host.alive)
+      .map((host) => ({ name: `agtop-${host.id}`, path: host.cwd ?? "", attached: false }));
+  } catch {
+    return [];
+  }
+}
+
 /// One step of a tmux command chain: the arguments of a single tmux call, a
 /// pause between two of them, or a raw shell fragment (with `%TMUX%` standing
 /// in for the tmux binary) for the checks a plain call cannot express.
@@ -149,6 +256,11 @@ export function buildTmuxCommand(
   steps: TmuxStep[],
   options: TmuxRunOptions = {}
 ): string {
+  const agtopId = agtopIdFromSessionName(sessionName);
+  if (agtopId) {
+    const script = agtopScript(agtopId, steps);
+    return options.quiet ? `${script} 2>/dev/null` : script;
+  }
   const machine = remoteMachineForSession(sessionName);
   const tmux = machine ? "tmux" : findTmux();
   const script = steps
@@ -187,12 +299,13 @@ export function runTmux(
 
 export function listTmuxSessions(): TmuxSession[] {
   const tmux = findTmux();
+  let sessions: TmuxSession[] = [];
   try {
     const out = execSync(
       `${tmux} list-sessions -F '#{session_name}\t#{session_path}\t#{session_attached}' 2>/dev/null`,
       { encoding: "utf-8" }
     );
-    return out
+    sessions = out
       .trim()
       .split("\n")
       .filter(Boolean)
@@ -201,8 +314,9 @@ export function listTmuxSessions(): TmuxSession[] {
         return { name, path: path || "", attached: attached === "1" };
       });
   } catch {
-    return [];
+    // No tmux server: agtop hosts still count.
   }
+  return [...sessions, ...listAgtopSessions()];
 }
 
 /// Capture tmux pane output.

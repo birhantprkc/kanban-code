@@ -888,6 +888,14 @@ struct ContentView: View {
                 if let card = store.state.selectedCard,
                    let sessionName = card.link.tmuxLink?.sessionName {
                     ImageDropZone(isTargeted: $isDroppingImage) { imageData in
+                        if let agtopId = AgtopSessionName.agtopId(fromName: sessionName) {
+                            var image = ImageAttachment(data: imageData)
+                            Task {
+                                guard let path = try? image.saveToTemp() else { return }
+                                try? await self.tmuxAdapter.agtop.send(id: agtopId, text: "", imagePaths: [path])
+                            }
+                            return
+                        }
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setData(imageData, forType: .png)
                         Task {

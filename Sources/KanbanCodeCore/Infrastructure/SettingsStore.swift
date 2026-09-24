@@ -28,6 +28,9 @@ public struct Settings: Codable, Sendable {
     public var subagents: SubagentSettings
     /// Maps `CodingAssistant.rawValue` → the launch command template of that assistant.
     public var assistantCommands: [String: AssistantCommandTemplate]
+    /// Maps `CodingAssistant.rawValue` → what keeps the main session of a
+    /// card running. Missing means tmux.
+    public var assistantRuntimes: [String: SessionRuntime]
 
     public init(
         projects: [Project] = [],
@@ -48,7 +51,8 @@ public struct Settings: Codable, Sendable {
         defaultAPIServiceIds: [String: String] = [:],
         selfCompact: SelfCompactSettings = SelfCompactSettings(),
         subagents: SubagentSettings = SubagentSettings(),
-        assistantCommands: [String: AssistantCommandTemplate] = [:]
+        assistantCommands: [String: AssistantCommandTemplate] = [:],
+        assistantRuntimes: [String: SessionRuntime] = [:]
     ) {
         self.projects = projects
         self.globalView = globalView
@@ -69,6 +73,7 @@ public struct Settings: Codable, Sendable {
         self.selfCompact = selfCompact
         self.subagents = subagents
         self.assistantCommands = assistantCommands
+        self.assistantRuntimes = assistantRuntimes
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -76,7 +81,7 @@ public struct Settings: Codable, Sendable {
         case promptTemplate, githubIssuePromptTemplate, columnOrder, hasCompletedOnboarding, defaultAssistant
         case enabledAssistants
         case apiServices, defaultAPIServiceIds
-        case selfCompact, subagents, assistantCommands
+        case selfCompact, subagents, assistantCommands, assistantRuntimes
         case skill // backward-compat: old name for promptTemplate
     }
 
@@ -131,6 +136,11 @@ public struct Settings: Codable, Sendable {
         selfCompact = (try? container.decodeIfPresent(SelfCompactSettings.self, forKey: .selfCompact)) ?? SelfCompactSettings()
         subagents = (try? container.decodeIfPresent(SubagentSettings.self, forKey: .subagents)) ?? SubagentSettings()
         assistantCommands = (try? container.decodeIfPresent([String: AssistantCommandTemplate].self, forKey: .assistantCommands)) ?? [:]
+        if let raw = try? container.decodeIfPresent([String: String].self, forKey: .assistantRuntimes) {
+            assistantRuntimes = raw.compactMapValues(SessionRuntime.init(rawValue:))
+        } else {
+            assistantRuntimes = [:]
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -154,12 +164,22 @@ public struct Settings: Codable, Sendable {
         try container.encode(selfCompact, forKey: .selfCompact)
         try container.encode(subagents, forKey: .subagents)
         try container.encode(assistantCommands, forKey: .assistantCommands)
+        if !assistantRuntimes.isEmpty {
+            try container.encode(assistantRuntimes.mapValues(\.rawValue), forKey: .assistantRuntimes)
+        }
         // Note: "skill" is NOT encoded — only read for backward-compat
     }
 
     /// The launch command template of an assistant, or nil when the user did
     /// not set one. A blank template and the bare placeholder both mean "run
     /// the command as it is built", so both read as nil.
+    /// What runs the main session of a new or resumed card. Only Claude can
+    /// run in agtop.
+    public func runtime(for assistant: CodingAssistant) -> SessionRuntime {
+        guard assistant == .claude else { return .tmux }
+        return assistantRuntimes[assistant.rawValue] ?? .tmux
+    }
+
     public func commandTemplate(for assistant: CodingAssistant, remote: Bool) -> String? {
         guard let entry = assistantCommands[assistant.rawValue] else { return nil }
         let candidate = remote ? (entry.remote ?? entry.local) : entry.local

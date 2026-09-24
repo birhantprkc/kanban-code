@@ -246,6 +246,8 @@ struct AssistantsSettingsView: View {
     @State private var savedCommands: [String: AssistantCommandTemplate] = [:]
     @State private var remoteClaudeToken = ""
     @State private var remoteTokenSaveTask: Task<Void, Never>?
+    @State private var claudeRuntime: SessionRuntime = .tmux
+    @State private var agtopInstalled = AgtopCliAdapter.findExecutable() != nil
 
     var body: some View {
         Form {
@@ -365,6 +367,7 @@ struct AssistantsSettingsView: View {
 
                     launchCommandRows(for: assistant)
                     if assistant == .claude {
+                        runtimeRows
                         remoteLoginRows
                     }
                 } header: {
@@ -421,6 +424,38 @@ struct AssistantsSettingsView: View {
             TextField("Remote launch command", text: remoteCommandBinding(for: assistant))
                 .textFieldStyle(.roundedBorder)
                 .font(.system(.caption, design: .monospaced))
+        }
+    }
+
+    // MARK: - Runtime
+
+    @ViewBuilder
+    private var runtimeRows: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Picker("Run sessions in", selection: $claudeRuntime) {
+                ForEach(SessionRuntime.allCases, id: \.self) { runtime in
+                    Text(runtime.displayName).tag(runtime)
+                }
+            }
+            .onChange(of: claudeRuntime) { saveRuntime() }
+            Text(agtopInstalled || claudeRuntime == .tmux
+                ? "agtop keeps each session running in the background and shows it in the card's terminal. Remote cards and custom commands keep running on tmux. Applies to new launches and resumes."
+                : "agtop is not installed. Install it with `go install github.com/0xdeafcafe/agtop/cmd/agtop@latest`, sessions run on tmux until then.")
+                .font(.caption)
+                .foregroundStyle(agtopInstalled || claudeRuntime == .tmux ? .tertiary : .secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func saveRuntime() {
+        guard commandsLoaded else { return }
+        let runtime = claudeRuntime
+        Task {
+            var settings = (try? await settingsStore.read()) ?? Settings()
+            guard settings.runtime(for: .claude) != runtime else { return }
+            settings.assistantRuntimes[CodingAssistant.claude.rawValue] = runtime == .tmux ? nil : runtime
+            try? await settingsStore.write(settings)
+            NotificationCenter.default.post(name: .kanbanCodeSettingsChanged, object: nil)
         }
     }
 
@@ -532,6 +567,7 @@ struct AssistantsSettingsView: View {
         assistantCommands = settings.assistantCommands
         savedCommands = settings.assistantCommands
         remoteClaudeToken = settings.boxd?.claudeOAuthToken ?? ""
+        claudeRuntime = settings.runtime(for: .claude)
         commandsLoaded = true
     }
 

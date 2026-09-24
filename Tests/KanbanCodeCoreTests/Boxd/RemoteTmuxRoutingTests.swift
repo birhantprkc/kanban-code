@@ -130,7 +130,11 @@ struct RoutingTmuxAdapterTests {
     private func makeRouter() -> (RoutingTmuxAdapter, FakeTmuxTransport, RemoteSessionRegistry) {
         let localTransport = FakeTmuxTransport(label: "local")
         let registry = RemoteSessionRegistry()
-        let router = RoutingTmuxAdapter(local: TmuxAdapter(transport: localTransport), registry: registry)
+        let router = RoutingTmuxAdapter(
+            local: TmuxAdapter(transport: localTransport),
+            registry: registry,
+            agtop: AgtopCliAdapter(executable: "/nonexistent/agtop")
+        )
         return (router, localTransport, registry)
     }
 

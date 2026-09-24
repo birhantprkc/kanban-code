@@ -160,6 +160,40 @@ extension ContentView {
                     serviceExtraEnv.merge(parentEnv) { _, new in new }
                 }
 
+                if boxdPreparation == nil,
+                   agtopChoice(settings: settings, assistant: assistant, remote: isRemote, commandOverride: commandOverride) == .agtop {
+                    var cwd = projectPath
+                    var worktreeLink: WorktreeLink?
+                    if let worktreeName {
+                        let name = worktreeName.isEmpty ? BoxdLaunchPlanner.randomWorktreeName() : worktreeName
+                        progress.report("Creating worktree \(name)")
+                        let worktree = try await BoxdMachineSupervisor.createLocalWorktree(repoRoot: projectPath, name: name)
+                        cwd = worktree.path
+                        worktreeLink = worktree
+                    }
+                    let sessionId = UUID().uuidString.lowercased()
+                    let name = try await startOnAgtop(
+                        cardId: cardId,
+                        cwd: cwd,
+                        sessionId: sessionId,
+                        resume: false,
+                        prompt: prompt,
+                        images: images,
+                        extraEnv: serviceExtraEnv,
+                        skipPermissions: skipPermissions,
+                        model: effectiveModelOverride,
+                        commandTemplate: commandTemplate,
+                        service: resolvedService
+                    )
+                    let sessionLink = SessionLink(
+                        sessionId: sessionId,
+                        sessionPath: Self.claudeTranscriptPath(cwd: cwd, sessionId: sessionId)
+                    )
+                    store.dispatch(.launchCompleted(cardId: cardId, tmuxName: name, sessionLink: sessionLink, worktreeLink: worktreeLink, isRemote: false))
+                    completion?(nil)
+                    return
+                }
+
                 // Snapshot existing session files for detection
                 let sessionFileExt = ".\(assistant.sessionFileExtension)"
                 let configDir = (NSHomeDirectory() as NSString).appendingPathComponent(assistant.configDirName)
@@ -911,6 +945,26 @@ extension ContentView {
                 }
                 if let parentEnv = Self.subagentCacheEnv(parentCardId: card.link.parentCardId, assistant: assistant) {
                     serviceExtraEnv.merge(parentEnv) { _, new in new }
+                }
+
+                if boxdPreparation == nil,
+                   agtopChoice(settings: settings, assistant: assistant, remote: isRemote, commandOverride: commandOverride) == .agtop {
+                    await killTmuxSessions(of: sessionId)
+                    let name = try await startOnAgtop(
+                        cardId: cardId,
+                        cwd: resumePath,
+                        sessionId: sessionId,
+                        resume: true,
+                        prompt: nil,
+                        images: [],
+                        extraEnv: serviceExtraEnv,
+                        skipPermissions: skipPermissions,
+                        model: effectiveModelOverride,
+                        commandTemplate: commandTemplate,
+                        service: resolvedService
+                    )
+                    store.dispatch(.resumeCompleted(cardId: cardId, tmuxName: name, isRemote: false))
+                    return
                 }
 
                 let actualTmuxName = try await launcher.resume(

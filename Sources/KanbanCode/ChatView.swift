@@ -604,8 +604,12 @@ private struct ChatMessageList: View {
         while !Task.isCancelled {
             let newBusy: Bool
             do {
-                let output = try await tmux.capturePane(sessionName: session)
-                newBusy = PaneOutputParser.isWorking(output, assistant: assistant)
+                if let agtopId = AgtopSessionName.agtopId(fromName: session) {
+                    newBusy = try await tmux.agtop.info(id: agtopId)?.isBusy ?? false
+                } else {
+                    let output = try await tmux.capturePane(sessionName: session)
+                    newBusy = PaneOutputParser.isWorking(output, assistant: assistant)
+                }
             } catch {
                 newBusy = false
             }

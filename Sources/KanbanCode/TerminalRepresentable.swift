@@ -618,6 +618,8 @@ final class TerminalCache {
 
             guard let window = event.window else { return event }
             guard let session = self?.sessionUnderPoint(event.locationInWindow, in: window) else { return event }
+            // agtop reads the wheel itself, through mouse reporting.
+            if AgtopSessionName.isAgtop(session) { return event }
 
             let inCopyMode = self?.copyModeSessions.contains(session) ?? false
 
@@ -785,8 +787,9 @@ final class TerminalCache {
         terminal.kanbanSession = sessionName
         // The assistant may ask for mouse tracking to select text on its
         // own. The terminal keeps its native selection instead, and the
-        // wheel reaches tmux through the scroll monitor.
-        terminal.allowMouseReporting = false
+        // wheel reaches tmux through the scroll monitor. agtop draws its own
+        // scrollback, so its sessions get the mouse.
+        terminal.allowMouseReporting = AgtopSessionName.isAgtop(sessionName)
         // Dark terminal colors matching a real terminal
         terminal.nativeBackgroundColor = NSColor(red: 0.07, green: 0.07, blue: 0.07, alpha: 1.0)
         terminal.nativeForegroundColor = NSColor(red: 0.93, green: 0.93, blue: 0.93, alpha: 1.0)
@@ -851,6 +854,8 @@ final class TerminalCache {
                 session: sessionName,
                 readyMarker: AppServices.remoteReadyMarkerPath(for: sessionName)
             )
+        } else if let agtopId = AgtopSessionName.agtopId(fromName: sessionName) {
+            script = Self.agtopScript(agtop: AgtopCliAdapter.findExecutable(), id: agtopId)
         } else {
             script = Self.attachScript(tmux: Self.tmuxPath, session: sessionName)
         }
@@ -976,6 +981,15 @@ final class TerminalCache {
             + " && if '\(tmux)' -T hyperlinks -V >/dev/null 2>&1;"
             + " then \(attach("-T hyperlinks ")); else \(attach("")); fi;"
             + " sleep 0.1; done; echo 'Session ended.'"
+    }
+
+    /// The shell command a terminal runs to show an agtop session. The view
+    /// shows that one session only, and quitting it leaves the host running,
+    /// so it opens again.
+    static func agtopScript(agtop: String?, id: String) -> String {
+        guard let agtop else { return "echo 'agtop is not installed.'" }
+        let bin = agtop.replacingOccurrences(of: "'", with: "'\\''")
+        return "while :; do '\(bin)' open '\(id)' --solo; sleep 0.3; done"
     }
 
     /// Remove and terminate a specific terminal (e.g., when user kills a session).

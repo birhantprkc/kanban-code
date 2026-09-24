@@ -35,6 +35,8 @@ public actor ImageSender {
         pollInterval: Duration = .milliseconds(500),
         timeout: Duration? = nil
     ) async throws {
+        // An agtop host takes messages as soon as it runs, and queues them.
+        if AgtopSessionName.isAgtop(sessionName) { return }
         // Gemini and Codex can take longer to start (auth checks, banners, model setup).
         let effectiveTimeout = timeout ?? (assistant == .gemini || assistant == .codex ? .seconds(60) : .seconds(30))
         let start = ContinuousClock.now
