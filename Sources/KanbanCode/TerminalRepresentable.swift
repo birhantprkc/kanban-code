@@ -111,7 +111,9 @@ final class BatchedTerminalView: LocalProcessTerminalView {
         // Small chunks (typing, cursor moves): feed directly on this main-thread
         // call — zero scheduling overhead for instant keystroke response.
         // Large chunks (Claude streaming): batch to avoid frame-per-byte overhead.
-        if totalPending <= Self.interactiveThreshold && !flushScheduled {
+        // A lossless program (agtop) paces its own frames, so each one is
+        // drawn as it arrives instead of waiting for the batch timer.
+        if (totalPending <= Self.interactiveThreshold || lossless) && !flushScheduled {
             // Feed directly — we're already on main thread (LocalProcess dispatches here).
             // This avoids DispatchQueue.main.async latency from pending SwiftUI layout work.
             statsFlushCount += 1
