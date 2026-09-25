@@ -8,7 +8,9 @@ VERSION ?= 0.1.1
 # search is an order of magnitude slower unoptimized, which is felt directly in
 # the palette. Use `make app-debug` when iterating and the extra build time hurts.
 CONFIG ?= release
-ARCH := $(shell uname -m)
+# The machine's architecture, not the shell's: a shell under Rosetta reports
+# x86_64 on Apple Silicon and would build an Intel app.
+ARCH := $(shell [ "$$(sysctl -n hw.optional.arm64 2>/dev/null)" = 1 ] && echo arm64 || uname -m)
 BUILD_DIR = .build/$(ARCH)-apple-macosx/$(CONFIG)
 PNPM ?= corepack pnpm
 CODESIGN_IDENTITY ?= $(shell security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Apple Development:[^"]*\)".*/\1/p' | head -n 1)
@@ -17,7 +19,7 @@ CODESIGN_IDENTITY := -
 endif
 
 build:
-	swift build -c $(CONFIG)
+	swift build -c $(CONFIG) --arch $(ARCH)
 
 test:
 	swift test
