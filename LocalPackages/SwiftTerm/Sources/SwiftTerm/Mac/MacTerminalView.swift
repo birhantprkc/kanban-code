@@ -1957,7 +1957,10 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     {
         // find the selected range of text in the buffer and put in the clipboard
         let str = selection.getSelectedText()
-        
+        // With nothing selected here, the clipboard keeps what it has: a
+        // program that draws its own selection copies it itself (OSC 52).
+        guard !str.isEmpty else { return }
+
         let clipboard = NSPasteboard.general
         clipboard.clearContents()
         clipboard.setString(str, forType: .string)
