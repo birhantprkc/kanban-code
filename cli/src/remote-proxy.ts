@@ -38,6 +38,8 @@ export interface ProxyResponse {
 export function runsOnMachine(argv: string[]): boolean {
   const command = firstCommand(argv);
   if (command === "remote-agent") return true;
+  // `kanban remote` talks to a Mac over HTTP and needs nothing from the board here.
+  if (command === "remote") return true;
   return command === "hooks" && subCommand(argv) === "install";
 }
 

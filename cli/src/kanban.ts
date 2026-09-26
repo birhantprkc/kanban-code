@@ -41,6 +41,7 @@ import { runtimeSpec } from "./agents/runtime.js";
 import { installHooks } from "./hooks.js";
 import { runRemoteAgent } from "./remote-agent.js";
 import { runProxiedCommand, shouldProxy } from "./remote-proxy.js";
+import { registerRemoteCommands } from "./remote-client.js";
 import { Daemon } from "./agents/daemon.js";
 import { slackAppManifest, MANIFEST_INSTRUCTIONS } from "./slack/manifest.js";
 import { runSlackBridge } from "./slack/bridge.js";
@@ -2194,6 +2195,8 @@ program
     );
     program.help({ error: true });
   });
+
+registerRemoteCommands(program);
 
 sortTopLevelCommands([
   "open",

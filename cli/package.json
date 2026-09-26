@@ -7,11 +7,20 @@
   "bin": {
     "kanban": "./dist/kanban.js"
   },
+  "files": [
+    "dist/**/*.js",
+    "!dist/**/*.test.js",
+    "docs"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc",
     "watch": "tsc --watch",
     "dev": "tsx src/kanban.ts",
-    "test": "tsx --test --test-force-exit --test-reporter=spec 'src/*.test.ts'"
+    "test": "tsx --test --test-force-exit --test-reporter=spec 'src/*.test.ts'",
+    "prepack": "tsc"
   },
   "dependencies": {
     "@slack/socket-mode": "^2.0.7",

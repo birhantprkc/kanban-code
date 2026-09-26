@@ -66,6 +66,11 @@ The command runs in a pseudo-terminal on the Mac.
   - `kanban remote show <card>`
   - `kanban remote task --project <name|path> [--worktree [name]] [--name <n>] "<prompt>"`
   - `kanban remote send <card> [--now] "<text>"`
-  - `kanban remote transcript <card> [--limit N]`
+  - `kanban remote transcript <card> [--limit N] [--follow]`
+  - `kanban remote wait <card> [--timeout 30m]`
   - `kanban remote interrupt <card>`
   - `kanban remote resume <card>`
+  - `kanban remote projects`, `kanban remote whoami`, `kanban remote logout`
+  - On the Mac: `kanban remote pair`, `kanban remote devices`, `kanban remote revoke <id|name>`
+
+  Installing on another machine and every option: `cli/docs/remote.md`. An agent skill for it: `cli/docs/openclaw-skill.md`.
