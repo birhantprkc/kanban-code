@@ -42,7 +42,7 @@ function runCli(args: string[], env: NodeJS.ProcessEnv = {}): { stdout: string; 
 }
 
 function tmuxCapture(session: string): string {
-  return execSync(`tmux capture-pane -p -t ${session}`, { encoding: "utf-8" });
+  return execSync(`tmux capture-pane -p -J -t ${session}`, { encoding: "utf-8" });
 }
 
 function tmuxKill(session: string): void {
@@ -138,8 +138,8 @@ describe("broadcast fan-out (real tmux)", skipIfNoTmux, () => {
 
     // Human handle is derived from the system user (NSUserName / os.userInfo)
     // so the prefix can be any slug. Just match any handle.
-    assert.match(a, /Message from #demo @\w+.*standup at 10/);
-    assert.match(b, /Message from #demo @\w+.*standup at 10/);
+    assert.match(a, /Message from #demo @\w+[\s\S]*standup at 10/);
+    assert.match(b, /Message from #demo @\w+[\s\S]*standup at 10/);
   });
 
   test("agent broadcast does not echo back to sender", () => {
@@ -155,10 +155,9 @@ describe("broadcast fan-out (real tmux)", skipIfNoTmux, () => {
     const b = tmuxCapture(sess.bob);
 
     // Bob receives
-    assert.match(b, /Message from #demo @alice.*hey bob/);
+    assert.match(b, /Message from #demo @alice[\s\S]*hey bob/);
     // Alice does NOT see her own broadcast in her pane
-    const aLines = a.split("\n");
-    const echoed = aLines.some((l) => /Message from #demo @alice.*hey bob/.test(l));
+    const echoed = /Message from #demo @alice[\s\S]*hey bob/.test(a);
     assert.equal(echoed, false, "sender received their own broadcast back (should be skipped)");
   });
 
