@@ -130,6 +130,9 @@ struct SettingsView: View {
             RemoteSettingsView()
                 .tabItem { Label("Remote", systemImage: "network") }
 
+            RemoteControlSettingsView()
+                .tabItem { Label("Remote Control", systemImage: "iphone.radiowaves.left.and.right") }
+
             AmphetamineSettingsView()
                 .tabItem { Label("Amphetamine", systemImage: "bolt.fill") }
         }

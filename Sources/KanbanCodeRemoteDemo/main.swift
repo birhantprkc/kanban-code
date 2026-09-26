@@ -315,17 +315,10 @@ print("devices file: \(devices.path)")
 if let name = options.pairName {
     let (device, token) = try devices.add(name: name, scope: options.scope)
     let base = tailscale.first(where: { !$0.contains(":") }).map { "http://\($0):\(server.port)" } ?? "http://127.0.0.1:\(server.port)"
-    var link = URLComponents()
-    link.scheme = "kanbancode"
-    link.host = "pair"
-    link.queryItems = [
-        URLQueryItem(name: "url", value: base),
-        URLQueryItem(name: "token", value: token),
-        URLQueryItem(name: "name", value: RemoteControlServer.defaultHostName),
-    ]
+    let link = RemotePairLink.make(url: base, token: token, name: RemoteControlServer.defaultHostName)
     print("paired \(device.name) (\(device.scope.rawValue)), id \(device.id)")
     print("token: \(token)")
-    print("pair link: \(link.string ?? "")")
+    print("pair link: \(link)")
     print("try: curl -H 'Authorization: Bearer \(token)' \(base)/v1/board")
 }
 

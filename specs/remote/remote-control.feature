@@ -6,7 +6,7 @@ Feature: Remote control from a phone and from other agents
   # Contract: docs/remote-control.md. Wire types: KanbanCodeRemoteKit.
 
   Background:
-    Given Settings > Remote is on
+    Given Settings > Remote Control is on
     And the Mac is on Tailscale
 
   Scenario: The server is reachable only on loopback and the tailnet
@@ -15,7 +15,7 @@ Feature: Remote control from a phone and from other agents
     And when Tailscale comes up after the app, the server binds its address then
 
   Scenario: Pairing a phone
-    When I add a device named "iPhone" with scope full in Settings > Remote
+    When I add a device named "iPhone" with scope full in Settings > Remote Control
     Then the app shows its token once and a QR code of the kanbancode://pair link
     And ~/.kanban-code/remote/devices.json keeps only the token's SHA-256
     When the phone scans the QR code
@@ -38,7 +38,7 @@ Feature: Remote control from a phone and from other agents
 
   Scenario: Revoking a device closes its connections
     Given a phone streaming a card's terminal
-    When I revoke the phone in Settings > Remote
+    When I revoke the phone in Settings > Remote Control
     Then its sockets close and its next request is refused
 
   Scenario: The board follows the Mac live

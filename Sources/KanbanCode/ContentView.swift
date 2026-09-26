@@ -1496,6 +1496,9 @@ struct ContentView: View {
             .task(id: "subagent-command-bootstrap") {
                 await monitorSubagentCommands()
             }
+            .task(id: "remote-control-handlers") {
+                registerRemoteControlHandlers()
+            }
             .task(id: "session-model-monitor") {
                 await sessionModelMonitorLoop()
             }

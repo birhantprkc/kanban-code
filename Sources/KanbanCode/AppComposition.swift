@@ -145,6 +145,8 @@ final class AppComposition {
             boardStore.dispatch(.selectCard(cardId: persistedCardId))
         }
 
+        RemoteControlController.shared.attach(store: boardStore, tmux: tmux, settingsStore: settings)
+
         self.store = boardStore
         self.orchestrator = orch
         self.settingsStore = settings

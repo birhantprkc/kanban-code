@@ -10,7 +10,7 @@ agent: kanban remote ... ──┘   :7780, tailnet     └─ ~/.claude transcr
 
 ## Network and auth
 
-- Off by default. Settings > Remote turns it on.
+- Off by default. Settings > Remote Control turns it on.
 - The server listens on port 7780 (configurable) on `127.0.0.1` and on the Mac's Tailscale addresses (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`). It never binds `0.0.0.0`, so the LAN and public Wi-Fi cannot reach it. When Tailscale comes up later, the server binds its address then.
 - `tailscale serve --bg --https=7780 http://127.0.0.1:7780` puts HTTPS with a valid certificate in front of it at `https://<mac>.<tailnet>.ts.net:7780`. Both forms work.
 - Every request except `GET /v1/health` needs `Authorization: Bearer <token>`. WebSocket clients that cannot set headers may pass `?token=`.
@@ -19,7 +19,7 @@ agent: kanban remote ... ──┘   :7780, tailnet     └─ ~/.claude transcr
   - `agent`: read the board and transcripts, create tasks, send prompts, interrupt. No terminal, no raw keys. For another agent such as OpenClaw.
 - Tokens are `kc_` followed by 40 base62 characters. `~/.kanban-code/remote/devices.json` keeps only their SHA-256 with the device id, name, scope, `createdAt` and `lastSeenAt`. The server re-reads the file when it changes, so a revoked device is refused on its next request and its open sockets close.
 - Pairing:
-  - In the app, Settings > Remote > Add device shows the token once, plus a QR code of `kanbancode://pair?url=<base url>&token=<token>&name=<host name>`.
+  - In the app, Settings > Remote Control > Add device shows the token once, plus a QR code of `kanbancode://pair?url=<base url>&token=<token>&name=<host name>`.
   - On the Mac, `kanban remote pair --name <device> [--scope agent]` writes the same file and prints the token and the link.
 - Refusals: 401 with no token or an unknown one, 403 when the scope does not allow the call. Bodies are `{"error": "..."}`.
 
@@ -45,7 +45,10 @@ JSON bodies. Dates are ISO 8601 with milliseconds, UTC (`2026-09-26T10:00:00.000
 Behaviour:
 - `POST /v1/tasks` resolves `project` as a project path first, then as a project name (case-insensitive). An unknown project is a 400 that lists the known names. The card launches with the app's defaults for that project: runtime (tmux or agtop), skip permissions, and the command template.
 - `prompt` with `mode: queue` delivers the text when the current turn ends, or at once when the session is idle. `mode: now` interrupts the turn first. A card with no live session returns 409 until it is resumed.
+- `transcript` pages back with `before=<olderCursor>` of the previous page; `olderCursor` is null at the start of the conversation.
+- `resume` on a card that never ran launches it.
 - `/v1/events` sends the whole board on connect, then again after each change, at most once per second. A `ping` event arrives every 20 seconds.
+- `terminal` without `session` opens the card's primary terminal. A terminal that is not running returns 409.
 
 ## Terminal stream
 

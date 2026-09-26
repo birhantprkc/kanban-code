@@ -105,4 +105,12 @@ struct RemoteControlDeviceStoreTests {
         #expect(framed[0] == 0x02)
         #expect(RemoteWebSocketHandshake.accept(key: "dGhlIHNhbXBsZSBub25jZQ==") == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")
     }
+
+    @Test("pair links percent-encode every value")
+    func pairLink() throws {
+        let link = RemotePairLink.make(url: "http://mac.tail.ts.net:7780/x?y=1", token: "kc_abc", name: "Rogerio’s Mac")
+        #expect(link == "kanbancode://pair?url=http%3A%2F%2Fmac.tail.ts.net%3A7780%2Fx%3Fy%3D1&token=kc_abc&name=Rogerio%E2%80%99s%20Mac")
+        let items = try #require(URLComponents(string: link)?.queryItems)
+        #expect(items.first { $0.name == "url" }?.value == "http://mac.tail.ts.net:7780/x?y=1")
+    }
 }

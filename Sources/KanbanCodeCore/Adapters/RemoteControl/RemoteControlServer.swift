@@ -498,7 +498,8 @@ public final class RemoteControlServer: Sendable {
         let changes = host.boardChanges()
         let pusher = Task { [weak self] in
             guard let self else { return }
-            if let text = self.encodedEvent(RemoteEvent(type: .board, board: await host.board())) {
+            var sent = await host.board()
+            if let text = self.encodedEvent(RemoteEvent(type: .board, board: sent)) {
                 try? await ws.sendText(text)
             }
             var lastPush = Date()
@@ -506,8 +507,12 @@ public final class RemoteControlServer: Sendable {
                 let wait = pushInterval - Date().timeIntervalSince(lastPush)
                 if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
                 if Task.isCancelled { return }
+                let board = await host.board()
+                // The app signals many changes that leave the wire board as it was.
+                guard board.cards != sent.cards || board.projects != sent.projects else { continue }
                 lastPush = Date()
-                guard let text = self.encodedEvent(RemoteEvent(type: .board, board: await host.board())) else { continue }
+                sent = board
+                guard let text = self.encodedEvent(RemoteEvent(type: .board, board: board)) else { continue }
                 do { try await ws.sendText(text) } catch { return }
             }
         }

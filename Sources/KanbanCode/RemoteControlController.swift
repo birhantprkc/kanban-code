@@ -1,0 +1,372 @@
+import Foundation
+import KanbanCodeCore
+import KanbanCodeRemoteKit
+import Observation
+
+/// What a remote `POST /v1/tasks` asks the board window to create and launch.
+struct RemoteLaunchRequest: Sendable {
+    var projectPath: String
+    var prompt: String
+    var title: String?
+    /// A worktree name, "" for a random one, nil for the project checkout.
+    var worktree: String?
+    var assistant: CodingAssistant
+    var model: String?
+    var launch: Bool
+}
+
+/// Runs the remote control server of Settings > Remote Control and holds
+/// the paired devices. The server itself runs off the main actor; this
+/// controller only starts, stops and reports on it.
+@MainActor
+@Observable
+final class RemoteControlController {
+    static let shared = RemoteControlController()
+
+    private(set) var isRunning = false
+    private(set) var port = RemoteAPI.defaultPort
+    private(set) var addresses: [String] = []
+    private(set) var lastError: String?
+    /// The Mac's Tailscale MagicDNS name, e.g. `mac.tailnet.ts.net`.
+    private(set) var magicDNSName: String?
+    private(set) var devices: [RemoteDevice] = []
+
+    @ObservationIgnored let deviceStore = RemoteDeviceStore()
+    @ObservationIgnored private var server: RemoteControlServer?
+    @ObservationIgnored private var host: AppRemoteControlHost?
+    @ObservationIgnored private var applied: RemoteControlSettings?
+    @ObservationIgnored private weak var store: BoardStore?
+    @ObservationIgnored private var tmux: RoutingTmuxAdapter?
+    @ObservationIgnored private var settingsObserver: NSObjectProtocol?
+
+    /// Set by the board window: creating and resuming cards runs the same
+    /// launch flow as the New Task dialog and the resume button.
+    @ObservationIgnored var launchTask: (@MainActor (RemoteLaunchRequest) -> String)?
+    @ObservationIgnored var resumeCard: (@MainActor (String) -> Void)?
+
+    private init() {}
+
+    /// Wires the controller to the app's store and starts following the
+    /// settings. Called once by the composition root.
+    func attach(store: BoardStore, tmux: RoutingTmuxAdapter, settingsStore: SettingsStore) {
+        self.store = store
+        self.tmux = tmux
+        settingsObserver = NotificationCenter.default.addObserver(
+            forName: .kanbanCodeSettingsChanged, object: nil, queue: .main
+        ) { _ in
+            Task { @MainActor in await RemoteControlController.shared.reload(settingsStore: settingsStore) }
+        }
+        Task { await reload(settingsStore: settingsStore) }
+    }
+
+    func reload(settingsStore: SettingsStore) async {
+        let settings = (try? await settingsStore.read())?.remoteControl ?? RemoteControlSettings()
+        await apply(settings)
+    }
+
+    func apply(_ settings: RemoteControlSettings) async {
+        guard settings != applied || (settings.enabled && server == nil) else {
+            refreshStatus()
+            return
+        }
+        applied = settings
+        stopServer()
+        port = settings.port
+        guard settings.enabled else {
+            refreshStatus()
+            return
+        }
+        guard let store, let tmux else { return }
+        let host = AppRemoteControlHost(store: store) { session in
+            try await tmux.sendEscape(sessionName: session)
+        }
+        let server = RemoteControlServer(host: host, devices: deviceStore, port: settings.port)
+        do {
+            try await server.start()
+            self.host = host
+            self.server = server
+            lastError = nil
+        } catch {
+            server.stop()
+            lastError = "\(error)"
+            KanbanCodeLog.warn("remote", "remote control did not start: \(error)")
+        }
+        refreshStatus()
+        await refreshMagicDNSName()
+    }
+
+    private func stopServer() {
+        server?.stop()
+        server = nil
+        host = nil
+    }
+
+    func refreshStatus() {
+        isRunning = server?.isRunning ?? false
+        addresses = server?.listeningAddresses ?? []
+        if let server { port = server.port }
+        devices = deviceStore.list().sorted { $0.createdAt > $1.createdAt }
+    }
+
+    func refreshMagicDNSName() async {
+        magicDNSName = await Self.tailscaleDNSName()
+    }
+
+    // MARK: - Devices
+
+    func addDevice(name: String, scope: RemoteScope) throws -> (device: RemoteDevice, token: String) {
+        let (device, token) = try deviceStore.add(name: name, scope: scope)
+        refreshStatus()
+        return (device, token)
+    }
+
+    func revoke(deviceId: String) {
+        _ = try? deviceStore.revoke(id: deviceId)
+        server?.closeConnections(deviceId: deviceId)
+        refreshStatus()
+    }
+
+    /// The URL a device on the tailnet reaches the server at.
+    var baseURL: String {
+        if let magicDNSName { return "http://\(magicDNSName):\(port)" }
+        if let ip = addresses.first(where: { $0 != RemoteNetworkAddresses.loopback && !$0.contains(":") }) {
+            return "http://\(ip):\(port)"
+        }
+        return "http://127.0.0.1:\(port)"
+    }
+
+    func pairLink(token: String) -> String {
+        RemotePairLink.make(url: baseURL, token: token, name: RemoteControlServer.defaultHostName)
+    }
+
+    /// `Self.DNSName` of `tailscale status --json`, without the final dot.
+    nonisolated static func tailscaleDNSName() async -> String? {
+        let candidates = ["/Applications/Tailscale.app/Contents/MacOS/Tailscale"]
+        guard let tailscale = ShellCommand.findExecutable("tailscale")
+                ?? candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else { return nil }
+        guard let result = try? await ShellCommand.run(tailscale, arguments: ["status", "--json"], timeout: 5),
+              result.exitCode == 0,
+              let json = try? JSONSerialization.jsonObject(with: Data(result.stdout.utf8)) as? [String: Any],
+              let me = json["Self"] as? [String: Any],
+              let name = me["DNSName"] as? String, !name.isEmpty else { return nil }
+        return name.hasSuffix(".") ? String(name.dropLast()) : name
+    }
+}
+
+/// The app side of the remote control API: reads the board from the store
+/// and acts through the same actions and launch flow as the UI.
+final class AppRemoteControlHost: RemoteControlHost, @unchecked Sendable {
+    private let store: BoardStore
+    /// Esc to a session, as the stop button does (agtop: its interrupt).
+    private let sendEscape: @Sendable (String) async throws -> Void
+
+    init(store: BoardStore, sendEscape: @escaping @Sendable (String) async throws -> Void) {
+        self.store = store
+        self.sendEscape = sendEscape
+    }
+
+    func board() async -> RemoteBoard {
+        await MainActor.run {
+            RemoteBoardMapper.board(
+                cards: store.state.cards,
+                projects: store.state.configuredProjects,
+                liveSessions: store.state.tmuxSessions
+            )
+        }
+    }
+
+    @MainActor
+    private func card(_ cardId: String) throws -> KanbanCodeCard {
+        guard let card = store.state.cards.first(where: { $0.id == cardId }) else {
+            throw RemoteHostError.notFound("no card \(cardId)")
+        }
+        return card
+    }
+
+    @MainActor
+    private func remoteCard(_ cardId: String) throws -> RemoteCard {
+        RemoteBoardMapper.card(try card(cardId), liveSessions: store.state.tmuxSessions)
+    }
+
+    func transcript(cardId: String, limit: Int, before: String?) async throws -> RemoteTranscript {
+        let (path, assistant) = try await MainActor.run { () throws -> (String?, CodingAssistant) in
+            let card = try card(cardId)
+            return (card.link.sessionLink?.sessionPath ?? card.session?.jsonlPath, card.link.effectiveAssistant)
+        }
+        guard let path, FileManager.default.fileExists(atPath: path) else {
+            return RemoteTranscript(cardId: cardId, messages: [])
+        }
+        return try await RemoteTranscriptMapper.page(cardId: cardId, limit: limit, before: before) { maxTurns in
+            switch assistant {
+            case .claude:
+                let r = try await TranscriptReader.readTail(from: path, maxTurns: maxTurns)
+                return (r.turns, r.hasMore)
+            case .codex:
+                let r = try await CodexSessionParser.readTail(from: path, maxTurns: maxTurns)
+                return (r.turns, r.hasMore)
+            default:
+                let all = try await GeminiSessionStore().readTranscript(sessionPath: path)
+                return (Array(all.suffix(maxTurns)), all.count > maxTurns)
+            }
+        }
+    }
+
+    func createTask(_ request: RemoteTaskRequest) async throws -> RemoteCard {
+        let launch = try await MainActor.run { () throws -> RemoteLaunchRequest in
+            let projects = store.state.configuredProjects
+            guard let project = RemoteBoardMapper.resolveProject(request.project, in: projects) else {
+                let names = projects.map(\.name).sorted().joined(separator: ", ")
+                throw RemoteHostError.badRequest("unknown project \(request.project); known: \(names)")
+            }
+            let assistant: CodingAssistant
+            if let raw = request.assistant {
+                guard let parsed = CodingAssistant(rawValue: raw.lowercased()) else {
+                    throw RemoteHostError.badRequest("unknown assistant \(raw); use claude, codex or gemini")
+                }
+                assistant = parsed
+            } else {
+                // The assistant the New Task dialog last used.
+                let last = UserDefaults.standard.string(forKey: "selectedAssistant").flatMap(CodingAssistant.init(rawValue:))
+                assistant = last.flatMap { ContentView.loadEnabledAssistants().contains($0) ? $0 : nil } ?? .claude
+            }
+            let title = request.name?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return RemoteLaunchRequest(
+                projectPath: project.path,
+                prompt: request.prompt,
+                title: title?.isEmpty == false ? title : nil,
+                worktree: request.worktree,
+                assistant: assistant,
+                model: request.model,
+                launch: request.launch ?? true
+            )
+        }
+        let cardId = try await MainActor.run { () throws -> String in
+            guard let handler = RemoteControlController.shared.launchTask else {
+                throw RemoteHostError.conflict("Kanban Code has no board window open to launch the task")
+            }
+            return handler(launch)
+        }
+        for _ in 0..<30 {
+            if let card = try? await MainActor.run(body: { try remoteCard(cardId) }) { return card }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        throw RemoteHostError.notFound("card \(cardId) was created but is not on the board yet")
+    }
+
+    func sendPrompt(cardId: String, _ request: RemotePromptRequest) async throws {
+        let (session, busy) = try await MainActor.run { () throws -> (String, Bool) in
+            let card = try card(cardId)
+            guard let session = RemoteBoardMapper.liveAssistantSession(card.link, liveSessions: store.state.tmuxSessions) else {
+                throw RemoteHostError.conflict("card \(cardId) has no live session; resume it first")
+            }
+            return (session, card.activityState == .activelyWorking)
+        }
+        let mode = request.mode ?? .queue
+        if mode == .now && busy {
+            try await sendEscape(session)
+            // The composer takes input again once the turn has stopped.
+            try? await Task.sleep(for: .milliseconds(600))
+        }
+        await MainActor.run {
+            let prompt = QueuedPrompt(body: request.text, sendAutomatically: true)
+            store.dispatch(.addQueuedPrompt(cardId: cardId, prompt: prompt, placement: .back))
+            // A queued prompt on a busy card goes out when the turn ends; the
+            // rest goes out now, as the chat's send button does.
+            if mode == .now || !busy {
+                store.dispatch(.sendQueuedPrompt(cardId: cardId, promptId: prompt.id))
+            }
+        }
+    }
+
+    func interrupt(cardId: String) async throws {
+        let session = try await MainActor.run { () throws -> String in
+            let card = try card(cardId)
+            guard let session = RemoteBoardMapper.liveAssistantSession(card.link, liveSessions: store.state.tmuxSessions) else {
+                throw RemoteHostError.conflict("card \(cardId) has no live session")
+            }
+            return session
+        }
+        try await sendEscape(session)
+    }
+
+    func resume(cardId: String) async throws -> RemoteCard {
+        let current = try await MainActor.run { try remoteCard(cardId) }
+        if current.isLive { return current }
+        try await MainActor.run { () throws -> Void in
+            guard let handler = RemoteControlController.shared.resumeCard else {
+                throw RemoteHostError.conflict("Kanban Code has no board window open to resume the card")
+            }
+            handler(cardId)
+        }
+        try? await Task.sleep(for: .milliseconds(200))
+        return try await MainActor.run { try remoteCard(cardId) }
+    }
+
+    func terminalCommand(cardId: String, sessionName: String) async throws -> [String] {
+        try await MainActor.run { () throws -> [String] in
+            let card = try card(cardId)
+            let names = card.link.tmuxLink?.allSessionNames ?? []
+            guard names.contains(sessionName) else {
+                throw RemoteHostError.notFound("card \(cardId) has no terminal \(sessionName)")
+            }
+            guard store.state.tmuxSessions.contains(sessionName) || AppServices.machine(forSession: sessionName) != nil else {
+                throw RemoteHostError.conflict("terminal \(sessionName) is not running; resume the card first")
+            }
+            return Self.command(forSession: sessionName)
+        }
+    }
+
+    /// The command a remote viewer runs, the same way the card's own
+    /// terminal decides it: agtop's own UI for agtop, an attach otherwise.
+    @MainActor
+    static func command(forSession sessionName: String) -> [String] {
+        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        if let machine = AppServices.machine(forSession: sessionName) {
+            let script = TerminalCache.remoteAttachScript(
+                boxd: AppServices.boxdPath,
+                machine: machine,
+                session: sessionName,
+                readyMarker: AppServices.remoteReadyMarkerPath(for: sessionName)
+            )
+            return [shell, "-l", "-c", script]
+        }
+        if let agtopId = AgtopSessionName.agtopId(fromName: sessionName) {
+            return [AgtopCliAdapter.findExecutable() ?? "agtop", "open", agtopId, "--solo"]
+        }
+        return [shell, "-l", "-c", TerminalCache.attachScript(tmux: TerminalCache.tmuxPath, session: sessionName)]
+    }
+
+    func boardChanges() -> AsyncStream<Void> {
+        let (stream, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let store = self.store
+        let alive = BoardChangeFlag()
+        continuation.onTermination = { _ in alive.stop() }
+        Task { @MainActor in
+            Self.observe(store: store, continuation: continuation, alive: alive)
+        }
+        return stream
+    }
+
+    /// Yields once per change of the cards, the live sessions or the
+    /// projects, re-arming the observation each time.
+    @MainActor
+    private static func observe(store: BoardStore, continuation: AsyncStream<Void>.Continuation, alive: BoardChangeFlag) {
+        guard alive.isAlive else { return }
+        withObservationTracking {
+            _ = store.state.cards
+            _ = store.state.tmuxSessions
+            _ = store.state.configuredProjects
+        } onChange: {
+            continuation.yield()
+            Task { @MainActor in observe(store: store, continuation: continuation, alive: alive) }
+        }
+    }
+}
+
+private final class BoardChangeFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var alive = true
+
+    var isAlive: Bool { lock.withLock { alive } }
+    func stop() { lock.withLock { alive = false } }
+}

@@ -31,6 +31,7 @@ public struct Settings: Codable, Sendable {
     /// Maps `CodingAssistant.rawValue` → what keeps the main session of a
     /// card running. Missing means tmux.
     public var assistantRuntimes: [String: SessionRuntime]
+    public var remoteControl: RemoteControlSettings
 
     public init(
         projects: [Project] = [],
@@ -52,7 +53,8 @@ public struct Settings: Codable, Sendable {
         selfCompact: SelfCompactSettings = SelfCompactSettings(),
         subagents: SubagentSettings = SubagentSettings(),
         assistantCommands: [String: AssistantCommandTemplate] = [:],
-        assistantRuntimes: [String: SessionRuntime] = [:]
+        assistantRuntimes: [String: SessionRuntime] = [:],
+        remoteControl: RemoteControlSettings = RemoteControlSettings()
     ) {
         self.projects = projects
         self.globalView = globalView
@@ -74,6 +76,7 @@ public struct Settings: Codable, Sendable {
         self.subagents = subagents
         self.assistantCommands = assistantCommands
         self.assistantRuntimes = assistantRuntimes
+        self.remoteControl = remoteControl
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -81,7 +84,7 @@ public struct Settings: Codable, Sendable {
         case promptTemplate, githubIssuePromptTemplate, columnOrder, hasCompletedOnboarding, defaultAssistant
         case enabledAssistants
         case apiServices, defaultAPIServiceIds
-        case selfCompact, subagents, assistantCommands, assistantRuntimes
+        case selfCompact, subagents, assistantCommands, assistantRuntimes, remoteControl
         case skill // backward-compat: old name for promptTemplate
     }
 
@@ -141,6 +144,7 @@ public struct Settings: Codable, Sendable {
         } else {
             assistantRuntimes = [:]
         }
+        remoteControl = (try? container.decodeIfPresent(RemoteControlSettings.self, forKey: .remoteControl)) ?? RemoteControlSettings()
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -167,6 +171,7 @@ public struct Settings: Codable, Sendable {
         if !assistantRuntimes.isEmpty {
             try container.encode(assistantRuntimes.mapValues(\.rawValue), forKey: .assistantRuntimes)
         }
+        try container.encode(remoteControl, forKey: .remoteControl)
         // Note: "skill" is NOT encoded — only read for backward-compat
     }
 
