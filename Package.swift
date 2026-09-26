@@ -10,6 +10,7 @@ let package = Package(
     products: [
         .executable(name: "KanbanCode", targets: ["KanbanCode"]),
         .executable(name: "kanban-code-active-session", targets: ["KanbanCodeActiveSession"]),
+        .executable(name: "kanban-code-remote-demo", targets: ["KanbanCodeRemoteDemo"]),
         .library(name: "KanbanCodeCore", targets: ["KanbanCodeCore"]),
         .library(name: "KanbanCodeRemoteKit", targets: ["KanbanCodeRemoteKit"]),
     ],
@@ -28,6 +29,12 @@ let package = Package(
         .executableTarget(
             name: "KanbanCodeActiveSession",
             path: "Sources/KanbanCodeActiveSession"
+        ),
+        // Development server for the remote control clients: the real server over a fake board.
+        .executableTarget(
+            name: "KanbanCodeRemoteDemo",
+            dependencies: ["KanbanCodeCore", "KanbanCodeRemoteKit"],
+            path: "Sources/KanbanCodeRemoteDemo"
         ),
         .target(
             name: "KanbanCodeCore",
