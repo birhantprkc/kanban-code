@@ -304,7 +304,7 @@ function unreachableMessage(baseUrl: string, error: unknown): string {
       : err?.cause?.code ?? err?.cause?.message ?? err?.message ?? String(error);
   return (
     `Cannot reach the Kanban Code Mac at ${baseUrl} (${reason}).\n` +
-    "Check that the Mac is awake, Kanban Code runs with Settings > Remote on, and this machine is on the " +
+    "Check that the Mac is awake, Kanban Code runs with Settings > Remote Control on, and this machine is on the " +
     "same Tailscale tailnet (`tailscale status` should list the Mac)."
   );
 }
@@ -583,7 +583,7 @@ export function registerRemoteCommands(program: Command, io: RemoteIO = defaultR
   remote
     .command("login <url>")
     .description("Check a Mac's remote API and save it with a token in ~/.kanban-code/remote-client.json")
-    .requiredOption("--token <token>", "device token printed by `kanban remote pair` or Settings > Remote")
+    .requiredOption("--token <token>", "device token printed by `kanban remote pair` or Settings > Remote Control")
     .option("--json", "output as JSON")
     .action(
       run(async (rawUrl: string, opts: { token: string; json?: boolean }) => {
@@ -868,7 +868,7 @@ export function registerRemoteCommands(program: Command, io: RemoteIO = defaultR
             `Token (shown once): ${token}\n` +
             `Link: ${link}\n\n` +
             `On the other machine: kanban remote login ${url} --token ${token}\n` +
-            `The Mac app answers only with Settings > Remote on.`
+            `The Mac app answers only with Settings > Remote Control on.`
         );
       })
     );

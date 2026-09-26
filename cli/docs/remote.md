@@ -29,7 +29,7 @@ Only the `kanban remote` commands are meant for that machine. The other `kanban`
 
 ## Pair and log in
 
-1. On the Mac, turn on Settings > Remote in Kanban Code.
+1. On the Mac, turn on Settings > Remote Control in Kanban Code.
 2. On the Mac, create a token for the machine:
 
    ```bash

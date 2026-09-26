@@ -72,6 +72,6 @@ Add `--json` to any command for machine-readable output.
 
 ## Errors
 
-- `Cannot reach the Kanban Code Mac`: the Mac is asleep, Kanban Code is closed or Settings > Remote is off, or this machine is off the tailnet. Check `tailscale status`, then tell the user.
+- `Cannot reach the Kanban Code Mac`: the Mac is asleep, Kanban Code is closed or Settings > Remote Control is off, or this machine is off the tailnet. Check `tailscale status`, then tell the user.
 - `401`: the token was revoked. Ask the user to pair again.
 - `403`: the `agent` scope does not allow that call (terminals need `full`).
