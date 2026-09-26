@@ -166,7 +166,20 @@ export function defaultServerUrl(host = tailscaleHost(), port = REMOTE_DEFAULT_P
   return `http://${host ?? "127.0.0.1"}:${port}`;
 }
 
+/** The Mac's name as the app shows it (System Settings > General > Sharing), else the host name. */
 export function macHostName(): string {
+  if (process.platform === "darwin") {
+    try {
+      const name = execFileSync("scutil", ["--get", "ComputerName"], {
+        encoding: "utf8",
+        timeout: 2000,
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+      if (name) return name;
+    } catch {
+      // Fall back to the host name.
+    }
+  }
   return hostname().replace(/\.local$/, "");
 }
 

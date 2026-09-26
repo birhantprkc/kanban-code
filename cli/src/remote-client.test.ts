@@ -420,8 +420,7 @@ describe("kanban remote task / send / interrupt / resume", () => {
   test("send to a card with no live session explains the 409 and how to resume", async () => {
     const r = await run(["send", "card_3", "hello"]);
     assert.equal(r.code, 1);
-    assert.match(r.err, /no live session/);
-    assert.match(r.err, /kanban remote resume card_3zzzSTOPPED/);
+    assert.match(r.err, /no live session \(409\)\. Run: kanban remote resume card_3zzzSTOPPED/);
   });
 
   test("interrupt and resume", async () => {

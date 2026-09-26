@@ -314,7 +314,7 @@ function httpErrorMessage(status: number, serverMessage: string, method: string,
   switch (status) {
     case 401:
       return (
-        `The Mac refused the token (401${detail}). It is missing, unknown or revoked. ` +
+        `The Mac refused the token (401${detail}). ` +
         "Pair again on the Mac with `kanban remote pair --name <device>` and run `kanban remote login`."
       );
     case 403:
@@ -395,10 +395,10 @@ export function cardState(card: RemoteCard): string {
   return "stopped";
 }
 
-export function formatCardLine(card: RemoteCard): string {
+export function formatCardLine(card: RemoteCard, idWidth = card.id.length): string {
   const project = card.projectName ?? "-";
-  const queued = card.queuedPromptCount > 0 ? ` +${card.queuedPromptCount} queued` : "";
-  return `${card.id}  ${pad(COLUMN_NAMES[card.column] ?? card.column, 12)} ${pad(cardState(card) + queued, 8)} ${pad(project, 16)} ${card.title}`;
+  const queued = card.queuedPromptCount > 0 ? ` +${card.queuedPromptCount}q` : "";
+  return `${pad(card.id, idWidth)}  ${pad(COLUMN_NAMES[card.column] ?? card.column, 12)} ${pad(cardState(card) + queued, 11)} ${pad(project, 16)} ${card.title}`;
 }
 
 export function formatCardsTable(cards: RemoteCard[]): string {
@@ -409,7 +409,8 @@ export function formatCardsTable(cards: RemoteCard[]): string {
       order.indexOf(a.column) - order.indexOf(b.column) ||
       (b.lastActivity ?? b.updatedAt).localeCompare(a.lastActivity ?? a.updatedAt)
   );
-  return sorted.map(formatCardLine).join("\n");
+  const idWidth = Math.max(...sorted.map((c) => c.id.length));
+  return sorted.map((c) => formatCardLine(c, idWidth)).join("\n");
 }
 
 export function formatCardDetail(card: RemoteCard): string {
@@ -570,8 +571,7 @@ export function registerRemoteCommands(program: Command, io: RemoteIO = defaultR
     } catch (error) {
       if (error instanceof RemoteHttpError && error.status === 409) {
         throw new RemoteCliError(
-          `The card has no live session${error.serverMessage ? ` (${error.serverMessage})` : ""}. ` +
-            `Resume it first: kanban remote resume ${ref}`
+          `${error.serverMessage || "The card has no live session"} (409). Run: kanban remote resume ${ref}`
         );
       }
       throw error;
