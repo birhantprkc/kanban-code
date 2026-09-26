@@ -1,6 +1,7 @@
 import Foundation
 import KanbanCodeRemoteKit
 import Network
+import SystemConfiguration
 import Synchronization
 
 /// The HTTP + WebSocket server of docs/remote-control.md. It listens on
@@ -48,8 +49,10 @@ public final class RemoteControlServer: Sendable {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
     }
 
+    /// The Mac's computer name, as Sharing settings shows it.
     public static var defaultHostName: String {
-        Host.current().localizedName ?? ProcessInfo.processInfo.hostName
+        if let name = SCDynamicStoreCopyComputerName(nil, nil) as String?, !name.isEmpty { return name }
+        return ProcessInfo.processInfo.hostName
     }
 
     private struct SocketEntry {
