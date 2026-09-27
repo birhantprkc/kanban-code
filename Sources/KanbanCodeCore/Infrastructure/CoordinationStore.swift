@@ -163,6 +163,25 @@ public actor CoordinationStore {
         }
     }
 
+    /// Tombstones of deleted cards kept for peer sync, in `tombstones.json`
+    /// next to links.json (a separate file, so the many links writes never
+    /// have to carry them).
+    public func readTombstones() throws -> [Link] {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: tombstonesPath)) else { return [] }
+        return (try? decoder.decode(LinksContainer.self, from: data).links) ?? []
+    }
+
+    public func writeTombstones(_ tombstones: [Link]) throws {
+        let dir = (tombstonesPath as NSString).deletingLastPathComponent
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let data = try encoder.encode(LinksContainer(links: tombstones.sorted { $0.id < $1.id }))
+        try data.write(to: URL(fileURLWithPath: tombstonesPath), options: .atomic)
+    }
+
+    private var tombstonesPath: String {
+        ((filePath as NSString).deletingLastPathComponent as NSString).appendingPathComponent("tombstones.json")
+    }
+
     /// Get a single link by its id.
     public func linkById(_ id: String) throws -> Link? {
         try readLinks().first { $0.id == id }

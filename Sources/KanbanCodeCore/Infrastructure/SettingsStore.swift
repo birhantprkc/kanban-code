@@ -32,6 +32,8 @@ public struct Settings: Codable, Sendable {
     /// card running. Missing means tmux.
     public var assistantRuntimes: [String: SessionRuntime]
     public var remoteControl: RemoteControlSettings
+    /// Other masters this one syncs cards with (Settings > Peers).
+    public var peers: [PeerConfig]
 
     public init(
         projects: [Project] = [],
@@ -54,7 +56,8 @@ public struct Settings: Codable, Sendable {
         subagents: SubagentSettings = SubagentSettings(),
         assistantCommands: [String: AssistantCommandTemplate] = [:],
         assistantRuntimes: [String: SessionRuntime] = [:],
-        remoteControl: RemoteControlSettings = RemoteControlSettings()
+        remoteControl: RemoteControlSettings = RemoteControlSettings(),
+        peers: [PeerConfig] = []
     ) {
         self.projects = projects
         self.globalView = globalView
@@ -77,6 +80,7 @@ public struct Settings: Codable, Sendable {
         self.assistantCommands = assistantCommands
         self.assistantRuntimes = assistantRuntimes
         self.remoteControl = remoteControl
+        self.peers = peers
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -84,7 +88,7 @@ public struct Settings: Codable, Sendable {
         case promptTemplate, githubIssuePromptTemplate, columnOrder, hasCompletedOnboarding, defaultAssistant
         case enabledAssistants
         case apiServices, defaultAPIServiceIds
-        case selfCompact, subagents, assistantCommands, assistantRuntimes, remoteControl
+        case selfCompact, subagents, assistantCommands, assistantRuntimes, remoteControl, peers
         case skill // backward-compat: old name for promptTemplate
     }
 
@@ -145,6 +149,7 @@ public struct Settings: Codable, Sendable {
             assistantRuntimes = [:]
         }
         remoteControl = (try? container.decodeIfPresent(RemoteControlSettings.self, forKey: .remoteControl)) ?? RemoteControlSettings()
+        peers = (try? container.decodeIfPresent([PeerConfig].self, forKey: .peers)) ?? []
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -172,6 +177,9 @@ public struct Settings: Codable, Sendable {
             try container.encode(assistantRuntimes.mapValues(\.rawValue), forKey: .assistantRuntimes)
         }
         try container.encode(remoteControl, forKey: .remoteControl)
+        if !peers.isEmpty {
+            try container.encode(peers, forKey: .peers)
+        }
         // Note: "skill" is NOT encoded — only read for backward-compat
     }
 

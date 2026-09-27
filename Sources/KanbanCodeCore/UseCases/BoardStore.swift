@@ -156,6 +156,27 @@ public final class AppState: @unchecked Sendable {
     /// Active confirmation dialog — global so it survives view recreation.
     public var activeDialog: DialogState = .none
 
+    // MARK: - Peer sync
+
+    /// This master's machine id (`~/.kanban-code/machine.json`). Cards whose
+    /// `ownerMachine` is nil or equal to it run here.
+    public var localMachineId: String = ""
+    /// This master's display name.
+    public var localMachineName: String = ""
+    /// Live state of every configured peer, by `PeerConfig.id`.
+    public var peerStatuses: [String: PeerStatus] = [:]
+    /// Deleted cards, by id, kept for `LinkSync.tombstoneLifetime` so the
+    /// deletion reaches every peer and wins over older edits.
+    @ObservationIgnored public var tombstones: [String: Link] = [:]
+    /// Lamport clock: ahead of every stamp this machine wrote or saw.
+    @ObservationIgnored public var syncClock: Int = 0
+    /// Change counter served to peers as the `since` cursor; restarts with
+    /// the process, which `syncEpoch` tells them.
+    @ObservationIgnored public var syncSeq: Int = 0
+    @ObservationIgnored public var syncEpoch: String = KSUID.generate(prefix: "epoch")
+    /// `syncSeq` of the last change of each card or tombstone.
+    @ObservationIgnored public var linkSeqs: [String: Int] = [:]
+
     // MARK: - Chat channels
 
     /// All known channels (loaded from ~/.kanban-code/channels/channels.json).
@@ -516,6 +537,20 @@ public enum Action: Sendable {
     /// The machine no longer exists; every card that used it forgets it.
     case remoteMachineDestroyed(machineName: String)
 
+    // Peer sync
+    /// This machine's identity, loaded at startup.
+    case localMachineLoaded(MachineIdentity)
+    /// A page of cards pulled from the peer with machine id `peer`.
+    case peerLinksMerged(peer: String, links: [Link])
+    case peerStatusChanged(PeerStatus)
+    /// Hands a card this machine owns to `machine`: the card keeps its
+    /// state and is marked migrating until that machine adopts it.
+    case releaseCardOwnership(cardId: String, to: String)
+    /// Takes a card released to this machine. Terminals and machine records
+    /// of the old owner are dropped; the session, worktree and project are
+    /// replaced when given (their paths differ per machine).
+    case adoptCard(cardId: String, sessionLink: SessionLink?, worktreeLink: WorktreeLink?, projectPath: String?)
+
     // Settings / misc
     case settingsLoaded(projects: [Project], excludedPaths: [String], remote: RemoteSettings?, remoteMode: RemoteMode = .boxd, boxd: BoxdSettings? = nil)
     case setError(String?)
@@ -613,6 +648,8 @@ public enum Effect: Sendable {
     case persistLinks([Link])
     case upsertLink(Link)
     case removeLink(String) // id
+    /// Rewrites the tombstones kept in links.json.
+    case persistTombstones([Link])
     case createTmuxSession(cardId: String, name: String, path: String, isExtra: Bool = false)
     /// A shell session on the machine of the card, in its remote checkout.
     case createRemoteTmuxSession(cardId: String, machineName: String, name: String, path: String, isExtra: Bool = false)
@@ -748,6 +785,13 @@ public enum Reducer {
     }
 
     public static func reduce(state: AppState, action: Action) -> [Effect] {
+        if case .peerLinksMerged = action { return reduceAction(state: state, action: action) }
+        let before = state.links
+        let effects = reduceAction(state: state, action: action)
+        return stampLocalChanges(state: state, before: before, action: action, effects: effects)
+    }
+
+    static func reduceAction(state: AppState, action: Action) -> [Effect] {
         switch action {
 
         // MARK: UI Actions
@@ -2060,7 +2104,7 @@ public enum Reducer {
             var removedSessionNames: [String] = []
             for (id, var link) in state.links {
                 guard link.tmuxLink != nil, link.isLaunching != true,
-                      !link.manualOverrides.tmuxSession else { continue }
+                      !link.manualOverrides.tmuxSession, state.isOwnedLocally(link) else { continue }
                 // A remote card whose machine is paused or unreachable is not
                 // in the scan; its tmux session is still there.
                 if let remote = link.remote, link.isRemote,
@@ -2131,6 +2175,8 @@ public enum Reducer {
                     continue
                 }
                 if let existing = mergedLinks[link.id] {
+                    // A card another master runs is its owner's to update.
+                    if !state.isOwnedLocally(existing) { continue }
                     link.parentCardId = existing.parentCardId
                     link.modelOverride = existing.modelOverride
                     link.selfCompactContextThresholdTokens = existing.selfCompactContextThresholdTokens
@@ -2205,6 +2251,7 @@ public enum Reducer {
             let reconciledIds = Set(result.links.map(\.id))
             for (id, link) in mergedLinks {
                 guard !reconciledIds.contains(id),
+                      state.isOwnedLocally(link),
                       link.sessionLink == nil,
                       link.source != .manual,
                       link.name == nil,
@@ -2222,7 +2269,7 @@ public enum Reducer {
             // cards that have a session on the same branch. Multiple sessions on the
             // same branch are legitimate (e.g., forked tasks) and must NOT be merged.
             var branchToIds: [String: [String]] = [:]
-            for (id, link) in mergedLinks {
+            for (id, link) in mergedLinks where state.isOwnedLocally(link) {
                 if let branch = link.worktreeLink?.branch, !branch.isEmpty {
                     branchToIds[branch, default: []].append(id)
                 }
@@ -2261,7 +2308,8 @@ public enum Reducer {
             let liveTmuxNames = result.tmuxSessions
             deduplicatePrimaryTmuxLinks(&mergedLinks, liveTmuxNames: liveTmuxNames)
 
-            for (id, var link) in mergedLinks where link.isLaunching != true && !preservedIds.contains(id) {
+            for (id, var link) in mergedLinks
+            where link.isLaunching != true && !preservedIds.contains(id) && state.isOwnedLocally(link) {
                 let activity = result.activityMap[link.sessionLink?.sessionId ?? ""]
                 let hasTmux = link.tmuxLink.map { tmux in
                     // Shell-only terminals don't count as "active work" for column assignment
@@ -2341,7 +2389,7 @@ public enum Reducer {
         case .activityChanged(let activityMap):
             // Lightweight column update — no full reconciliation, just activity → column
             var changed = false
-            for (id, var link) in state.links where link.isLaunching != true {
+            for (id, var link) in state.links where link.isLaunching != true && state.isOwnedLocally(link) {
                 guard let sessionId = link.sessionLink?.sessionId,
                       let activity = activityMap[sessionId] else { continue }
                 let hasWorktree = link.worktreeLink?.branch != nil
@@ -2444,6 +2492,44 @@ public enum Reducer {
             state.links[cardId] = link
             effects.insert(.upsertLink(link), at: 0)
             return effects
+
+        case .localMachineLoaded(let identity):
+            state.localMachineId = identity.id
+            state.localMachineName = identity.name
+            return []
+
+        case .peerLinksMerged(let peer, let links):
+            return reducePeerLinksMerged(state: state, peer: peer, incoming: links)
+
+        case .peerStatusChanged(let status):
+            if state.peerStatuses[status.peerId] != status { state.peerStatuses[status.peerId] = status }
+            return []
+
+        case .releaseCardOwnership(let cardId, let machine):
+            guard var link = state.links[cardId], state.isOwnedLocally(link),
+                  machine != state.localMachineId, link.isLaunching != true
+            else { return [] }
+            link.ownerMachine = machine
+            link.migrating = true
+            link.updatedAt = .now
+            state.links[cardId] = link
+            return [.upsertLink(link)]
+
+        case .adoptCard(let cardId, let sessionLink, let worktreeLink, let projectPath):
+            guard var link = state.links[cardId], link.ownerMachine == state.localMachineId,
+                  !state.localMachineId.isEmpty
+            else { return [] }
+            link.migrating = nil
+            link.tmuxLink = nil
+            link.remote = nil
+            link.isRemote = false
+            link.isLaunching = nil
+            if let sessionLink { link.sessionLink = sessionLink }
+            if let worktreeLink { link.worktreeLink = worktreeLink }
+            if let projectPath { link.projectPath = projectPath }
+            link.updatedAt = .now
+            state.links[cardId] = link
+            return [.upsertLink(link)]
 
         case .remoteMachineDestroyed(let machineName):
             state.remoteMachineStates[machineName] = nil
@@ -2624,7 +2710,7 @@ public final class BoardStore: @unchecked Sendable {
             return false
         case .setPaletteOpen, .setDetailExpanded, .setPromptEditorFocused,
              .showDialog, .dismissDialog, .setError, .setNotice, .setLoading, .setIsRefreshingBacklog,
-             .launchProgress:
+             .launchProgress, .peerStatusChanged, .localMachineLoaded:
             return false
         case .refreshChannels, .refreshChannelMessages, .channelsLoaded,
              .channelMessagesLoaded, .createChannel, .sendChannelMessage,
@@ -2770,6 +2856,7 @@ public final class BoardStore: @unchecked Sendable {
                 for link in cached {
                     state.links[link.id] = link
                 }
+                state.loadSyncState(tombstones: (try? await coordinationStore.readTombstones()) ?? [])
                 state.rebuildCards()
             }
         }
@@ -2823,6 +2910,7 @@ public final class BoardStore: @unchecked Sendable {
                         state.links[link.id] = link
                     }
                 }
+                state.loadSyncState(tombstones: (try? await coordinationStore.readTombstones()) ?? [])
                 KanbanCodeLog.info("reconcile", "cached links: \(t.duration(to: .now)) (\(cached.count) links)")
             }
 

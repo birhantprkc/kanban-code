@@ -1311,8 +1311,9 @@ struct ReducerTests {
         #expect(state.links["card_tgt"]?.sessionLink?.sessionId == "sess-1")
         #expect(state.links["card_tgt"]?.tmuxLink?.sessionName == "tmux-1")
         #expect(state.deletedCardIds.contains("card_src"))
-        // Should produce upsert + remove effects
-        #expect(effects.count == 2)
+        // Upsert + remove, and the source's tombstone for peer sync
+        #expect(effects.count == 3)
+        #expect(state.tombstones["card_src"]?.isTombstone == true)
     }
 
     @Test("mergeCards transfers tmux from source to target")

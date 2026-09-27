@@ -277,6 +277,33 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
     /// card onto the board, which keeps it there for good.
     public var headless: Bool?
 
+    // MARK: Peer sync
+
+    /// The machine id of the master that runs this card's heavy state
+    /// (session, worktree, terminals). nil means this machine, which is what
+    /// every card written before peer sync reads as.
+    public var ownerMachine: String?
+
+    /// Version of the shared fields (name, column, order, pin, archive,
+    /// prompt...). Stamped on every local change of one of them; the higher
+    /// stamp wins a merge.
+    public var rev: SyncStamp?
+
+    /// Version of the owner-only fields (session, terminals, worktree,
+    /// launch state, queued prompts, machine). Only the owner stamps it.
+    public var ownerRev: SyncStamp?
+
+    /// Set while the owner hands the card to `ownerMachine`: the release is
+    /// written, the adopting machine has not taken it yet.
+    public var migrating: Bool?
+
+    /// Set on a tombstone: the card was deleted at this moment. Tombstones
+    /// travel between peers so a deletion wins over older edits, and are
+    /// pruned after `LinkSync.tombstoneLifetime`.
+    public var deletedAt: Date?
+
+    public var isTombstone: Bool { deletedAt != nil }
+
     /// Evidence that the card is more than a discovered transcript: someone
     /// created, launched, named, pinned or placed it, or it carries work
     /// (a worktree, a pull request, an issue, a parent card).
@@ -414,7 +441,12 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         pinnedSortOrder: Int? = nil,
         discoveredBranches: [String]? = nil,
         discoveredRepos: [String: String]? = nil,
-        headless: Bool? = nil
+        headless: Bool? = nil,
+        ownerMachine: String? = nil,
+        rev: SyncStamp? = nil,
+        ownerRev: SyncStamp? = nil,
+        migrating: Bool? = nil,
+        deletedAt: Date? = nil
     ) {
         self.id = id
         self.name = name
@@ -450,6 +482,11 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         self.discoveredBranches = discoveredBranches
         self.discoveredRepos = discoveredRepos
         self.headless = headless
+        self.ownerMachine = ownerMachine
+        self.rev = rev
+        self.ownerRev = ownerRev
+        self.migrating = migrating
+        self.deletedAt = deletedAt
     }
 
     // MARK: - Backward-compatible Codable
@@ -461,6 +498,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         case selfCompactContextThresholdTokens
         case isRemote, remote, isLaunching, launchedAt, sortOrder, pinnedAt, pinnedSortOrder
         case discoveredBranches, discoveredRepos, assistant, apiServiceId, headless
+        case ownerMachine, rev, ownerRev, migrating, deletedAt
         // Typed links (new nested format)
         case sessionLink, tmuxLink, worktreeLink, prLinks, issueLink, queuedPrompts, browserTabs
         // Old format keys (for reading legacy format)
@@ -500,6 +538,11 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         assistant = try c.decodeIfPresent(CodingAssistant.self, forKey: .assistant)
         apiServiceId = try c.decodeIfPresent(String.self, forKey: .apiServiceId)
         headless = try c.decodeIfPresent(Bool.self, forKey: .headless)
+        ownerMachine = try? c.decodeIfPresent(String.self, forKey: .ownerMachine)
+        rev = try? c.decodeIfPresent(SyncStamp.self, forKey: .rev)
+        ownerRev = try? c.decodeIfPresent(SyncStamp.self, forKey: .ownerRev)
+        migrating = try? c.decodeIfPresent(Bool.self, forKey: .migrating)
+        deletedAt = try? c.decodeIfPresent(Date.self, forKey: .deletedAt)
 
         // Session link: try nested first, fallback to flat
         if let sl = try c.decodeIfPresent(SessionLink.self, forKey: .sessionLink) {
@@ -595,6 +638,11 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         try c.encodeIfPresent(assistant, forKey: .assistant)
         try c.encodeIfPresent(apiServiceId, forKey: .apiServiceId)
         try c.encodeIfPresent(headless, forKey: .headless)
+        try c.encodeIfPresent(ownerMachine, forKey: .ownerMachine)
+        try c.encodeIfPresent(rev, forKey: .rev)
+        try c.encodeIfPresent(ownerRev, forKey: .ownerRev)
+        try c.encodeIfPresent(migrating, forKey: .migrating)
+        try c.encodeIfPresent(deletedAt, forKey: .deletedAt)
 
         // Always write new nested format
         try c.encodeIfPresent(sessionLink, forKey: .sessionLink)

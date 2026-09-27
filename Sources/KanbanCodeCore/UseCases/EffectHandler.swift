@@ -94,6 +94,13 @@ public actor EffectHandler {
                 KanbanCodeLog.warn("effect", "removeLink failed: \(error)")
             }
 
+        case .persistTombstones(let tombstones):
+            do {
+                try await coordinationStore.writeTombstones(tombstones)
+            } catch {
+                KanbanCodeLog.warn("effect", "persistTombstones failed: \(error)")
+            }
+
         case .createTmuxSession(let cardId, let name, let path, let isExtra):
             do {
                 try await tmuxAdapter?.createSession(name: name, path: path, command: nil)
