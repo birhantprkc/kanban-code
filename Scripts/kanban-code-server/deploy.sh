@@ -4,20 +4,17 @@
 #   Scripts/kanban-code-server/deploy.sh [user@host]      (default root@51.159.202.175)
 #
 # The host needs a Swift 6.2 toolchain in /opt/swift (swift.org tarball for the
-# distribution) plus zlib1g-dev. The tree is synced to ~/Projects/kanban-linux on
-# the host, built there in release mode with a static Swift runtime, installed as
-# /usr/local/bin/kanban-code-server and restarted.
+# distribution) plus zlib1g-dev. The committed tree (HEAD) is unpacked into
+# ~/Projects/kanban-server on the host, built there in release mode with a static
+# Swift runtime, installed as /usr/local/bin/kanban-code-server and restarted.
 set -euo pipefail
 
 HOST="${1:-root@51.159.202.175}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-REMOTE_DIR="Projects/kanban-linux"
+REMOTE_DIR="Projects/kanban-server"
 
-ssh "$HOST" "mkdir -p $REMOTE_DIR"
-rsync -az --delete \
-  --exclude .build --exclude build --exclude node_modules --exclude .claude --exclude .git \
-  --exclude Package.resolved \
-  "$ROOT/" "$HOST:$REMOTE_DIR/"
+git -C "$ROOT" archive --format=tar HEAD | ssh "$HOST" \
+  "mkdir -p $REMOTE_DIR && cd $REMOTE_DIR && find . -mindepth 1 -maxdepth 1 ! -name .build -exec rm -rf {} + && tar x"
 
 ssh "$HOST" bash -s <<REMOTE
 set -euo pipefail
