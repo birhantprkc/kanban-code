@@ -251,6 +251,13 @@ final class BatchedTerminalView: LocalProcessTerminalView {
         super.copy(sender)
     }
 
+    /// Copy stays enabled while the program has the mouse: its selection is
+    /// its own, so an empty one here doesn't mean there's nothing to copy.
+    override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(copy(_:)), terminal.mouseMode != .off { return true }
+        return super.validateUserInterfaceItem(item)
+    }
+
     // MARK: - Paste fix
 
     /// Override paste to always send bracketed paste codes. With our async+dropping
