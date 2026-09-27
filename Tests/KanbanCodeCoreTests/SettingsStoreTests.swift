@@ -32,6 +32,39 @@ struct SettingsStoreTests {
         #expect(FileManager.default.fileExists(atPath: filePath))
     }
 
+    @Test("A read racing a write from another store never sees defaults")
+    func readDuringWrite() async throws {
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+        let writer = SettingsStore(basePath: dir)
+        let reader = SettingsStore(basePath: dir)
+        var settings = Settings()
+        settings.remoteControl.enabled = true
+        try await writer.write(settings)
+        let base = settings
+
+        let sawDefaults = await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                for i in 0..<300 {
+                    var s = base
+                    s.promptTemplate = "\(i)"
+                    try? await writer.write(s)
+                }
+                return false
+            }
+            group.addTask {
+                for _ in 0..<3000 {
+                    await reader.invalidateCache()
+                    if let s = try? await reader.read(), !s.remoteControl.enabled { return true }
+                }
+                return false
+            }
+            return await group.contains(true)
+        }
+        #expect(!sawDefaults)
+        #expect(try await writer.read().remoteControl.enabled)
+    }
+
     @Test("Write and read round-trip")
     func roundTrip() async throws {
         let dir = try makeTempDir()

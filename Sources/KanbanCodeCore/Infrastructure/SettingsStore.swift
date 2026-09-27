@@ -503,11 +503,10 @@ public actor SettingsStore {
         let dir = (filePath as NSString).deletingLastPathComponent
         try fileManager.createDirectory(atPath: dir, withIntermediateDirectories: true)
 
+        // .atomic renames a temp file over the old one, so a reader never
+        // finds the file missing and mistakes that for a first run.
         let data = try encoder.encode(settings)
-        let tmpPath = filePath + ".tmp"
-        try data.write(to: URL(fileURLWithPath: tmpPath))
-        _ = try? fileManager.removeItem(atPath: filePath)
-        try fileManager.moveItem(atPath: tmpPath, toPath: filePath)
+        try data.write(to: URL(fileURLWithPath: filePath), options: .atomic)
 
         // Update cache with the just-written value
         cachedSettings = settings

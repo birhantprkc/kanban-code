@@ -62,8 +62,10 @@ final class RemoteControlController {
     }
 
     func reload(settingsStore: SettingsStore) async {
-        let settings = (try? await settingsStore.read())?.remoteControl ?? RemoteControlSettings()
-        await apply(settings)
+        // A settings file that can't be read keeps the server as it is: only
+        // a setting that says so turns it off.
+        guard let settings = try? await settingsStore.read() else { return }
+        await apply(settings.remoteControl)
     }
 
     func apply(_ settings: RemoteControlSettings) async {
