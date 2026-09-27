@@ -9,6 +9,11 @@
           "type": "generic",
           "path": "Makefile",
           "glob": false
+        },
+        {
+          "type": "generic",
+          "path": "Sources/KanbanCodeServer/Version.swift",
+          "glob": false
         }
       ],
       "changelog-sections": [

@@ -1,3 +1,4 @@
+#if canImport(IOKit)
 import Foundation
 import IOKit
 import CoreGraphics
@@ -45,3 +46,13 @@ public enum LidStateDetector {
         return false
     }
 }
+#else
+import Foundation
+
+/// A headless host has no lid and nobody at its screen, so it is always away.
+public enum LidStateDetector {
+    public static var isAway: Bool { true }
+    public static var isLidClosed: Bool { true }
+    public static var hasActiveExternalDisplay: Bool { false }
+}
+#endif

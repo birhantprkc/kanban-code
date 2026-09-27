@@ -157,3 +157,29 @@ extension String {
         return copy.withUTF8 { ByteSearch.containsAny($0, needles: needles) }
     }
 }
+
+#if !canImport(Darwin)
+#if canImport(Glibc)
+import Glibc
+#endif
+
+/// glibc declares memmem only under _GNU_SOURCE, which Swift does not see:
+/// memchr for the first byte, memcmp for the rest.
+private func memmem(
+    _ haystack: UnsafeRawPointer, _ haystackCount: Int,
+    _ needle: UnsafeRawPointer, _ needleCount: Int
+) -> UnsafeRawPointer? {
+    guard needleCount > 0 else { return haystack }
+    guard haystackCount >= needleCount else { return nil }
+    let first = Int32(needle.load(as: UInt8.self))
+    var cursor = haystack
+    let last = haystack + (haystackCount - needleCount)
+    while cursor <= last {
+        guard let hit = memchr(cursor, first, last - cursor + 1) else { return nil }
+        let candidate = UnsafeRawPointer(hit)
+        if memcmp(candidate, needle, needleCount) == 0 { return candidate }
+        cursor = candidate + 1
+    }
+    return nil
+}
+#endif

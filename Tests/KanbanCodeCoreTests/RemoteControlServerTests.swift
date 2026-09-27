@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import KanbanCodeRemoteKit
 import Testing
 
@@ -506,7 +509,7 @@ final class TerminalOutput: @unchecked Sendable {
     private var buffer = Data()
     private var closed = false
 
-    init(_ ws: URLSessionWebSocketTask) {
+    init(_ ws: TestWebSocket) {
         Task { [self] in
             while true {
                 do {

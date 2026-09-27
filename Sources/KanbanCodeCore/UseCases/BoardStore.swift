@@ -1,5 +1,6 @@
 import Foundation
-#if DEBUG
+import Observation
+#if DEBUG && canImport(QuartzCore)
 import QuartzCore
 #endif
 

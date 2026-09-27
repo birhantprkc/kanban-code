@@ -1,0 +1,17 @@
+[Unit]
+Description=Kanban Code headless master (remote control API on loopback and Tailscale)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Environment=HOME=/root
+Environment=SHELL=/bin/bash
+Environment=PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/local/bin/kanban-code-server
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

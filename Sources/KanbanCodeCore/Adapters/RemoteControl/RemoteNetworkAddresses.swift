@@ -1,4 +1,8 @@
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 import Foundation
 
 /// Addresses the remote control server may listen on.
@@ -49,7 +53,11 @@ public enum RemoteNetworkAddresses {
 
     private static func numeric(_ sa: UnsafeMutablePointer<sockaddr>) -> String? {
         var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+        #if canImport(Darwin)
         let len = socklen_t(sa.pointee.sa_len)
+        #else
+        let len = socklen_t(Int32(sa.pointee.sa_family) == AF_INET6 ? MemoryLayout<sockaddr_in6>.size : MemoryLayout<sockaddr_in>.size)
+        #endif
         guard getnameinfo(sa, len, &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 else { return nil }
         let s = String(cString: host)
         // Drop a zone suffix, Tailscale addresses are global.

@@ -1,7 +1,11 @@
 import Foundation
 import KanbanCodeRemoteKit
+#if canImport(Network)
 import Network
+#endif
+#if canImport(SystemConfiguration)
 import SystemConfiguration
+#endif
 import Synchronization
 
 /// The HTTP + WebSocket server of docs/remote-control.md. It listens on
@@ -51,7 +55,9 @@ public final class RemoteControlServer: Sendable {
 
     /// The Mac's computer name, as Sharing settings shows it.
     public static var defaultHostName: String {
+        #if canImport(SystemConfiguration)
         if let name = SCDynamicStoreCopyComputerName(nil, nil) as String?, !name.isEmpty { return name }
+        #endif
         return ProcessInfo.processInfo.hostName
     }
 
@@ -63,15 +69,19 @@ public final class RemoteControlServer: Sendable {
     private struct State {
         var running = false
         var port: Int
-        var listeners: [String: NWListener] = [:]
+        var listeners: [String: any RemoteListener] = [:]
         var connections: [ObjectIdentifier: RemoteConnection] = [:]
         var sockets: [UUID: SocketEntry] = [:]
+        #if canImport(Network)
         var pathMonitor: NWPathMonitor?
+        #endif
         var watchTask: Task<Void, Never>?
     }
 
     public let host: any RemoteControlHost
     public let devices: RemoteDeviceStore
+    /// Serves the peer sync routes (`/v1/links`, `/v1/peers`) when set.
+    public let peerServer: (any PeerLinksServing)?
     private let bindAddresses: @Sendable () -> [String]
     private let options: Options
     private let requestedPort: Int
@@ -83,10 +93,12 @@ public final class RemoteControlServer: Sendable {
         devices: RemoteDeviceStore,
         port: Int = RemoteAPI.defaultPort,
         bindAddresses: @escaping @Sendable () -> [String] = RemoteNetworkAddresses.bindable,
-        options: Options = Options()
+        options: Options = Options(),
+        peerServer: (any PeerLinksServing)? = nil
     ) {
         self.host = host
         self.devices = devices
+        self.peerServer = peerServer
         self.requestedPort = port
         self.bindAddresses = bindAddresses
         self.options = options
@@ -120,7 +132,7 @@ public final class RemoteControlServer: Sendable {
         let first = addresses.first ?? RemoteNetworkAddresses.loopback
         do {
             let listener = try await makeListener(address: first, port: requestedPort)
-            let bound = Int(listener.port?.rawValue ?? UInt16(requestedPort))
+            let bound = listener.port
             state.withLock {
                 $0.port = bound
                 $0.listeners[first] = listener
@@ -131,12 +143,14 @@ public final class RemoteControlServer: Sendable {
         }
         await reconcileAddresses()
 
+        #if canImport(Network)
         let monitor = NWPathMonitor()
         monitor.pathUpdateHandler = { [weak self] _ in
             guard let self else { return }
             Task { await self.reconcileAddresses() }
         }
         monitor.start(queue: queue)
+        #endif
 
         let interval = options.watchInterval
         let watch = Task { [weak self] in
@@ -150,26 +164,33 @@ public final class RemoteControlServer: Sendable {
             }
         }
         state.withLock {
+            #if canImport(Network)
             $0.pathMonitor = monitor
+            #endif
             $0.watchTask = watch
         }
         KanbanCodeLog.info("remote", "remote control listening on \(listeningAddresses.joined(separator: ", ")) port \(port)")
     }
 
     public func stop() {
-        let (listeners, connections, sockets, monitor, watch) = state.withLock { s in
+        #if canImport(Network)
+        let monitor = state.withLock { s in
+            defer { s.pathMonitor = nil }
+            return s.pathMonitor
+        }
+        monitor?.cancel()
+        #endif
+        let (listeners, connections, sockets, watch) = state.withLock { s in
             s.running = false
             defer {
                 s.listeners = [:]
                 s.connections = [:]
                 s.sockets = [:]
-                s.pathMonitor = nil
                 s.watchTask = nil
             }
-            return (Array(s.listeners.values), Array(s.connections.values), Array(s.sockets.values), s.pathMonitor, s.watchTask)
+            return (Array(s.listeners.values), Array(s.connections.values), Array(s.sockets.values), s.watchTask)
         }
         watch?.cancel()
-        monitor?.cancel()
         listeners.forEach { $0.cancel() }
         sockets.forEach { $0.close() }
         connections.forEach { $0.cancel() }
@@ -221,60 +242,23 @@ public final class RemoteControlServer: Sendable {
         }
     }
 
-    private func makeListener(address: String, port: Int) async throws -> NWListener {
-        let params = NWParameters.tcp
-        params.allowLocalEndpointReuse = true
-        params.requiredLocalEndpoint = .hostPort(
-            host: NWEndpoint.Host(address),
-            port: NWEndpoint.Port(rawValue: UInt16(clamping: port)) ?? .any
-        )
-        let listener: NWListener
-        do {
-            listener = try NWListener(using: params)
-        } catch {
-            throw ServerError.bindFailed(address, "\(error)")
+    private func makeListener(address: String, port: Int) async throws -> any RemoteListener {
+        try await RemoteTransport.listen(address: address, port: port, queue: queue) { [weak self] stream in
+            self?.accept(stream)
         }
-        listener.newConnectionHandler = { [weak self] nw in
-            self?.accept(nw)
-        }
-        let resumed = Mutex(false)
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            listener.stateUpdateHandler = { state in
-                let result: Result<Void, Error>?
-                switch state {
-                case .ready: result = .success(())
-                case .failed(let error): result = .failure(ServerError.bindFailed(address, "\(error)"))
-                case .cancelled: result = .failure(ServerError.bindFailed(address, "cancelled"))
-                case .waiting(let error): result = .failure(ServerError.bindFailed(address, "\(error)"))
-                default: result = nil
-                }
-                guard let result else { return }
-                let first = resumed.withLock { done -> Bool in
-                    if done { return false }
-                    done = true
-                    return true
-                }
-                if first {
-                    if case .failure = result { listener.cancel() }
-                    cont.resume(with: result)
-                }
-            }
-            listener.start(queue: queue)
-        }
-        return listener
     }
 
     // MARK: - Connections
 
-    private func accept(_ nw: NWConnection) {
-        let conn = RemoteConnection(nw)
+    private func accept(_ stream: any RemoteByteStream) {
+        let conn = RemoteConnection(stream)
         let accepted = state.withLock { s -> Bool in
             guard s.running else { return false }
             s.connections[ObjectIdentifier(conn)] = conn
             return true
         }
         guard accepted else {
-            nw.cancel()
+            stream.cancel()
             return
         }
         conn.start()
@@ -368,6 +352,10 @@ public final class RemoteControlServer: Sendable {
 
         do {
             let rest = Array(seg.dropFirst())
+            if let peerServer,
+               let response = await RemoteLinksRoutes.handle(method: method, rest: rest, query: request.query, server: peerServer) {
+                return .response(response)
+            }
             let id = rest.count >= 2 && rest[0] == "cards" ? rest[1] : ""
             let shape = rest.enumerated().map { item in
                 let wildcard = rest[0] == "cards" && (item.offset == 1 || (item.offset == 3 && rest[2] == "queue"))
@@ -620,14 +608,13 @@ public final class RemoteControlServer: Sendable {
         }
         defer { unregister(socketId) }
 
-        let nw = conn.nw
         process.startReading(
             onData: { data in
                 // Waiting for the send keeps a slow client from buffering without bound.
                 let sent = DispatchSemaphore(value: 0)
-                nw.send(content: RemoteWebSocket.frames(opcode: .binary, payload: data), completion: .contentProcessed { _ in
+                conn.send(RemoteWebSocket.frames(opcode: .binary, payload: data)) { _ in
                     sent.signal()
-                })
+                }
                 _ = sent.wait(timeout: .now() + 30)
             },
             onExit: {

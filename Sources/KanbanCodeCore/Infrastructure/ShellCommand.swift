@@ -32,7 +32,7 @@ public enum ShellCommand {
         proc.standardError = FileHandle.nullDevice
         defer { try? pipe.fileHandleForReading.close() }
         do {
-            try proc.run()
+            try proc.runUnmasked()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             proc.waitUntilExit()
             guard proc.terminationStatus == 0,
@@ -138,7 +138,7 @@ public enum ShellCommand {
                 }
 
                 do {
-                    try process.run()
+                    try process.runUnmasked()
                 } catch {
                     closePipes()
                     continuation.resume(throwing: error)

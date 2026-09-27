@@ -112,6 +112,8 @@ struct ChatRenderingPerformanceTests {
         #expect(textBlock.text.utf8.count > 80_000)
     }
 
+    // Markdown AttributedString parsing is Foundation on Apple platforms only.
+    #if canImport(Darwin)
     @Test("AttributedString markdown parsing of 90KB text is fast enough")
     func attributedStringMarkdownPerformance() async throws {
         let largeText = generateLargeText(sizeKB: 90)
@@ -127,6 +129,7 @@ struct ChatRenderingPerformanceTests {
         print("AttributedString(markdown:) for 90KB: \(elapsed)")
         #expect(elapsed < .seconds(1), "Markdown parsing took \(elapsed) — freezes UI if over 1s")
     }
+    #endif
 
     @Test("Plain Text init with 90KB string is fast")
     func plainTextPerformance() async throws {

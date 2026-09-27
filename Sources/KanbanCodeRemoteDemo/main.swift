@@ -378,7 +378,9 @@ let server = RemoteControlServer(
     options: .init(appVersion: "demo")
 )
 
+#if canImport(Darwin)
 setvbuf(stdout, nil, _IOLBF, 0)
+#endif
 signal(SIGPIPE, SIG_IGN)
 
 do {

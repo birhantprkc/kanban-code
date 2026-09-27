@@ -6,7 +6,9 @@ import Foundation
 /// Skipped when the binary has not been built.
 @Suite("remote client loopback", .serialized, .enabled(if: DemoServer.binary != nil))
 struct RemoteClientLoopbackTests {
-    @Test("Board, transcript pages, prompts, events and a terminal round trip")
+    // swift-corelibs-foundation opens WebSockets only through a libcurl built
+    // with them, which Linux distributions do not ship.
+    @Test("Board, transcript pages, prompts, events and a terminal round trip", .disabled(if: webSocketsUnsupported))
     func roundTrip() async throws {
         let server = try DemoServer.start()
         defer { server.stop() }
@@ -103,3 +105,9 @@ struct DemoServer {
         process.terminate()
     }
 }
+
+#if canImport(FoundationNetworking)
+let webSocketsUnsupported = true
+#else
+let webSocketsUnsupported = false
+#endif

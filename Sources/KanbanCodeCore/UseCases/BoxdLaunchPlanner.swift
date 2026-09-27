@@ -1,4 +1,8 @@
+#if canImport(CryptoKit)
 import CryptoKit
+#else
+import Crypto
+#endif
 import Foundation
 
 /// What a resume has to do before the card is back on its machine.
@@ -243,9 +247,17 @@ public enum BoxdLaunchPlanner {
                 if skippedDirectories.contains(url.lastPathComponent) { enumerator.skipDescendants() }
                 continue
             }
-            files.append(url.relativePath)
+            files.append(relativePath(url, root: root))
         }
         return files
+    }
+
+    /// The enumerated file relative to `root`. Foundation outside Apple
+    /// platforms ignores `.producesRelativePathURLs` and gives full paths.
+    static func relativePath(_ url: URL, root: String) -> String {
+        let path = url.relativePath
+        let prefix = root.hasSuffix("/") ? root : root + "/"
+        return path.hasPrefix(prefix) ? String(path.dropFirst(prefix.count)) : path
     }
 
     static func walkMatches(patterns: [String], root: String) -> [String] {
@@ -266,7 +278,7 @@ public enum BoxdLaunchPlanner {
                 }
                 continue
             }
-            let relative = url.relativePath
+            let relative = relativePath(url, root: root)
             if patterns.contains(where: { matches(glob: $0, path: relative) }) {
                 found.append(relative)
             }

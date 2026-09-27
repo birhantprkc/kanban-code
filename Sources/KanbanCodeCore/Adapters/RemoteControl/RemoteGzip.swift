@@ -1,7 +1,12 @@
+#if canImport(Compression)
 import Compression
+#else
+import CZlib
+#endif
 import Foundation
 
-/// gzip (RFC 1952) around the raw DEFLATE stream of the Compression framework.
+/// gzip (RFC 1952) around a raw DEFLATE stream: the Compression framework on
+/// Apple platforms, zlib elsewhere.
 enum RemoteGzip {
     /// HTTP bodies smaller than this go out as they are.
     static let minimumBytes = 8 * 1024
@@ -21,10 +26,9 @@ enum RemoteGzip {
         var deflated = Data(count: capacity)
         let written = deflated.withUnsafeMutableBytes { dst in
             data.withUnsafeBytes { src in
-                compression_encode_buffer(
+                rawDeflate(
                     dst.bindMemory(to: UInt8.self).baseAddress!, capacity,
-                    src.bindMemory(to: UInt8.self).baseAddress!, data.count,
-                    nil, COMPRESSION_ZLIB
+                    src.bindMemory(to: UInt8.self).baseAddress!, data.count
                 )
             }
         }
@@ -34,6 +38,25 @@ enum RemoteGzip {
         appendLittleEndian(crc32(data), to: &out)
         appendLittleEndian(UInt32(truncatingIfNeeded: data.count), to: &out)
         return out
+    }
+
+    /// Raw DEFLATE of `count` bytes into `dst`; the bytes written, 0 on failure.
+    private static func rawDeflate(_ dst: UnsafeMutablePointer<UInt8>, _ capacity: Int, _ src: UnsafePointer<UInt8>, _ count: Int) -> Int {
+        #if canImport(Compression)
+        return compression_encode_buffer(dst, capacity, src, count, nil, COMPRESSION_ZLIB)
+        #else
+        var stream = z_stream()
+        // Negative window bits: raw DEFLATE, no zlib header.
+        guard deflateInit2_(&stream, Z_DEFAULT_COMPRESSION, Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY,
+                            ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size)) == Z_OK else { return 0 }
+        defer { deflateEnd(&stream) }
+        stream.next_in = UnsafeMutablePointer(mutating: src)
+        stream.avail_in = uInt(count)
+        stream.next_out = dst
+        stream.avail_out = uInt(capacity)
+        guard deflate(&stream, Z_FINISH) == Z_STREAM_END else { return 0 }
+        return Int(stream.total_out)
+        #endif
     }
 
     private static func appendLittleEndian(_ value: UInt32, to data: inout Data) {

@@ -1,5 +1,9 @@
 import Foundation
+#if canImport(CryptoKit)
 import CryptoKit
+#else
+import Crypto
+#endif
 
 /// Everything a launch or resume needs after a machine is ready.
 public struct BoxdPreparation: Sendable {

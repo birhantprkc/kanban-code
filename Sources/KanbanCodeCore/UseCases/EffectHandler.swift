@@ -1,6 +1,8 @@
 import Foundation
 import KanbanCodeRemoteKit
+#if canImport(UserNotifications)
 import UserNotifications
+#endif
 
 /// Executes side effects produced by the Reducer.
 /// All async operations (disk, network, tmux) go through here.
@@ -502,6 +504,7 @@ public actor EffectHandler {
         body: String,
         userInfo: [String: String]
     ) async {
+        #if canImport(UserNotifications)
         let center = UNUserNotificationCenter.current()
         let settings = await center.notificationSettings()
         guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else {
@@ -522,6 +525,7 @@ public actor EffectHandler {
         do { try await center.add(req) } catch {
             KanbanCodeLog.info("notify", "chat notification failed: \(error)")
         }
+        #endif
     }
 }
 

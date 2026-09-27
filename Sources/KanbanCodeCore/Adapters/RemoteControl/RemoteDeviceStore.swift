@@ -1,7 +1,13 @@
+#if canImport(CryptoKit)
 import CryptoKit
+#else
+import Crypto
+#endif
 import Foundation
 import KanbanCodeRemoteKit
+#if canImport(Security)
 import Security
+#endif
 import Synchronization
 
 /// Paired devices of the remote control server, kept in
@@ -153,8 +159,13 @@ public final class RemoteDeviceStore: Sendable {
         var out = "kc_"
         while out.count < 43 {
             var bytes = [UInt8](repeating: 0, count: 64)
+            #if canImport(Security)
             let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
             precondition(status == errSecSuccess, "SecRandomCopyBytes failed")
+            #else
+            var rng = SystemRandomNumberGenerator()
+            for i in bytes.indices { bytes[i] = rng.next() }
+            #endif
             // 248 = 4 * 62: rejecting bytes above it keeps every character equally likely.
             for b in bytes where b < 248 && out.count < 43 {
                 out.append(alphabet[Int(b) % 62])
@@ -175,7 +186,11 @@ public final class RemoteDeviceStore: Sendable {
     private func currentStamp() -> FileStamp? {
         var st = stat()
         guard stat(path, &st) == 0 else { return nil }
+        #if canImport(Darwin)
         return FileStamp(mtime: st.st_mtimespec, size: st.st_size, inode: st.st_ino)
+        #else
+        return FileStamp(mtime: st.st_mtim, size: st.st_size, inode: st.st_ino)
+        #endif
     }
 
     private func refresh(_ s: inout State) {

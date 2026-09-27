@@ -1,6 +1,9 @@
+#if canImport(CryptoKit)
 import CryptoKit
+#else
+import Crypto
+#endif
 import Foundation
-import Network
 
 /// A parsed HTTP/1.1 request.
 struct RemoteHTTPRequest: Sendable {
@@ -34,9 +37,8 @@ enum RemoteHTTPError: Error {
 /// An accepted TCP connection with a read buffer. Reads come from one task
 /// at a time; sends may come from any thread and keep their call order.
 final class RemoteConnection: @unchecked Sendable {
-    let nw: NWConnection
+    let stream: any RemoteByteStream
     private var buffer = Data()
-    private let queue: DispatchQueue
     private let closedLock = NSLock()
     private var isClosed = false
 
@@ -44,19 +46,12 @@ final class RemoteConnection: @unchecked Sendable {
     /// Room for `RemoteImage.maxCount` images of `RemoteImage.maxBytes`, base64 encoded.
     static let maxBodyBytes = 48 * 1024 * 1024
 
-    init(_ nw: NWConnection) {
-        self.nw = nw
-        self.queue = DispatchQueue(label: "kanban.remote.conn")
+    init(_ stream: any RemoteByteStream) {
+        self.stream = stream
     }
 
     func start() {
-        nw.stateUpdateHandler = { [weak self] state in
-            switch state {
-            case .failed, .cancelled: self?.markClosed()
-            default: break
-            }
-        }
-        nw.start(queue: queue)
+        stream.start { [weak self] in self?.markClosed() }
     }
 
     var closed: Bool {
@@ -69,27 +64,14 @@ final class RemoteConnection: @unchecked Sendable {
 
     func cancel() {
         markClosed()
-        nw.cancel()
+        stream.cancel()
     }
 
     // MARK: Reading
 
     /// Appends the next chunk to the buffer. False at end of stream.
     private func receiveMore() async throws -> Bool {
-        let chunk: Data? = try await withCheckedThrowingContinuation { cont in
-            nw.receive(minimumIncompleteLength: 1, maximumLength: 256 * 1024) { data, _, isComplete, error in
-                if let data, !data.isEmpty {
-                    cont.resume(returning: data)
-                } else if let error {
-                    cont.resume(throwing: error)
-                } else if isComplete {
-                    cont.resume(returning: nil)
-                } else {
-                    cont.resume(returning: Data())
-                }
-            }
-        }
-        guard let chunk else { return false }
+        guard let chunk = try await stream.receive() else { return false }
         buffer.append(chunk)
         return true
     }
@@ -200,14 +182,18 @@ final class RemoteConnection: @unchecked Sendable {
     /// Sends bytes; sends keep the order of the calls.
     func send(_ data: Data) async throws {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            nw.send(content: data, completion: .contentProcessed { error in
+            stream.send(data) { error in
                 if let error { cont.resume(throwing: error) } else { cont.resume() }
-            })
+            }
         }
     }
 
+    func send(_ data: Data, completion: @escaping @Sendable (Error?) -> Void) {
+        stream.send(data, completion: completion)
+    }
+
     func sendDetached(_ data: Data) {
-        nw.send(content: data, completion: .contentProcessed { _ in })
+        stream.send(data) { _ in }
     }
 }
 

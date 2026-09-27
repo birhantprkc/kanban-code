@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// Sends push notifications via the Pushover API.
 public final class PushoverClient: NotifierPort, @unchecked Sendable {

@@ -1,3 +1,4 @@
+#if canImport(UserNotifications)
 import Foundation
 import UserNotifications
 
@@ -66,3 +67,15 @@ public final class MacOSNotificationClient: NotifierPort, @unchecked Sendable {
         true // Always available on macOS
     }
 }
+#else
+import Foundation
+
+/// Without a notification center, local notifications are dropped.
+public final class MacOSNotificationClient: NotifierPort, @unchecked Sendable {
+    public init() {}
+
+    public func sendNotification(title: String, message: String, imageData: Data?, cardId: String?) async throws {}
+
+    public func isConfigured() -> Bool { false }
+}
+#endif

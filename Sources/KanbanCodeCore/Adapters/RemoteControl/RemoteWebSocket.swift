@@ -54,9 +54,9 @@ final class RemoteWebSocket: @unchecked Sendable {
         var payload = Data([UInt8(code >> 8), UInt8(code & 0xFF)])
         payload.append(Data(reason.utf8.prefix(120)))
         let conn = connection
-        conn.nw.send(content: Self.frame(fin: true, opcode: .close, payload: payload), completion: .contentProcessed { _ in
+        conn.send(Self.frame(fin: true, opcode: .close, payload: payload)) { _ in
             DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) { conn.cancel() }
-        })
+        }
     }
 
     /// One whole message split into frames of at most `maxFramePayload`.

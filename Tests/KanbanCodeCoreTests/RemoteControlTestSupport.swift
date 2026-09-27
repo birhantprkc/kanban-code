@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import KanbanCodeRemoteKit
 import Synchronization
 
@@ -212,18 +215,27 @@ final class RemoteServerFixture: Sendable {
         return ((response as! HTTPURLResponse).statusCode, data)
     }
 
-    func webSocket(_ path: String, token: String?) -> URLSessionWebSocketTask {
+    func webSocket(_ path: String, token: String?) -> TestWebSocket {
+        #if canImport(FoundationNetworking)
+        return RawTestWebSocket(port: server.port, path: path, token: token)
+        #else
         var req = URLRequest(url: URL(string: "ws://127.0.0.1:\(server.port)" + path)!)
         if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         let task = session.webSocketTask(with: req)
         task.resume()
         return task
+        #endif
     }
 }
 
+#if canImport(FoundationNetworking)
+typealias TestWebSocket = RawTestWebSocket
+#else
+typealias TestWebSocket = URLSessionWebSocketTask
 extension URLSessionWebSocketTask: @retroactive @unchecked Sendable {}
+#endif
 
-func decodeEvent(_ message: URLSessionWebSocketTask.Message) throws -> RemoteEvent {
+func decodeEvent(_ message: TestWebSocket.Message) throws -> RemoteEvent {
     switch message {
     case .string(let s): return try JSONDecoder.remote.decode(RemoteEvent.self, from: Data(s.utf8))
     case .data(let d): return try JSONDecoder.remote.decode(RemoteEvent.self, from: d)

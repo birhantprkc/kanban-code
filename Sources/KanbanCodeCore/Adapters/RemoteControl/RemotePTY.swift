@@ -1,4 +1,8 @@
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 import Foundation
 
 /// A child process running in its own pseudo-terminal and session, so it is
@@ -65,7 +69,7 @@ final class RemotePTYProcess: @unchecked Sendable {
         let cExecutable = strdup(executable)
         let cArgs = argv.map { strdup($0) } + [nil]
         let cEnv = env.map { strdup("\($0.key)=\($0.value)") } + [nil]
-        let cDir = directory.map { strdup($0) }
+        let cDir = directory.flatMap { strdup($0) }
         defer {
             free(cExecutable)
             cArgs.forEach { free($0) }
@@ -79,8 +83,15 @@ final class RemotePTYProcess: @unchecked Sendable {
             cEnv.withUnsafeBufferPointer { envPtr in
                 let pid = forkpty(&master, nil, nil, &size)
                 if pid == 0 {
+                    #if os(Linux)
+                    // The fork keeps the spawning thread's mask, and dispatch
+                    // threads block nearly every signal; a terminal needs them.
+                    var empty = sigset_t()
+                    sigemptyset(&empty)
+                    sigprocmask(SIG_SETMASK, &empty, nil)
+                    #endif
                     if let cDir { _ = chdir(cDir) }
-                    _ = execve(cExecutable, argsPtr.baseAddress, envPtr.baseAddress)
+                    _ = execve(cExecutable!, argsPtr.baseAddress!, envPtr.baseAddress!)
                     _exit(127)
                 }
                 return pid
@@ -114,7 +125,7 @@ final class RemotePTYProcess: @unchecked Sendable {
             var status: Int32 = 0
             while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
             lock.withLock { exited = true }
-            writeQueue.sync { close(master) }
+            _ = writeQueue.sync { close(master) }
             onExit()
         }
         thread.name = "kanban.remote.pty.read"
@@ -129,7 +140,7 @@ final class RemotePTYProcess: @unchecked Sendable {
                 guard var p = raw.baseAddress else { return }
                 var left = raw.count
                 while left > 0 {
-                    let n = Darwin.write(master, p, left)
+                    let n = systemWrite(master, p, left)
                     if n < 0 {
                         if errno == EINTR || errno == EAGAIN { continue }
                         return
@@ -146,7 +157,7 @@ final class RemotePTYProcess: @unchecked Sendable {
         writeQueue.async { [self] in
             guard !hasExited else { return }
             var size = winsize(ws_row: UInt16(clamping: rows), ws_col: UInt16(clamping: cols), ws_xpixel: 0, ws_ypixel: 0)
-            _ = ioctl(master, TIOCSWINSZ, &size)
+            _ = ioctl(master, UInt(TIOCSWINSZ), &size)
         }
     }
 
@@ -162,4 +173,12 @@ final class RemotePTYProcess: @unchecked Sendable {
             kill(pid, SIGKILL)
         }
     }
+}
+
+private func systemWrite(_ fd: Int32, _ p: UnsafeRawPointer, _ count: Int) -> Int {
+    #if canImport(Darwin)
+    Darwin.write(fd, p, count)
+    #else
+    Glibc.write(fd, p, count)
+    #endif
 }

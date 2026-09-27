@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 /// A card on the Kanban board, combining Link + Session data for display.
 public struct KanbanCodeCard: Identifiable, Sendable, Equatable {

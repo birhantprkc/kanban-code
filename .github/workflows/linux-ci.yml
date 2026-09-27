@@ -1,0 +1,42 @@
+name: Linux CI
+
+# Core, the remote control API and kanban-code-server build and pass their
+# tests on Linux, where the headless master runs.
+
+on:
+  pull_request:
+    paths:
+      - "Package.swift"
+      - "Sources/**"
+      - "Tests/**"
+      - ".github/workflows/linux-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "Package.swift"
+      - "Sources/**"
+      - "Tests/**"
+      - ".github/workflows/linux-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container: swift:6.2-noble
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      # tmux + git let the real-tmux / real-git tests run for real.
+      - name: Install tmux
+        run: apt-get update && apt-get install -y tmux git
+
+      - name: Build
+        run: swift build --build-tests
+
+      - name: Test
+        run: swift test --skip-build
+
+      - name: Build kanban-code-server (release)
+        run: swift build -c release --product kanban-code-server --static-swift-stdlib

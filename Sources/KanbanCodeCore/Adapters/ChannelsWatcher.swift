@@ -11,16 +11,16 @@ import Foundation
 public final class ChannelsWatcher: @unchecked Sendable {
     private let baseDir: String
     private let queue: DispatchQueue
-    private var channelsFileSource: DispatchSourceFileSystemObject?
+    private var channelsFileSource: FileWatchSource?
     private var channelsFileFd: Int32 = -1
-    private var readStateSource: DispatchSourceFileSystemObject?
+    private var readStateSource: FileWatchSource?
     private var readStateFd: Int32 = -1
 
-    private var perChannelSources: [String: DispatchSourceFileSystemObject] = [:]
+    private var perChannelSources: [String: FileWatchSource] = [:]
     private var perChannelFds: [String: Int32] = [:]
-    private var dmDirSource: DispatchSourceFileSystemObject?
+    private var dmDirSource: FileWatchSource?
     private var dmDirFd: Int32 = -1
-    private var perDMSources: [String: DispatchSourceFileSystemObject] = [:]
+    private var perDMSources: [String: FileWatchSource] = [:]
     private var perDMFds: [String: Int32] = [:]
     private let lock = NSLock()
 
@@ -127,7 +127,7 @@ public final class ChannelsWatcher: @unchecked Sendable {
     /// a fresh fd on the new inode so we keep getting updates.
     private func attachChannelsFileWatcher() {
         let path = (baseDir as NSString).appendingPathComponent("channels.json")
-        let fd = open(path, O_EVTONLY)
+        let fd = open(path, fileWatchOpenFlags)
         guard fd >= 0 else { return }
         let source = Self.makeFileSource(fd: fd, queue: queue) { [weak self] in
             guard let self else { return }
@@ -167,7 +167,7 @@ public final class ChannelsWatcher: @unchecked Sendable {
             // Touch the file so `open(O_EVTONLY)` succeeds.
             FileManager.default.createFile(atPath: path, contents: nil)
         }
-        let fd = open(path, O_EVTONLY)
+        let fd = open(path, fileWatchOpenFlags)
         guard fd >= 0 else { return }
         let source = Self.makeFileSource(fd: fd, queue: queue) {
             Self.postChannelMessagesChanged(channelName: name)
@@ -200,7 +200,7 @@ public final class ChannelsWatcher: @unchecked Sendable {
         if !FileManager.default.fileExists(atPath: path) {
             try? "{}".write(toFile: path, atomically: true, encoding: .utf8)
         }
-        let fd = open(path, O_EVTONLY)
+        let fd = open(path, fileWatchOpenFlags)
         guard fd >= 0 else { return }
         let source = Self.makeFileSource(fd: fd, queue: queue) { [weak self] in
             guard let self else { return }
@@ -235,7 +235,7 @@ public final class ChannelsWatcher: @unchecked Sendable {
     private func watchDMDirectory() {
         guard dmDirSource == nil else { return }
         let path = dmDir
-        let fd = open(path, O_EVTONLY)
+        let fd = open(path, fileWatchOpenFlags)
         guard fd >= 0 else { return }
         let source = Self.makeFileSource(fd: fd, queue: queue) { [weak self] in
             // Directory changed (likely new DM log file). Re-scan.
@@ -271,7 +271,7 @@ public final class ChannelsWatcher: @unchecked Sendable {
         if !FileManager.default.fileExists(atPath: path) {
             FileManager.default.createFile(atPath: path, contents: nil)
         }
-        let fd = open(path, O_EVTONLY)
+        let fd = open(path, fileWatchOpenFlags)
         guard fd >= 0 else { return }
         let source = Self.makeFileSource(fd: fd, queue: queue) {
             Self.postDMLogsChanged(dmKey: key)
@@ -299,16 +299,8 @@ public final class ChannelsWatcher: @unchecked Sendable {
         queue: DispatchQueue,
         onEvent: @escaping @Sendable () -> Void,
         onCancel: @escaping @Sendable () -> Void
-    ) -> DispatchSourceFileSystemObject {
-        let src = DispatchSource.makeFileSystemObjectSource(
-            fileDescriptor: fd,
-            eventMask: [.write, .extend, .rename, .delete, .attrib],
-            queue: queue
-        )
-        src.setEventHandler { onEvent() }
-        src.setCancelHandler { onCancel() }
-        src.resume()
-        return src
+    ) -> FileWatchSource {
+        makeFileWatchSource(fd: fd, queue: queue, onEvent: onEvent, onCancel: onCancel)
     }
 }
 
