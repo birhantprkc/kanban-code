@@ -1828,7 +1828,7 @@ struct ContentView: View {
                 get: { showSearch },
                 set: { if !$0 { closePalette() } }
             ),
-            cards: store.state.cards,
+            cards: store.state.cards.filter { !store.state.isExcludedFromGlobalView($0) },
             sessionStore: store.sessionStore,
             onSelectCard: { card in
                 switchToProjectIfNeeded(for: card)

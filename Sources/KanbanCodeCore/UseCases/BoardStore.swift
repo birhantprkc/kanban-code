@@ -396,7 +396,7 @@ public final class AppState: @unchecked Sendable {
         return false
     }
 
-    private func isExcludedFromGlobalView(_ card: KanbanCodeCard) -> Bool {
+    public func isExcludedFromGlobalView(_ card: KanbanCodeCard) -> Bool {
         guard !excludedPaths.isEmpty else { return false }
         let cardPath = card.link.projectPath ?? card.session?.projectPath
         guard let cardPath else { return false }
