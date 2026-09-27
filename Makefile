@@ -83,8 +83,9 @@ app: build cli install-cli web
 	@# Code sign so macOS grants notification permissions and Web Inspector can attach
 	@echo "Code signing with: $(CODESIGN_IDENTITY)"
 	@codesign --force --sign "$(CODESIGN_IDENTITY)" --entitlements KanbanCode.entitlements $(BUNDLE_DIR)
-	@# Register with Launch Services so macOS picks up the icon
-	@/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -f $(BUNDLE_DIR) 2>/dev/null || true
+	@# Register with Launch Services, as the only copy of this bundle id, so
+	@# notification clicks open this build and macOS picks up the icon
+	@Scripts/register-app.sh $(BUNDLE_DIR) $(BUNDLE_ID)
 	@echo "Built $(BUNDLE_DIR)"
 
 app-debug:
