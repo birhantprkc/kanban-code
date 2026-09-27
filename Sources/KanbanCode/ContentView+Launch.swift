@@ -826,6 +826,15 @@ extension ContentView {
                     let existingMachine = machineChoice?.machineName
                         ?? (machineChoice == nil ? currentMachine : nil)
                     progress.start()
+                    // A card that moves from this Mac to a machine ends its
+                    // local session first, so the conversation never runs in
+                    // two places, and the transcript it pushes is complete.
+                    if !card.link.isRemote, let previous = card.link.tmuxLink?.sessionName,
+                       AppServices.machine(forSession: previous) == nil {
+                        progress.report("Ending the session on this Mac")
+                        KanbanCodeLog.info("resume", "Ending local session \(previous) before moving card=\(cardId.prefix(12)) to a machine")
+                        try? await tmuxAdapter.killSession(name: previous)
+                    }
                     let preparation = try await boxdSupervisor.prepare(
                         cardId: cardId,
                         localProjectPath: projectPath,
@@ -918,10 +927,16 @@ extension ContentView {
                     // worktree that only existed on the machine is created
                     // here first.
                     if let remote = card.link.remote, remote.mode == .boxd {
-                        await boxdSupervisor.releaseSessions([resumeSessionName])
-                        if await boxdSupervisor.isConnected(remote.machineName) {
-                            await boxdSupervisor.stop(machineName: remote.machineName, reason: .manual)
-                        }
+                        progress.start()
+                        progress.report("Leaving \(remote.machineName)")
+                        // Every session the card has there ends: the one of
+                        // its launch may carry another name than the resume.
+                        let names = (card.link.tmuxLink?.allSessionNames ?? []) + [resumeSessionName]
+                        await boxdSupervisor.leave(
+                            machineName: remote.machineName,
+                            sessionNames: Array(Set(names)),
+                            localTranscript: store.state.links[cardId]?.sessionLink?.sessionPath,
+                            remoteCwd: remote.remoteCwd)
                         if let worktree = card.link.worktreeLink,
                            let repoRoot = card.link.projectPath,
                            !FileManager.default.fileExists(atPath: worktree.path) {

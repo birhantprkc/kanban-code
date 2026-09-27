@@ -92,7 +92,8 @@ struct LaunchConfirmationDialog: View {
                 lastRunRemote: remoteOptions?.lastRunRemote, cardMachine: cardMachine,
                 mode: mode, projectPath: projectPath)
         self._runRemotely = State(initialValue: remoteDefault)
-        self._machineChoice = State(initialValue: cardMachine.map { BoxdMachineChoice.existing($0) } ?? .newMachine)
+        self._machineChoice = State(initialValue: remoteOptions?.initialMachineChoice(projectPath: projectPath)
+            ?? cardMachine.map { BoxdMachineChoice.existing($0) } ?? .newMachine)
         self._createWorktree = State(initialValue: UserDefaults.standard.object(forKey: "createWorktree_\(projectPath)") as? Bool ?? true)
     }
 
@@ -202,7 +203,7 @@ struct LaunchConfirmationDialog: View {
                             .font(.app(.caption))
                             .foregroundStyle(.secondary)
                         if runsOnBoxd {
-                            Text("on boxd machine \(selectedMachineLabel)")
+                            Text("on machine \(selectedMachineLabel)")
                                 .font(.app(.caption2))
                                 .foregroundStyle(.secondary)
                             if createWorktree && isGitRepo && assistant.supportsWorktree {
@@ -278,9 +279,13 @@ struct LaunchConfirmationDialog: View {
 
     @ViewBuilder
     private var remoteSection: some View {
-        Toggle(remoteToggleLabel, isOn: canRunRemotely ? $runRemotely : .constant(false))
-            .font(.app(.callout))
-            .disabled(!canRunRemotely)
+        if remoteMode == .boxd, canRunRemotely, let remoteOptions {
+            RunTargetPicker(remote: remoteOptions, runRemotely: $runRemotely, machineChoice: $machineChoice)
+        } else {
+            Toggle(remoteToggleLabel, isOn: canRunRemotely ? $runRemotely : .constant(false))
+                .font(.app(.callout))
+                .disabled(!canRunRemotely)
+        }
 
         if let hint = remoteHint {
             Label(hint, systemImage: "info.circle")
@@ -302,46 +307,12 @@ struct LaunchConfirmationDialog: View {
             }
         }
 
-        if runsOnBoxd {
-            HStack {
-                Picker("Machine", selection: $machineChoice) {
-                    ForEach(machineOptions, id: \.choice) { option in
-                        Text(option.label).tag(option.choice)
-                    }
-                }
-                if remoteOptions?.cardMachine != nil, let onRemoveMachine {
-                    Button("Remove machine", role: .destructive, action: onRemoveMachine)
-                        .controlSize(.small)
-                }
-            }
-            .padding(.leading, 20)
+        if runsOnBoxd, let machine = remoteOptions?.cardMachine,
+           remoteOptions?.boxd?.sshMachine(named: machine) == nil, let onRemoveMachine {
+            Button("Remove machine", role: .destructive, action: onRemoveMachine)
+                .controlSize(.small)
+                .padding(.leading, 20)
         }
-    }
-
-    private struct MachineOption: Identifiable {
-        let choice: BoxdMachineChoice
-        let label: String
-        var id: BoxdMachineChoice { choice }
-    }
-
-    private var machineOptions: [MachineOption] {
-        var options: [MachineOption] = []
-        if let machine = remoteOptions?.cardMachine {
-            var label = machine
-            if let state = remoteOptions?.cardMachineState {
-                label += " (\(state.label))"
-            }
-            options.append(MachineOption(choice: .existing(machine), label: label))
-        }
-        options.append(MachineOption(choice: .newMachine, label: "New machine from snapshot \(snapshotName)"))
-        for name in remoteOptions?.availableMachines ?? [] where name != remoteOptions?.cardMachine {
-            options.append(MachineOption(choice: .existing(name), label: name))
-        }
-        return options
-    }
-
-    private var snapshotName: String {
-        remoteOptions?.boxd?.snapshotName ?? BoxdSettings.defaultSnapshotName
     }
 
     private var selectedMachineLabel: String {
@@ -397,6 +368,9 @@ struct LaunchConfirmationDialog: View {
         let branch = worktreeBranch.trimmingCharacters(in: .whitespacesAndNewlines)
         if runsOnBoxd {
             onMachineChoice(machineChoice)
+            if remoteOptions?.cardMachine == nil {
+                RemoteLaunchOptions.rememberMachineChoice(machineChoice, projectPath: projectPath)
+            }
         }
         onLaunch(prompt, effectiveCreateWorktree, branch.isEmpty ? nil : branch, effectiveRunRemotely, dangerouslySkipPermissions, override, images, selectedServiceId)
         isPresented = false

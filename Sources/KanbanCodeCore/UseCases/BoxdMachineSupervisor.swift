@@ -70,6 +70,8 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
 
     public static let subsystem = "boxd"
     public static let defaultRemoteHome = "/home/boxd"
+    /// Node on a boxd machine.
+    public static let defaultNodePath = "/usr/local/bin/node"
 
     private struct MachineRuntime {
         var bridge: BoxdBridge?
@@ -81,6 +83,9 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         var remoteHome: String
         var localProjectPath: String
         var remoteProjectPath: String
+        /// Other checkouts on the machine, remote to local. A shared ssh
+        /// machine runs cards of several projects over one bridge.
+        var otherProjects: [PathMapping] = []
         var reconnectAttempts = 0
         /// True from the moment a person brought the machine back until the
         /// first work arrives on it. A peek that ends with nothing done
@@ -176,6 +181,49 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         machines[machineName]?.lastActivity
     }
 
+    /// True for an always-on ssh machine, which the app never stops.
+    public func isHost(_ machineName: String) async -> Bool {
+        await boxd.hostProfile(name: machineName) != nil
+    }
+
+    /// A card leaves its machine to continue on the Mac. A boxd machine is
+    /// stopped with the session on it. An ssh machine keeps running for its
+    /// other cards, so the sessions of this card are killed there, and the
+    /// last lines of the transcript are given a few seconds to reach the
+    /// mirror. The tmux names route locally afterwards either way.
+    public func leave(
+        machineName: String,
+        sessionNames: [String],
+        localTranscript: String?,
+        remoteCwd: String?,
+        settle: Duration = .seconds(10)
+    ) async {
+        guard await isHost(machineName) else {
+            releaseSessions(sessionNames)
+            if isConnected(machineName) {
+                await stop(machineName: machineName, reason: .manual)
+            }
+            return
+        }
+        if let bridge = machines[machineName]?.bridge {
+            for name in sessionNames {
+                _ = try? await bridge.exec(["tmux", "kill-session", "-t", name], stdin: nil, cwd: nil, timeout: 20)
+                registry.forgetSession(name, on: machineName)
+            }
+            if let localTranscript, let remoteCwd {
+                let deadline = ContinuousClock.now + settle
+                while ContinuousClock.now < deadline {
+                    let remote = await remoteTranscriptLines(machineName: machineName, localPath: localTranscript, remoteCwd: remoteCwd)
+                    let local = BoxdLaunchPlanner.lineCount(ofFileAt: localTranscript)
+                    if remote <= local { break }
+                    try? await Task.sleep(for: .milliseconds(500))
+                }
+            }
+            KanbanCodeLog.info(Self.subsystem, "\(machineName): \(sessionNames.joined(separator: ", ")) left for the Mac")
+        }
+        releaseSessions(sessionNames)
+    }
+
     /// What the machine records as the installed CLI: the app version and a
     /// digest of the bundle. The version alone does not move between two
     /// builds of the same version, so a fix in the CLI would never reach a
@@ -211,9 +259,18 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         registry.seed(from: links)
         var seen: Set<String> = []
         for link in links {
-            guard let remote = link.remote, remote.mode == .boxd, !seen.contains(remote.machineName) else { continue }
-            seen.insert(remote.machineName)
+            guard let remote = link.remote, remote.mode == .boxd else { continue }
             let projectPath = link.projectPath ?? localHome
+            if seen.contains(remote.machineName) {
+                if await isHost(remote.machineName) {
+                    await addProject(
+                        machineName: remote.machineName,
+                        localProjectPath: Self.repositoryRoot(of: projectPath),
+                        remoteProjectPath: remote.remoteProjectPath)
+                }
+                continue
+            }
+            seen.insert(remote.machineName)
             do {
                 let machine = try await boxd.getMachine(name: remote.machineName)
                 switch machine.status {
@@ -289,9 +346,10 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         let originURL = await Self.originURL(of: repoRoot)
         let repoName = BoxdLaunchPlanner.repoName(fromOriginURL: originURL, fallbackFolder: (repoRoot as NSString).lastPathComponent)
         let machineName = existingMachine ?? BoxdLaunchPlanner.machineName(repoName: repoName, cardId: cardId)
-        let remoteHome = machines[machineName]?.remoteHome ?? Self.defaultRemoteHome
+        let host = await boxd.hostProfile(name: machineName)
+        let remoteHome = machines[machineName]?.remoteHome ?? host?.remoteHome ?? Self.defaultRemoteHome
         let remoteProjectPath = BoxdLaunchPlanner.remoteProjectPath(
-            folderTemplate: settings.folderTemplate, repoName: repoName, remoteHome: remoteHome)
+            folderTemplate: host?.folderTemplate ?? settings.folderTemplate, repoName: repoName, remoteHome: remoteHome)
 
         let previousState = registry.state(of: machineName)
         let newNames = sessionNames.filter { registry.machine(forSession: $0) != machineName }
@@ -494,7 +552,8 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     private func trustClaudeFolders(_ folders: [String], bridge: BoxdBridge, remoteHome: String) async throws {
         let unique = Array(Set(folders)).sorted()
         let script = Self.trustFoldersScript(folders: unique, claudeConfigPath: "\(remoteHome)/.claude.json")
-        let result = try await bridge.exec(["/usr/local/bin/node", "-e", script], stdin: nil, cwd: remoteHome, timeout: 30)
+        let node = await boxd.hostProfile(name: bridge.machineName)?.nodePath ?? Self.defaultNodePath
+        let result = try await bridge.exec([node, "-e", script], stdin: nil, cwd: remoteHome, timeout: 30)
         if !result.succeeded {
             KanbanCodeLog.warn(Self.subsystem, "could not mark folders trusted: \(result.stderr)")
         }
@@ -539,6 +598,11 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
             "KANBAN_CODE_HOME": "\(remoteHome)/.kanban-code",
             "LANG": "C.UTF-8",
         ]
+        // Claude Code refuses --dangerously-skip-permissions for root unless
+        // it is told it runs in a sandbox; an ssh machine may log in as root.
+        if remoteHome == "/root" {
+            env["IS_SANDBOX"] = "1"
+        }
         if let token = claudeOAuthToken?.trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty {
             env["CLAUDE_CODE_OAUTH_TOKEN"] = token
         }
@@ -760,6 +824,12 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     }
 
     public func stop(machineName: String, reason: RemotePausedReason) async {
+        // An ssh machine is always on and shared by its cards: the sessions
+        // of a card are killed on their own, the machine and its bridge stay.
+        if await isHost(machineName) {
+            KanbanCodeLog.info(Self.subsystem, "\(machineName): ssh machine, not stopped")
+            return
+        }
         setPausedMarkers(machineName: machineName, paused: true)
         if var runtime = machines[machineName] {
             runtime.pausedReason = reason
@@ -785,6 +855,10 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     }
 
     public func destroy(machineName: String) async throws {
+        if await isHost(machineName) {
+            KanbanCodeLog.info(Self.subsystem, "\(machineName): ssh machine, not removed")
+            return
+        }
         if var runtime = machines[machineName] {
             runtime.eventTask?.cancel()
             runtime.keepaliveTask?.cancel()
@@ -814,7 +888,10 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     /// is stopped or when `deadline` passes, whichever comes first; a stop
     /// that hangs keeps running on its own, the quit must not wait for it.
     public func stopAll(reason: RemotePausedReason, deadline: Duration = .seconds(8)) async {
-        let running = machines.filter { $0.value.bridge != nil }.map(\.key)
+        var running: [String] = []
+        for (name, runtime) in machines where runtime.bridge != nil {
+            if await !isHost(name) { running.append(name) }
+        }
         guard !running.isEmpty else { return }
         let stops = running.map { name in
             Task { await self.stop(machineName: name, reason: reason) }
@@ -915,6 +992,10 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     // MARK: - Machine lifecycle
 
     private func ensureRunning(machineName: String, settings: BoxdSettings, log: @escaping @Sendable (String) -> Void) async throws -> BoxdMachine {
+        if await isHost(machineName) {
+            log("Reaching \(machineName) over ssh")
+            return try await boxd.getMachine(name: machineName)
+        }
         var machine: BoxdMachine
         do {
             machine = try await boxd.getMachine(name: machineName)
@@ -963,15 +1044,17 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         return latest
     }
 
-    private func makeRuntime(machineName: String, localProjectPath: String, remoteProjectPath: String?, remoteHome: String, pausedReason: RemotePausedReason? = nil) -> MachineRuntime {
+    private func makeRuntime(machineName: String, localProjectPath: String, remoteProjectPath: String?, remoteHome: String, pausedReason: RemotePausedReason? = nil, otherProjects: [PathMapping] = []) -> MachineRuntime {
+        let primary = remoteProjectPath ?? "\(remoteHome)/\((localProjectPath as NSString).lastPathComponent)"
+        let others = otherProjects.filter { $0.from != primary }
         let mappings = BoxdLaunchPlanner.mappings(
             localProjectPath: localProjectPath,
-            remoteProjectPath: remoteProjectPath ?? "\(remoteHome)/\((localProjectPath as NSString).lastPathComponent)",
+            remoteProjectPath: primary,
             localHome: localHome,
             remoteHome: remoteHome,
             localKanbanHome: localKanbanHome,
             remoteKanbanHome: "\(remoteHome)/.kanban-code"
-        )
+        ) + others
         let mirror = BoxdMirror(
             machineName: machineName,
             rewriter: TranscriptPathRewriter(mappings),
@@ -986,8 +1069,40 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
             pausedReason: pausedReason,
             remoteHome: remoteHome,
             localProjectPath: localProjectPath,
-            remoteProjectPath: remoteProjectPath ?? "\(remoteHome)/\((localProjectPath as NSString).lastPathComponent)"
+            remoteProjectPath: primary,
+            otherProjects: others
         )
+    }
+
+    /// Every checkout a runtime maps, remote to local, primary first.
+    private static func projectMappings(of runtime: MachineRuntime) -> [PathMapping] {
+        [PathMapping(from: runtime.remoteProjectPath, to: runtime.localProjectPath)] + runtime.otherProjects
+    }
+
+    /// Adds a checkout to a machine that already has a runtime. A machine
+    /// shared by several projects maps them all, so the transcripts of every
+    /// card come back with local paths. Returns false when there is no
+    /// runtime yet.
+    @discardableResult
+    private func addProject(machineName: String, localProjectPath: String, remoteProjectPath: String?) async -> Bool {
+        guard var runtime = machines[machineName] else { return false }
+        guard let remoteProjectPath else { return true }
+        let mapping = PathMapping(from: remoteProjectPath, to: localProjectPath)
+        let known = Self.projectMappings(of: runtime)
+        if known.contains(mapping) { return true }
+        runtime.otherProjects = runtime.otherProjects.filter { $0.from != mapping.from } + [mapping]
+        machines[machineName] = runtime
+        let mappings = BoxdLaunchPlanner.mappings(
+            localProjectPath: runtime.localProjectPath,
+            remoteProjectPath: runtime.remoteProjectPath,
+            localHome: localHome,
+            remoteHome: runtime.remoteHome,
+            localKanbanHome: localKanbanHome,
+            remoteKanbanHome: "\(runtime.remoteHome)/.kanban-code"
+        ) + runtime.otherProjects
+        await runtime.mirror.setRewriter(TranscriptPathRewriter(mappings))
+        KanbanCodeLog.info(Self.subsystem, "\(machineName): maps \(remoteProjectPath) to \(localProjectPath)")
+        return true
     }
 
     /// Opens the bridge to a running machine, installing the CLI first when
@@ -1000,28 +1115,41 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         keepActivityClock: Bool = false,
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws {
-        if machines[machineName]?.bridge != nil { return }
+        let host = await isHost(machineName)
+        if machines[machineName]?.bridge != nil {
+            if host {
+                await addProject(machineName: machineName, localProjectPath: localProjectPath, remoteProjectPath: remoteProjectPath)
+            }
+            return
+        }
         let previousActivity = machines[machineName]?.lastActivity
         var runtime = machines[machineName] ?? makeRuntime(
             machineName: machineName, localProjectPath: localProjectPath,
             remoteProjectPath: remoteProjectPath, remoteHome: remoteHome)
         if let remoteProjectPath, runtime.remoteProjectPath != remoteProjectPath || runtime.localProjectPath != localProjectPath {
-            runtime = makeRuntime(machineName: machineName, localProjectPath: localProjectPath, remoteProjectPath: remoteProjectPath, remoteHome: remoteHome, pausedReason: runtime.pausedReason)
+            let kept = host ? Self.projectMappings(of: runtime) : []
+            runtime = makeRuntime(machineName: machineName, localProjectPath: localProjectPath, remoteProjectPath: remoteProjectPath, remoteHome: remoteHome, pausedReason: runtime.pausedReason, otherProjects: kept)
         }
         runtime.pausedReason = nil
         runtime.machineHalted = false
         machines[machineName] = runtime
 
         try await bootstrapIfNeeded(machineName: machineName, remoteHome: remoteHome, log: log)
-        await startWatchdog(machineName: machineName, remoteHome: runtime.remoteHome)
+        // The self-park watchdog stops an idle boxd machine; an ssh machine
+        // is always on.
+        if !host {
+            await startWatchdog(machineName: machineName, remoteHome: runtime.remoteHome)
+        }
 
         log("Connecting to \(machineName)")
-        let bridge = try BoxdBridge.spawn(machineName: machineName, remoteHome: remoteHome)
+        let bridge = BoxdBridge(
+            machineName: machineName,
+            channel: try await boxd.bridgeChannel(name: machineName, remoteHome: remoteHome))
         try await bridge.start()
         runtime.bridge = bridge
         runtime.reconnectAttempts = 0
         if let home = await bridge.remoteHome, !home.isEmpty, !home.hasSuffix("/.kanban-code"), home != runtime.remoteHome {
-            runtime = makeRuntime(machineName: machineName, localProjectPath: localProjectPath, remoteProjectPath: remoteProjectPath, remoteHome: home)
+            runtime = makeRuntime(machineName: machineName, localProjectPath: localProjectPath, remoteProjectPath: remoteProjectPath, remoteHome: home, otherProjects: runtime.otherProjects)
             runtime.bridge = bridge
         }
         if keepActivityClock, let previousActivity {
@@ -1128,6 +1256,7 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
                 "the upload of the kanban CLI (\(size)) to \(machineName) failed: \(BoxdCliAdapter.shortMessage(of: error))")
         }
         let bundleName = (cliBundlePath as NSString).lastPathComponent
+        let node = await boxd.hostProfile(name: machineName)?.nodePath ?? Self.defaultNodePath
         let script = """
         set -e
         mkdir -p \(remoteHome)/.kanban-code \(remoteHome)/.local/bin
@@ -1138,7 +1267,7 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         mv \(remoteHome)/.kanban-code/cli.new \(remoteHome)/.kanban-code/cli
         rm -f /tmp/kanban-cli.tgz
         printf '%s' \(Self.shellEscape(stamp)) > \(versionFile)
-        printf '#!/bin/sh\\nexec /usr/local/bin/node \(remoteHome)/.kanban-code/cli/dist/kanban.js "$@"\\n' > \(remoteHome)/.local/bin/kanban
+        printf '#!/bin/sh\\nexec \(node) \(remoteHome)/.kanban-code/cli/dist/kanban.js "$@"\\n' > \(remoteHome)/.local/bin/kanban
         chmod +x \(remoteHome)/.local/bin/kanban
         KANBAN_CODE_HOME=\(remoteHome)/.kanban-code \(remoteHome)/.local/bin/kanban hooks install
         """
@@ -1399,7 +1528,7 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
             }
             return false
         }
-        machines[machineName]?.resumedForPeek = true
+        machines[machineName]?.resumedForPeek = await !isHost(machineName)
         // The card lost focus while the machine was still coming back.
         if peekPauseRequested.remove(machineName) != nil {
             await pauseIfPeek(machineName: machineName)
@@ -1626,6 +1755,7 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         let current = now()
         for (name, runtime) in machines where runtime.bridge != nil {
             guard current.timeIntervalSince(runtime.lastActivity) > timeout else { continue }
+            if await isHost(name) { continue }
             if let busyCheck, await busyCheck(name) {
                 touch(name)
                 continue
@@ -1634,6 +1764,7 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
             await stop(machineName: name, reason: .inactivity)
         }
         for (name, runtime) in machines where runtime.bridge == nil {
+            if await isHost(name) { continue }
             guard Self.shouldStopParked(
                 pausedReason: runtime.pausedReason,
                 machineHalted: runtime.machineHalted,

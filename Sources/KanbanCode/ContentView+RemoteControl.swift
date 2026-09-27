@@ -8,6 +8,7 @@ extension ContentView {
         let controller = RemoteControlController.shared
         controller.launchTask = { request in launchRemoteTask(request) }
         controller.resumeCard = { cardId in resumeRemoteCard(cardId) }
+        controller.moveCard = { cardId, target in moveCard(cardId, to: target) }
     }
 
     /// Creates the card and, unless `launch` is false, launches it with the
@@ -29,11 +30,13 @@ extension ContentView {
         store.dispatch(.createManualTask(link))
         KanbanCodeLog.info("remote", "Created task card=\(link.id.prefix(12)) project=\(request.projectPath) launch=\(request.launch)")
         guard request.launch else { return link.id }
-        launchRemoteCard(link: link, worktree: request.worktree)
+        launchRemoteCard(link: link, worktree: request.worktree, machine: request.machine)
         return link.id
     }
 
-    private func launchRemoteCard(link: Link, worktree: String?) {
+    /// `machine` is "mac", the name of a machine, or nil for the defaults
+    /// of the project.
+    private func launchRemoteCard(link: Link, worktree: String?, machine: String? = nil) {
         let projectPath = link.projectPath ?? NSHomeDirectory()
         let assistant = link.effectiveAssistant
         Task {
@@ -44,20 +47,20 @@ extension ContentView {
             let isGitRepo = FileManager.default.fileExists(atPath: (projectPath as NSString).appendingPathComponent(".git"))
             let worktreeName = (isGitRepo && assistant.supportsWorktree) ? worktree : nil
             let options = remoteLaunchOptions(cardId: nil)
-            let runRemotely = options.canRunRemotely(projectPath: projectPath)
-                && RemoteLaunchOptions.defaultRunRemotely(mode: options.mode, projectPath: projectPath)
+            let choice = RemoteLaunchOptions.remoteMachineChoice(
+                machine, options: options, projectPath: projectPath)
             executeLaunch(
                 cardId: link.id,
                 prompt: prompt,
                 projectPath: projectPath,
                 worktreeName: worktreeName,
-                runRemotely: runRemotely,
+                runRemotely: choice.runRemotely,
                 skipPermissions: Self.remoteSkipPermissions,
                 images: (link.promptImagePaths ?? []).compactMap { ImageAttachment.fromPath($0) },
                 assistant: assistant,
                 serviceIdOverride: settings?.defaultAPIServiceIds[assistant.rawValue],
                 modelOverride: link.modelOverride,
-                machineChoice: runRemotely && options.mode == .boxd ? .newMachine : nil,
+                machineChoice: choice.machine,
                 focusCard: false
             )
         }
@@ -69,7 +72,7 @@ extension ContentView {
         guard let link = store.state.links[cardId] else { return }
         guard link.sessionLink != nil else {
             if link.column == .backlog { store.dispatch(.moveCard(cardId: cardId, to: .inProgress)) }
-            launchRemoteCard(link: link, worktree: link.worktreeLink?.branch)
+            launchRemoteCard(link: link, worktree: link.worktreeLink?.branch, machine: link.remote?.machineName)
             return
         }
         executeResume(
@@ -81,6 +84,28 @@ extension ContentView {
             serviceIdOverride: link.apiServiceId,
             modelOverride: link.modelOverride,
             machineChoice: link.remote.map { .existing($0.machineName) },
+            focusCard: false
+        )
+    }
+
+    /// Continues a card's conversation somewhere else: `target` is "mac" or
+    /// the name of a machine. The session where it runs now ends first.
+    func moveCard(_ cardId: String, to target: String) {
+        guard let link = store.state.links[cardId], link.sessionLink != nil else {
+            KanbanCodeLog.warn("remote", "Move of card=\(cardId.prefix(12)) refused: no conversation to move")
+            return
+        }
+        let toMac = target.lowercased() == "mac"
+        KanbanCodeLog.info("remote", "Moving card=\(cardId.prefix(12)) to \(toMac ? "this Mac" : target)")
+        executeResume(
+            cardId: cardId,
+            runRemotely: !toMac,
+            skipPermissions: Self.remoteSkipPermissions,
+            commandOverride: nil,
+            assistant: link.effectiveAssistant,
+            serviceIdOverride: link.apiServiceId,
+            modelOverride: link.modelOverride,
+            machineChoice: toMac ? nil : .existing(target),
             focusCard: false
         )
     }

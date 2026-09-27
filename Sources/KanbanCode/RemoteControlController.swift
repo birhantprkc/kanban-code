@@ -15,6 +15,8 @@ struct RemoteLaunchRequest: Sendable {
     var launch: Bool
     /// Image files for the first prompt, already written.
     var imagePaths: [String] = []
+    /// "mac", a machine name, or nil for the project default.
+    var machine: String?
 }
 
 /// Runs the remote control server of Settings > Remote Control and holds
@@ -45,6 +47,8 @@ final class RemoteControlController {
     /// launch flow as the New Task dialog and the resume button.
     @ObservationIgnored var launchTask: (@MainActor (RemoteLaunchRequest) -> String)?
     @ObservationIgnored var resumeCard: (@MainActor (String) -> Void)?
+    /// Continues a card on this Mac ("mac") or on a named machine.
+    @ObservationIgnored var moveCard: (@MainActor (String, String) -> Void)?
 
     private init() {}
 
@@ -265,7 +269,8 @@ final class AppRemoteControlHost: RemoteControlHost, @unchecked Sendable {
                 assistant: assistant,
                 model: request.model,
                 launch: request.launch ?? true,
-                imagePaths: imagePaths
+                imagePaths: imagePaths,
+                machine: request.machine?.trimmingCharacters(in: .whitespacesAndNewlines)
             )
         }
         let cardId = try await MainActor.run { () throws -> String in
@@ -478,7 +483,8 @@ final class AppRemoteControlHost: RemoteControlHost, @unchecked Sendable {
                 boxd: AppServices.boxdPath,
                 machine: machine,
                 session: sessionName,
-                readyMarker: AppServices.remoteReadyMarkerPath(for: sessionName)
+                readyMarker: AppServices.remoteReadyMarkerPath(for: sessionName),
+                sshTargets: AppServices.sshTargets
             )
             return [shell, "-l", "-c", script]
         }

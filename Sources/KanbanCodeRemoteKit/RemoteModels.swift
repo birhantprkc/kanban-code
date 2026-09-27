@@ -371,9 +371,14 @@ public struct RemoteTaskRequest: Codable, Sendable, Equatable {
     /// false only creates the card in the backlog.
     public var launch: Bool?
     public var images: [RemoteImage]?
+    /// Where the card runs: "mac" for the Mac itself, or the name of a
+    /// machine (an ssh machine or a boxd machine). nil follows the project
+    /// default, as the New Task dialog would.
+    public var machine: String?
 
     public init(project: String, prompt: String, name: String? = nil, worktree: String? = nil,
-                assistant: String? = nil, model: String? = nil, launch: Bool? = nil, images: [RemoteImage]? = nil) {
+                assistant: String? = nil, model: String? = nil, launch: Bool? = nil, images: [RemoteImage]? = nil,
+                machine: String? = nil) {
         self.project = project
         self.prompt = prompt
         self.name = name
@@ -382,6 +387,7 @@ public struct RemoteTaskRequest: Codable, Sendable, Equatable {
         self.model = model
         self.launch = launch
         self.images = images
+        self.machine = machine
     }
 }
 

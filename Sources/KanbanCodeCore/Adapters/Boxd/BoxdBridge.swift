@@ -106,7 +106,7 @@ public final class ProcessBridgeChannel: BridgeChannel, @unchecked Sendable {
             continuation.finish()
         }
 
-        try process.run()
+        try process.runUnmasked()
     }
 
     public func send(line: String) throws {
@@ -229,8 +229,13 @@ public actor BoxdBridge: RemoteCommandRunner {
 
     /// Opens the default bridge: `boxd machine exec <vm> -- node kanban.js remote-agent`.
     public static func spawn(machineName: String, boxdPath: String? = nil, remoteHome: String = "/home/boxd") throws -> BoxdBridge {
+        BoxdBridge(machineName: machineName, channel: try boxdChannel(machineName: machineName, boxdPath: boxdPath, remoteHome: remoteHome))
+    }
+
+    /// The process under a boxd bridge.
+    public static func boxdChannel(machineName: String, boxdPath: String? = nil, remoteHome: String = "/home/boxd") throws -> ProcessBridgeChannel {
         let executable = boxdPath ?? ShellCommand.findExecutable("boxd") ?? "boxd"
-        let channel = try ProcessBridgeChannel(
+        return try ProcessBridgeChannel(
             executable: executable,
             arguments: [
                 "machine", "exec", machineName, "--",
@@ -238,7 +243,6 @@ public actor BoxdBridge: RemoteCommandRunner {
             ],
             environment: ShellCommand.loginEnvironment
         )
-        return BoxdBridge(machineName: machineName, channel: channel)
     }
 
     /// Starts reading and waits for `hello`.

@@ -33,11 +33,16 @@ struct RemoteLaunchOptions {
     /// True when the boxd CLI is installed.
     var boxdAvailable: Bool = true
 
+    /// Always-on machines reached over ssh.
+    var sshMachines: [SshMachine] {
+        (boxd?.sshMachines ?? []).filter(\.isComplete)
+    }
+
     /// Whether a project path can run remotely at all in the active mode.
     func canRunRemotely(projectPath: String?) -> Bool {
         switch mode {
         case .boxd:
-            return boxd != nil && boxdAvailable
+            return boxd != nil && (boxdAvailable || !sshMachines.isEmpty)
         case .mutagen:
             guard let mutagen, let projectPath else { return false }
             return projectPath.hasPrefix(mutagen.localPath)
@@ -64,6 +69,46 @@ struct RemoteLaunchOptions {
         return defaultRunRemotely(mode: mode, projectPath: projectPath)
     }
 
+    /// Machine picked last time for a project, when the pick was a machine
+    /// that already exists (an ssh machine or a named boxd machine).
+    static func defaultMachineChoice(projectPath: String) -> BoxdMachineChoice {
+        guard let name = UserDefaults.standard.string(forKey: "runOnMachine_\(projectPath)"), !name.isEmpty else {
+            return .newMachine
+        }
+        return .existing(name)
+    }
+
+    static func rememberMachineChoice(_ choice: BoxdMachineChoice, projectPath: String) {
+        UserDefaults.standard.set(choice.machineName ?? "", forKey: "runOnMachine_\(projectPath)")
+    }
+
+    /// The machine a dialog opens with: the machine of the card, then the
+    /// last pick for the project when it is still offered, then a new boxd
+    /// machine (or the first ssh machine when boxd is not installed).
+    func initialMachineChoice(projectPath: String) -> BoxdMachineChoice {
+        if let cardMachine { return .existing(cardMachine) }
+        let remembered = Self.defaultMachineChoice(projectPath: projectPath)
+        let offered = RunTargetOption.options(for: self).map(\.target)
+        if offered.contains(.machine(remembered)) { return remembered }
+        if !boxdAvailable, let first = sshMachines.first { return .existing(first.name) }
+        return .newMachine
+    }
+
+    /// Where a launch from the remote API runs. `machine` is "mac", the
+    /// name of a machine, or nil for the defaults a dialog would open with.
+    static func remoteMachineChoice(
+        _ machine: String?, options: RemoteLaunchOptions, projectPath: String
+    ) -> (runRemotely: Bool, machine: BoxdMachineChoice?) {
+        let canRun = options.canRunRemotely(projectPath: projectPath)
+        if let machine, !machine.isEmpty {
+            if machine.lowercased() == "mac" || !canRun { return (false, nil) }
+            return (true, options.mode == .boxd ? .existing(machine) : nil)
+        }
+        let remote = canRun && defaultRunRemotely(mode: options.mode, projectPath: projectPath)
+        guard remote else { return (false, nil) }
+        return (true, options.mode == .boxd ? options.initialMachineChoice(projectPath: projectPath) : nil)
+    }
+
     static func rememberRunRemotely(_ value: Bool, mode: RemoteMode, projectPath: String) {
         switch mode {
         case .boxd:
@@ -71,5 +116,51 @@ struct RemoteLaunchOptions {
         case .mutagen:
             UserDefaults.standard.set(value, forKey: "runRemotely_\(projectPath)")
         }
+    }
+}
+
+/// Where a launch runs: this Mac or one of the machines.
+enum RunTarget: Hashable {
+    case mac
+    case machine(BoxdMachineChoice)
+}
+
+/// One entry of the "Run on" picker.
+struct RunTargetOption: Identifiable, Equatable {
+    let target: RunTarget
+    let label: String
+    /// Name of the ssh machine behind the option, for its reachability.
+    var sshMachine: String?
+    var id: RunTarget { target }
+
+    /// The entries in order: this Mac, the ssh machines, then boxd (the
+    /// machine of the card, a new machine, the other machines of the org).
+    static func options(for remote: RemoteLaunchOptions, reachability: [String: Bool] = [:]) -> [RunTargetOption] {
+        var options = [RunTargetOption(target: .mac, label: "This Mac")]
+        let sshNames = Set(remote.sshMachines.map(\.name))
+        for machine in remote.sshMachines {
+            let state: String
+            switch reachability[machine.name] {
+            case .some(true): state = "online"
+            case .some(false): state = "offline"
+            case .none: state = "checking"
+            }
+            options.append(RunTargetOption(
+                target: .machine(.existing(machine.name)),
+                label: "\(machine.name) (\(state))",
+                sshMachine: machine.name))
+        }
+        guard remote.boxdAvailable else { return options }
+        if let machine = remote.cardMachine, !sshNames.contains(machine) {
+            var label = "boxd: \(machine)"
+            if let state = remote.cardMachineState { label += " (\(state.label))" }
+            options.append(RunTargetOption(target: .machine(.existing(machine)), label: label))
+        }
+        let snapshot = remote.boxd?.snapshotName ?? BoxdSettings.defaultSnapshotName
+        options.append(RunTargetOption(target: .machine(.newMachine), label: "boxd: new machine from snapshot \(snapshot)"))
+        for name in remote.availableMachines where name != remote.cardMachine && !sshNames.contains(name) {
+            options.append(RunTargetOption(target: .machine(.existing(name)), label: "boxd: \(name)"))
+        }
+        return options
     }
 }

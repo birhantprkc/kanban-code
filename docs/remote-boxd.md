@@ -6,7 +6,7 @@ This document describes the file layout on the machine and the bridge protocol b
 
 ## Transport
 
-The app does not use SSH. Every interaction goes through the boxd CLI:
+A boxd machine is not reached over SSH (an ssh machine is, see "Ssh machines" below). Every interaction goes through the boxd CLI:
 
 - `boxd machine exec <vm> -- <command>` runs a command. Stdout streams live, stdin is forwarded, the exit code is forwarded.
 - `boxd machine cp - <vm>:<path>` uploads a file from stdin.
@@ -163,6 +163,36 @@ The embedded terminal opens when the launch starts. For a remote session it wait
 The service graph of the app (store, boxd supervisor, session registry, tmux router) is built once in `AppComposition` and shared by every `ContentView` value SwiftUI creates. The supervisor sends its actions to that one store.
 
 #A shell tab of a card on a machine (Cmd+T) opens on the machine, in the remote checkout. The app marks the name as remote before the tab opens, creates the session through the bridge, and writes the ready marker, which is what the terminal waits for. A shell that cannot be created takes only its own tab: the session of the card keeps running.
+
+## Ssh machines
+
+An ssh machine is an always-on host, for example a server on the tailnet, that runs cards the way a boxd machine does. Settings, Remote, "Ssh machines" lists them: a name, the ssh target (`user@host` or a host alias of `~/.ssh/config`), and the folder the repositories are cloned into (`~/Projects` by default). A card stores the name as its machine.
+
+The supervisor reaches it through `SshHostPort`, and `MachinePortRouter` sends every other machine name to boxd:
+
+| boxd | ssh machine |
+|---|---|
+| `boxd machine get` | `ssh <target> -- printf "$HOME" and the path of node`; a machine that does not answer is unreachable, never created |
+| `boxd machine exec` | `ssh <target> -- <command>` |
+| `boxd machine cp` | `ssh <target> -- cat` into a temporary name, moved into place |
+| bridge over `boxd machine exec` | `ssh -T <target> -- node ~/.kanban-code/cli/dist/kanban.js remote-agent` |
+| terminal over `expect` and `boxd machine connect` | `ssh -tt <target> -- tmux attach-session -t <session>` |
+| pause, stop, remove | nothing |
+
+Every ssh call runs with `BatchMode=yes`, so the key must be loaded, and with keepalives, so a dead connection ends the bridge and the supervisor reconnects.
+
+The machine is shared: several cards, of several projects, run on it over one bridge. The mirror maps the checkout of every project that ran there. The app never pauses or stops it: the idle window, the self-park watchdog, the sweep, the peek pause and the quit sheet leave it alone, and "Remove machine" is not offered. A card that ends its work there has its tmux sessions killed and nothing else.
+
+A session of `root` gets `IS_SANDBOX=1`, without which Claude Code refuses `--dangerously-skip-permissions`.
+
+### Moving a card
+
+A card moves between the Mac and a machine through a resume on the other side, from the resume dialog ("Run on"), from `kanbancode://move/<cardId>?to=mac|<machine>`, or, for a new task, from the `machine` field of `POST /v1/tasks`.
+
+- To a machine: the session on the Mac (tmux or agtop) ends first, so the conversation never runs in two places, then the transcript is pushed as described above and `claude --resume` starts there.
+- To the Mac: on an ssh machine every tmux session of the card is killed and the app waits up to 10 seconds for the last transcript lines to reach the mirror; a boxd machine is stopped as before. The resume then runs on the Mac from the mirror, in the card's runtime (agtop or tmux), and a worktree that only existed on the machine is created from origin.
+
+The launch dialogs list, under "Run on": this Mac, each ssh machine with whether it answers over ssh, then the boxd machines. The pick of the last launch of a project is offered again while it exists.
 
 ## Files that are rewritten
 

@@ -230,6 +230,9 @@ public struct BoxdSettings: Codable, Sendable, Equatable {
     /// `CLAUDE_CODE_OAUTH_TOKEN` in every session on a machine. Without it
     /// the machines get the login of this Mac, kept in sync while they run.
     public var claudeOAuthToken: String
+    /// Always-on machines reached over ssh. Cards run on them the way they
+    /// run on a boxd machine, several cards on one machine.
+    public var sshMachines: [SshMachine]
 
     public static let defaultSnapshotName = "kanban-code-base"
     public static let defaultSourceMachine = "good-wolf"
@@ -272,7 +275,8 @@ public struct BoxdSettings: Codable, Sendable, Equatable {
         initCommand: String = BoxdSettings.defaultInitCommand,
         copyGlobs: [String] = BoxdSettings.defaultCopyGlobs,
         inactivityTimeoutSeconds: Int = BoxdSettings.defaultInactivityTimeoutSeconds,
-        claudeOAuthToken: String = ""
+        claudeOAuthToken: String = "",
+        sshMachines: [SshMachine] = []
     ) {
         self.snapshotName = snapshotName
         self.sourceMachine = sourceMachine
@@ -281,6 +285,7 @@ public struct BoxdSettings: Codable, Sendable, Equatable {
         self.copyGlobs = copyGlobs
         self.inactivityTimeoutSeconds = max(Self.minimumInactivityTimeoutSeconds, inactivityTimeoutSeconds)
         self.claudeOAuthToken = claudeOAuthToken
+        self.sshMachines = sshMachines
     }
 
     // Per-field `try?` decoding, same rule as `Settings`: one bad value must
@@ -296,11 +301,17 @@ public struct BoxdSettings: Codable, Sendable, Equatable {
         let seconds = (try? c.decodeIfPresent(Int.self, forKey: .inactivityTimeoutSeconds)) ?? Self.defaultInactivityTimeoutSeconds
         inactivityTimeoutSeconds = max(Self.minimumInactivityTimeoutSeconds, seconds)
         claudeOAuthToken = (try? c.decodeIfPresent(String.self, forKey: .claudeOAuthToken)) ?? ""
+        sshMachines = (try? c.decodeIfPresent([SshMachine].self, forKey: .sshMachines)) ?? []
+    }
+
+    /// The ssh machine of that name, when there is one.
+    public func sshMachine(named name: String) -> SshMachine? {
+        sshMachines.first { $0.name == name && $0.isComplete }
     }
 
     private enum CodingKeys: String, CodingKey {
         case snapshotName, sourceMachine, folderTemplate, initCommand, copyGlobs, inactivityTimeoutSeconds
-        case claudeOAuthToken
+        case claudeOAuthToken, sshMachines
     }
 }
 

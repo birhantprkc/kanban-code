@@ -160,7 +160,7 @@ struct NewTaskDialog: View {
                         .font(.app(.caption))
                         .foregroundStyle(.secondary)
                     if runsOnBoxd {
-                        Text("on boxd machine \(selectedMachineLabel)")
+                        Text("on machine \(selectedMachineLabel)")
                             .font(.app(.caption2))
                             .foregroundStyle(.secondary)
                         if createWorktree && isGitRepo && selectedAssistant.supportsWorktree {
@@ -258,9 +258,13 @@ struct NewTaskDialog: View {
 
     @ViewBuilder
     private var remoteSection: some View {
-        Toggle(remoteToggleLabel, isOn: canRunRemotely ? $runRemotely : .constant(false))
-            .font(.app(.callout))
-            .disabled(!canRunRemotely)
+        if remoteMode == .boxd, canRunRemotely, let remoteOptions {
+            RunTargetPicker(remote: remoteOptions, runRemotely: $runRemotely, machineChoice: $machineChoice)
+        } else {
+            Toggle(remoteToggleLabel, isOn: canRunRemotely ? $runRemotely : .constant(false))
+                .font(.app(.callout))
+                .disabled(!canRunRemotely)
+        }
 
         if let hint = remoteHint {
             Label(hint, systemImage: "info.circle")
@@ -269,40 +273,6 @@ struct NewTaskDialog: View {
                 .padding(.leading, 20)
         }
 
-        if runsOnBoxd {
-            Picker("Machine", selection: $machineChoice) {
-                ForEach(machineOptions, id: \.choice) { option in
-                    Text(option.label).tag(option.choice)
-                }
-            }
-            .padding(.leading, 20)
-        }
-    }
-
-    private struct MachineOption: Identifiable {
-        let choice: BoxdMachineChoice
-        let label: String
-        var id: BoxdMachineChoice { choice }
-    }
-
-    private var machineOptions: [MachineOption] {
-        var options: [MachineOption] = []
-        if let machine = remoteOptions?.cardMachine {
-            var label = machine
-            if let state = remoteOptions?.cardMachineState {
-                label += " (\(state.label))"
-            }
-            options.append(MachineOption(choice: .existing(machine), label: label))
-        }
-        options.append(MachineOption(choice: .newMachine, label: "New machine from snapshot \(snapshotName)"))
-        for name in remoteOptions?.availableMachines ?? [] where name != remoteOptions?.cardMachine {
-            options.append(MachineOption(choice: .existing(name), label: name))
-        }
-        return options
-    }
-
-    private var snapshotName: String {
-        remoteOptions?.boxd?.snapshotName ?? BoxdSettings.defaultSnapshotName
     }
 
     private var selectedMachineLabel: String {
@@ -331,6 +301,7 @@ struct NewTaskDialog: View {
     private func applyProjectDefaults() {
         machineChoice = remoteOptions?.cardMachine.map { BoxdMachineChoice.existing($0) } ?? .newMachine
         guard let path = resolvedProjectPath else { return }
+        if let remoteOptions { machineChoice = remoteOptions.initialMachineChoice(projectPath: path) }
         runRemotely = remoteOptions?.cardMachine != nil
             ? true
             : RemoteLaunchOptions.defaultRunRemotely(mode: remoteMode, projectPath: path)
@@ -369,6 +340,9 @@ struct NewTaskDialog: View {
         if startImmediately {
             if runsOnBoxd {
                 onMachineChoice(machineChoice)
+                if remoteOptions?.cardMachine == nil, let proj {
+                    RemoteLaunchOptions.rememberMachineChoice(machineChoice, projectPath: proj)
+                }
             }
             onCreateAndLaunch(
                 prompt,

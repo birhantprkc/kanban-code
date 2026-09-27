@@ -53,8 +53,12 @@ final class AppComposition {
         let settings = SettingsStore()
         let remoteRegistry = RemoteSessionRegistry()
         let tmux = RoutingTmuxAdapter(local: TmuxAdapter(), registry: remoteRegistry)
-        let supervisor = BoxdMachineSupervisor(
+        let machinePort = MachinePortRouter(
             boxd: BoxdCliAdapter(),
+            ssh: SshHostPort(machines: { (try? await settings.read())?.boxd?.sshMachines ?? [] })
+        )
+        let supervisor = BoxdMachineSupervisor(
+            boxd: machinePort,
             registry: remoteRegistry,
             settingsProvider: { (try? await settings.read())?.boxd ?? BoxdSettings() },
             cliBundlePath: AppServices.cliBundlePath,

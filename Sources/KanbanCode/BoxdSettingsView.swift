@@ -36,6 +36,8 @@ struct BoxdSettingsView: View {
     @State private var inactivityMinutes = BoxdSettings.defaultInactivityTimeoutSeconds / 60
     /// Edited in the Assistants tab; carried through the save unchanged.
     @State private var claudeOAuthToken = ""
+    @State private var sshMachines: [SshMachine] = []
+    @State private var sshReachability: [String: Bool] = [:]
 
     @State private var loaded = false
     @State private var saveTask: Task<Void, Never>?
@@ -67,6 +69,49 @@ struct BoxdSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
+        }
+
+        Section("Ssh machines") {
+            ForEach($sshMachines) { $machine in
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(reachabilityColor(machine))
+                        .frame(width: 8, height: 8)
+                        .help(reachabilityHelp(machine))
+                    TextField("Name", text: $machine.name)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 130)
+                    TextField("Ssh target", text: $machine.target, prompt: Text("user@host"))
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.body, design: .monospaced))
+                    TextField("Repositories", text: $machine.repoRoot, prompt: Text(SshMachine.defaultRepoRoot))
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.body, design: .monospaced))
+                        .frame(width: 130)
+                    Button {
+                        sshMachines.removeAll { $0.name == machine.name && $0.target == machine.target }
+                        scheduleSave()
+                    } label: {
+                        Image(systemName: "minus.circle")
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+            .onChange(of: sshMachines) { scheduleSave() }
+
+            HStack {
+                Button("Add ssh machine") {
+                    sshMachines.append(SshMachine(name: "machine-\(sshMachines.count + 1)", target: ""))
+                }
+                .controlSize(.small)
+                Button("Check") { Task { await probeSshMachines() } }
+                    .controlSize(.small)
+                    .disabled(sshMachines.isEmpty)
+            }
+
+            Text("Always-on machines reached with ssh, as root or a user with tmux, git, node and the coding assistant installed. Cards launched there share the machine and are never paused or removed by the app. Repositories are cloned into the folder on the right.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
         }
 
         Section("Machine") {
@@ -199,7 +244,9 @@ struct BoxdSettingsView: View {
         copyGlobsText = boxd.copyGlobs.joined(separator: "\n")
         inactivityMinutes = max(Self.minimumMinutes, boxd.inactivityTimeoutSeconds / 60)
         claudeOAuthToken = boxd.claudeOAuthToken
+        sshMachines = boxd.sshMachines
         loaded = true
+        Task { await probeSshMachines() }
 
         let adapter = BoxdCliAdapter()
         boxdAvailable = await adapter.isAvailable()
@@ -236,8 +283,47 @@ struct BoxdSettingsView: View {
                 .map { $0.trimmingCharacters(in: .whitespaces) }
                 .filter { !$0.isEmpty },
             inactivityTimeoutSeconds: max(Self.minimumMinutes, inactivityMinutes) * 60,
-            claudeOAuthToken: claudeOAuthToken.trimmingCharacters(in: .whitespacesAndNewlines)
+            claudeOAuthToken: claudeOAuthToken.trimmingCharacters(in: .whitespacesAndNewlines),
+            sshMachines: sshMachines.map {
+                SshMachine(
+                    name: $0.name.trimmingCharacters(in: .whitespacesAndNewlines),
+                    target: $0.target.trimmingCharacters(in: .whitespacesAndNewlines),
+                    repoRoot: $0.repoRoot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        ? SshMachine.defaultRepoRoot : $0.repoRoot.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
         )
+    }
+
+    // MARK: - Ssh machines
+
+    private func probeSshMachines() async {
+        for machine in sshMachines where machine.isComplete {
+            sshReachability[machine.name] = nil
+        }
+        await withTaskGroup(of: (String, Bool).self) { group in
+            for machine in sshMachines where machine.isComplete {
+                group.addTask { (machine.name, await SshHostPort.isReachable(target: machine.target)) }
+            }
+            for await (name, reachable) in group {
+                sshReachability[name] = reachable
+            }
+        }
+    }
+
+    private func reachabilityColor(_ machine: SshMachine) -> Color {
+        switch sshReachability[machine.name] {
+        case .some(true): .green
+        case .some(false): .red
+        case .none: .secondary
+        }
+    }
+
+    private func reachabilityHelp(_ machine: SshMachine) -> String {
+        switch sshReachability[machine.name] {
+        case .some(true): "\(machine.target) answers over ssh"
+        case .some(false): "\(machine.target) does not answer over ssh"
+        case .none: "Not checked"
+        }
     }
 
     // MARK: - Snapshot

@@ -114,6 +114,10 @@ public protocol BoxdPort: Sendable {
     /// way so a launch can show it.
     func upload(name: String, remotePath: String, data: Data, onEvent: @escaping @Sendable (BoxdUploadEvent) -> Void) async throws
     func isAvailable() async -> Bool
+    /// What differs on a machine that is not a boxd machine; nil for boxd.
+    func hostProfile(name: String) async -> RemoteHostProfile?
+    /// Opens the process that carries the bridge of a machine.
+    func bridgeChannel(name: String, remoteHome: String) async throws -> any BridgeChannel
 }
 
 /// What an upload reports while it runs.
@@ -131,6 +135,13 @@ extension BoxdPort {
 
     public func upload(name: String, remotePath: String, data: Data) async throws {
         try await upload(name: name, remotePath: remotePath, data: data, onEvent: { _ in })
+    }
+
+    public func hostProfile(name: String) async -> RemoteHostProfile? { nil }
+
+    /// `boxd machine exec <vm> -- node kanban.js remote-agent`.
+    public func bridgeChannel(name: String, remoteHome: String) async throws -> any BridgeChannel {
+        try BoxdBridge.boxdChannel(machineName: name, remoteHome: remoteHome)
     }
 }
 
@@ -297,7 +308,7 @@ public final class BoxdCliAdapter: BoxdPort, @unchecked Sendable {
             process.arguments = ["-1", "-n", temporaryPath]
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
-            try process.run()
+            try process.runUnmasked()
             process.waitUntilExit()
             guard process.terminationStatus == 0 else { return nil }
             return try Data(contentsOf: URL(fileURLWithPath: compressedPath))

@@ -874,7 +874,8 @@ final class TerminalCache {
                 boxd: AppServices.boxdPath,
                 machine: machine,
                 session: sessionName,
-                readyMarker: AppServices.remoteReadyMarkerPath(for: sessionName)
+                readyMarker: AppServices.remoteReadyMarkerPath(for: sessionName),
+                sshTargets: AppServices.sshTargets
             )
         } else if AppServices.isRemoteSessionExpected(sessionName) {
             // The launch has not reached its machine yet; the marker names it.
@@ -882,7 +883,8 @@ final class TerminalCache {
                 boxd: AppServices.boxdPath,
                 machine: nil,
                 session: sessionName,
-                readyMarker: AppServices.remoteReadyMarkerPath(for: sessionName)
+                readyMarker: AppServices.remoteReadyMarkerPath(for: sessionName),
+                sshTargets: AppServices.sshTargets
             )
         } else if let agtopId = AgtopSessionName.agtopId(fromName: sessionName) {
             script = Self.agtopScript(agtop: AgtopCliAdapter.findExecutable(), id: agtopId)
@@ -926,11 +928,29 @@ final class TerminalCache {
     /// that fails or drops (no network, the machine still coming back) does
     /// not use up those tries: the session is still running on the machine,
     /// so the attach is retried for as long as the terminal is open.
-    static func remoteAttachScript(boxd: String, machine: String?, session: String, readyMarker: String? = nil) -> String {
+    ///
+    /// A machine reached over ssh (`sshTargets`, machine name to ssh target)
+    /// needs none of that: `ssh -tt` sizes the remote pty and follows
+    /// resizes, and it returns the exit status of the command, so the same
+    /// statuses drive the loop (`noSessionStatus` for a missing session, 255
+    /// for a connection that failed).
+    static func remoteAttachScript(boxd: String, machine: String?, session: String, readyMarker: String? = nil, sshTargets: [String: String] = [:]) -> String {
         let quote = { (value: String) in "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
         let fallback = quote(machine ?? "")
         let program = expectProgram(boxd: boxd, session: session)
-        let attach = "KANBAN_MACHINE=\"$m\" /usr/bin/expect -c \(quote(program)); r=$?; [ $r -eq 0 ] && break"
+        let boxdAttach = "KANBAN_MACHINE=\"$m\" /usr/bin/expect -c \(quote(program)); r=$?"
+        let attach: String
+        if sshTargets.isEmpty {
+            attach = "\(boxdAttach); [ $r -eq 0 ] && break"
+        } else {
+            let cases = sshTargets.sorted { $0.key < $1.key }
+                .map { "\(quote($0.key))) t=\(quote($0.value));;" }
+                .joined(separator: " ")
+            let remote = "tmux has-session -t \(quote(session)) 2>/dev/null || exit \(noSessionStatus); "
+                + "exec tmux -u -T hyperlinks attach-session -t \(quote(session))"
+            let ssh = "/usr/bin/ssh -tt -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \"$t\" -- \(quote(remote)); r=$?"
+            attach = "t=; case \"$m\" in \(cases) esac; if [ -n \"$t\" ]; then \(ssh); else \(boxdAttach); fi; [ $r -eq 0 ] && break"
+        }
         // A missing session counts against the tries, a failed connection
         // only waits a little longer.
         let again = "if [ $r -eq \(noSessionStatus) ]; then n=$((n+1)); sleep 2; else sleep 3; fi"

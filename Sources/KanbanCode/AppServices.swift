@@ -31,6 +31,17 @@ enum AppServices {
         ShellCommand.findExecutable("boxd") ?? "boxd"
     }
 
+    /// Ssh machines of the settings, machine name to ssh target, for the
+    /// terminals that attach to sessions on them.
+    static var sshTargets: [String: String] {
+        let path = NSHomeDirectory() + "/.kanban-code/settings.json"
+        let settings = FileManager.default.contents(atPath: path).flatMap { try? JSONDecoder().decode(Settings.self, from: $0) }
+        let machines = settings?.boxd?.sshMachines ?? []
+        var targets: [String: String] = [:]
+        for machine in machines where machine.isComplete { targets[machine.name] = machine.target }
+        return targets
+    }
+
     // MARK: - Remote session readiness
 
     /// Directory of the marker files that tell the embedded terminal a remote

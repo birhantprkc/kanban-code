@@ -50,6 +50,17 @@ struct RemoteAttachScriptTests {
         }
     }
 
+    @Test("a session on an ssh machine attaches with ssh -tt, other machines keep the boxd path")
+    func sshMachineAttach() {
+        let script = TerminalCache.remoteAttachScript(
+            boxd: "boxd", machine: nil, session: "claude-1234", readyMarker: "/tmp/marker",
+            sshTargets: ["box": "root@10.0.0.1"])
+        #expect(script.contains(#"t=; case "$m" in 'box') t='root@10.0.0.1';; esac; if [ -n "$t" ]; then "#))
+        #expect(script.contains(#"/usr/bin/ssh -tt -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$t" -- 'tmux has-session -t '\''claude-1234'\'' 2>/dev/null || exit 9; exec tmux -u -T hyperlinks attach-session -t '\''claude-1234'\'''; r=$?; else KANBAN_MACHINE="$m" /usr/bin/expect -c '"#))
+        // The same statuses drive the loop: 9 uses up a try, 0 ends it.
+        #expect(script.contains("fi; [ $r -eq 0 ] && break; if [ -e '/tmp/marker.paused' ]; then continue; fi; if [ $r -eq 9 ]; then n=$((n+1)); sleep 2; else sleep 3; fi; done"))
+    }
+
     @Test("wheel ticks on a machine become one copy-mode move per flush")
     func remoteScrollCommands() {
         #expect(TerminalCache.remoteScrollCommands(session: "s", enter: true, delta: 5) == [

@@ -574,6 +574,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                     userInfo: ["cardId": cardId]
                 )
             }
+            // kanbancode://move/{cardId}?to=mac|<machine>: continues the card's
+            // conversation on this Mac or on a machine.
+            if url.host == "move",
+               let cardId = url.pathComponents.dropFirst().first, !cardId.isEmpty,
+               let target = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                   .queryItems?.first(where: { $0.name == "to" })?.value, !target.isEmpty {
+                RemoteControlController.shared.moveCard?(cardId, target)
+            }
             // kanbancode://open?path=/some/project
             if url.host == "open",
                let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
