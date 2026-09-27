@@ -238,6 +238,19 @@ final class BatchedTerminalView: LocalProcessTerminalView {
         }
     }
 
+    // MARK: - Copy
+
+    /// With nothing selected here and the program drawing its own selection
+    /// (it asked for the mouse), cmd+c goes to the program as a kitty-encoded
+    /// super+c, so agtop copies what was dragged over.
+    override func copy(_ sender: Any) {
+        if (getSelection() ?? "").isEmpty, terminal.mouseMode != .off {
+            send(txt: "\u{1b}[99;9u")
+            return
+        }
+        super.copy(sender)
+    }
+
     // MARK: - Paste fix
 
     /// Override paste to always send bracketed paste codes. With our async+dropping
@@ -999,7 +1012,8 @@ final class TerminalCache {
     static func agtopScript(agtop: String?, id: String) -> String {
         guard let agtop else { return "echo 'agtop is not installed.'" }
         let bin = agtop.replacingOccurrences(of: "'", with: "'\\''")
-        return "while :; do '\(bin)' open '\(id)' --solo; sleep 0.3; done"
+        // Copying is asked for with cmd+c here, never by letting go of a drag.
+        return "export AGTOP_COPY_ON_SELECT=0; while :; do '\(bin)' open '\(id)' --solo; sleep 0.3; done"
     }
 
     /// Remove and terminate a specific terminal (e.g., when user kills a session).
