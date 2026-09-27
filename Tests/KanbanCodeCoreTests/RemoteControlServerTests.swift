@@ -220,6 +220,28 @@ struct RemoteControlServerTests {
         #expect(f.host.state.withLock { $0.prompts.count } == 1)
     }
 
+    @Test("a prompt's images follow their [Image #N] markers; an image whose marker was deleted is dropped")
+    func promptImageMarkers() async throws {
+        let f = try await RemoteServerFixture()
+        defer { f.shutdown() }
+        let png = RemoteImage(mediaType: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+        let jpeg = RemoteImage(bytes: Data([0xFF, 0xD8, 0xFF, 0xE0, 1, 2]), mediaType: "image/jpeg")
+        let gif = RemoteImage(bytes: Data("GIF89a-body".utf8), mediaType: "image/gif")
+        // Markers out of order, image 2 (the jpeg) no longer named.
+        let body = try JSONEncoder.remote.encode(RemotePromptRequest(
+            text: "see [Image #3] then [Image #1]", images: [png, jpeg, gif]))
+        let (status, _) = try await f.request("POST", "/v1/cards/card_live/prompt", token: f.agentToken, body: body)
+        #expect(status == 204)
+        #expect(f.host.state.withLock { $0.prompts.last?.request.text } == "see [Image #1] then [Image #2]")
+        #expect(f.host.state.withLock { $0.promptImages.last?.map(\.fileExtension) } == ["gif", "png"])
+
+        // No marker at all (an older client): every image, text as sent.
+        let legacy = try JSONEncoder.remote.encode(RemotePromptRequest(text: "look", images: [png, jpeg]))
+        _ = try await f.request("POST", "/v1/cards/card_live/prompt", token: f.agentToken, body: legacy)
+        #expect(f.host.state.withLock { $0.prompts.last?.request.text } == "look")
+        #expect(f.host.state.withLock { $0.promptImages.last?.map(\.fileExtension) } == ["png", "jpg"])
+    }
+
     @Test("a queued prompt can be sent now or removed by id")
     func queuedPrompts() async throws {
         var cards = FakeRemoteHost.defaultCards

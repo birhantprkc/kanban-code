@@ -19,13 +19,33 @@ struct ChatPane: View {
     @State private var showCamera = false
     @State private var photoItems: [PhotosPickerItem] = []
     @FocusState private var composerFocused: Bool
+    @State private var composerSelection: TextSelection?
+    /// Where picked images put their markers, taken when + is used.
+    @State private var imageInsertion: Int?
     @State private var scrollPosition = ScrollPosition(edge: .bottom)
+    @State private var follow = FollowState()
+    /// Top of the keyboard and bottom of the chat, in window coordinates.
+    @State private var keyboardTop: CGFloat?
+    @State private var paneBottom: CGFloat = 0
 
-    /// Scroll geometry that decides whether the chat follows its end.
-    private struct ScrollState: Equatable {
-        var viewport: CGFloat
-        var content: CGFloat
-        var atBottom: Bool
+    /// How much of the chat the keyboard still covers after SwiftUI made
+    /// room for it: nothing, unless SwiftUI missed the suggestion bar.
+    private var keyboardShortfall: CGFloat {
+        guard let keyboardTop else { return 0 }
+        return max(0, paneBottom - keyboardTop)
+    }
+
+    /// Whether the chat keeps to its end: from opening until the user
+    /// scrolls away, and again once they scroll back to it. A class, so
+    /// scrolling does not redraw the view.
+    private final class FollowState {
+        var followsEnd = true
+        var userScrolling = false
+    }
+
+    /// Distance from the end of the conversation to the bottom of what is shown.
+    private static func distanceToEnd(_ geo: ScrollGeometry) -> CGFloat {
+        geo.contentSize.height + geo.contentInsets.bottom - (geo.contentOffset.y + geo.containerSize.height)
     }
 
     private static let bottomID = "chat-bottom"
@@ -63,12 +83,14 @@ struct ChatPane: View {
                 if card.isBusy {
                     WorkingIndicator()
                 }
+                // The last row reaches the end of the content, so scrolling
+                // to it ends at the true bottom.
                 Color.clear
-                    .frame(height: 1)
+                    .frame(height: 12)
                     .id(Self.bottomID)
             }
             .padding(.horizontal)
-            .padding(.vertical, 12)
+            .padding(.top, 12)
             // A tap anywhere on the conversation puts the keyboard away,
             // on a button too (which still does its own thing); message
             // text reports its taps through selectableTextTap.
@@ -83,18 +105,50 @@ struct ChatPane: View {
         // the offset from the estimated heights of rows the lazy stack has
         // not laid out, so after the keyboard or a new message changed the
         // size it could land where no row is drawn and show a blank chat.
-        .onScrollGeometryChange(for: ScrollState.self) { geo in
-            ScrollState(viewport: geo.containerSize.height, content: geo.contentSize.height,
-                        atBottom: geo.contentOffset.y + geo.containerSize.height >= geo.contentSize.height - 60)
-        } action: { old, new in
-            let resized = abs(old.viewport - new.viewport) > 1 || abs(old.content - new.content) > 1
-            if resized && old.atBottom && !new.atBottom {
+        // One scrollTo can still land short: the long rows it brings on
+        // screen are measured only then and push the end further down. So
+        // while the chat follows its end, every change that leaves it off
+        // the end scrolls again, until it is there.
+        .onScrollGeometryChange(for: CGFloat.self) { geo in
+            Self.distanceToEnd(geo).rounded()
+        } action: { _, distance in
+            if follow.followsEnd && !follow.userScrolling && distance > 1 {
                 scrollPosition.scrollTo(id: Self.bottomID, anchor: .bottom)
+            }
+        }
+        .onScrollPhaseChange { _, phase, context in
+            switch phase {
+            case .tracking, .interacting, .decelerating:
+                follow.userScrolling = true
+            case .idle:
+                if follow.userScrolling {
+                    follow.userScrolling = false
+                    follow.followsEnd = Self.distanceToEnd(context.geometry) < 60
+                }
+            case .animating:
+                break
+            @unknown default:
+                break
             }
         }
         .scrollDismissesKeyboard(.interactively)
         .overlay { emptyState }
-        .safeAreaInset(edge: .bottom, spacing: 0) { bottomBar }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            bottomBar
+                .padding(.bottom, keyboardShortfall)
+                .background(Color(.systemBackground))
+        }
+        .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY.rounded() } action: { paneBottom = $0 }
+        .background {
+            KeyboardTopReader { top, duration in
+                if duration > 0 {
+                    withAnimation(.easeOut(duration: duration)) { keyboardTop = top }
+                } else {
+                    keyboardTop = top
+                }
+            }
+            .ignoresSafeArea()
+        }
         .refreshable { await transcript.refresh() }
         .task(id: card.lastActivity ?? card.updatedAt) { await transcript.refresh() }
         .task(id: card.isBusy) {
@@ -120,7 +174,7 @@ struct ChatPane: View {
             Task { await addPhotos(items) }
         }
         .fullScreenCover(isPresented: $showCamera) {
-            CameraPicker { data in draft.addImage(data) }
+            CameraPicker { data in insertImage(data) }
                 .ignoresSafeArea()
         }
     }
@@ -208,7 +262,7 @@ struct ChatPane: View {
                 if !draft.images.isEmpty {
                     attachments
                 }
-                TextField("Message", text: Bindable(draft).text, axis: .vertical)
+                TextField("Message", text: composerText, selection: $composerSelection, axis: .vertical)
                     .lineLimit(1...8)
                     .focused($composerFocused)
                     .padding(.horizontal, 6)
@@ -235,6 +289,38 @@ struct ChatPane: View {
             .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
             .onTapGesture { composerFocused = true }
         }
+    }
+
+    /// The typed text; a deletion into an [Image #N] marker takes the
+    /// whole marker, and the caret goes where it was.
+    private var composerText: Binding<String> {
+        Binding {
+            draft.text
+        } set: { newText in
+            guard let deletion = draft.markerDeletion(to: newText) else {
+                draft.text = newText
+                return
+            }
+            draft.holdText(newText)
+            DispatchQueue.main.async {
+                draft.text = deletion.text
+                composerSelection = TextSelection(insertionPoint: Self.index(deletion.caret, in: draft.text))
+            }
+        }
+    }
+
+    private static func index(_ offset: Int, in text: String) -> String.Index {
+        text.index(text.startIndex, offsetBy: min(max(offset, 0), text.count))
+    }
+
+    /// The caret's place in the composer, in characters, or nil when the
+    /// composer has no caret.
+    private var caretOffset: Int? {
+        guard let composerSelection, case .selection(let range) = composerSelection.indices else { return nil }
+        let text = draft.text
+        let utf16 = min(range.upperBound.utf16Offset(in: text), text.utf16.count)
+        let index = String.Index(utf16Offset: utf16, in: text)
+        return text.distance(from: text.startIndex, to: index)
     }
 
     /// Stop while the agent works and nothing is typed; send otherwise.
@@ -316,9 +402,15 @@ struct ChatPane: View {
 
     private var attachButton: some View {
         Menu {
-            Button("Photos", systemImage: "photo.on.rectangle") { showPhotoPicker = true }
+            Button("Photos", systemImage: "photo.on.rectangle") {
+                imageInsertion = caretOffset
+                showPhotoPicker = true
+            }
             if UIImagePickerController.isSourceTypeAvailable(.camera) {
-                Button("Camera", systemImage: "camera") { showCamera = true }
+                Button("Camera", systemImage: "camera") {
+                    imageInsertion = caretOffset
+                    showCamera = true
+                }
             }
         } label: {
             Image(systemName: "plus")
@@ -336,7 +428,7 @@ struct ChatPane: View {
     private var attachments: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(draft.images) { image in
+                ForEach(Array(draft.images.enumerated()), id: \.element.id) { number, image in
                     ZStack(alignment: .topTrailing) {
                         Group {
                             if let ui = UIImage(data: image.data) {
@@ -347,6 +439,16 @@ struct ChatPane: View {
                         }
                         .frame(width: 64, height: 64)
                         .clipShape(RoundedRectangle(cornerRadius: 10))
+                        // The number of its [Image #N] marker in the text.
+                        .overlay(alignment: .bottomLeading) {
+                            Text("#\(number + 1)")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(.black.opacity(0.6), in: Capsule())
+                                .padding(4)
+                        }
                         Button {
                             withAnimation(.snappy) { draft.removeImage(image.id) }
                         } label: {
@@ -371,12 +473,22 @@ struct ChatPane: View {
     private func addPhotos(_ items: [PhotosPickerItem]) async {
         var failed = 0
         for item in items {
-            guard let data = try? await item.loadTransferable(type: Data.self), draft.addImage(data) else {
+            guard let data = try? await item.loadTransferable(type: Data.self), insertImage(data) else {
                 failed += 1
                 continue
             }
         }
         if failed > 0 { sendError = failed == 1 ? "One image could not be attached." : "\(failed) images could not be attached." }
+    }
+
+    /// Attaches an image with its marker where the caret was when + was
+    /// used; the next image goes after it.
+    @discardableResult
+    private func insertImage(_ data: Data) -> Bool {
+        guard let caret = draft.addImage(data, at: imageInsertion) else { return false }
+        imageInsertion = caret
+        composerSelection = TextSelection(insertionPoint: Self.index(caret, in: draft.text))
+        return true
     }
 
     private func send(_ mode: RemotePromptRequest.Mode) {
@@ -390,6 +502,7 @@ struct ChatPane: View {
             do {
                 try await client.sendPrompt(cardId: card.id, text: text, mode: mode, images: images)
                 draft.clear()
+                follow.followsEnd = true
                 sentCount += 1
                 transcript.appendPending(text, imageCount: images.count)
             } catch {
@@ -418,7 +531,9 @@ struct ChatPane: View {
                     try await client.removeQueuedPrompt(cardId: card.id, promptId: prompt.id)
                     // Whatever is typed now waits in a stash.
                     draft.stash()
-                    draft.load(text: prompt.text, images: [])
+                    // Its images stay on the Mac, so their markers go too.
+                    draft.load(text: PromptImageLayout.removingMarkers(from: prompt.text, imageCount: prompt.imageCount),
+                               images: [])
                     if prompt.imageCount > 0 {
                         notice = prompt.imageCount == 1
                             ? "Its image stays on the Mac; attach it again to send it."

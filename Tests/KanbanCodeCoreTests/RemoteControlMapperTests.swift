@@ -177,6 +177,28 @@ struct RemoteControlMapperTests {
         #expect(Set(messages.map(\.id)).count == messages.count)
     }
 
+    @Test("a prompt's images show as their [Image #N] markers, never as file paths")
+    func userImages() {
+        let turns = [
+            // agtop splits the text at each marker, an image after it.
+            ConversationTurn(index: 0, lineNumber: 0, role: "user", textPreview: "",
+                             contentBlocks: [ContentBlock(kind: .text, text: "compare [Image #1]"),
+                                             ContentBlock(kind: .text, text: " with [Image #2] please")],
+                             imageCount: 2),
+            // Images sent by path, as a prompt to a remote machine has them.
+            ConversationTurn(index: 1, lineNumber: 100, role: "user", textPreview: "",
+                             contentBlocks: [ContentBlock(kind: .text, text: "look ![](/var/folders/x/T/kanban-remote-AB12.jpg) here")]),
+            // Images with no marker keep the tag.
+            ConversationTurn(index: 2, lineNumber: 200, role: "user", textPreview: "",
+                             contentBlocks: [ContentBlock(kind: .text, text: "what is this")], imageCount: 1),
+        ]
+        #expect(RemoteTranscriptMapper.messages(from: turns).map(\.text) == [
+            "compare [Image #1] with [Image #2] please",
+            "look [Image #1] here",
+            "what is this\n\n[image]",
+        ])
+    }
+
     @Test("pages go back with the cursor until the start")
     func paging() async throws {
         let turns = Self.turns()

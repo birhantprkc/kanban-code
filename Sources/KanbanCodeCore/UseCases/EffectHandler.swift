@@ -1,4 +1,5 @@
 import Foundation
+import KanbanCodeRemoteKit
 import UserNotifications
 
 /// Executes side effects produced by the Reducer.
@@ -211,9 +212,9 @@ public actor EffectHandler {
                 }
                 if let agtopId = AgtopSessionName.agtopId(fromName: sessionName),
                    let agtop = (tmux as? RoutingTmuxAdapter)?.agtop {
-                    // agtop takes the images as files, next to the text.
-                    let body = PromptImageLayout.replacingMarkersWithMarkdown(in: promptBody, imagePaths: imagePaths)
-                    try await agtop.send(id: agtopId, text: body, imagePaths: imagePaths)
+                    // agtop takes the images as files and puts each right
+                    // after its [Image #N] marker in the text.
+                    try await agtop.send(id: agtopId, text: promptBody, imagePaths: imagePaths)
                     return
                 }
                 let images = assistant.supportsImageUpload

@@ -1,4 +1,5 @@
 import Foundation
+import KanbanCodeRemoteKit
 import KanbanCodeCore
 
 enum PromptImagePlaceholders {

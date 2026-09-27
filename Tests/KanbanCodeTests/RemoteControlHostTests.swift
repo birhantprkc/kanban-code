@@ -233,6 +233,20 @@ struct RemoteControlHostTests {
         #expect(card?.queuedPromptCount == 1)
     }
 
+    @Test("an agtop card gets the text with its [Image #N] markers and the images as files")
+    func agtopImageMarkers() async throws {
+        let fake = try FakeAgtop()
+        defer { fake.cleanup() }
+        let (host, store, _) = makeHost(agtop: fake.adapter())
+        addCard(store, id: "card_a", session: "agtop-0a1b2c3d", live: true, busy: false)
+        let jpeg = RemotePromptImages.Decoded(bytes: Data([0xFF, 0xD8, 0xFF, 0xE0]), fileExtension: "jpg")
+        try await host.sendPrompt(cardId: "card_a", RemotePromptRequest(text: "what is [Image #1] showing"), images: [jpeg])
+        let calls = fake.calls()
+        #expect(calls.contains("STDIN what is [Image #1] showing"))
+        #expect(calls.contains("--image "))
+        #expect(!calls.contains("![]("))
+    }
+
     @Test("send now and remove on an agtop queued message map to agtop's queue commands")
     func agtopQueueActions() async throws {
         let fake = try FakeAgtop()

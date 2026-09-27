@@ -77,7 +77,8 @@ final class TranscriptModel {
 
     static func displayText(_ text: String, imageCount: Int) -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard imageCount > 0 else { return trimmed }
+        // Markers in the text show where each image went.
+        guard imageCount > 0, !PromptImageLayout.marksEveryImage(trimmed, imageCount: imageCount) else { return trimmed }
         let tag = imageTag(imageCount)
         return trimmed.isEmpty ? tag : trimmed + "\n\n" + tag
     }

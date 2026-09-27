@@ -1,5 +1,6 @@
 import SwiftUI
 import KanbanCodeCore
+import KanbanCodeRemoteKit
 import MarkdownUI
 
 /// The first `limit` lines, which is all a capped block can show anyway.

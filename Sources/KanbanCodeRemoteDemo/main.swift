@@ -112,6 +112,8 @@ final class DemoHost: RemoteControlHost {
                              prs: [RemotePR(number: 412, url: "https://github.com/acme/acme-api/pull/412", title: "perf: faster search index", status: "open")],
                              minutesAgo: 90),
                   messages: Self.conversation("Speed up the search index")),
+            .init(card: card("card_long", "Write the release notes", .waiting, project: 1, runtime: .tmux, live: true, minutesAgo: 20),
+                  messages: Self.longEnding("Write the release notes")),
             .init(card: card("card_backlog", "Write the migration guide", .backlog, project: 0, runtime: .none, live: false, minutesAgo: 600),
                   messages: []),
             .init(card: card("card_done", "Bump dependencies", .done, project: 1, runtime: .tmux, live: false,
@@ -137,6 +139,22 @@ final class DemoHost: RemoteControlHost {
             if i % 3 == 0 { add(.tool, "Bash pnpm test --filter part-\(i + 1)") }
         }
         add(.assistant, "Done. The change is in place and the tests pass.")
+        return out
+    }
+
+    /// A conversation whose last two messages are very long, for opening a
+    /// chat at its true end.
+    static func longEnding(_ task: String) -> [RemoteMessage] {
+        var out = conversation(task)
+        let t = Date().addingTimeInterval(-1200)
+        func long(_ title: String, paragraphs: Int, last: String) -> String {
+            let body = (1...paragraphs).map { i in
+                "\(title) part \(i): the notes cover the change, why it was made, what to check after upgrading and which settings moved. Every paragraph is long enough to wrap over several lines on a phone."
+            }
+            return (body + [last]).joined(separator: "\n\n")
+        }
+        out.append(RemoteMessage(id: "m\(out.count)", role: .assistant, text: long("Draft", paragraphs: 40, last: "That was the first draft."), at: t))
+        out.append(RemoteMessage(id: "m\(out.count)", role: .assistant, text: long("Final", paragraphs: 60, last: "End of the release notes."), at: t.addingTimeInterval(30)))
         return out
     }
 
@@ -241,6 +259,7 @@ final class DemoHost: RemoteControlHost {
 
     /// What the transcript shows for a prompt, with its images as the Mac pastes them.
     static func promptText(_ text: String, imageCount: Int) -> String {
+        if PromptImageLayout.marksEveryImage(text, imageCount: imageCount) { return text }
         let images = (0..<imageCount).map { "[Image #\($0 + 1)]" }.joined(separator: " ")
         return [images, text].filter { !$0.isEmpty }.joined(separator: " ")
     }

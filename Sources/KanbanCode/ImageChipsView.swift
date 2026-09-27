@@ -1,5 +1,6 @@
 import SwiftUI
 import KanbanCodeCore
+import KanbanCodeRemoteKit
 
 /// Shared "Prompt" section: label, image chips (above editor, like Claude Code), and the editor.
 struct PromptSection: View {

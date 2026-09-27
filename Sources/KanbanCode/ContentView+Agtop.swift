@@ -45,7 +45,6 @@ extension ContentView {
             var copy = image
             return try? copy.saveToTemp()
         }
-        let text = prompt.map { PromptImageLayout.replacingMarkersWithMarkdown(in: $0, imagePaths: imagePaths) }
         let binary = try AgtopLaunchPlanner.wrapperCommand(template: commandTemplate, service: service)
             .map { try Self.writeAgtopWrapper(cardId: cardId, command: $0) }
         let request = AgtopLaunchPlanner.request(
@@ -54,7 +53,8 @@ extension ContentView {
             sessionId: sessionId,
             resume: resume,
             name: store.state.links[cardId]?.name,
-            prompt: text,
+            // agtop puts each image right after its [Image #N] marker.
+            prompt: prompt,
             imagePaths: imagePaths,
             extraEnv: extraEnv,
             skipPermissions: skipPermissions,

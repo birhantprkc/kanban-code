@@ -24,7 +24,7 @@ public enum RemoteTranscriptMapper {
 
             if turn.role == "user" {
                 if turn.contentBlocks.isEmpty {
-                    add(.user, turn.textPreview)
+                    add(.user, PromptImageLayout.replacingMarkdownImagesWithMarkers(in: turn.textPreview))
                     continue
                 }
                 let onlyToolResults = turn.contentBlocks.allSatisfy {
@@ -32,8 +32,8 @@ public enum RemoteTranscriptMapper {
                     return false
                 }
                 if onlyToolResults { continue }
-                var text = turn.contentBlocks.filter { $0.kind == .text }.map(\.text).joined(separator: "\n\n")
-                if turn.imageCount > 0 {
+                var text = userText(turn.contentBlocks.filter { $0.kind == .text }.map(\.text))
+                if turn.imageCount > 0 && !PromptImageLayout.marksEveryImage(text, imageCount: turn.imageCount) {
                     let images = turn.imageCount == 1 ? "[image]" : "[\(turn.imageCount) images]"
                     text = text.isEmpty ? images : text + "\n\n" + images
                 }
@@ -80,6 +80,23 @@ public enum RemoteTranscriptMapper {
             flush()
         }
         return out
+    }
+
+    /// A user turn's text blocks as one text. An image sent at its
+    /// [Image #N] marker splits the text there, so a block ending in a
+    /// marker runs on into the next; images sent by path read as markers.
+    static func userText(_ blocks: [String]) -> String {
+        var out = ""
+        for block in blocks {
+            if !out.isEmpty && !endsWithMarker(out) { out += "\n\n" }
+            out += block
+        }
+        return PromptImageLayout.replacingMarkdownImagesWithMarkers(in: out)
+    }
+
+    private static func endsWithMarker(_ text: String) -> Bool {
+        guard text.hasSuffix("]"), let start = text.range(of: PromptImageLayout.markerPrefix, options: .backwards) else { return false }
+        return Int(text[start.upperBound..<text.index(before: text.endIndex)]) != nil
     }
 
     static func toolLine(name: String, text: String) -> String {

@@ -6,13 +6,22 @@ import KanbanCodeRemoteKit
 /// What is typed and attached for one card, kept per Mac and card until it
 /// is sent: across leaving the card, switching tabs and relaunching the app.
 /// Stashes set a message aside for later, as agtop's ctrl+s does.
+///
+/// Each image has an `[Image #N]` marker in the text where it goes, as in
+/// Claude Code and the Mac composer. Markers are numbered in text order,
+/// and deleting one drops its image.
 @Observable
 final class ComposerDraft {
     let key: String
     var text: String {
-        didSet { if text != oldValue { save() } }
+        didSet {
+            guard text != oldValue else { return }
+            if !settling { settleImages() }
+            save()
+        }
     }
     private(set) var images: [DraftImage]
+    @ObservationIgnored private var settling = false
     /// Messages set aside, oldest first.
     private(set) var stashes: [Stash]
 
@@ -48,8 +57,10 @@ final class ComposerDraft {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
         directory = base?.appendingPathComponent("drafts", isDirectory: true)
             .appendingPathComponent(Self.fileSafe(key), isDirectory: true)
-        text = UserDefaults.standard.string(forKey: Self.textKey(key)) ?? ""
-        images = Self.loadImages(from: directory)
+        let savedText = UserDefaults.standard.string(forKey: Self.textKey(key)) ?? ""
+        let savedImages = Self.loadImages(from: directory)
+        text = Self.withMarkers(savedText, imageCount: savedImages.count)
+        images = savedImages
         stashes = Self.loadStashes(from: directory)
     }
 
@@ -68,32 +79,77 @@ final class ComposerDraft {
 
     var canAddImages: Bool { images.count < RemoteImage.maxCount }
 
-    /// Adds a picked or captured image, scaled down and re-encoded as JPEG.
-    /// Returns false when the image cannot be read or would be too big.
+    /// Adds a picked or captured image, scaled down and re-encoded as JPEG,
+    /// and puts its marker at `offset` characters into the text (the end
+    /// when nil). Returns the caret offset right after the marker, or nil
+    /// when the image cannot be read or would be too big.
     @discardableResult
-    func addImage(_ data: Data) -> Bool {
-        guard canAddImages, let jpeg = Self.prepare(data) else { return false }
-        images.append(DraftImage(id: UUID(), data: jpeg))
-        saveImages()
-        return true
+    func addImage(_ data: Data, at offset: Int? = nil) -> Int? {
+        guard canAddImages, let jpeg = Self.prepare(data) else { return nil }
+        let chars = Array(text)
+        let position = min(max(offset ?? chars.count, 0), chars.count)
+        let before = chars[..<position], after = chars[position...]
+        // A number no marker has yet; settling renumbers in text order.
+        let marker = PromptImageLayout.marker(for: images.count + 1)
+        let lead = before.last.map { $0.isWhitespace ? "" : " " } ?? ""
+        let trail = after.first?.isWhitespace == true ? "" : " "
+        let inserted = lead + marker + trail
+        replace(text: String(before) + inserted + String(after),
+                images: images + [DraftImage(id: UUID(), data: jpeg)])
+        return position + inserted.count
     }
 
+    /// Drops an image and its marker.
     func removeImage(_ id: UUID) {
-        images.removeAll { $0.id == id }
-        saveImages()
+        guard let index = images.firstIndex(where: { $0.id == id }) else { return }
+        let marker = PromptImageLayout.marker(for: index + 1)
+        let stripped = text.replacingOccurrences(of: marker + " ", with: "").replacingOccurrences(of: marker, with: "")
+        var remaining = images
+        remaining.remove(at: index)
+        // Marker numbers above it move down by one.
+        let renumbered = PromptImageLayout.parts(in: stripped, imageCount: images.count).map { part -> String in
+            guard let i = part.imageIndex else { return part.text }
+            return PromptImageLayout.marker(for: i < index ? i + 1 : i)
+        }.joined()
+        replace(text: renumbered, images: remaining)
+    }
+
+    /// A deletion reaching into a marker takes the whole marker, as agtop
+    /// and Claude Code do. Returns the text that makes and the caret offset
+    /// in it, or nil for an edit that does not touch a marker.
+    func markerDeletion(to newText: String) -> (text: String, caret: Int)? {
+        let old = Array(text), new = Array(newText)
+        guard !images.isEmpty, new.count < old.count else { return nil }
+        var prefix = 0
+        while prefix < new.count && old[prefix] == new[prefix] { prefix += 1 }
+        var suffix = 0
+        while suffix < new.count - prefix && old[old.count - 1 - suffix] == new[new.count - 1 - suffix] { suffix += 1 }
+        guard prefix + suffix == new.count else { return nil }
+        var lower = prefix, upper = old.count - suffix
+        for range in Self.markerRanges(in: old) where range.lowerBound < upper && range.upperBound > lower {
+            lower = min(lower, range.lowerBound)
+            upper = max(upper, range.upperBound)
+        }
+        guard lower != prefix || upper != old.count - suffix else { return nil }
+        return (String(old[..<lower]) + String(old[upper...]), lower)
+    }
+
+    /// Takes the text as the field has it for now, images untouched: the
+    /// field shows a change to its text only once its own edit is over.
+    func holdText(_ newText: String) {
+        settling = true
+        text = newText
+        settling = false
     }
 
     func clear() {
-        text = ""
-        images = []
-        saveImages()
+        replace(text: "", images: [])
     }
 
     /// Puts a message into the composer, as if typed and attached.
     func load(text: String, images: [Data]) {
-        self.text = text
-        self.images = images.map { DraftImage(id: UUID(), data: $0) }
-        saveImages()
+        replace(text: Self.withMarkers(text, imageCount: images.count),
+                images: images.map { DraftImage(id: UUID(), data: $0) })
     }
 
     /// Sets the composer's message aside and clears the composer.
@@ -123,6 +179,70 @@ final class ComposerDraft {
 
     var remoteImages: [RemoteImage] {
         images.map { RemoteImage(bytes: $0.data, mediaType: "image/jpeg") }
+    }
+
+    // MARK: Markers
+
+    /// Sets text and images together, then settles them.
+    private func replace(text newText: String, images newImages: [DraftImage]) {
+        settling = true
+        images = newImages
+        text = newText
+        settling = false
+        settleImages(force: true)
+    }
+
+    /// Keeps the images to the markers in the text: in marker order, and
+    /// none whose marker is gone.
+    private func settleImages(force: Bool = false) {
+        guard !images.isEmpty else {
+            if force { saveImages() }
+            return
+        }
+        let settled: (text: String, images: [DraftImage])
+        if PromptImageLayout.referencedImageIndices(in: text, imageCount: images.count).isEmpty {
+            settled = (text, [])
+        } else {
+            settled = PromptImageLayout.arranged(text: text, images: images)
+        }
+        let changed = settled.images.map(\.id) != images.map(\.id)
+        settling = true
+        images = settled.images
+        if settled.text != text { text = settled.text }
+        settling = false
+        if changed || force { saveImages() }
+    }
+
+    /// Text from before markers, or a message whose images have none,
+    /// gets them at the end.
+    static func withMarkers(_ text: String, imageCount: Int) -> String {
+        guard imageCount > 0,
+              PromptImageLayout.referencedImageIndices(in: text, imageCount: imageCount).isEmpty else { return text }
+        let markers = (1...imageCount).map { PromptImageLayout.marker(for: $0) }.joined(separator: " ")
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? markers + " " : trimmed + " " + markers
+    }
+
+    /// Character ranges of the `[Image #N]` markers in `chars`.
+    static func markerRanges(in chars: [Character]) -> [Range<Int>] {
+        let prefix = Array(PromptImageLayout.markerPrefix)
+        var out: [Range<Int>] = []
+        var i = 0
+        while i + prefix.count < chars.count {
+            guard Array(chars[i..<i + prefix.count]) == prefix else {
+                i += 1
+                continue
+            }
+            var j = i + prefix.count
+            while j < chars.count, chars[j].isASCII, chars[j].isNumber { j += 1 }
+            if j > i + prefix.count, j < chars.count, chars[j] == "]" {
+                out.append(i..<j + 1)
+                i = j + 1
+            } else {
+                i += 1
+            }
+        }
+        return out
     }
 
     // MARK: Storage

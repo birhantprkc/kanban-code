@@ -302,9 +302,9 @@ final class AppRemoteControlHost: RemoteControlHost, @unchecked Sendable {
         let mode = request.mode ?? .queue
         if let agtopId = AgtopSessionName.agtopId(fromName: session) {
             // agtop queues a message sent mid-turn itself, and `now` hands it
-            // to Claude mid-turn; the card's own queue is not used.
-            let text = PromptImageLayout.replacingMarkersWithMarkdown(in: request.text, imagePaths: imagePaths)
-            try await agtop.send(id: agtopId, text: text, imagePaths: imagePaths, now: mode == .now)
+            // to Claude mid-turn; the card's own queue is not used. agtop
+            // puts each image right after its [Image #N] marker.
+            try await agtop.send(id: agtopId, text: request.text, imagePaths: imagePaths, now: mode == .now)
             await readAgtopQueue(session: session, agtopId: agtopId)
             return
         }

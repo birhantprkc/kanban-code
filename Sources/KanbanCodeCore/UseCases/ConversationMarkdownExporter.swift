@@ -1,4 +1,5 @@
 import Foundation
+import KanbanCodeRemoteKit
 
 /// Converts native assistant transcripts into a plain message-only Markdown log.
 public enum ConversationMarkdownExporter {

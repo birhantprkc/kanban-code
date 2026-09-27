@@ -1,4 +1,5 @@
 import Foundation
+import KanbanCodeRemoteKit
 
 /// Errors from image sending operations.
 public enum ImageSendError: Error, LocalizedError {

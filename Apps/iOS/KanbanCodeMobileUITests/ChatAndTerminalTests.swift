@@ -54,6 +54,61 @@ final class ChatAndTerminalTests: KanbanUITestCase {
         clearComposer()
     }
 
+    /// The composer's whole box, + and send included, sits above the
+    /// keyboard and its suggestion bar, however the keyboard came up.
+    func testComposerBottomRowStaysAboveTheKeyboard() throws {
+        let keyboard = app.keyboards.firstMatch
+        func check(_ step: String) {
+            XCTAssertTrue(keyboard.waitForExistence(timeout: 5), "\(step): no keyboard")
+            sleep(1)
+            let send = app.buttons["send"]
+            XCTAssertTrue(send.exists, "\(step): no send button")
+            XCTAssertLessThanOrEqual(send.frame.maxY, keyboard.frame.minY + 1,
+                                     "\(step): send is under the keyboard: \(send.frame) vs \(keyboard.frame)")
+            XCTAssertLessThanOrEqual(app.buttons["attach"].frame.maxY, keyboard.frame.minY + 1, "\(step): + is under the keyboard")
+        }
+        openCard("card_wait")
+        XCTAssertTrue(composer.waitForExistence(timeout: 10))
+        clearComposer()
+        tapConversation()
+        XCTAssertTrue(waitFor(5) { !keyboard.exists })
+
+        composer.tap()
+        check("first focus")
+        shot("21a-keyboard-empty-composer")
+        composer.typeText("Hello")
+        check("typed")
+        clearComposer()
+        check("cleared")
+
+        tapConversation()
+        XCTAssertTrue(waitFor(5) { !keyboard.exists })
+        // A tap on the box's empty space, beside the buttons.
+        app.buttons["attach"].coordinate(withNormalizedOffset: CGVector(dx: 3, dy: 0.5)).tap()
+        check("focus from the box")
+
+        // Leave with the keyboard up and come back.
+        goBack()
+        openCard("card_wait")
+        XCTAssertTrue(composer.waitForExistence(timeout: 10))
+        composer.tap()
+        check("after coming back")
+
+        // Through the terminal tab and back.
+        app.segmentedControls["cardTabs"].buttons["Terminal"].tap()
+        sleep(1)
+        app.segmentedControls["cardTabs"].buttons["Chat"].tap()
+        XCTAssertTrue(composer.waitForExistence(timeout: 10))
+        composer.tap()
+        check("after the terminal tab")
+
+        // Drag the chat down a little, as if to dismiss, and let go.
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.3))
+        start.press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.55)))
+        if keyboard.exists { check("after a short drag") }
+        tapConversation()
+    }
+
     // MARK: Queued prompts
 
     func testQueuedPromptsMenuSendsNowEditsAndDeletes() throws {
@@ -156,10 +211,13 @@ final class ChatAndTerminalTests: KanbanUITestCase {
         shot("40-composer-empty")
         XCTAssertFalse(app.buttons["send"].isEnabled)
         composer.tap()
+        let tabsTop = app.segmentedControls["cardTabs"].frame.minY
         composer.typeText("First line of a longer prompt\nSecond line with more detail\nThird line\nFourth line")
         sleep(1)
         shot("41-composer-multiline-keyboard")
-        XCTAssertLessThanOrEqual(composer.frame.maxY, app.keyboards.firstMatch.frame.minY)
+        XCTAssertLessThanOrEqual(app.buttons["send"].frame.maxY, app.keyboards.firstMatch.frame.minY + 1)
+        // The header stays put; only the chat makes room.
+        XCTAssertEqual(app.segmentedControls["cardTabs"].frame.minY, tabsTop, accuracy: 1)
         XCTAssertTrue(app.buttons["send"].isEnabled)
         tapConversation()
         XCTAssertTrue(waitFor(5) { !app.keyboards.firstMatch.exists })
@@ -174,7 +232,43 @@ final class ChatAndTerminalTests: KanbanUITestCase {
         openCard("card_wait")
         let attach = app.buttons["attach"]
         XCTAssertTrue(attach.waitForExistence(timeout: 10))
-        attach.tap()
+        clearComposer()
+        composer.tap()
+        composer.typeText("Compare")
+        pickFirstPhoto()
+        let attachment = app.descendants(matching: .any).matching(identifier: "attachment").firstMatch
+        XCTAssertTrue(attachment.waitForExistence(timeout: 15))
+        // The marker goes in at the caret.
+        XCTAssertEqual(composer.value as? String, "Compare [Image #1] ")
+        tapConversation()
+        sleep(1)
+        shot("26-attachment-marker")
+
+        // Deleting into the marker takes it whole, and its image with it.
+        composer.coordinate(withNormalizedOffset: CGVector(dx: 0.99, dy: 0.95)).tap()
+        composer.typeText(XCUIKeyboardKey.delete.rawValue + XCUIKeyboardKey.delete.rawValue)
+        XCTAssertTrue(waitFor(5) { !attachment.exists })
+        XCTAssertEqual(composer.value as? String, "Compare ")
+
+        pickFirstPhoto()
+        XCTAssertTrue(attachment.waitForExistence(timeout: 15))
+        composer.coordinate(withNormalizedOffset: CGVector(dx: 0.99, dy: 0.95)).tap()
+        composer.typeText("with the design")
+        XCTAssertEqual(composer.value as? String, "Compare [Image #1] with the design")
+        shot("26b-attachment-keyboard")
+        tapConversation()
+        app.buttons["send"].tap()
+        XCTAssertTrue(waitFor(15) { message(containing: "Compare [Image #1] with the design").exists })
+        XCTAssertFalse(message(containing: "[image]").exists)
+        XCTAssertFalse(attachment.exists)
+        tapConversation()
+        sleep(1)
+        shot("27-image-sent")
+    }
+
+    /// Picks the first photo of the library through + > Photos.
+    private func pickFirstPhoto() {
+        app.buttons["attach"].tap()
         app.buttons["Photos"].firstMatch.tap()
         // The system picker: pick the first photo, then Done.
         let photo = app.images.matching(identifier: "PXGGridLayout-Info").firstMatch
@@ -183,26 +277,11 @@ final class ChatAndTerminalTests: KanbanUITestCase {
         let close = app.buttons["Close"].firstMatch
         if close.waitForExistence(timeout: 2) { close.tap() }
         sleep(1)
-        shot("26a-photo-picker")
         // The grid sits under an overlay that XCUITest counts as covering it.
         photo.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         let done = app.buttons["Done"].firstMatch
         XCTAssertTrue(waitEnabled(done))
         done.tap()
-        let attachment = app.descendants(matching: .any).matching(identifier: "attachment").firstMatch
-        XCTAssertTrue(attachment.waitForExistence(timeout: 15))
-        composer.tap()
-        composer.typeText("What is in this picture?")
-        shot("26-attachment")
-        tapConversation()
-        sleep(1)
-        shot("26b-attachment-no-keyboard")
-        app.buttons["send"].tap()
-        XCTAssertTrue(waitFor(15) { message(containing: "[Image #1] What is in this picture?").exists })
-        XCTAssertFalse(attachment.exists)
-        tapConversation()
-        sleep(1)
-        shot("27-image-sent")
     }
 
     // MARK: Selection
@@ -249,6 +328,28 @@ final class ChatAndTerminalTests: KanbanUITestCase {
             tapConversation()
             XCTAssertTrue(waitFor(5) { !app.keyboards.firstMatch.exists })
             XCTAssertTrue(waitFor(5) { last.isHittable }, "round \(round): blank chat after the keyboard went away")
+            goBack()
+        }
+    }
+
+    /// A chat whose last two messages are very long opens at its true end,
+    /// every time, and stays where the user scrolled to.
+    func testAChatWithLongLastMessagesOpensAtItsEnd() throws {
+        for round in 0..<4 {
+            openCard("card_long")
+            let end = message(containing: "End of the release notes.")
+            XCTAssertTrue(end.waitForExistence(timeout: 10), "round \(round): no messages")
+            XCTAssertTrue(waitFor(5) { end.isHittable }, "round \(round): the chat did not open at its end")
+            sleep(1)
+            XCTAssertTrue(end.isHittable, "round \(round): the chat moved off its end")
+            if round == 0 { shot("50-long-chat-opened") }
+            if round == 1 {
+                // Scrolled up to read, it stays there.
+                app.swipeDown(velocity: .slow)
+                sleep(2)
+                XCTAssertFalse(end.isHittable, "the chat went back to its end while reading")
+                shot("51-long-chat-reading")
+            }
             goBack()
         }
     }

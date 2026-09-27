@@ -409,11 +409,15 @@ public final class RemoteControlServer: Sendable {
                 guard let body = try? JSONDecoder.remote.decode(RemotePromptRequest.self, from: request.body) else {
                     return .response(.error(400, "body must be {\"text\": \"...\", \"mode\": \"queue\"|\"now\", \"images\": [...]}"))
                 }
-                let images = try RemotePromptImages.decode(body.images)
-                guard !body.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty else {
+                let decoded = try RemotePromptImages.decode(body.images)
+                guard !body.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !decoded.isEmpty else {
                     return .response(.error(400, "text or images are required"))
                 }
-                try await host.sendPrompt(cardId: id, body, images: images)
+                // Each image goes where its [Image #N] marker is in the text.
+                let (text, images) = PromptImageLayout.arranged(text: body.text, images: decoded)
+                var prompt = body
+                prompt.text = text
+                try await host.sendPrompt(cardId: id, prompt, images: images)
                 return .response(.noContent)
 
             case ("POST", "cards/*/queue/*"):
