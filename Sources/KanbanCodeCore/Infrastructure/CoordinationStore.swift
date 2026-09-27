@@ -77,12 +77,9 @@ public actor CoordinationStore {
         encoder.dateEncodingStrategy = .iso8601
         guard let data = try? encoder.encode(LinksContainer(links: links)) else { return }
 
-        let tmpPath = filePath + ".tmp"
-        guard (try? FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)) != nil,
-              (try? data.write(to: URL(fileURLWithPath: tmpPath))) != nil
+        guard (try? FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)) != nil
         else { return }
-        _ = try? FileManager.default.removeItem(atPath: filePath)
-        try? FileManager.default.moveItem(atPath: tmpPath, toPath: filePath)
+        try? data.write(to: URL(fileURLWithPath: filePath), options: .atomic)
     }
 
     /// Read all links from the coordination file.
@@ -124,11 +121,9 @@ public actor CoordinationStore {
         let container = LinksContainer(links: links)
         let data = try encoder.encode(container)
 
-        // Atomic write: write to .tmp, then rename
-        let tmpPath = filePath + ".tmp"
-        try data.write(to: URL(fileURLWithPath: tmpPath))
-        _ = try? fileManager.removeItem(atPath: filePath)
-        try fileManager.moveItem(atPath: tmpPath, toPath: filePath)
+        // .atomic renames a temp file over the old one, so a reader never
+        // finds the file missing and takes the board for empty.
+        try data.write(to: URL(fileURLWithPath: filePath), options: .atomic)
     }
 
     // MARK: - Daily backup rotation

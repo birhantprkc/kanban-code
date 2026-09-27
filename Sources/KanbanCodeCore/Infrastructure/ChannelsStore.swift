@@ -123,14 +123,8 @@ public actor ChannelsStore {
     }
 
     private func writeReplacing(_ data: Data, at path: String) throws {
-        let fm = FileManager.default
-        let tmp = "\(path).tmp-\(UUID().uuidString)"
-        defer { try? fm.removeItem(atPath: tmp) }
-        try data.write(to: URL(fileURLWithPath: tmp))
-        if fm.fileExists(atPath: path) {
-            try? fm.removeItem(atPath: path)
-        }
-        try fm.moveItem(atPath: tmp, toPath: path)
+        // .atomic renames over the old file: a reader never finds it missing.
+        try data.write(to: URL(fileURLWithPath: path), options: .atomic)
     }
 
     /// Copy attached image files (possibly from NSTemporaryDirectory) into a
