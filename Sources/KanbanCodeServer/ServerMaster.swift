@@ -1,6 +1,9 @@
 import Foundation
 import KanbanCodeCore
 import KanbanCodeRemoteKit
+#if canImport(Glibc)
+import Glibc
+#endif
 
 /// The service graph and loops of a headless master: the same BoardStore and
 /// master engine the Mac app drives, over the kanban home of this machine,
@@ -77,6 +80,7 @@ final class ServerMaster {
         self.orchestrator = orchestrator
 
         var platform = MasterPlatform()
+        if getuid() == 0 { platform.sessionEnvironment["IS_SANDBOX"] = "1" }
         platform.defaultAssistant = {
             let enabled = Self.readSettings(home: home).settings?.enabledAssistants ?? [.claude]
             return enabled.contains(.claude) ? .claude : (enabled.first ?? .claude)

@@ -45,6 +45,10 @@ JSON bodies, up to 48 MiB. Dates are ISO 8601 with milliseconds, UTC (`2026-09-2
 | `DELETE /v1/cards/{id}/queue/{promptId}` | any | 204 |
 | `POST /v1/cards/{id}/interrupt` | any | 204 |
 | `POST /v1/cards/{id}/resume` | any | `RemoteCard` |
+| `POST /v1/cards/{id}/move` | any | `RemoteMoveRequest` → `RemoteCard` |
+| `GET /v1/cards/{id}/handover` | any | `RemoteHandoverInfo` |
+| `GET /v1/cards/{id}/transcript/raw?offset=0&limit=4194304` | any | transcript bytes, `X-Transcript-Size` header |
+| `GET /v1/links?since=&epoch=`, `POST /v1/links/changed`, `GET /v1/peers` | any | peer sync |
 | `GET /v1/events?all=1` (WebSocket) | any | `RemoteEvent` text frames |
 | `GET /v1/cards/{id}/terminal?session=<name>&cols=80&rows=24` (WebSocket) | full | terminal bytes |
 | `GET /.well-known/openapi.json` | none | OpenAPI 3.1 of the above |
@@ -61,6 +65,15 @@ Behaviour:
 - `resume` on a card that never ran launches it.
 - `/v1/events` (also `?all=1`) sends a `board` event with the whole board on connect, then `cards` events at most once per second: `upserted` holds the cards whose value changed or that joined the set, `removed` the ids that left it (archived, moved out of the recent Done, deleted), and `projects` the project list when it changed. A client applies them by id (`RemoteEvent.apply(to:)` in RemoteKit). A text frame `{"type":"resync"}` from the client gets a whole `board` again; so does every new connection. A `ping` event arrives every 20 seconds.
 - `terminal` without `session` opens the card's primary terminal. A terminal that is not running returns 409.
+
+## Several masters
+
+The Mac app and `kanban-code-server` (an always-on Linux box) are both masters: each runs the same engine, owns the cards it launched or adopted, and syncs light card state with its peers (Settings > Remote Control > Peers: a peer's URL and a device token that peer issued, `kanban-code-server pair <name>` on a box). A card carries `machineId`/`machineName`, the master that owns it.
+
+- Any master answers for any card: prompts, queue, interrupt, resume, transcript and move on a card another master owns are forwarded to that master. The terminal of such a card on the Mac runs `kanban remote attach`, which bridges the owner's terminal socket.
+- `POST /v1/tasks` with `machine` naming a peer creates the card here and hands it to that peer, which starts it. `project` may also be a repository URL: the master finds the project with that origin, or clones it into `~/Projects` (a box).
+- `POST /v1/cards/{id}/move` with `{"to": "<machine id or name>"}` continues a card on a peer master, or `"mac"`/`"local"` for the master that answers. A move to a peer is a handover: the session ends, the worktree branch is pushed to origin, the card is released; the peer reads `handover` (origin, branch, uncommitted changes as a base64 git diff), checks out the worktree, copies the transcript through `transcript/raw` with its paths rewritten, adopts the card and resumes it. Only Claude conversations move. A name that is not a peer is a boxd or ssh machine this master drives.
+- The Mac keeps a copy of each foreign card's transcript under `~/.kanban-code/peers/<machine>/transcripts/` for its chat view. When a peer is offline its cards stay on the board, marked offline.
 
 ## Terminal stream
 

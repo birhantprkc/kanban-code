@@ -64,6 +64,22 @@ enum RemoteOpenAPI {
       "parameters": [{"$ref": "#/components/parameters/CardId"}],
       "post": {"summary": "Start the card's session again when it ended", "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Card"}}}}, "404": {"$ref": "#/components/responses/Error"}}}
     },
+    "/v1/cards/{id}/move": {
+      "parameters": [{"$ref": "#/components/parameters/CardId"}],
+      "post": {"summary": "Continue the card on another master (a handover) or machine; {\"to\": \"<machine id or name>\"|\"mac\"}", "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Card"}}}}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/v1/cards/{id}/handover": {
+      "parameters": [{"$ref": "#/components/parameters/CardId"}],
+      "get": {"summary": "What a master adopting the card needs: repository origin, branch, uncommitted changes, transcript size", "responses": {"200": {"description": "RemoteHandoverInfo"}, "404": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/v1/cards/{id}/transcript/raw": {
+      "parameters": [
+        {"$ref": "#/components/parameters/CardId"},
+        {"name": "offset", "in": "query", "schema": {"type": "integer", "default": 0}},
+        {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 4194304}}
+      ],
+      "get": {"summary": "Bytes of the transcript file from offset; X-Transcript-Size has the file size", "responses": {"200": {"description": "application/octet-stream"}, "404": {"$ref": "#/components/responses/Error"}}}
+    },
     "/v1/events": {
       "parameters": [{"$ref": "#/components/parameters/All"}],
       "get": {"summary": "WebSocket. Text frames of Event: a board event on connect, then cards events (upserted, removed, projects) at most once per second, a ping every 20 s. Send {\"type\":\"resync\"} for a whole board again.", "responses": {"101": {"description": "switching protocols"}, "401": {"$ref": "#/components/responses/Error"}}}

@@ -84,6 +84,10 @@ public struct MasterPlatform: Sendable {
     /// adoption stops and asks for the project (the Mac).
     public var clonesMissingProjects = true
 
+    /// Environment every session this master starts gets (a root host sets
+    /// `IS_SANDBOX=1` so Claude accepts skipped permissions).
+    public var sessionEnvironment: [String: String] = [:]
+
     /// Claude's projects directory, where transcripts live by working directory.
     public var claudeProjectsDirectory: String = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/projects")
 

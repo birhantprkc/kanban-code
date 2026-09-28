@@ -170,6 +170,7 @@ public final class MasterEngine {
                 if let parentEnv = Self.subagentCacheEnv(parentCardId: cardLink?.parentCardId, assistant: assistant) {
                     serviceExtraEnv.merge(parentEnv) { _, new in new }
                 }
+                serviceExtraEnv.merge(platform.sessionEnvironment) { current, _ in current }
 
                 if boxdPreparation == nil,
                    agtopChoice(settings: settings, assistant: assistant, remote: isRemote, commandOverride: commandOverride) == .agtop {
@@ -748,6 +749,7 @@ public final class MasterEngine {
                 if let parentEnv = Self.subagentCacheEnv(parentCardId: card.link.parentCardId, assistant: assistant) {
                     serviceExtraEnv.merge(parentEnv) { _, new in new }
                 }
+                serviceExtraEnv.merge(platform.sessionEnvironment) { current, _ in current }
 
                 if boxdPreparation == nil,
                    agtopChoice(settings: settings, assistant: assistant, remote: isRemote, commandOverride: commandOverride) == .agtop {

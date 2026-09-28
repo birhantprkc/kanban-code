@@ -93,6 +93,16 @@ public enum ShellCommand {
         let env = environment ?? userEnvironment
         return try await withCheckedThrowingContinuation { continuation in
             processQueue.async {
+                #if os(Linux)
+                do {
+                    continuation.resume(returning: try LinuxSpawn.run(
+                        executable: executable, arguments: arguments, currentDirectory: currentDirectory,
+                        stdin: stdin, environment: env, timeout: timeout))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+                return
+                #else
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: executable)
                 process.arguments = arguments
@@ -198,6 +208,7 @@ public enum ShellCommand {
                     stderr: String(data: stderrBuffer.value, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 )
                 continuation.resume(returning: result)
+                #endif
             }
         }
     }
