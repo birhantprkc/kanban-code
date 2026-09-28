@@ -306,6 +306,80 @@ struct MasterHandoverTests {
         #expect(box.store.state.links["card_c"]?.ownerMachine == nil)
     }
 
+    @Test("a card that ran over ssh on the peer's machine continues there in the same folder, with its transcript")
+    func sshCardMovesToTheMasterOnItsMachine() async throws {
+        let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("ssh-handover-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let origin = "\(root)/origin/widgets.git"
+        let repoA = "\(root)/mac/widgets"
+        try FileManager.default.createDirectory(atPath: "\(root)/origin", withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: "\(root)/mac", withIntermediateDirectories: true)
+        try await sh(["git", "init", "--bare", "-q", origin], in: root)
+        try await sh(["git", "clone", "-q", origin, repoA], in: root)
+        try await sh(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"], in: repoA)
+        try await sh(["git", "push", "-q", "origin", "HEAD"], in: repoA)
+
+        let mac = try TestMaster(name: "mac", root: root)
+        let box = try TestMaster(name: "box", root: root)
+        try await mac.serve()
+        try await box.serve()
+        try await mac.start(peerURL: box.url, peerToken: box.tokenForPeer)
+        try await box.start(peerURL: mac.url, peerToken: mac.tokenForPeer)
+        defer { mac.server.stop(); box.server.stop() }
+
+        // The box's own checkout, where the ssh session ran: a worktree with
+        // work nobody committed, and the transcript the session wrote.
+        let repoB = "\(box.home)/Projects/widgets"
+        try FileManager.default.createDirectory(atPath: "\(box.home)/Projects", withIntermediateDirectories: true)
+        try await sh(["git", "clone", "-q", origin, repoB], in: root)
+        let worktreeB = "\(repoB)/.claude/worktrees/fix-bug"
+        try await sh(["git", "worktree", "add", "-q", "-b", "fix-bug", worktreeB], in: repoB)
+        try "written over ssh\n".write(toFile: "\(worktreeB)/notes.txt", atomically: true, encoding: .utf8)
+        let sessionId = "0f1e2d3c-aaaa-bbbb-cccc-000000000002"
+        let transcriptB = box.engine.transcriptPath(cwd: worktreeB, sessionId: sessionId)
+        try FileManager.default.createDirectory(atPath: (transcriptB as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        let first = #"{"type":"user","cwd":"\#(worktreeB)","message":{"role":"user","content":"first"}}"#
+        let second = #"{"type":"user","cwd":"\#(worktreeB)","message":{"role":"user","content":"second"}}"#
+        try (first + "\n" + second + "\n").write(toFile: transcriptB, atomically: true, encoding: .utf8)
+
+        // The Mac's mirror of that conversation, and the card it drives there.
+        let worktreeA = "\(repoA)/.claude/worktrees/fix-bug"
+        let transcriptA = mac.engine.transcriptPath(cwd: worktreeA, sessionId: sessionId)
+        try FileManager.default.createDirectory(atPath: (transcriptA as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        try (first.replacingOccurrences(of: worktreeB, with: worktreeA) + "\n").write(toFile: transcriptA, atomically: true, encoding: .utf8)
+        mac.store.dispatch(.settingsLoaded(projects: [], excludedPaths: [], remote: nil, remoteMode: .ssh, boxd: BoxdSettings(
+            sshMachines: [SshMachine(name: "platform", target: "root@127.0.0.1")])))
+        mac.store.dispatch(.createManualTask(Link(
+            id: "card_ssh", name: "Fix the bug", projectPath: repoA, column: .waiting,
+            sessionLink: SessionLink(sessionId: sessionId, sessionPath: transcriptA),
+            worktreeLink: WorktreeLink(path: worktreeA, branch: "fix-bug"),
+            isRemote: true,
+            remote: RemoteLink(machineName: "platform", remoteProjectPath: repoB, remoteCwd: worktreeB)
+        )))
+        await mac.peerSync.pullAll()
+        await box.peerSync.pullAll()
+        #expect(mac.store.state.peerMachine(named: "platform")?.id == box.identity.id)
+
+        // Its next resume on that machine hands it to the box's master.
+        #expect(mac.engine.resume(cardId: "card_ssh", runRemotely: true, commandOverride: nil))
+        for _ in 0..<100 where mac.store.state.links["card_ssh"]?.ownerMachine != box.identity.id {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(mac.store.state.links["card_ssh"]?.ownerMachine == box.identity.id)
+        #expect(mac.tmux.created.isEmpty)
+
+        await box.peerSync.pullAll()
+        try await box.engine.adopt(cardId: "card_ssh")
+        let adopted = try #require(box.store.state.links["card_ssh"])
+        #expect(adopted.worktreeLink?.path == worktreeB)
+        #expect(adopted.sessionLink?.sessionPath == transcriptB)
+        // Nothing was stashed or replaced.
+        #expect((try? String(contentsOfFile: "\(worktreeB)/notes.txt", encoding: .utf8)) == "written over ssh\n")
+        #expect(BoxdLaunchPlanner.lineCount(ofFileAt: transcriptB) == 2)
+        for _ in 0..<50 where box.tmux.created.isEmpty { try await Task.sleep(for: .milliseconds(50)) }
+        #expect(box.tmux.created.first?.command?.contains("--resume \(sessionId)") == true)
+    }
+
     @Test("a first launch on a peer releases the card and the peer starts it")
     func launchOnPeer() async throws {
         let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("peer-launch-\(UUID().uuidString)")

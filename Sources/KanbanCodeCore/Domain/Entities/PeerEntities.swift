@@ -128,19 +128,24 @@ public struct PeerStatus: Codable, Sendable, Equatable {
     /// Last successful pull.
     public var lastSeen: Date?
     public var lastError: String?
+    /// The peer's Remote Control URL, to tell an ssh machine that is the
+    /// same host.
+    public var url: String?
 
     public init(
         peerId: String,
         machine: MachineIdentity? = nil,
         online: Bool = false,
         lastSeen: Date? = nil,
-        lastError: String? = nil
+        lastError: String? = nil,
+        url: String? = nil
     ) {
         self.peerId = peerId
         self.machine = machine
         self.online = online
         self.lastSeen = lastSeen
         self.lastError = lastError
+        self.url = url
     }
 }
 

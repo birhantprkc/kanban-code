@@ -415,16 +415,15 @@ struct CardActionsMenu: View {
         let owner = card.owner?.id
         let onMachine = card.link.remote != nil && card.link.isRemote
         if owner != nil || onMachine { out.append(("This Mac", "mac")) }
-        var names = Set<String>()
-        for status in state.peerStatuses.values.sorted(by: { ($0.machine?.name ?? "") < ($1.machine?.name ?? "") }) {
-            guard let machine = status.machine, machine.id != owner else { continue }
-            names.insert(machine.name.lowercased())
-            out.append((status.online ? machine.name : "\(machine.name) (offline)", machine.id))
-        }
-        if owner == nil, card.link.sessionLink != nil {
-            for machine in (state.boxdSettings?.sshMachines ?? []) where machine.isComplete && !names.contains(machine.name.lowercased()) {
-                if card.link.remote?.machineName == machine.name, card.link.isRemote { continue }
-                out.append(("\(machine.name) (over ssh)", machine.name))
+        // One entry per machine: a machine that runs a master takes the card
+        // over; an ssh machine without one runs it for this Mac.
+        for choice in state.machineChoices {
+            if let master = choice.master {
+                guard master.id != owner else { continue }
+                out.append((choice.masterOnline ? choice.name : "\(choice.name) (offline)", master.id))
+            } else if owner == nil, card.link.sessionLink != nil, choice.sshMachine != nil {
+                if card.link.remote?.machineName == choice.name, card.link.isRemote { continue }
+                out.append((choice.name, choice.name))
             }
         }
         return out

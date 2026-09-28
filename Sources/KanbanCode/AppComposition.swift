@@ -257,7 +257,8 @@ final class AppComposition {
             mutagen: store.state.globalRemoteSettings,
             boxd: store.state.remoteMode.runsOnMachines ? (store.state.boxdSettings ?? BoxdSettings()) : nil,
             availableMachines: AppServices.boxdMachineNames,
-            boxdAvailable: AppServices.boxdAvailable
+            boxdAvailable: AppServices.boxdAvailable,
+            machines: store.state.machineChoices
         )
     }
 }

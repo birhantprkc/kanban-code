@@ -58,6 +58,29 @@ struct RemoteLaunchOptionsTests {
         #expect(options(mode: .ssh, boxdAvailable: false).canRunRemotely(projectPath: project))
     }
 
+    @Test("Run on lists a machine that runs its own master once, with the master's state")
+    func runTargetsMaster() {
+        let box = MachineIdentity(id: "machine_box", name: "box")
+        let studio = MachineIdentity(id: "machine_studio", name: "studio")
+        var opts = options(mode: .ssh)
+        opts.machines = [
+            MachineChoice(name: "box", master: box, masterOnline: true, sshMachine: SshMachine(name: "box", target: "root@10.0.0.1")),
+            MachineChoice(name: "studio", master: studio, masterOnline: false),
+        ]
+        let targets = RunTargetOption.options(for: opts, reachability: ["box": false])
+        #expect(targets.map(\.label) == ["This Mac", "box (online)", "studio (offline)"])
+        #expect(targets[1].target == .machine(.existing("box")))
+        #expect(targets[1].sshMachine == nil)
+        // The boxd mode offers the masters too, before the boxd machines.
+        var boxd = options(available: ["kanban-repo-1"])
+        boxd.machines = opts.machines
+        #expect(RunTargetOption.options(for: boxd).map(\.label) == [
+            "This Mac", "box (online)", "studio (offline)", "boxd: new machine from snapshot snap", "boxd: kanban-repo-1"])
+        var noCli = options(boxdAvailable: false)
+        noCli.machines = [opts.machines[1]]
+        #expect(noCli.canRunRemotely(projectPath: project))
+    }
+
     @Test("Run on offers this Mac and the boxd machines in the boxd mode")
     func runTargetsBoxd() {
         let targets = RunTargetOption.options(for: options(available: ["kanban-repo-1", "box"]))

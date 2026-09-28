@@ -593,6 +593,23 @@ public final class MasterEngine {
             forwardToOwner(cardId, "resume the card") { client in _ = try await client.resume(cardId: cardId) }
             return false
         }
+        if runRemotely,
+           let name = machineChoice?.machineName ?? (machineChoice == nil ? card.link.remote?.machineName : nil),
+           let peer = peerMachine(named: name) {
+            // The machine runs a master: the card moves there and that
+            // master continues the conversation, also while this one is off.
+            // A card that ran there over ssh moves the same way.
+            KanbanCodeLog.info("resume", "Card=\(cardId.prefix(12)) continues on \(peer.name), handing it over")
+            afterDispatch?()
+            Task {
+                do {
+                    try await handover(cardId: cardId, to: peer.id)
+                } catch {
+                    store.dispatch(.setError("Could not continue on \(peer.name): \(error.localizedDescription)"))
+                }
+            }
+            return true
+        }
         let effectiveModelOverride = modelOverride ?? card.link.modelOverride
         let sessionId = card.link.sessionLink?.sessionId ?? card.link.id
         // For worktree cards, cd into the worktree — that's where Claude stored the session data.

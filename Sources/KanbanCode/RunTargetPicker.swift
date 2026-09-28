@@ -19,6 +19,14 @@ struct RunTargetPicker: View {
         .task(id: remote.sshMachines) {
             await probe()
         }
+        if runRemotely, let name = machineChoice.machineName,
+           remote.masterMachines.contains(where: { $0.name == name }) {
+            Label("\(name) runs Kanban Code itself: the card moves there and keeps going while this Mac is off.",
+                  systemImage: "info.circle")
+                .font(.app(.caption2))
+                .foregroundStyle(.secondary)
+                .padding(.leading, 20)
+        }
     }
 
     private var selection: Binding<RunTarget> {
@@ -39,7 +47,7 @@ struct RunTargetPicker: View {
     private func probe() async {
         guard remote.mode == .ssh else { return }
         await withTaskGroup(of: (String, Bool).self) { group in
-            for machine in remote.sshMachines {
+            for machine in remote.sshMachines where !remote.masterMachines.contains(where: { $0.name == machine.name }) {
                 group.addTask { (machine.name, await SshHostPort.isReachable(target: machine.target)) }
             }
             for await (name, reachable) in group {

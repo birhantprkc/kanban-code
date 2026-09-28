@@ -1333,7 +1333,8 @@ struct ContentView: View {
             // Only a card that has run before has a last run to follow.
             lastRunRemote: link?.sessionLink != nil ? link?.isRemote : nil,
             availableMachines: boxdMachineNames,
-            boxdAvailable: boxdAvailable
+            boxdAvailable: boxdAvailable,
+            machines: store.state.machineChoices
         )
     }
 

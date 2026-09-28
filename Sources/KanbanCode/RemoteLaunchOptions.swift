@@ -19,6 +19,21 @@ struct RemoteLaunchOptions {
     var availableMachines: [String] = []
     /// True when the boxd CLI is installed.
     var boxdAvailable: Bool = true
+    /// The ssh machines and peer masters, one entry per machine
+    /// (`AppState.machineChoices`).
+    var machines: [MachineChoice] = []
+
+    /// Machines that run a master of their own.
+    var masterMachines: [MachineChoice] { machines.filter { $0.master != nil } }
+
+    /// `machines`, plus the complete ssh machines it does not list yet.
+    var allMachines: [MachineChoice] {
+        var out = machines
+        for ssh in sshMachines where !out.contains(where: { $0.name == ssh.name }) {
+            out.append(MachineChoice(name: ssh.name, sshMachine: ssh))
+        }
+        return out
+    }
 
     /// Always-on machines reached over ssh.
     var sshMachines: [SshMachine] {
@@ -29,9 +44,9 @@ struct RemoteLaunchOptions {
     func canRunRemotely(projectPath: String?) -> Bool {
         switch mode {
         case .ssh:
-            return boxd != nil && (!sshMachines.isEmpty || cardMachine != nil)
+            return boxd != nil && (!sshMachines.isEmpty || cardMachine != nil || !masterMachines.isEmpty)
         case .boxd:
-            return boxd != nil && (boxdAvailable || cardMachine != nil)
+            return boxd != nil && (boxdAvailable || cardMachine != nil || !masterMachines.isEmpty)
         case .mutagen:
             guard let mutagen, let projectPath else { return false }
             return projectPath.hasPrefix(mutagen.localPath)
@@ -81,7 +96,8 @@ struct RemoteLaunchOptions {
         let remembered = Self.defaultMachineChoice(projectPath: projectPath)
         let offered = RunTargetOption.options(for: self).map(\.target)
         if offered.contains(.machine(remembered)) { return remembered }
-        if mode == .ssh || !boxdAvailable, let first = sshMachines.first { return .existing(first.name) }
+        if mode == .ssh, let first = allMachines.first { return .existing(first.name) }
+        if !boxdAvailable, let first = sshMachines.first?.name ?? masterMachines.first?.name { return .existing(first) }
         return .newMachine
     }
 
@@ -134,28 +150,40 @@ struct RunTargetOption: Identifiable, Equatable {
         let sshNames = Set(remote.sshMachines.map(\.name))
         switch remote.mode {
         case .ssh:
-            for machine in remote.sshMachines {
+            // One entry per machine: an ssh machine that runs a master of its
+            // own is that master, and a paired master without ssh is listed too.
+            for machine in remote.allMachines {
                 let state: String
-                switch reachability[machine.name] {
-                case .some(true): state = "online"
-                case .some(false): state = "offline"
-                case .none: state = "checking"
+                if machine.master != nil {
+                    state = machine.masterOnline ? "online" : "offline"
+                } else {
+                    switch reachability[machine.name] {
+                    case .some(true): state = "online"
+                    case .some(false): state = "offline"
+                    case .none: state = "checking"
+                    }
                 }
                 options.append(RunTargetOption(
                     target: .machine(.existing(machine.name)),
                     label: "\(machine.name) (\(state))",
-                    sshMachine: machine.name))
+                    sshMachine: machine.master == nil ? machine.sshMachine?.name : nil))
             }
         case .boxd:
+            for machine in remote.masterMachines {
+                options.append(RunTargetOption(
+                    target: .machine(.existing(machine.name)),
+                    label: "\(machine.name) (\(machine.masterOnline ? "online" : "offline"))"))
+            }
             guard remote.boxdAvailable else { break }
-            if let machine = remote.cardMachine, !sshNames.contains(machine) {
+            let masterNames = Set(remote.masterMachines.map(\.name))
+            if let machine = remote.cardMachine, !sshNames.contains(machine), !masterNames.contains(machine) {
                 var label = "boxd: \(machine)"
                 if let state = remote.cardMachineState { label += " (\(state.label))" }
                 options.append(RunTargetOption(target: .machine(.existing(machine)), label: label))
             }
             let snapshot = remote.boxd?.snapshotName ?? BoxdSettings.defaultSnapshotName
             options.append(RunTargetOption(target: .machine(.newMachine), label: "boxd: new machine from snapshot \(snapshot)"))
-            for name in remote.availableMachines where name != remote.cardMachine && !sshNames.contains(name) {
+            for name in remote.availableMachines where name != remote.cardMachine && !sshNames.contains(name) && !masterNames.contains(name) {
                 options.append(RunTargetOption(target: .machine(.existing(name)), label: "boxd: \(name)"))
             }
         case .mutagen:

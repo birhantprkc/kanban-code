@@ -85,31 +85,39 @@ struct BoxdSettingsView: View {
                 .foregroundStyle(.secondary)
             }
             ForEach($sshMachines) { $machine in
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(reachabilityColor(machine))
-                        .frame(width: 8, height: 8)
-                        .help(reachabilityHelp(machine))
-                    TextField("Name", text: $machine.name, prompt: Text("name"))
-                        .labelsHidden()
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 130)
-                    TextField("Ssh target", text: $machine.target, prompt: Text("user@host"))
-                        .labelsHidden()
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(.body, design: .monospaced))
-                    TextField("Repositories", text: $machine.repoRoot, prompt: Text(SshMachine.defaultRepoRoot))
-                        .labelsHidden()
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(.body, design: .monospaced))
-                        .frame(width: 130)
-                    Button {
-                        sshMachines.removeAll { $0.name == machine.name && $0.target == machine.target }
-                        scheduleSave()
-                    } label: {
-                        Image(systemName: "minus.circle")
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(reachabilityColor(machine))
+                            .frame(width: 8, height: 8)
+                            .help(reachabilityHelp(machine))
+                        TextField("Name", text: $machine.name, prompt: Text("name"))
+                            .labelsHidden()
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 130)
+                        TextField("Ssh target", text: $machine.target, prompt: Text("user@host"))
+                            .labelsHidden()
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(.body, design: .monospaced))
+                        TextField("Repositories", text: $machine.repoRoot, prompt: Text(SshMachine.defaultRepoRoot))
+                            .labelsHidden()
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(.body, design: .monospaced))
+                            .frame(width: 130)
+                        Button {
+                            sshMachines.removeAll { $0.name == machine.name && $0.target == machine.target }
+                            scheduleSave()
+                        } label: {
+                            Image(systemName: "minus.circle")
+                        }
+                        .buttonStyle(.borderless)
                     }
-                    .buttonStyle(.borderless)
+                    if let master = master(of: machine) {
+                        Text("Runs Kanban Code (paired in Remote Control > Peers): cards started here are owned by its server and keep going while this Mac is off. \(master.masterOnline ? "Online." : "Offline.")")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(.leading, 16)
+                    }
                 }
             }
             .onChange(of: sshMachines) { scheduleSave() }
@@ -356,8 +364,14 @@ struct BoxdSettingsView: View {
         }
     }
 
+    /// The machine's entry when it runs a paired master.
+    private func master(of machine: SshMachine) -> MachineChoice? {
+        AppComposition.shared.store.state.machineChoices.first { $0.sshMachine == machine && $0.master != nil }
+    }
+
     private func reachabilityColor(_ machine: SshMachine) -> Color {
-        switch sshReachability[machine.name] {
+        if let master = master(of: machine) { return master.masterOnline ? .green : .red }
+        return switch sshReachability[machine.name] {
         case .some(true): .green
         case .some(false): .red
         case .none: .secondary
@@ -365,7 +379,10 @@ struct BoxdSettingsView: View {
     }
 
     private func reachabilityHelp(_ machine: SshMachine) -> String {
-        switch sshReachability[machine.name] {
+        if let master = master(of: machine) {
+            return master.masterOnline ? "Its Kanban Code server answers" : "Its Kanban Code server does not answer"
+        }
+        return switch sshReachability[machine.name] {
         case .some(true): "\(machine.target) answers over ssh"
         case .some(false): "\(machine.target) does not answer over ssh"
         case .none: "Not checked"

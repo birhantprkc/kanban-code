@@ -53,6 +53,10 @@ public struct RemoteHandoverInfo: Codable, Sendable, Equatable {
     /// launches it with, and the worktree to create ("" for a random name).
     public var launchPrompt: String?
     public var launchWorktree: String?
+    /// The folder the conversation ran in when it ran over ssh on the
+    /// adopting master's own machine: the adopter continues there, with
+    /// the worktree and transcript as they are.
+    public var machineCwd: String?
 
     public init(cardId: String, sessionId: String?, assistant: String, projectPath: String?, cwd: String?,
                 repoUrl: String?, branch: String?, worktreeName: String?, patch: String?, transcriptSize: Int) {

@@ -36,15 +36,10 @@ public enum MasterPeerError: Error, LocalizedError, Equatable {
 // MARK: - Peers
 
 extension MasterEngine {
-    /// The peer master `target` names, by machine id or name (any case).
+    /// The peer master `target` names: its machine id, its name, or the
+    /// ssh machine it runs on (any case).
     public func peerMachine(named target: String) -> MachineIdentity? {
-        let wanted = target.trimmingCharacters(in: .whitespaces)
-        let lower = wanted.lowercased()
-        for status in store.state.peerStatuses.values {
-            guard let machine = status.machine else { continue }
-            if machine.id == wanted || machine.name.lowercased() == lower { return machine }
-        }
-        return nil
+        store.state.peerMachine(named: target)
     }
 
     /// Whether `target` names this master.
@@ -304,6 +299,11 @@ extension MasterEngine {
             info.launchPrompt = launch.prompt
             info.launchWorktree = launch.worktree
         }
+        if let remote = link.remote, link.isRemote,
+           let target = store.state.links[cardId]?.ownerMachine,
+           store.state.sshMachine(named: remote.machineName, runningMaster: target) != nil {
+            info.machineCwd = remote.remoteCwd
+        }
         return info
     }
 
@@ -376,7 +376,16 @@ extension MasterEngine {
         let repoRoot = try await localRepository(repoUrl: info.repoUrl, fallback: info.projectPath)
         var cwd = repoRoot
         var worktreeLink: WorktreeLink?
-        if info.sessionId != nil, let name = info.worktreeName, let branch = info.branch {
+        // A card that ran over ssh on this very machine continues in the
+        // folder it ran in, uncommitted work included.
+        let machineCwd = info.machineCwd.flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil }
+        if let machineCwd, info.sessionId != nil {
+            cwd = machineCwd
+            if let branch = info.branch, machineCwd.contains("/.claude/worktrees/") {
+                worktreeLink = WorktreeLink(path: machineCwd, branch: branch)
+            }
+            KanbanCodeLog.info("handover", "Card=\(cardId.prefix(12)) ran on this machine over ssh, continuing in \(machineCwd)")
+        } else if info.sessionId != nil, let name = info.worktreeName, let branch = info.branch {
             worktreeLink = try await Self.checkoutWorktree(repoRoot: repoRoot, name: name, branch: branch)
             cwd = worktreeLink!.path
             if let patch = info.patch, let data = Data(base64Encoded: patch), !data.isEmpty {
@@ -401,7 +410,14 @@ extension MasterEngine {
             var mappings: [PathMapping] = []
             if let old = info.cwd, old != cwd { mappings.append(PathMapping(from: old, to: cwd)) }
             if let old = info.projectPath, old != repoRoot, old != info.cwd { mappings.append(PathMapping(from: old, to: repoRoot)) }
-            try Self.writeTranscript(raw, to: path, rewriter: TranscriptPathRewriter(mappings))
+            let incomingLines = raw.reduce(0) { $1 == 0x0A ? $0 + 1 : $0 }
+            if machineCwd != nil, BoxdLaunchPlanner.lineCount(ofFileAt: path) >= incomingLines {
+                // The session wrote this file here; the releasing master's copy
+                // is a mirror of it.
+                KanbanCodeLog.info("handover", "Transcript \(sessionId.prefix(8)) already here at \(path), kept")
+            } else {
+                try Self.writeTranscript(raw, to: path, rewriter: TranscriptPathRewriter(mappings))
+            }
             sessionLink = SessionLink(sessionId: sessionId, sessionPath: path)
             KanbanCodeLog.info("handover", "Transcript \(sessionId.prefix(8)) copied (\(raw.count) bytes) to \(path)")
         }

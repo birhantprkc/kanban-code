@@ -168,12 +168,13 @@ public actor PeerSync {
                 await dispatch(.peerRepoSlugsLoaded(peer: page.machine.id, slugs: slugs))
             }
             cursors[peer.id] = Cursor(epoch: page.epoch, seq: page.seq)
-            await report(PeerStatus(peerId: peer.id, machine: page.machine, online: true, lastSeen: .now))
+            await report(PeerStatus(peerId: peer.id, machine: page.machine, online: true, lastSeen: .now, url: peer.url))
             return true
         } catch {
             var status = statuses[peer.id] ?? PeerStatus(peerId: peer.id)
             status.online = false
             status.lastError = error.localizedDescription
+            status.url = peer.url
             await report(status)
             return false
         }
@@ -247,6 +248,7 @@ public actor PeerSync {
         let changed = previous?.online != status.online
             || previous?.machine != status.machine
             || previous?.lastError != status.lastError
+            || previous?.url != status.url
         guard changed || stale else { return }
         statusDispatchedAt[status.peerId] = .now
         await dispatch(.peerStatusChanged(status))

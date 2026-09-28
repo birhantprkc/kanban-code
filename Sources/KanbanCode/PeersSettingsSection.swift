@@ -29,6 +29,11 @@ struct PeersSettingsSection: View {
                         Text(detail(peer, status))
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                        if let ssh = sshMachineName(of: status) {
+                            Text("Also the ssh machine \(ssh) in Settings > Remote: one machine, cards run there are owned by this master.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     Spacer()
                     Toggle("", isOn: Binding(
@@ -72,6 +77,13 @@ struct PeersSettingsSection: View {
                 await load()
             }
         }
+    }
+
+    /// The ssh machine that is this peer's host, when there is one.
+    private func sshMachineName(of status: PeerStatus?) -> String? {
+        guard let id = status?.machine?.id else { return nil }
+        return AppComposition.shared.store.state.machineChoices
+            .first { $0.master?.id == id && $0.sshMachine != nil }?.name
     }
 
     private func detail(_ peer: PeerConfig, _ status: PeerStatus?) -> String {
