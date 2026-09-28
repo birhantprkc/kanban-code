@@ -207,7 +207,11 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         }
         if let bridge = machines[machineName]?.bridge {
             for name in sessionNames {
-                _ = try? await bridge.exec(["tmux", "kill-session", "-t", name], stdin: nil, cwd: nil, timeout: 20)
+                if let id = AgtopSessionName.agtopId(fromName: name) {
+                    try? await registry.agtop(for: machineName)?.stop(id: id)
+                } else {
+                    _ = try? await bridge.exec(["tmux", "kill-session", "-t", name], stdin: nil, cwd: nil, timeout: 20)
+                }
                 registry.forgetSession(name, on: machineName)
             }
             if let localTranscript, let remoteCwd {
@@ -590,6 +594,38 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         """
     }
 
+    /// Readies an ssh machine for sessions: its tmux server stops handing
+    /// `NO_COLOR` to new panes (a server started from a shell that had it
+    /// set, such as an agent's, passes it to every session after), and its
+    /// agtop, when it has one, is recorded so cards set to agtop run there.
+    private func prepareSessions(machineName: String, bridge: BoxdBridge, remoteHome: String) async {
+        _ = try? await bridge.exec(["sh", "-c", Self.tmuxColorScript], stdin: nil, cwd: nil, timeout: 20)
+        let found = try? await bridge.exec(["sh", "-c", "command -v agtop"], stdin: nil, cwd: nil, timeout: 20)
+        let path = found?.succeeded == true ? found?.stdout.trimmingCharacters(in: .whitespacesAndNewlines) ?? "" : ""
+        guard !path.isEmpty else {
+            registry.setAgtop(nil, on: machineName)
+            KanbanCodeLog.info(Self.subsystem, "\(machineName): no agtop, cards run on tmux there")
+            return
+        }
+        let agtop = AgtopCliAdapter(remote: bridge, executable: path, scratchDirectory: "\(remoteHome)/.kanban-code/tmp/agtop")
+        registry.setAgtop(agtop, on: machineName)
+        let remoteVersion = await agtop.version()
+        let localVersion = await AgtopCliAdapter().version()
+        KanbanCodeLog.info(Self.subsystem, "\(machineName): agtop at \(path) (\(remoteVersion ?? "?"), here \(localVersion ?? "none"))")
+        if let remoteVersion, let localVersion, remoteVersion != localVersion {
+            KanbanCodeLog.warn(Self.subsystem, "\(machineName) runs \(remoteVersion), this machine \(localVersion): Scripts/agtop-to-machine.sh <ssh target> updates it")
+        }
+    }
+
+    /// Runs before the assistant in a tmux session on a machine: a tmux
+    /// server started with `NO_COLOR` set would otherwise pass it on.
+    public static let sessionPreamble = "unset NO_COLOR"
+
+    /// Shell script for a machine's running tmux server, if any: no
+    /// `NO_COLOR` for new panes, and truecolor for the programs in them.
+    static let tmuxColorScript = "tmux has-session 2>/dev/null || exit 0; "
+        + "tmux set-environment -g -u NO_COLOR 2>/dev/null; tmux set-environment -g COLORTERM truecolor"
+
     /// Environment every assistant process gets on the machine.
     public nonisolated static func sessionEnvironment(cardId: String, remoteHome: String, claudeOAuthToken: String? = nil) -> [String: String] {
         var env = [
@@ -597,6 +633,8 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
             "KANBAN_CARD_ID": cardId,
             "KANBAN_CODE_HOME": "\(remoteHome)/.kanban-code",
             "LANG": "C.UTF-8",
+            // What the terminals that show the session support, as on the Mac.
+            "COLORTERM": "truecolor",
         ]
         // Claude Code refuses --dangerously-skip-permissions for root unless
         // it is told it runs in a sandbox; an ssh machine may log in as root.
@@ -677,8 +715,13 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     /// Whether the tmux session of a card is still alive on its machine.
     public func hasSession(machineName: String, sessionName: String) async -> Bool {
         guard let bridge = machines[machineName]?.bridge else { return false }
-        let result = try? await bridge.exec(["tmux", "has-session", "-t", sessionName], stdin: nil, cwd: nil, timeout: 20)
-        let alive = result?.succeeded == true
+        let alive: Bool
+        if let id = AgtopSessionName.agtopId(fromName: sessionName) {
+            alive = (try? await registry.agtop(for: machineName)?.info(id: id))??.alive == true
+        } else {
+            let result = try? await bridge.exec(["tmux", "has-session", "-t", sessionName], stdin: nil, cwd: nil, timeout: 20)
+            alive = result?.succeeded == true
+        }
         if !alive { registry.forgetSession(sessionName, on: machineName) }
         return alive
     }
@@ -1181,6 +1224,9 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
 
         let transport = BridgeTmuxTransport(runner: bridge, remoteHome: runtime.remoteHome)
         registry.setMachine(machineName, state: .connected, tmux: TmuxAdapter(transport: transport))
+        if host {
+            await prepareSessions(machineName: machineName, bridge: bridge, remoteHome: runtime.remoteHome)
+        }
         setPausedMarkers(machineName: machineName, paused: false)
         await report(machineName, state: .connected)
         KanbanCodeLog.info(Self.subsystem, "\(machineName): connected (agent \(await bridge.agentVersion ?? "?"))")

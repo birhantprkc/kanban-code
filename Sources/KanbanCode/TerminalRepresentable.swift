@@ -873,6 +873,11 @@ final class TerminalCache {
            let peerScript = AppServices.peerAttachScript(machineId: peer.machineId, cardId: peer.cardId, session: sessionName) {
             // Another master runs the card: its terminal streams from there.
             script = peerScript
+        } else if let machine = AppServices.machine(forSession: sessionName),
+                  let agtopId = AgtopSessionName.agtopId(fromName: sessionName),
+                  let target = AppServices.sshTargets[machine] {
+            script = Self.remoteAgtopScript(
+                target: target, id: agtopId, readyMarker: AppServices.remoteReadyMarkerPath(for: sessionName))
         } else if let machine = AppServices.machine(forSession: sessionName) {
             script = Self.remoteAttachScript(
                 boxd: AppServices.boxdPath,
@@ -951,7 +956,7 @@ final class TerminalCache {
                 .map { "\(quote($0.key))) t=\(quote($0.value));;" }
                 .joined(separator: " ")
             let remote = "tmux has-session -t \(quote(session)) 2>/dev/null || exit \(noSessionStatus); "
-                + "exec tmux -u -T hyperlinks attach-session -t \(quote(session))"
+                + "COLORTERM=truecolor exec tmux -u -T hyperlinks attach-session -t \(quote(session))"
             let ssh = "/usr/bin/ssh -tt -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \"$t\" -- \(quote(remote)); r=$?"
             attach = "t=; case \"$m\" in \(cases) esac; if [ -n \"$t\" ]; then \(ssh); else \(boxdAttach); fi; [ $r -eq 0 ] && break"
         }
@@ -1035,6 +1040,22 @@ final class TerminalCache {
             + " && if '\(tmux)' -T hyperlinks -V >/dev/null 2>&1;"
             + " then \(attach("-T hyperlinks ")); else \(attach("")); fi;"
             + " sleep 0.1; done; echo 'Session ended.'"
+    }
+
+    /// The shell command a terminal runs to show an agtop session on an ssh
+    /// machine: `agtop open <id> --solo` there, over `ssh -tt`, which sizes
+    /// the remote pty and follows resizes. It waits for the ready marker of
+    /// the launch first, like `remoteAttachScript`, and opens the view again
+    /// when it is quit or the connection drops. ssh passes TERM on;
+    /// COLORTERM it does not, so it is set on the machine.
+    static func remoteAgtopScript(target: String, id: String, readyMarker: String?) -> String {
+        let quote = { (value: String) in "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+        let remote = "PATH=\"$PATH:/usr/local/bin:$HOME/.local/bin:$HOME/go/bin\" COLORTERM=truecolor AGTOP_COPY_ON_SELECT=0 "
+            + "exec agtop open \(quote(id)) --solo"
+        let ssh = "/usr/bin/ssh -tt -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "
+            + "\(quote(target)) -- \(quote(remote))"
+        let wait = readyMarker.map { "for i in $(seq 1 2400); do [ -e \(quote($0)) ] && break; sleep 0.5; done; " } ?? ""
+        return wait + "while :; do \(ssh); sleep 1; done"
     }
 
     /// The shell command a terminal runs to show an agtop session. The view

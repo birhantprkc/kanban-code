@@ -381,6 +381,17 @@ public enum BoxdLaunchPlanner {
         return count
     }
 
+    /// The folder of this machine that mirrors `remote`, a folder at or
+    /// under `remoteRoot` on the machine, with `localRoot` as the local copy
+    /// of `remoteRoot`. A folder outside `remoteRoot` comes back as is.
+    public static func localPath(ofRemote remote: String, remoteRoot: String, localRoot: String) -> String {
+        let root = trimTrailingSlash(remoteRoot)
+        let path = trimTrailingSlash(remote)
+        if path == root { return trimTrailingSlash(localRoot) }
+        guard path.hasPrefix(root + "/") else { return remote }
+        return trimTrailingSlash(localRoot) + path.dropFirst(root.count)
+    }
+
     // MARK: - Private
 
     private static func trimTrailingSlash(_ path: String) -> String {

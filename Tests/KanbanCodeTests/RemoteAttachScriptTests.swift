@@ -56,9 +56,16 @@ struct RemoteAttachScriptTests {
             boxd: "boxd", machine: nil, session: "claude-1234", readyMarker: "/tmp/marker",
             sshTargets: ["box": "root@10.0.0.1"])
         #expect(script.contains(#"t=; case "$m" in 'box') t='root@10.0.0.1';; esac; if [ -n "$t" ]; then "#))
-        #expect(script.contains(#"/usr/bin/ssh -tt -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$t" -- 'tmux has-session -t '\''claude-1234'\'' 2>/dev/null || exit 9; exec tmux -u -T hyperlinks attach-session -t '\''claude-1234'\'''; r=$?; else KANBAN_MACHINE="$m" /usr/bin/expect -c '"#))
+        #expect(script.contains(#"/usr/bin/ssh -tt -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$t" -- 'tmux has-session -t '\''claude-1234'\'' 2>/dev/null || exit 9; COLORTERM=truecolor exec tmux -u -T hyperlinks attach-session -t '\''claude-1234'\'''; r=$?; else KANBAN_MACHINE="$m" /usr/bin/expect -c '"#))
         // The same statuses drive the loop: 9 uses up a try, 0 ends it.
         #expect(script.contains("fi; [ $r -eq 0 ] && break; if [ -e '/tmp/marker.paused' ]; then continue; fi; if [ $r -eq 9 ]; then n=$((n+1)); sleep 2; else sleep 3; fi; done"))
+    }
+
+    @Test("an agtop session on an ssh machine opens agtop there, in truecolor, after the ready marker")
+    func sshMachineAgtop() {
+        let script = TerminalCache.remoteAgtopScript(target: "root@10.0.0.1", id: "0a1b2c3d", readyMarker: "/tmp/marker")
+        #expect(script.hasPrefix("for i in $(seq 1 2400); do [ -e '/tmp/marker' ] && break; sleep 0.5; done; while :; do "))
+        #expect(script.contains(#"/usr/bin/ssh -tt -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 'root@10.0.0.1' -- 'PATH="$PATH:/usr/local/bin:$HOME/.local/bin:$HOME/go/bin" COLORTERM=truecolor AGTOP_COPY_ON_SELECT=0 exec agtop open '\''0a1b2c3d'\'' --solo'; sleep 1; done"#))
     }
 
     @Test("wheel ticks on a machine become one copy-mode move per flush")

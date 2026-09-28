@@ -605,7 +605,7 @@ private struct ChatMessageList: View {
             let newBusy: Bool
             do {
                 if let agtopId = AgtopSessionName.agtopId(fromName: session) {
-                    newBusy = try await tmux.agtop.info(id: agtopId)?.isBusy ?? false
+                    newBusy = try await tmux.agtop(forSession: session).info(id: agtopId)?.isBusy ?? false
                 } else {
                     let output = try await tmux.capturePane(sessionName: session)
                     newBusy = PaneOutputParser.isWorking(output, assistant: assistant)

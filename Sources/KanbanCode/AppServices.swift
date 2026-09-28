@@ -26,6 +26,13 @@ enum AppServices {
     @MainActor
     static func terminalCommand(forSession sessionName: String) -> [String] {
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        if let machine = machine(forSession: sessionName),
+           let agtopId = AgtopSessionName.agtopId(fromName: sessionName),
+           let target = sshTargets[machine] {
+            let script = TerminalCache.remoteAgtopScript(
+                target: target, id: agtopId, readyMarker: remoteReadyMarkerPath(for: sessionName))
+            return [shell, "-l", "-c", script]
+        }
         if let machine = machine(forSession: sessionName) {
             let script = TerminalCache.remoteAttachScript(
                 boxd: boxdPath,

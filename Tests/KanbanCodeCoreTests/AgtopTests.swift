@@ -196,4 +196,71 @@ struct AgtopTests {
         #expect(calls.contains("ARGS session queue 0a1b2c3d remove 0 --was later"))
         #expect(try await adapter.list().first?.queue == ["later", "and this"])
     }
+
+    // MARK: - agtop on a machine
+
+    @Test("agtop on a machine runs through the bridge, with the prompt on stdin and the images copied over")
+    func remoteAdapter() async throws {
+        let runner = FakeRemoteCommandRunner()
+        runner.script(["/usr/local/bin/agtop", "session", "info", "0a1b2c3d", "--json"], ShellCommand.Result(
+            exitCode: 0, stdout: #"{"id":"0a1b2c3d","sessionId":"s","cwd":"/root/repo","state":"idle","alive":true}"#, stderr: ""))
+        runner.setFallback(ShellCommand.Result(
+            exitCode: 0, stdout: #"{"id":"0a1b2c3d","sessionId":"s","cwd":"/root/repo","state":"starting","alive":true}"#, stderr: ""))
+        let agtop = AgtopCliAdapter(remote: runner, executable: "/usr/local/bin/agtop", scratchDirectory: "/root/.kanban-code/tmp/agtop")
+        #expect(agtop.isAvailable)
+
+        let image = NSTemporaryDirectory() + "kanban-agtop-image-\(UUID().uuidString).png"
+        try Data([1, 2, 3]).write(to: URL(fileURLWithPath: image))
+        defer { try? FileManager.default.removeItem(atPath: image) }
+
+        _ = try await agtop.start(AgtopStartRequest(
+            cwd: "/root/repo", sessionId: "0a1b2c3d-1111-2222-3333-444455556666", resume: true,
+            prompt: "go on", imagePaths: [image]))
+        let start = try #require(runner.execCalls.first)
+        #expect(Array(start.prefix(3)) == ["/usr/local/bin/agtop", "session", "start"])
+        #expect(start.contains("--prompt-file") && start[start.firstIndex(of: "--prompt-file")! + 1] == "-")
+        #expect(runner.execStdins.first == "go on")
+        let copied = try #require(runner.files.keys.first)
+        #expect(copied.hasPrefix("/root/.kanban-code/tmp/agtop/") && copied.hasSuffix("/1.png"))
+        #expect(start[start.firstIndex(of: "--image")! + 1] == copied)
+
+        try await agtop.send(id: "0a1b2c3d", text: "hello", imagePaths: ["/root/already-there.png"])
+        #expect(runner.execCalls.last == ["/usr/local/bin/agtop", "session", "send", "0a1b2c3d", "--image", "/root/already-there.png"])
+        #expect(runner.execStdins.last == "hello")
+        #expect(try await agtop.info(id: "0a1b2c3d")?.alive == true)
+    }
+
+    @Test("An agtop name on a machine routes to that machine's agtop, and only its own hosts are listed")
+    func remoteRouting() async throws {
+        let runner = FakeRemoteCommandRunner()
+        runner.script(["/usr/local/bin/agtop", "session", "list", "--json"], ShellCommand.Result(exitCode: 0, stdout: """
+            [{"id":"0a1b2c3d","sessionId":"s1","cwd":"/root/repo","state":"working","alive":true,"queue":["next"]},
+             {"id":"feedbeef","sessionId":"s2","cwd":"/root/other","state":"idle","alive":true}]
+            """, stderr: ""))
+        let registry = RemoteSessionRegistry()
+        let router = RoutingTmuxAdapter(
+            local: TmuxAdapter(transport: FakeTmuxTransport(label: "local")),
+            registry: registry,
+            agtop: AgtopCliAdapter(executable: "/nonexistent/agtop"))
+        registry.assign(sessionName: "agtop-0a1b2c3d", to: "box")
+        registry.setMachine("box", state: .connected, tmux: TmuxAdapter(transport: FakeTmuxTransport(label: "box")))
+        registry.setAgtop(AgtopCliAdapter(remote: runner, executable: "/usr/local/bin/agtop", scratchDirectory: "/tmp/a"), on: "box")
+
+        try await router.sendPrompt(to: "agtop-0a1b2c3d", text: "hi")
+        #expect(runner.execCalls.last == ["/usr/local/bin/agtop", "session", "send", "0a1b2c3d"])
+
+        let sessions = try await router.listSessions()
+        #expect(sessions.contains { $0.name == "agtop-0a1b2c3d" && $0.agtopQueue == ["next"] })
+        // Another master's host on the same machine is not this one's.
+        #expect(!sessions.contains { $0.name == "agtop-feedbeef" })
+
+        try await router.killSession(name: "agtop-0a1b2c3d")
+        #expect(runner.execCalls.last == ["/usr/local/bin/agtop", "session", "stop", "0a1b2c3d"])
+        #expect(registry.machine(forSession: "agtop-0a1b2c3d") == nil)
+
+        // A machine that is not connected refuses instead of falling back here.
+        registry.assign(sessionName: "agtop-0a1b2c3d", to: "box")
+        registry.disconnectMachine("box", state: .unreachable)
+        #expect(throws: RemoteMachineUnavailable.self) { try router.agtop(forSession: "agtop-0a1b2c3d") }
+    }
 }

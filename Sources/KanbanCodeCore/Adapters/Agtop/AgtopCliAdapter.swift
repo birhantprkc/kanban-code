@@ -89,24 +89,40 @@ public struct AgtopCommandFailed: Error, LocalizedError {
     public var errorDescription: String? { "agtop \(arguments.first ?? "") failed: \(message)" }
 }
 
-/// Drives agtop hosts through the `agtop session` CLI.
+/// Drives agtop hosts through the `agtop session` CLI, on this machine or,
+/// through a bridge, on a machine that runs cards for this one.
 public final class AgtopCliAdapter: @unchecked Sendable {
     /// Path of the agtop binary, or nil to look it up on every call.
     private let executable: String?
     private let scratchDirectory: String
+    /// The machine the hosts run on, nil for this one.
+    private let remote: (any RemoteCommandRunner)?
 
     public init(executable: String? = nil, scratchDirectory: String? = nil) {
         self.executable = executable
         self.scratchDirectory = scratchDirectory
             ?? (NSHomeDirectory() as NSString).appendingPathComponent(".kanban-code/tmp/agtop")
+        self.remote = nil
     }
+
+    /// agtop on another machine: every command goes through `runner`, and
+    /// image files of this machine are copied into `scratchDirectory` there
+    /// before agtop gets their paths.
+    public init(remote runner: any RemoteCommandRunner, executable: String, scratchDirectory: String) {
+        self.executable = executable
+        self.scratchDirectory = scratchDirectory
+        self.remote = runner
+    }
+
+    public var isRemote: Bool { remote != nil }
 
     public static func findExecutable() -> String? {
         ShellCommand.findExecutable("agtop")
     }
 
     public var isAvailable: Bool {
-        resolvedExecutable().map(FileManager.default.isExecutableFile(atPath:)) ?? false
+        if remote != nil { return true }
+        return resolvedExecutable().map(FileManager.default.isExecutableFile(atPath:)) ?? false
     }
 
     private func resolvedExecutable() -> String? {
@@ -114,7 +130,7 @@ public final class AgtopCliAdapter: @unchecked Sendable {
     }
 
     /// Arguments for `agtop session start`, the prompt already written to
-    /// `promptFile`.
+    /// `promptFile` (`-` for stdin).
     public static func startArguments(_ request: AgtopStartRequest, promptFile: String?) -> [String] {
         var args = ["session", "start", "--cwd", request.cwd, "--session-id", request.sessionId]
         if request.resume { args.append("--resume") }
@@ -132,27 +148,25 @@ public final class AgtopCliAdapter: @unchecked Sendable {
 
     @discardableResult
     public func start(_ request: AgtopStartRequest) async throws -> AgtopSessionInfo {
-        var promptFile: String?
-        if let prompt = request.prompt, !prompt.isEmpty {
-            promptFile = try writeScratch(prompt)
+        var request = request
+        request.imagePaths = try await machinePaths(of: request.imagePaths)
+        let prompt = request.prompt.flatMap { $0.isEmpty ? nil : $0 }
+        let args = Self.startArguments(request, promptFile: prompt == nil ? nil : "-")
+        let result = try await exec(args, stdin: prompt, timeout: 60)
+        guard result.succeeded else {
+            throw AgtopCommandFailed(arguments: Array(args.dropFirst()), message: Self.errorMessage(result))
         }
-        defer { if let promptFile { try? FileManager.default.removeItem(atPath: promptFile) } }
-        let result = try await run(Self.startArguments(request, promptFile: promptFile), timeout: 60)
-        return try JSONDecoder().decode(AgtopSessionInfo.self, from: Data(result.utf8))
+        return try JSONDecoder().decode(AgtopSessionInfo.self, from: Data(result.stdout.utf8))
     }
 
     /// Sends a message. A busy session queues it; `now` delivers it mid-turn,
     /// for Claude to read at its next step. Images always go at once. A
     /// stopped host is started again with `--resume`.
     public func send(id: String, text: String, imagePaths: [String] = [], now: Bool = false) async throws {
-        let file = try writeScratch(text)
-        defer { try? FileManager.default.removeItem(atPath: file) }
-        guard let bin = resolvedExecutable() else { throw Self.notInstalled }
         var args = ["session", "send", id]
         if now { args.append("--now") }
-        for path in imagePaths { args += ["--image", path] }
-        let command = ([bin] + args).map(Self.shellQuote).joined(separator: " ") + " < " + Self.shellQuote(file)
-        let result = try await ShellCommand.run("/bin/sh", arguments: ["-c", command], timeout: 60)
+        for path in try await machinePaths(of: imagePaths) { args += ["--image", path] }
+        let result = try await exec(args, stdin: text, timeout: 60)
         guard result.succeeded else {
             throw AgtopCommandFailed(arguments: args, message: Self.errorMessage(result))
         }
@@ -179,8 +193,7 @@ public final class AgtopCliAdapter: @unchecked Sendable {
 
     /// The host, or nil when agtop has no session with that id.
     public func info(id: String) async throws -> AgtopSessionInfo? {
-        guard let bin = resolvedExecutable() else { throw Self.notInstalled }
-        let result = try await ShellCommand.run(bin, arguments: ["session", "info", id, "--json"], timeout: 15)
+        let result = try await exec(["session", "info", id, "--json"], stdin: nil, timeout: 15)
         if !result.succeeded {
             if result.stdout.contains("not found") || result.stderr.contains("not found") { return nil }
             throw AgtopCommandFailed(arguments: ["info", id], message: Self.errorMessage(result))
@@ -196,6 +209,13 @@ public final class AgtopCliAdapter: @unchecked Sendable {
         return try JSONDecoder().decode([AgtopSessionInfo].self, from: Data(trimmed.utf8))
     }
 
+    /// `agtop --version`, such as `agtop ce96836 (Sep 28)`.
+    public func version() async -> String? {
+        guard let result = try? await exec(["--version"], stdin: nil, timeout: 15), result.succeeded else { return nil }
+        let line = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return line.isEmpty ? nil : line
+    }
+
     // MARK: - Helpers
 
     public static let notInstalled = AgtopCommandFailed(
@@ -204,12 +224,47 @@ public final class AgtopCliAdapter: @unchecked Sendable {
     )
 
     private func run(_ args: [String], timeout: TimeInterval) async throws -> String {
-        guard let bin = resolvedExecutable() else { throw Self.notInstalled }
-        let result = try await ShellCommand.run(bin, arguments: args, timeout: timeout)
+        let result = try await exec(args, stdin: nil, timeout: timeout)
         guard result.succeeded else {
             throw AgtopCommandFailed(arguments: Array(args.dropFirst()), message: Self.errorMessage(result))
         }
         return result.stdout
+    }
+
+    /// Runs agtop with `args`, here or on the machine. Text for stdin goes
+    /// through a scratch file here, so a long prompt never fills a pipe.
+    private func exec(_ args: [String], stdin: String?, timeout: TimeInterval) async throws -> ShellCommand.Result {
+        guard let bin = resolvedExecutable() else { throw Self.notInstalled }
+        if let remote {
+            return try await remote.exec([bin] + args, stdin: stdin, cwd: nil, timeout: timeout)
+        }
+        guard let stdin else {
+            return try await ShellCommand.run(bin, arguments: args, timeout: timeout)
+        }
+        let file = try writeScratch(stdin)
+        defer { try? FileManager.default.removeItem(atPath: file) }
+        let command = ([bin] + args).map(Self.shellQuote).joined(separator: " ") + " < " + Self.shellQuote(file)
+        return try await ShellCommand.run("/bin/sh", arguments: ["-c", command], timeout: timeout)
+    }
+
+    /// Paths agtop can open: the same paths here, and on a machine a copy of
+    /// each file of this machine (a path that is not a file here is taken
+    /// as one on the machine already).
+    private func machinePaths(of paths: [String]) async throws -> [String] {
+        guard let remote, !paths.isEmpty else { return paths }
+        let folder = "\(scratchDirectory)/\(UUID().uuidString.lowercased().prefix(8))"
+        var result: [String] = []
+        for (index, path) in paths.enumerated() {
+            guard let data = FileManager.default.contents(atPath: path) else {
+                result.append(path)
+                continue
+            }
+            let ext = (path as NSString).pathExtension
+            let target = "\(folder)/\(index + 1).\(ext.isEmpty ? "png" : ext)"
+            try await remote.put(path: target, data: data, mode: nil)
+            result.append(target)
+        }
+        return result
     }
 
     private func writeScratch(_ text: String) throws -> String {

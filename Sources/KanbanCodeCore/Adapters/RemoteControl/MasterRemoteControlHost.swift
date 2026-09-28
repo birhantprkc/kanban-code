@@ -12,8 +12,9 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
     private let sendEscape: @Sendable (String) async throws -> Void
     /// Runs tmux commands on the server that holds the session.
     private let runTmux: @Sendable ([[String]], String) async -> Void
-    /// agtop cards queue and send through agtop itself.
-    private let agtop: AgtopCliAdapter
+    /// agtop cards queue and send through agtop itself: the agtop of the
+    /// machine that hosts the session.
+    private let agtopFor: @Sendable (String) throws -> AgtopCliAdapter
     private let queueWatch = QueueWatchFlag()
 
     @MainActor
@@ -24,7 +25,11 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
         self.engine = engine
         self.store = engine.store
         let tmux = engine.tmux
-        self.agtop = agtop ?? tmux.agtop
+        if let agtop {
+            self.agtopFor = { _ in agtop }
+        } else {
+            self.agtopFor = { session in try tmux.agtop(forSession: session) }
+        }
         self.runTmux = runTmux ?? { commands, session in
             guard let adapter = try? tmux.adapter(for: session) else { return }
             for command in commands {
@@ -166,7 +171,7 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
             // agtop queues a message sent mid-turn itself, and `now` hands it
             // to Claude mid-turn; the card's own queue is not used. agtop
             // puts each image right after its [Image #N] marker.
-            try await agtop.send(id: agtopId, text: request.text, imagePaths: imagePaths, now: mode == .now)
+            try await agtopFor(session).send(id: agtopId, text: request.text, imagePaths: imagePaths, now: mode == .now)
             await readAgtopQueue(session: session, agtopId: agtopId)
             return
         }
@@ -229,7 +234,7 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
             try await agtopQueueAction(cardId: cardId, promptId: promptId, send: false)
             let session = try await MainActor.run { try liveSession(cardId).session }
             guard let agtopId = AgtopSessionName.agtopId(fromName: session) else { return }
-            try await agtop.send(id: agtopId, text: text)
+            try await agtopFor(session).send(id: agtopId, text: text)
             await readAgtopQueue(session: session, agtopId: agtopId)
             return
         }
@@ -286,7 +291,7 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
         // The queue as the phone saw it may be older than agtop's.
         var current = queue
         if RemoteBoardMapper.agtopQueueIndex(of: promptId, in: current) == nil,
-           let info = try? await agtop.info(id: agtopId) {
+           let info = try? await agtopFor(session).info(id: agtopId) {
             current = info.queue
         }
         guard let index = RemoteBoardMapper.agtopQueueIndex(of: promptId, in: current) else {
@@ -295,9 +300,9 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
         }
         do {
             if send {
-                try await agtop.sendQueued(id: agtopId, index: index, was: current[index])
+                try await agtopFor(session).sendQueued(id: agtopId, index: index, was: current[index])
             } else {
-                try await agtop.removeQueued(id: agtopId, index: index, was: current[index])
+                try await agtopFor(session).removeQueued(id: agtopId, index: index, was: current[index])
             }
         } catch let error as AgtopCommandFailed where error.message.contains("already been sent") {
             await readAgtopQueue(session: session, agtopId: agtopId)
@@ -309,7 +314,7 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
     /// Reads one agtop host's queue into the store, then keeps watching
     /// while any host has something queued.
     private func readAgtopQueue(session: String, agtopId: String) async {
-        guard let info = try? await agtop.info(id: agtopId) else { return }
+        guard let info = try? await agtopFor(session).info(id: agtopId) else { return }
         await MainActor.run { store.dispatch(.agtopQueueRead(sessionName: session, queue: info.queue)) }
         await watchAgtopQueues()
     }
@@ -328,7 +333,7 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
                 try? await Task.sleep(for: .seconds(2))
                 for session in sessions {
                     guard let id = AgtopSessionName.agtopId(fromName: session) else { continue }
-                    let queue = (try? await self.agtop.info(id: id))?.queue ?? []
+                    let queue = (try? await self.agtopFor(session).info(id: id))?.queue ?? []
                     await MainActor.run { self.store.dispatch(.agtopQueueRead(sessionName: session, queue: queue)) }
                 }
             }

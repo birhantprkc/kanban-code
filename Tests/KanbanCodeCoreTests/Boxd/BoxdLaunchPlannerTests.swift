@@ -384,4 +384,11 @@ struct BoxdLaunchPlannerTests {
             #expect(sh.terminationStatus == 0, "sh -n failed for \(path)")
         }
     }
+
+    @Test("A folder on the machine maps to its mirror here")
+    func localPathOfRemote() {
+        #expect(BoxdLaunchPlanner.localPath(ofRemote: "/root/Projects/app", remoteRoot: "/root/Projects/app", localRoot: "/Users/me/app") == "/Users/me/app")
+        #expect(BoxdLaunchPlanner.localPath(ofRemote: "/root/Projects/app/.claude/worktrees/x", remoteRoot: "/root/Projects/app/", localRoot: "/Users/me/app") == "/Users/me/app/.claude/worktrees/x")
+        #expect(BoxdLaunchPlanner.localPath(ofRemote: "/root/Projects/apple", remoteRoot: "/root/Projects/app", localRoot: "/Users/me/app") == "/root/Projects/apple")
+    }
 }

@@ -16,6 +16,7 @@ private func withLock<T>(_ lock: NSLock, _ body: () -> T) -> T {
 final class FakeRemoteCommandRunner: RemoteCommandRunner, @unchecked Sendable {
     private let lock = NSLock()
     private var _execCalls: [[String]] = []
+    private var _execStdins: [String?] = []
     private var _files: [String: Data] = [:]
     private var _fileModes: [String: Int?] = [:]
     private var _removed: [String] = []
@@ -28,6 +29,8 @@ final class FakeRemoteCommandRunner: RemoteCommandRunner, @unchecked Sendable {
     }
 
     var execCalls: [[String]] { withLock(lock) { _execCalls } }
+    /// What each exec got on stdin, in the order of `execCalls`.
+    var execStdins: [String?] { withLock(lock) { _execStdins } }
     var files: [String: Data] { withLock(lock) { _files } }
     var removedPaths: [String] { withLock(lock) { _removed } }
 
@@ -52,6 +55,7 @@ final class FakeRemoteCommandRunner: RemoteCommandRunner, @unchecked Sendable {
     func exec(_ argv: [String], stdin: String?, cwd: String?, timeout: TimeInterval) async throws -> ShellCommand.Result {
         withLock(lock) {
             _execCalls.append(argv)
+            _execStdins.append(stdin)
             return _table[key(argv)] ?? _fallback
         }
     }

@@ -36,6 +36,19 @@ public final class RoutingTmuxAdapter: TmuxManagerPort, @unchecked Sendable {
         return remote
     }
 
+    /// The agtop that hosts an `agtop-<id>` session: the one of its machine
+    /// when the registry maps the name to one, the local one otherwise.
+    public func agtop(forSession sessionName: String) throws -> AgtopCliAdapter {
+        guard let machine = registry.machine(forSession: sessionName) else { return agtop }
+        guard registry.state(of: machine)?.isConnected == true, let remote = registry.agtop(for: machine) else {
+            throw RemoteMachineUnavailable(
+                machineName: machine,
+                state: registry.state(of: machine) ?? .unreachable
+            )
+        }
+        return remote
+    }
+
     public func isRemote(_ sessionName: String) -> Bool {
         registry.machine(forSession: sessionName) != nil
     }
@@ -56,7 +69,18 @@ public final class RoutingTmuxAdapter: TmuxManagerPort, @unchecked Sendable {
         for machine in registry.machineNames {
             let sessions: [TmuxSession]
             if let remote = registry.tmux(for: machine), registry.state(of: machine)?.isConnected == true,
-               let live = try? await remote.listSessions() {
+               var live = try? await remote.listSessions() {
+                // Only the hosts this master started there: another master
+                // on the same machine runs its own.
+                if let remoteAgtop = registry.agtop(for: machine), let hosts = try? await remoteAgtop.list() {
+                    let ours = registry.sessionNames(on: machine)
+                    for host in hosts where host.alive {
+                        let name = AgtopSessionName.name(agtopId: host.id)
+                        if ours.contains(name) {
+                            live.append(TmuxSession(name: name, path: host.cwd, agtopQueue: host.queue))
+                        }
+                    }
+                }
                 registry.recordSessions(live, on: machine)
                 sessions = live
             } else {
@@ -78,19 +102,23 @@ public final class RoutingTmuxAdapter: TmuxManagerPort, @unchecked Sendable {
     }
 
     public func killSession(name: String) async throws {
-        if let id = AgtopSessionName.agtopId(fromName: name) { return try await agtop.stop(id: id) }
+        if let id = AgtopSessionName.agtopId(fromName: name) {
+            try await agtop(forSession: name).stop(id: id)
+            registry.unassign(sessionName: name)
+            return
+        }
         let target = try adapter(for: name)
         try await target.killSession(name: name)
         registry.unassign(sessionName: name)
     }
 
     public func sendInterrupt(sessionName: String) async throws {
-        if let id = AgtopSessionName.agtopId(fromName: sessionName) { return try await agtop.interrupt(id: id) }
+        if let id = AgtopSessionName.agtopId(fromName: sessionName) { return try await agtop(forSession: sessionName).interrupt(id: id) }
         try await adapter(for: sessionName).sendInterrupt(sessionName: sessionName)
     }
 
     public func sendEscape(sessionName: String) async throws {
-        if let id = AgtopSessionName.agtopId(fromName: sessionName) { return try await agtop.interrupt(id: id) }
+        if let id = AgtopSessionName.agtopId(fromName: sessionName) { return try await agtop(forSession: sessionName).interrupt(id: id) }
         try await adapter(for: sessionName).sendEscape(sessionName: sessionName)
     }
 
@@ -99,30 +127,30 @@ public final class RoutingTmuxAdapter: TmuxManagerPort, @unchecked Sendable {
     }
 
     public func sendPrompt(to sessionName: String, text: String) async throws {
-        if let id = AgtopSessionName.agtopId(fromName: sessionName) { return try await agtop.send(id: id, text: text) }
+        if let id = AgtopSessionName.agtopId(fromName: sessionName) { return try await agtop(forSession: sessionName).send(id: id, text: text) }
         try await adapter(for: sessionName).sendPrompt(to: sessionName, text: text)
     }
 
     public func pastePrompt(to sessionName: String, text: String) async throws {
-        if let id = AgtopSessionName.agtopId(fromName: sessionName) { return try await agtop.send(id: id, text: text) }
+        if let id = AgtopSessionName.agtopId(fromName: sessionName) { return try await agtop(forSession: sessionName).send(id: id, text: text) }
         try await adapter(for: sessionName).pastePrompt(to: sessionName, text: text)
     }
 
     public func pastePrompt(to sessionName: String, text: String, abortIf: PromptAbortCheck?) async throws {
-        if let id = AgtopSessionName.agtopId(fromName: sessionName) { return try await agtop.send(id: id, text: text) }
+        if let id = AgtopSessionName.agtopId(fromName: sessionName) { return try await agtop(forSession: sessionName).send(id: id, text: text) }
         try await adapter(for: sessionName).pastePrompt(to: sessionName, text: text, abortIf: abortIf)
     }
 
     public func interruptPrompt(to sessionName: String, text: String) async throws {
         if let id = AgtopSessionName.agtopId(fromName: sessionName) {
-            return try await agtop.send(id: id, text: text, now: true)
+            return try await agtop(forSession: sessionName).send(id: id, text: text, now: true)
         }
         try await adapter(for: sessionName).interruptPrompt(to: sessionName, text: text)
     }
 
     public func interruptPrompt(to sessionName: String, text: String, abortIf: PromptAbortCheck?) async throws {
         if let id = AgtopSessionName.agtopId(fromName: sessionName) {
-            return try await agtop.send(id: id, text: text, now: true)
+            return try await agtop(forSession: sessionName).send(id: id, text: text, now: true)
         }
         try await adapter(for: sessionName).interruptPrompt(to: sessionName, text: text, abortIf: abortIf)
     }
@@ -136,7 +164,7 @@ public final class RoutingTmuxAdapter: TmuxManagerPort, @unchecked Sendable {
     /// agtop has no composer to type into from outside, so pasted text is
     /// sent as a message.
     public func pasteText(to sessionName: String, text: String) async throws {
-        if let id = AgtopSessionName.agtopId(fromName: sessionName) { return try await agtop.send(id: id, text: text) }
+        if let id = AgtopSessionName.agtopId(fromName: sessionName) { return try await agtop(forSession: sessionName).send(id: id, text: text) }
         try await adapter(for: sessionName).pasteText(to: sessionName, text: text)
     }
 

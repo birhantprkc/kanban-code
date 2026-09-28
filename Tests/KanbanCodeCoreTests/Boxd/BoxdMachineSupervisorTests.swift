@@ -319,6 +319,7 @@ struct BoxdMachineSupervisorTests {
             "KANBAN_CARD_ID": "card_1",
             "KANBAN_CODE_HOME": "/home/boxd/.kanban-code",
             "LANG": "C.UTF-8",
+            "COLORTERM": "truecolor",
         ])
     }
 
