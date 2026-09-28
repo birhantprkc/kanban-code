@@ -47,6 +47,7 @@ import {
   enqueueForeignPrompt,
   isForeignCard,
   machineLabel,
+  readChannelsHome,
   readLocalMachine,
 } from "./machines.js";
 import { registerRemoteCommands } from "./remote-client.js";
@@ -1658,15 +1659,7 @@ subagentCmd
       const links = readLinks();
       const caller = currentCardOrThrow(links);
       const target = requireSubagentTarget(caller, query, links);
-      const result = sendDirectMessage(
-        cardParticipant(caller),
-        cardParticipant(target),
-        await readMessageFromArgsOrStdin(message),
-        links,
-        undefined,
-        { liveSessionProbe: (session) => liveTmuxSet().has(session) }
-      );
-      if (!result.delivered) throw new Error(result.error ?? "message was not delivered");
+      await deliverCardDirectMessage(caller, target, await readMessageFromArgsOrStdin(message), links);
       console.log(`DM delivered to ${target.id}`);
     } catch (error) {
       console.error(String(error instanceof Error ? error.message : error));
@@ -1682,16 +1675,49 @@ async function sendToParent(messageArgs: string[]): Promise<{ child: Link; paren
   if (!parent) throw new Error(`Parent card ${child.parentCardId} no longer exists.`);
   const body = await readMessageFromArgsOrStdin(messageArgs);
   if (!body.trim()) throw new Error("A parent message is required.");
+  await deliverCardDirectMessage(child, parent, body, links);
+  return { child, parent, body };
+}
+
+/**
+ * A DM between two cards. Paired with a channels home, the DM log lives there,
+ * so the message is sent as the equivalent `kanban dm send` on the home; the
+ * local copy of the channels is read-only.
+ */
+async function deliverCardDirectMessage(from: Link, to: Link, body: string, links: Link[]): Promise<void> {
+  const sender = cardParticipant(from);
+  const recipient = cardParticipant(to);
+  if (readChannelsHome() && !process.env.KANBAN_CHANNELS_LOCAL) {
+    let errorText = "";
+    const outcome = await runOnChannelsHome(
+      [
+        "dm", "send", recipient.handle,
+        "--to-card-id", to.id,
+        "--as", sender.handle,
+        "--as-card-id", from.id,
+        "--", body,
+      ],
+      {
+        humanHandle: humanHandle(),
+        cardId: from.id,
+        write: () => {},
+        writeError: (text) => { errorText += text; },
+      }
+    );
+    if (outcome === 0) return;
+    if (outcome !== "local") {
+      throw new Error(errorText.trim().replace(/^Error: /, "") || "message was not delivered");
+    }
+  }
   const result = sendDirectMessage(
-    cardParticipant(child),
-    cardParticipant(parent),
+    sender,
+    recipient,
     body,
     links,
     undefined,
     { liveSessionProbe: (session) => liveTmuxSet().has(session) }
   );
   if (!result.delivered) throw new Error(result.error ?? "message was not delivered");
-  return { child, parent, body };
 }
 
 const parentCmd = program
@@ -2136,6 +2162,7 @@ dmCmd
   .description("Send a DM (default action)")
   .argument("<handle>", "Target handle (with or without @)")
   .argument("<message...>", "Message body")
+  .option("--to-card-id <id>", "Recipient card id, for a card that is in no channel yet")
   .option("--as <handle>", "Act as this handle")
     .option("--as-card-id <id>", "Explicit card id for the --as handle (testing + overrides)")
   .option("--as-user", "Act as the human user")
@@ -2149,9 +2176,11 @@ dmCmd
   .action((handle: string, message: string[], opts) => {
     try {
       const caller = resolveCaller(opts, undefined);
-      const target = findCardByHandle(handle);
+      const target = opts.toCardId
+        ? readLinks().find((link) => link.id === opts.toCardId)
+        : findCardByHandle(handle);
       if (!target) {
-        console.error(`Unknown handle "${handle}"`);
+        console.error(opts.toCardId ? `Card not found: ${opts.toCardId}` : `Unknown handle "${handle}"`);
         process.exit(1);
       }
       const body = message.join(" ");

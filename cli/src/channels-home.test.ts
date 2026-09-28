@@ -369,4 +369,87 @@ describe("CLI", () => {
       clearInterval(master);
     }
   });
+
+  test("subagent and parent DMs on a paired machine are sent on the home", async () => {
+    const target = await startHome();
+    const kanbanHome = join(home, ".kanban-code");
+    mkdirSync(kanbanHome, { recursive: true });
+    writeFileSync(join(kanbanHome, "channels-home.json"), JSON.stringify(target));
+    writeFileSync(
+      join(kanbanHome, "links.json"),
+      JSON.stringify({
+        links: [
+          { ...link("card_parent"), name: "lead" },
+          { ...link("card_child"), name: "worker", parentCardId: "card_parent" },
+        ],
+      })
+    );
+    const result = await cli(["parent", "dm", "--", "-done", "here"], cliEnv({ KANBAN_CARD_ID: "card_child" }));
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, "DM delivered to parent card_parent\n");
+    assert.deepEqual(received[0].body.argv, [
+      "dm", "send", "lead",
+      "--to-card-id", "card_parent",
+      "--as", "worker",
+      "--as-card-id", "card_child",
+      "--", "-done here",
+    ]);
+    assert.equal(received[0].body.env.KANBAN_CARD_ID, "card_child");
+    assert.equal(existsSync(join(home, ".kanban-code", "channels", "dm")), false, "the local mirror is not written");
+
+    reply = () => ({ status: 200, body: JSON.stringify({ stdout: "", stderr: "", code: 2 }) });
+    const refused = await cli(
+      ["subagent", "dm", "card_child", "check", "this"],
+      cliEnv({ KANBAN_CARD_ID: "card_parent" })
+    );
+    assert.equal(refused.code, 1);
+    assert.match(refused.stderr, /message was not delivered/);
+    assert.deepEqual(received[1].body.argv.slice(0, 9), [
+      "dm", "send", "worker", "--to-card-id", "card_child", "--as", "lead", "--as-card-id", "card_parent",
+    ]);
+  });
+
+  test("a DM to a card that is in no channel resolves it by --to-card-id", async () => {
+    const kanbanHome = join(home, ".kanban-code");
+    mkdirSync(kanbanHome, { recursive: true });
+    writeFileSync(join(kanbanHome, "links.json"), JSON.stringify({ links: [{ ...link("card_lead"), name: "lead" }] }));
+    const result = await cli(
+      ["dm", "send", "lead", "--to-card-id", "card_lead", "--as", "worker", "--as-card-id", "card_w", "--json", "--", "hi"],
+      cliEnv({ KANBAN_CHANNELS_LOCAL: "1" })
+    );
+    const out = JSON.parse(result.stdout);
+    assert.deepEqual(out.msg.to, { cardId: "card_lead", handle: "lead" });
+    assert.deepEqual(out.msg.from, { cardId: "card_w", handle: "worker" });
+    assert.equal(out.msg.body, "hi");
+  });
+
+  test("message bodies after -- are parsed as the body, flags included", async () => {
+    const env = cliEnv({ KANBAN_CHANNELS_LOCAL: "1", KANBAN_HUMAN_HANDLE: "rchaves" });
+    const image = join(home, "shot.png");
+    writeFileSync(image, "png");
+    mkdirSync(join(home, ".kanban-code"), { recursive: true });
+    writeFileSync(join(home, ".kanban-code", "links.json"), JSON.stringify({ links: [link("card_bob")] }));
+    assert.equal((await cli(["channel", "create", "team", "--as-user"], env)).code, 0);
+    assert.equal((await cli(["channel", "join", "team", "--as", "bob", "--as-card-id", "card_bob"], env)).code, 0);
+
+    const sent = await cli(
+      ["channel", "send", "team", "--as-user", "--image", image, "--json", "--", "-x", "--as", "body"],
+      env
+    );
+    assert.equal(sent.code, 0, sent.stderr);
+    const channelMessage = JSON.parse(sent.stdout).msg;
+    assert.equal(channelMessage.body, "-x --as body");
+    assert.equal(channelMessage.from.handle, "rchaves");
+    assert.equal(channelMessage.imagePaths.length, 1);
+
+    for (const args of [
+      ["dm", "send", "bob", "--as-user", "--json", "--", "--json", "hello"],
+      ["dm", "bob", "--as-user", "--json", "--", "--json", "hello"],
+    ]) {
+      const dm = await cli(args, env);
+      const directMessage = JSON.parse(dm.stdout).msg;
+      assert.equal(directMessage.body, "--json hello", args.join(" "));
+      assert.deepEqual(directMessage.to, { cardId: "card_bob", handle: "bob" });
+    }
+  });
 });
