@@ -13,14 +13,19 @@ class KanbanUITestCase: XCTestCase {
         try launch(linkKey: "KC_PAIR_LINK")
     }
 
-    func launch(linkKey: String, extraEnv: [String: String] = [:]) throws {
+    /// Launches paired with the server `linkKey` names, as primary, and with
+    /// the servers `moreLinkKeys` name; every other saved server is forgotten.
+    func launch(linkKey: String, moreLinkKeys: [String] = [], extraEnv: [String: String] = [:]) throws {
         let env = ProcessInfo.processInfo.environment
         let link = try XCTUnwrap(env[linkKey], "Set TEST_RUNNER_\(linkKey)")
+        let more = try moreLinkKeys.map { try XCTUnwrap(env[$0], "Set TEST_RUNNER_\($0)") }
         // A leftover "Open in Kanban Code?" prompt from simctl openurl.
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
         if springboard.buttons["Cancel"].waitForExistence(timeout: 1) { springboard.buttons["Cancel"].tap() }
         app = XCUIApplication()
         app.launchEnvironment["KANBANCODE_PAIR_LINK"] = link
+        app.launchEnvironment["KANBANCODE_PAIR_LINKS"] = more.joined(separator: " ")
+        app.launchEnvironment["KANBANCODE_PAIR_ONLY"] = "1"
         app.launchEnvironment.merge(extraEnv) { $1 }
         app.launch()
     }

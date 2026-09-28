@@ -3,21 +3,40 @@ import KanbanCodeRemoteKit
 
 @main
 struct KanbanCodeMobileApp: App {
-    @State private var servers = ServerStore()
+    @State private var servers: ServerStore
+    @State private var fleet: FleetModel
     @State private var pairing = PairingCoordinator()
+
+    init() {
+        let servers = ServerStore()
+        _servers = State(initialValue: servers)
+        _fleet = State(initialValue: FleetModel(store: servers))
+    }
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environment(servers)
+                .environment(fleet)
                 .environment(pairing)
                 .onOpenURL { url in pairing.open(url.absoluteString, into: servers) }
-                .task {
-                    // UI tests pair through the launch environment.
-                    if let link = ProcessInfo.processInfo.environment["KANBANCODE_PAIR_LINK"] {
-                        pairing.open(link, into: servers)
-                    }
-                }
+                .task { await pairFromEnvironment() }
+        }
+    }
+
+    /// UI tests pair through the launch environment: KANBANCODE_PAIR_LINK
+    /// (the primary) and KANBANCODE_PAIR_LINKS (more masters, space
+    /// separated). KANBANCODE_PAIR_ONLY=1 forgets every other master.
+    private func pairFromEnvironment() async {
+        let env = ProcessInfo.processInfo.environment
+        let texts = ([env["KANBANCODE_PAIR_LINK"]] + (env["KANBANCODE_PAIR_LINKS"] ?? "")
+            .split(whereSeparator: \.isWhitespace).map(String.init))
+            .compactMap { $0 }.filter { !$0.isEmpty }
+        let links = texts.compactMap(RemotePairLink.parse)
+        guard !links.isEmpty else { return }
+        if env["KANBANCODE_PAIR_ONLY"] == "1" { servers.keepOnly(Set(links.map(\.baseURL))) }
+        for (index, link) in links.enumerated() {
+            await pairing.pair(link, into: servers, makePrimary: index == 0)
         }
     }
 }
@@ -37,7 +56,7 @@ final class PairingCoordinator {
     }
 
     @discardableResult
-    func pair(_ link: RemotePairLink, into store: ServerStore) async -> Bool {
+    func pair(_ link: RemotePairLink, into store: ServerStore, makePrimary: Bool = false) async -> Bool {
         isChecking = true
         defer { isChecking = false }
         let client = RemoteClient(link: link)
@@ -45,7 +64,7 @@ final class PairingCoordinator {
             _ = try await client.me()
             let health = try? await client.health()
             let name = link.name ?? health?.hostName ?? link.baseURL.host() ?? "Mac"
-            store.add(link: link, name: name)
+            store.add(link: link, name: name, makePrimary: makePrimary)
             error = nil
             return true
         } catch {
@@ -57,17 +76,19 @@ final class PairingCoordinator {
 
 struct RootView: View {
     @Environment(ServerStore.self) private var servers
+    @Environment(FleetModel.self) private var fleet
     @Environment(PairingCoordinator.self) private var pairing
 
     var body: some View {
         Group {
-            if let server = servers.selected {
-                BoardScreen(server: server)
-                    .id(server.id)
-            } else {
+            if servers.servers.isEmpty {
                 NavigationStack { PairingView(isFirstRun: true) }
+            } else {
+                BoardScreen(fleet: fleet)
             }
         }
+        .task { fleet.sync() }
+        .onChange(of: servers.servers) { fleet.sync() }
         .overlay {
             if pairing.isChecking {
                 ProgressView("Pairing")
@@ -76,7 +97,7 @@ struct RootView: View {
             }
         }
         .alert("Pairing failed", isPresented: Binding(
-            get: { pairing.error != nil && servers.selected != nil },
+            get: { pairing.error != nil && !servers.servers.isEmpty },
             set: { if !$0 { pairing.error = nil } }
         )) {
             Button("OK", role: .cancel) { pairing.error = nil }

@@ -2,14 +2,16 @@ import Foundation
 import Observation
 import KanbanCodeRemoteKit
 
-/// The board of one Mac, kept live from `/v1/events`.
+/// The board of one master, kept live from `/v1/events`. The last board
+/// seen is kept on disk, so a master that is off (a sleeping Mac, a Mac on
+/// a VPN that cuts it off the tailnet) still shows its cards.
 @Observable
 final class BoardModel {
     enum Link: Equatable {
         case connecting
         case live
         case reconnecting(retryIn: TimeInterval)
-        /// The Mac refused the token: pair again.
+        /// The master refused the token: pair again.
         case refused(String)
         /// Previews and tests: nothing to connect to.
         case offline
@@ -19,25 +21,42 @@ final class BoardModel {
     let client: RemoteClient?
     private(set) var board: RemoteBoard?
     private(set) var device: RemoteDevice?
-    /// What the Mac supports beyond API version 1 (`RemoteAPI.Feature`).
+    /// What the master supports beyond API version 1 (`RemoteAPI.Feature`).
     private(set) var features: Set<String> = []
     private(set) var link: Link = .connecting
     private(set) var loadError: String?
+    /// The master's identity, from its board. Older servers do not name one.
+    private(set) var machine: RemoteMachine?
+    /// When the master was last reachable, while it is not. Nil while live.
+    private(set) var offlineSince: Date?
+    /// The board shown comes from the cache, not from the master.
+    private(set) var isCached = false
 
     @ObservationIgnored private var eventsTask: Task<Void, Never>?
+    @ObservationIgnored private var lastSaved = Date.distantPast
+    @ObservationIgnored private var lastReceived: Date?
+    @ObservationIgnored private var saveTask: Task<Void, Never>?
 
     init(server: SavedServer, client: RemoteClient?) {
         self.server = server
         self.client = client
+        if let cached = BoardCache.load(server.id) {
+            board = cached.board
+            machine = cached.board.machine
+            offlineSince = cached.savedAt
+            isCached = true
+        }
     }
 
     /// A board with no connection, for previews.
-    init(preview board: RemoteBoard, scope: RemoteScope = .full) {
-        server = SavedServer(id: UUID(), name: "Studio", baseURL: URL(string: "http://127.0.0.1:7780")!, addedAt: .now)
+    init(preview board: RemoteBoard, scope: RemoteScope = .full, name: String = "Studio", online: Bool = true) {
+        server = SavedServer(id: UUID(), name: name, baseURL: URL(string: "http://127.0.0.1:7780")!, addedAt: .now)
         client = nil
         self.board = board
+        machine = board.machine
         device = RemoteDevice(id: "d1", name: "iPhone", scope: scope, createdAt: .now)
-        link = .offline
+        link = online ? .offline : .reconnecting(retryIn: 8)
+        offlineSince = online ? nil : .now.addingTimeInterval(-1500)
         features = Set(RemoteAPI.features)
     }
 
@@ -45,6 +64,14 @@ final class BoardModel {
 
     var scope: RemoteScope { device?.scope ?? .full }
     var canUseTerminal: Bool { scope == .full }
+
+    /// Reachable right now. Previews count as online.
+    var isOnline: Bool { link == .live || link == .offline }
+
+    /// The master's machine id, or one made up from the pairing for a
+    /// server that names none.
+    var machineId: String { machine?.id ?? "paired-\(server.id.uuidString)" }
+    var machineName: String { machine?.name ?? server.name }
 
     func card(id: String) -> RemoteCard? {
         board?.cards.first { $0.id == id }
@@ -54,20 +81,17 @@ final class BoardModel {
         guard let client, eventsTask == nil else { return }
         eventsTask = Task { [weak self] in
             guard let model = self else { return }
-            async let me = try? client.me()
-            async let health = try? client.health()
             await model.refresh()
-            model.device = await me
-            model.features = Set(await health?.features ?? [])
+            await model.loadDevice()
             let stream = client.events { state in
                 Task { @MainActor in model.apply(state) }
             }
             do {
                 for try await event in stream {
                     guard event.type != .ping else { continue }
+                    if model.isCached { model.board = nil }
                     event.apply(to: &model.board)
-                    model.loadError = nil
-                    model.link = .live
+                    model.received()
                 }
             } catch {
                 model.link = .refused(error.localizedDescription)
@@ -78,17 +102,22 @@ final class BoardModel {
     func stop() {
         eventsTask?.cancel()
         eventsTask = nil
+        saveTask?.cancel()
+        saveTask = nil
+        if let board, let lastReceived { BoardCache.save(board, seenAt: lastReceived, for: server.id) }
     }
 
     func refresh() async {
         guard let client else { return }
         do {
             board = try await client.board()
-            loadError = nil
+            isCached = false
+            received()
         } catch let error as RemoteClientError where error.isAuthFailure {
             link = .refused(error.localizedDescription)
         } catch {
             loadError = error.localizedDescription
+            if offlineSince == nil { offlineSince = .now }
         }
     }
 
@@ -103,13 +132,87 @@ final class BoardModel {
         self.board = board
     }
 
+    /// The device and features, once per connection until both are known:
+    /// a master that was off at launch tells them when it comes back.
+    private func loadDevice() async {
+        guard let client, device == nil || features.isEmpty else { return }
+        async let me = try? client.me()
+        async let health = try? client.health()
+        if let me = await me { device = me }
+        if let features = await health?.features { self.features = Set(features) }
+    }
+
+    /// Fresh data from the master.
+    private func received() {
+        isCached = false
+        loadError = nil
+        offlineSince = nil
+        lastReceived = .now
+        if case .refused = link {} else { link = .live }
+        if let found = board?.machine { machine = found }
+        scheduleSave()
+    }
+
+    /// Writes the board at most every 5 seconds.
+    private func scheduleSave() {
+        guard saveTask == nil else { return }
+        let wait = max(0, 5 - Date.now.timeIntervalSince(lastSaved))
+        saveTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(wait))
+            guard let self, !Task.isCancelled else { return }
+            if let board = self.board, let seen = self.lastReceived {
+                BoardCache.save(board, seenAt: seen, for: self.server.id)
+            }
+            self.lastSaved = .now
+            self.saveTask = nil
+        }
+    }
+
     private func apply(_ state: RemoteConnectionState) {
         if case .refused = link { return }
         switch state {
-        case .connecting: if link != .live { link = .connecting }
-        case .connected: link = .live
-        case .reconnecting(let retryIn, _): link = .reconnecting(retryIn: retryIn)
+        case .connecting:
+            if link != .live { link = .connecting }
+        case .connected:
+            link = .live
+            offlineSince = nil
+            Task { await loadDevice() }
+        case .reconnecting(let retryIn, _):
+            if link == .live || offlineSince == nil { offlineSince = lastReceived ?? .now }
+            link = .reconnecting(retryIn: retryIn)
         }
+    }
+}
+
+/// The last board of each master, in Application Support.
+enum BoardCache {
+    struct Entry: Codable {
+        var board: RemoteBoard
+        var savedAt: Date
+    }
+
+    private static var directory: URL {
+        URL.applicationSupportDirectory.appending(path: "boards", directoryHint: .isDirectory)
+    }
+
+    private static func file(_ id: UUID) -> URL {
+        directory.appending(path: "\(id.uuidString).json")
+    }
+
+    static func load(_ id: UUID) -> Entry? {
+        guard let data = try? Data(contentsOf: file(id)) else { return nil }
+        return try? JSONDecoder.remote.decode(Entry.self, from: data)
+    }
+
+    /// `seenAt`: when the master last sent it.
+    static func save(_ board: RemoteBoard, seenAt: Date, for id: UUID) {
+        guard let data = try? JSONEncoder.remote.encode(Entry(board: board, savedAt: seenAt)) else { return }
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try? data.write(to: file(id), options: .atomic)
+    }
+
+    static func remove(_ id: UUID) {
+        try? FileManager.default.removeItem(at: file(id))
     }
 }
 

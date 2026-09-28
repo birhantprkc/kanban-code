@@ -30,6 +30,19 @@ enum PreviewData {
         ], generatedAt: now)
     }()
 
+    static let boxBoard: RemoteBoard = {
+        let now = Date.now
+        let box = RemoteMachine(id: "machine_box", name: "rchaves-platform")
+        return RemoteBoard(cards: [
+            RemoteCard(id: "b1", title: "Nightly data backfill", column: .inProgress, projectName: "langwatch",
+                       runtime: .tmux, isLive: true, isBusy: true, lastActivity: now.addingTimeInterval(-1600),
+                       updatedAt: now, machineId: box.id, machineName: box.name),
+            RemoteCard(id: "b2", title: "Deploy the blog", column: .waiting, projectName: "kanban",
+                       runtime: .tmux, isLive: true, lastActivity: now.addingTimeInterval(-1900),
+                       updatedAt: now, machineId: box.id, machineName: box.name),
+        ], projects: [RemoteProject(path: "/root/Projects/kanban", name: "kanban")], generatedAt: now, machine: box)
+    }()
+
     static let messages: [RemoteMessage] = [
         RemoteMessage(id: "m1", role: .user, text: "The scheduler test fails one run in ten. Find out why."),
         RemoteMessage(id: "m2", role: .assistant, text: """

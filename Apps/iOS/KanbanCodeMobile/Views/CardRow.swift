@@ -5,13 +5,15 @@ import KanbanCodeRemoteKit
 struct StatusDot: View {
     let card: RemoteCard
     var size: CGFloat = 9
+    /// The card's machine cannot be reached, so its state is unknown.
+    var unknown = false
 
     var body: some View {
         Circle()
             .fill(color)
             .frame(width: size, height: size)
             .overlay {
-                if card.isBusy {
+                if card.isBusy && !unknown {
                     Circle().stroke(color.opacity(0.4), lineWidth: 3)
                         .phaseAnimator([false, true]) { view, on in
                             view.scaleEffect(on ? 1.9 : 1).opacity(on ? 0 : 1)
@@ -22,12 +24,14 @@ struct StatusDot: View {
     }
 
     private var color: Color {
+        if unknown { return .gray.opacity(0.6) }
         if card.isBusy { return .blue }
         if card.isLive { return .green }
         return .gray.opacity(0.6)
     }
 
     private var label: String {
+        if unknown { return "Machine offline" }
         if card.isBusy { return "Working" }
         if card.isLive { return "Live" }
         return "Not running"
@@ -38,10 +42,14 @@ struct CardRow: View {
     let card: RemoteCard
     /// Names the card's column, for rows outside their column (the Live section).
     var showsColumn = false
+    /// The machine that runs the card, shown when there are several.
+    var machine: String? = nil
+    /// That machine cannot be reached: the card shows as last seen.
+    var machineOffline = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            StatusDot(card: card)
+            StatusDot(card: card, unknown: machineOffline)
                 .padding(.top, 6)
             VStack(alignment: .leading, spacing: 4) {
                 Text(card.title.isEmpty ? "Untitled" : card.title)
@@ -77,6 +85,9 @@ struct CardRow: View {
 
     private var badges: some View {
         HStack(spacing: 8) {
+            if let machine {
+                MachineTag(name: machine, offline: machineOffline)
+            }
             if showsColumn {
                 Text(card.column.displayName)
                     .font(.caption2.weight(.medium))
@@ -101,6 +112,85 @@ struct CardRow: View {
             Spacer(minLength: 0)
             PRBadges(prs: card.prs)
         }
+    }
+}
+
+/// The machine a card runs on, greyed with "offline" while it cannot be reached.
+struct MachineTag: View {
+    let name: String
+    var offline = false
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: offline ? "bolt.horizontal.circle" : "desktopcomputer")
+                .imageScale(.small)
+            Text(offline ? "\(name), offline" : name)
+        }
+        .font(.caption2.weight(.medium))
+        .lineLimit(1)
+        .fixedSize()
+        .foregroundStyle(offline ? Color.secondary : Color.indigo)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 1)
+        .background((offline ? Color.gray : Color.indigo).opacity(0.14), in: Capsule())
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// A master's name and whether it can be reached: "Offline since 10:32".
+struct MachineStatusLine: View {
+    let master: BoardModel
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(color)
+                .frame(width: 9, height: 9)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(master.machineName)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.primary)
+                Text(Self.status(master))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var color: Color {
+        switch master.link {
+        case .live, .offline: .green
+        case .connecting: .yellow
+        case .reconnecting: .gray
+        case .refused: .red
+        }
+    }
+
+    static func status(_ master: BoardModel) -> String {
+        switch master.link {
+        case .live, .offline:
+            return "Online"
+        case .refused:
+            return "Refused this phone. Pair it again."
+        case .connecting, .reconnecting:
+            guard let since = master.offlineSince else { return "Connecting" }
+            let cards = master.board == nil ? "" : ", cards as last seen"
+            return "Offline since \(since.offlineSinceText)\(cards)"
+        }
+    }
+}
+
+extension Date {
+    /// "22:41" today, "Mon 22:41" this week, then a date.
+    var offlineSinceText: String {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(self) { return formatted(date: .omitted, time: .shortened) }
+        if let days = calendar.dateComponents([.day], from: self, to: .now).day, days < 7 {
+            return formatted(.dateTime.weekday(.abbreviated).hour().minute())
+        }
+        return formatted(.dateTime.month(.abbreviated).day().hour().minute())
     }
 }
 

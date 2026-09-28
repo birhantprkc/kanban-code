@@ -2,65 +2,74 @@ import SwiftUI
 import KanbanCodeRemoteKit
 
 struct BoardScreen: View {
-    @Environment(ServerStore.self) private var servers
-    @State private var model: BoardModel
+    let fleet: FleetModel
     @State private var path: [String] = []
     @State private var search = ""
     @State private var showNewTask = false
     @State private var showAddMac = false
+    @State private var showMachines = false
     @State private var expandedSections: Set<String> = []
-    /// Project path the board is narrowed to, "" for every project. Kept per Mac.
-    @State private var projectFilter = ""
+    /// Project name the board is narrowed to, "" for every project.
+    @AppStorage("projectFilter.fleet") private var projectFilter = ""
 
     /// Cards shown per column before a "Show all" row.
     private static let columnPreviewCount = ProcessInfo.processInfo.environment["KANBANCODE_COLUMN_PREVIEW"].flatMap(Int.init) ?? 15
 
-    init(server: SavedServer, client: RemoteClient?) {
-        _model = State(initialValue: BoardModel(server: server, client: client))
-        _projectFilter = State(initialValue: UserDefaults.standard.string(forKey: Self.filterKey(server)) ?? "")
+    init(fleet: FleetModel) {
+        self.fleet = fleet
     }
 
-    private static func filterKey(_ server: SavedServer) -> String { "projectFilter.\(server.id.uuidString)" }
-
-    init(server: SavedServer) {
-        self.init(server: server, client: ServerStore.client(for: server))
-    }
-
-    init(model: BoardModel) {
-        _model = State(initialValue: model)
-    }
+    /// The only master, when there is one.
+    private var single: BoardModel? { fleet.isMulti ? nil : fleet.masters.first }
 
     var body: some View {
         NavigationStack(path: $path) {
             content
-                .navigationTitle(model.server.name)
+                .navigationTitle(title)
                 .navigationSubtitle(subtitle)
-                .onChange(of: projectFilter) { _, value in
-                    UserDefaults.standard.set(value, forKey: Self.filterKey(model.server))
-                }
                 .searchable(text: $search, prompt: "Search cards")
-                .refreshable { await model.refresh() }
+                .refreshable { await refreshAll() }
                 .toolbar { toolbar }
                 .navigationDestination(for: String.self) { id in
-                    CardScreen(cardId: id, board: model)
+                    FleetCardScreen(cardId: id, fleet: fleet)
                 }
         }
-        .environment(model)
-        .task { model.start() }
-        .onDisappear { model.stop() }
+        .task { fleet.start() }
         .sheet(isPresented: $showNewTask) {
-            NewTaskSheet(board: model) { card in
-                model.upsert(card)
+            NewTaskSheet(fleet: fleet) { card, master in
+                master.upsert(card)
                 path = [card.id]
             }
         }
         .sheet(isPresented: $showAddMac) {
             NavigationStack { PairingView() }
         }
+        .sheet(isPresented: $showMachines) {
+            MachinesView(fleet: fleet)
+        }
+    }
+
+    private func refreshAll() async {
+        await withTaskGroup(of: Void.self) { group in
+            for master in fleet.masters { group.addTask { await master.refresh() } }
+        }
+    }
+
+    private var title: String {
+        single?.machineName ?? "Kanban Code"
+    }
+
+    /// Every master refused this phone.
+    private var refusedMessage: String? {
+        let messages = fleet.masters.compactMap { master -> String? in
+            if case .refused(let message) = master.link { return message }
+            return nil
+        }
+        return !fleet.masters.isEmpty && messages.count == fleet.masters.count ? messages.first : nil
     }
 
     @ViewBuilder private var content: some View {
-        if case .refused(let message) = model.link {
+        if let message = refusedMessage {
             ContentUnavailableView {
                 Label("Pairing no longer valid", systemImage: "lock.slash")
             } description: {
@@ -69,14 +78,17 @@ struct BoardScreen: View {
                 Button("Pair again") { showAddMac = true }
                     .buttonStyle(.borderedProminent)
             }
-        } else if let board = model.board {
-            let sections = sections(of: board)
-            if sections.isEmpty {
+        } else if fleet.hasBoard {
+            let sections = sections(of: fleet.cards)
+            if sections.isEmpty && fleet.isMulti && search.isEmpty {
+                List { machineStatusSection }
+                    .listStyle(.insetGrouped)
+            } else if sections.isEmpty {
                 if search.isEmpty {
                     ContentUnavailableView {
                         Label("No cards", systemImage: "rectangle.stack")
                     } description: {
-                        Text("Start a task and it runs on your Mac.")
+                        Text("Start a task and it runs on one of your machines.")
                     } actions: {
                         Button("New task") { showNewTask = true }
                             .buttonStyle(.borderedProminent)
@@ -86,15 +98,18 @@ struct BoardScreen: View {
                 }
             } else {
                 List {
+                    machineStatusSection
                     ForEach(sections, id: \.id) { section in
                         Section {
                             let collapsed = search.isEmpty && !expandedSections.contains(section.id)
                                 && section.cards.count > Self.columnPreviewCount
-                            ForEach(collapsed ? Array(section.cards.prefix(Self.columnPreviewCount)) : section.cards) { card in
-                                NavigationLink(value: card.id) {
-                                    CardRow(card: card, showsColumn: section.id == Self.liveSectionID)
+                            ForEach(collapsed ? Array(section.cards.prefix(Self.columnPreviewCount)) : section.cards) { entry in
+                                NavigationLink(value: entry.card.id) {
+                                    CardRow(card: entry.card, showsColumn: section.id == Self.liveSectionID,
+                                            machine: fleet.isMulti ? entry.machineName : nil,
+                                            machineOffline: !entry.master.isOnline)
                                 }
-                                .accessibilityIdentifier("card-\(card.id)")
+                                .accessibilityIdentifier("card-\(entry.card.id)")
                             }
                             if search.isEmpty && section.cards.count > Self.columnPreviewCount {
                                 Button {
@@ -119,14 +134,15 @@ struct BoardScreen: View {
                 }
                 .listStyle(.insetGrouped)
             }
-        } else if let error = model.loadError {
+        } else if let error = fleet.masters.compactMap(\.loadError).first {
             ContentUnavailableView {
-                Label("Cannot reach \(model.server.name)", systemImage: "wifi.exclamationmark")
+                Label("Cannot reach \(single?.server.name ?? "any machine")", systemImage: "wifi.exclamationmark")
             } description: {
-                Text("\(error)\n\nCheck that the Mac is on, Remote Control is on in its Settings, and this phone is on the same tailnet.")
+                Text("\(error)\n\nCheck that the machine is on, Remote Control is on in its Settings, and this phone is on the same tailnet.")
             } actions: {
-                Button("Try again") { Task { await model.refresh() } }
+                Button("Try again") { Task { await refreshAll() } }
                     .buttonStyle(.borderedProminent)
+                Button("Machines") { showMachines = true }
             }
         } else {
             ProgressView("Loading board")
@@ -135,37 +151,19 @@ struct BoardScreen: View {
 
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
-            Menu {
-                Section("Macs") {
-                    ForEach(servers.servers) { server in
-                        Button {
-                            servers.selectedID = server.id
-                        } label: {
-                            if server.id == model.server.id {
-                                Label(server.name, systemImage: "checkmark")
-                            } else {
-                                Text(server.name)
-                            }
-                        }
-                    }
-                }
-                Button("Add a Mac", systemImage: "plus") { showAddMac = true }
-                if let current = servers.servers.first(where: { $0.id == model.server.id }) {
-                    Button("Forget \(current.name)", systemImage: "trash", role: .destructive) {
-                        servers.remove(current)
-                    }
-                }
+            Button {
+                showMachines = true
             } label: {
-                Label("Macs", systemImage: "desktopcomputer")
+                Label("Machines", systemImage: fleet.masters.allSatisfy(\.isOnline) ? "desktopcomputer" : "desktopcomputer.trianglebadge.exclamationmark")
             }
-            .accessibilityIdentifier("macsMenu")
+            .accessibilityIdentifier("machinesMenu")
         }
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
                 Picker("Project", selection: $projectFilter) {
                     Text("All projects").tag("")
                     ForEach(projects) { project in
-                        Text(project.name).tag(project.path)
+                        Text(project.name).tag(project.name)
                     }
                 }
             } label: {
@@ -181,13 +179,13 @@ struct BoardScreen: View {
             } label: {
                 Label("New task", systemImage: "plus")
             }
-            .disabled(model.board == nil)
+            .disabled(fleet.onlineMasters.allSatisfy { $0.board == nil })
             .accessibilityIdentifier("newTask")
         }
     }
 
-    private var linkText: String {
-        switch model.link {
+    private func linkText(_ master: BoardModel) -> String {
+        switch master.link {
         case .connecting: "Connecting"
         case .live: "Live"
         case .reconnecting(let retryIn): "Offline, retrying in \(Int(retryIn))s"
@@ -197,18 +195,40 @@ struct BoardScreen: View {
     }
 
     private var subtitle: String {
-        guard let name = filteredProjectName else { return linkText }
-        return "\(linkText) · \(name)"
+        let status: String
+        if let single {
+            status = linkText(single)
+        } else {
+            let online = fleet.masters.filter(\.isOnline).count
+            status = online == fleet.masters.count ? "\(online) machines live" : "\(online) of \(fleet.masters.count) machines live"
+        }
+        guard let name = filteredProjectName else { return status }
+        return "\(status) · \(name)"
     }
 
-    private var projects: [RemoteProject] {
-        (model.board?.projects ?? []).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-    }
+    private var projects: [RemoteProject] { fleet.projects }
 
     private var filteredProjectName: String? {
         guard !projectFilter.isEmpty else { return nil }
-        return projects.first { $0.path == projectFilter }?.name
+        return projects.first { $0.name == projectFilter || $0.path == projectFilter }?.name
             ?? URL(fileURLWithPath: projectFilter).lastPathComponent
+    }
+
+    /// A row per master that is not live, when there are several: its cards
+    /// stay on the board as last seen.
+    @ViewBuilder private var machineStatusSection: some View {
+        let down = fleet.isMulti ? fleet.orderedMasters.filter { !$0.isOnline } : []
+        if !down.isEmpty {
+            Section {
+                ForEach(down, id: \.server.id) { master in
+                    Button { showMachines = true } label: {
+                        MachineStatusLine(master: master)
+                    }
+                    .tint(.primary)
+                    .accessibilityIdentifier("machineDown-\(master.machineName)")
+                }
+            }
+        }
     }
 
     private static let liveSectionID = "live"
@@ -216,37 +236,39 @@ struct BoardScreen: View {
     private struct BoardSection {
         let id: String
         let title: String
-        let cards: [RemoteCard]
+        let cards: [FleetCard]
     }
 
     /// Live sessions first, whatever their column (busy ones on top), then
     /// the columns without them.
-    private func sections(of board: RemoteBoard) -> [BoardSection] {
+    private func sections(of entries: [FleetCard]) -> [BoardSection] {
         let query = search.trimmingCharacters(in: .whitespaces).lowercased()
         let filterName = filteredProjectName
-        let visible = board.cards.filter { card in
+        let visible = entries.filter { entry in
+            let card = entry.card
             guard !card.archived else { return false }
-            if !projectFilter.isEmpty,
-               card.projectPath != projectFilter, card.projectName == nil || card.projectName != filterName {
+            if !projectFilter.isEmpty, card.projectPath != projectFilter, card.projectName == nil || card.projectName != filterName {
                 return false
             }
             guard !query.isEmpty else { return true }
-            return [card.title, card.projectName, card.branch]
+            return [card.title, card.projectName, card.branch, fleet.isMulti ? entry.machineName : nil]
                 .compactMap { $0?.lowercased() }
                 .contains { $0.contains(query) }
                 || card.prs.contains { "#\($0.number)".contains(query) }
         }
-        func recent(_ a: RemoteCard, _ b: RemoteCard) -> Bool {
-            (a.lastActivity ?? a.updatedAt) > (b.lastActivity ?? b.updatedAt)
+        func recent(_ a: FleetCard, _ b: FleetCard) -> Bool {
+            (a.card.lastActivity ?? a.card.updatedAt) > (b.card.lastActivity ?? b.card.updatedAt)
         }
-        let live = visible.filter(\.isLive).sorted { a, b in
-            a.isBusy != b.isBusy ? a.isBusy : recent(a, b)
+        // A card of a machine that is off shows in its column, not as live.
+        func isLive(_ entry: FleetCard) -> Bool { entry.card.isLive && entry.master.isOnline }
+        let live = visible.filter(isLive).sorted { a, b in
+            a.card.isBusy != b.card.isBusy ? a.card.isBusy : recent(a, b)
         }
         var out: [BoardSection] = []
         if !live.isEmpty { out.append(BoardSection(id: Self.liveSectionID, title: "Live", cards: live)) }
-        let rest = visible.filter { !$0.isLive }
+        let rest = visible.filter { !isLive($0) }
         for column in RemoteColumn.phoneOrder {
-            let cards = rest.filter { $0.column == column }.sorted(by: recent)
+            let cards = rest.filter { $0.card.column == column }.sorted(by: recent)
             if !cards.isEmpty { out.append(BoardSection(id: column.rawValue, title: column.displayName, cards: cards)) }
         }
         return out
@@ -254,7 +276,14 @@ struct BoardScreen: View {
 }
 
 #Preview("Board") {
-    BoardScreen(model: BoardModel(preview: PreviewData.board))
+    BoardScreen(fleet: FleetModel(preview: [BoardModel(preview: PreviewData.board)]))
+        .environment(ServerStore())
+        .environment(PairingCoordinator())
+}
+
+#Preview("Two machines") {
+    BoardScreen(fleet: FleetModel(preview: [BoardModel(preview: PreviewData.board),
+                                            BoardModel(preview: PreviewData.boxBoard, name: "rchaves-platform", online: false)]))
         .environment(ServerStore())
         .environment(PairingCoordinator())
 }

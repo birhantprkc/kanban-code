@@ -2,11 +2,15 @@ import SwiftUI
 import KanbanCodeRemoteKit
 
 struct NewTaskSheet: View {
-    let board: BoardModel
-    let onCreated: (RemoteCard) -> Void
+    let fleet: FleetModel
+    /// The created card and the master that runs it.
+    let onCreated: (RemoteCard, BoardModel) -> Void
 
     @Environment(\.dismiss) private var dismiss
-    @AppStorage("newTask.lastProject") private var lastProject = ""
+    /// Name of the project last launched in: paths differ between machines.
+    @AppStorage("newTask.lastProjectName") private var lastProject = ""
+    /// The master the task runs on, by `SavedServer.id`.
+    @State private var machineID: UUID?
     @State private var projectPath = ""
     @State private var prompt = ""
     @State private var useWorktree = false
@@ -15,14 +19,36 @@ struct NewTaskSheet: View {
     @State private var error: String?
     @FocusState private var promptFocused: Bool
 
-    private var projects: [RemoteProject] { board.board?.projects ?? [] }
+    /// Online masters with a board, primary first.
+    private var machines: [BoardModel] { fleet.onlineMasters.filter { $0.board != nil } }
+
+    private var board: BoardModel? {
+        machines.first { $0.server.id == machineID } ?? machines.first
+    }
+
+    private var projects: [RemoteProject] { board?.board?.projects ?? [] }
 
     var body: some View {
         NavigationStack {
             Form {
+                if fleet.isMulti {
+                    Section {
+                        Picker("Machine", selection: $machineID) {
+                            ForEach(machines, id: \.server.id) { master in
+                                Text(master.machineName).tag(Optional(master.server.id))
+                            }
+                        }
+                        .accessibilityIdentifier("machinePicker")
+                    } footer: {
+                        let offline = fleet.masters.filter { !$0.isOnline }.map(\.machineName)
+                        if !offline.isEmpty {
+                            Text("Offline: \(offline.joined(separator: ", ")).")
+                        }
+                    }
+                }
                 Section {
                     if projects.isEmpty {
-                        Text("The Mac has no projects yet.")
+                        Text("\(board?.machineName ?? "The machine") has no projects yet.")
                             .foregroundStyle(.secondary)
                     } else {
                         Picker("Project", selection: $projectPath) {
@@ -79,21 +105,31 @@ struct NewTaskSheet: View {
                 }
             }
             .onAppear {
-                if projectPath.isEmpty {
-                    projectPath = projects.contains { $0.path == lastProject } ? lastProject : (projects.first?.path ?? "")
-                }
+                if machineID == nil { machineID = machines.first?.server.id }
+                pickProject(named: lastProject)
                 promptFocused = true
+            }
+            .onChange(of: machineID) { old, _ in
+                // The same project on the other machine, by name.
+                let before = fleet.masters.first { $0.server.id == old }?.board?.projects ?? []
+                pickProject(named: before.first { $0.path == projectPath }?.name ?? lastProject)
             }
         }
         .presentationDetents([.large])
     }
 
+    private func pickProject(named name: String) {
+        guard !projects.contains(where: { $0.path == projectPath }) else { return }
+        projectPath = projects.first { $0.name == name }?.path ?? projects.first?.path ?? ""
+    }
+
     private var canLaunch: Bool {
-        !projectPath.isEmpty && !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        board != nil && projects.contains(where: { $0.path == projectPath })
+            && !projectPath.isEmpty && !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func launch() {
-        guard let client = board.client, canLaunch else { return }
+        guard let master = board, let client = master.client, canLaunch else { return }
         isLaunching = true
         error = nil
         let request = RemoteTaskRequest(
@@ -105,10 +141,10 @@ struct NewTaskSheet: View {
             defer { isLaunching = false }
             do {
                 let card = try await client.createTask(request)
-                lastProject = projectPath
+                lastProject = projects.first { $0.path == projectPath }?.name ?? ""
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
                 dismiss()
-                onCreated(card)
+                onCreated(card, master)
             } catch {
                 self.error = error.localizedDescription
                 UINotificationFeedbackGenerator().notificationOccurred(.error)
@@ -118,5 +154,6 @@ struct NewTaskSheet: View {
 }
 
 #Preview {
-    NewTaskSheet(board: BoardModel(preview: PreviewData.board)) { _ in }
+    NewTaskSheet(fleet: FleetModel(preview: [BoardModel(preview: PreviewData.board),
+                                             BoardModel(preview: PreviewData.boxBoard, name: "rchaves-platform")])) { _, _ in }
 }

@@ -3,7 +3,8 @@ import Observation
 import Security
 import KanbanCodeRemoteKit
 
-/// A Mac this phone has paired with. The token lives in the Keychain.
+/// A master this phone has paired with: a Mac, or an always-on box running
+/// the Kanban Code server. The token lives in the Keychain.
 struct SavedServer: Codable, Identifiable, Hashable {
     var id: UUID
     var name: String
@@ -11,36 +12,39 @@ struct SavedServer: Codable, Identifiable, Hashable {
     var addedAt: Date
 }
 
-/// The paired Macs and which one is showing.
+/// The paired masters and which one is primary. The board shows the cards
+/// of all of them; the primary is the default machine for new tasks and
+/// comes first when two masters list the same card.
 @Observable
 final class ServerStore {
     private(set) var servers: [SavedServer] = []
-    var selectedID: UUID? {
-        didSet { UserDefaults.standard.set(selectedID?.uuidString, forKey: Self.selectedKey) }
+    var primaryID: UUID? {
+        didSet { UserDefaults.standard.set(primaryID?.uuidString, forKey: Self.primaryKey) }
     }
 
     private static let listKey = "servers.v1"
-    private static let selectedKey = "servers.selected"
+    private static let primaryKey = "servers.selected"
 
     init() {
         if let data = UserDefaults.standard.data(forKey: Self.listKey),
            let saved = try? JSONDecoder().decode([SavedServer].self, from: data) {
             servers = saved
         }
-        let selected = UserDefaults.standard.string(forKey: Self.selectedKey).flatMap(UUID.init(uuidString:))
-        selectedID = servers.contains { $0.id == selected } ? selected : servers.first?.id
+        let primary = UserDefaults.standard.string(forKey: Self.primaryKey).flatMap(UUID.init(uuidString:))
+        primaryID = servers.contains { $0.id == primary } ? primary : servers.first?.id
     }
 
-    var selected: SavedServer? { servers.first { $0.id == selectedID } }
+    var primary: SavedServer? { servers.first { $0.id == primaryID } }
 
     static func client(for server: SavedServer) -> RemoteClient? {
         guard let token = Keychain.token(for: server.id) else { return nil }
         return RemoteClient(baseURL: server.baseURL, token: token)
     }
 
-    /// Adds the Mac, or replaces the token of one already saved at the same URL.
+    /// Adds the master, or replaces the token of one already saved at the
+    /// same URL. It becomes primary when asked, or when there is none.
     @discardableResult
-    func add(link: RemotePairLink, name: String) -> SavedServer {
+    func add(link: RemotePairLink, name: String, makePrimary: Bool = false) -> SavedServer {
         let server: SavedServer
         if let index = servers.firstIndex(where: { $0.baseURL == link.baseURL }) {
             servers[index].name = name
@@ -51,7 +55,7 @@ final class ServerStore {
         }
         Keychain.setToken(link.token, for: server.id)
         persist()
-        selectedID = server.id
+        if makePrimary || primary == nil { primaryID = server.id }
         return server
     }
 
@@ -59,7 +63,12 @@ final class ServerStore {
         Keychain.deleteToken(for: server.id)
         servers.removeAll { $0.id == server.id }
         persist()
-        if selectedID == server.id { selectedID = servers.first?.id }
+        if primaryID == server.id { primaryID = servers.first?.id }
+    }
+
+    /// Forgets every master not at one of `urls`.
+    func keepOnly(_ urls: Set<URL>) {
+        for server in servers where !urls.contains(server.baseURL) { remove(server) }
     }
 
     private func persist() {

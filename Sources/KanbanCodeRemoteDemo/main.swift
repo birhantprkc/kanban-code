@@ -9,6 +9,12 @@ import Synchronization
 //
 //   swift run kanban-code-remote-demo --pair iPhone
 //   swift run kanban-code-remote-demo --port 7790 --pair openclaw --scope agent --agtop <agtop id>
+//
+// Two masters, as a Mac and an always-on box:
+//
+//   swift run kanban-code-remote-demo --port 7790 --machine machine_mac:Studio --pair iPhone
+//   swift run kanban-code-remote-demo --port 7791 --machine machine_box:rchaves-platform --cards box \
+//       --foreign machine_mac:Studio --pair iPhone
 
 struct DemoOptions {
     var port = 7790
@@ -18,6 +24,19 @@ struct DemoOptions {
     var agtopId: String?
     var tmuxSocket: String?
     var loopbackOnly = false
+    /// This master's identity, `id:name`. Without it the board names no machine, as an older server.
+    var machine: RemoteMachine?
+    /// `default` or `box`: which demo cards this master owns.
+    var cards = "default"
+    /// A master whose synced copy of `card_wait` this board also lists, `id:name`.
+    var foreign: RemoteMachine?
+    /// Exits once this file exists (and removes it): UI tests take a master offline this way.
+    var exitWhen: String?
+
+    static func machine(_ spec: String) -> RemoteMachine {
+        let parts = spec.split(separator: ":", maxSplits: 1).map(String.init)
+        return RemoteMachine(id: parts[0], name: parts.count > 1 ? parts[1] : parts[0])
+    }
 
     static func parse(_ args: [String]) -> DemoOptions {
         var o = DemoOptions()
@@ -36,6 +55,10 @@ struct DemoOptions {
             case "--agtop": o.agtopId = value()
             case "--tmux-socket": o.tmuxSocket = value()
             case "--loopback-only": o.loopbackOnly = true
+            case "--machine": o.machine = machine(value())
+            case "--cards": o.cards = value()
+            case "--foreign": o.foreign = machine(value())
+            case "--exit-when": o.exitWhen = value()
             case "-h", "--help": usage(nil)
             default: usage("unknown argument \(args[i])")
             }
@@ -49,12 +72,18 @@ struct DemoOptions {
         print("""
         usage: kanban-code-remote-demo [--port 7790] [--devices <path>] [--pair <name> [--scope full|agent]]
                                        [--agtop <agtop session id>] [--tmux-socket <name>] [--loopback-only]
+                                       [--machine <id:name>] [--cards default|box] [--foreign <id:name>]
+                                       [--exit-when <file>]
 
           --pair      adds a device and prints its token and kanbancode://pair link
           --devices   devices file (default .claude/tmp/remote-demo/devices.json)
           --agtop     makes the "agtop" demo card open `agtop open <id> --solo`
           --tmux-socket  tmux cards attach to a session on this tmux server (tmux -L <name>,
                       no config file), created on first open, and scroll frames drive its copy-mode
+          --machine   this master's identity; the board and its cards name it
+          --cards     box: a second master's cards (ids box_*), for running two demos side by side
+          --foreign   also list a synced copy of card_wait owned by that machine, as a peer's board does
+          --exit-when exit as soon as this file exists, and remove it (a test takes the master offline)
         """)
         exit(error == nil ? 0 : 2)
     }
@@ -80,9 +109,15 @@ final class DemoHost: RemoteControlHost {
     ]
 
     let tmuxSocket: String?
+    let machine: RemoteMachine?
+    /// Prefix of the ids of this master's cards.
+    let idPrefix: String
 
-    init(agtopId: String?, tmuxSocket: String? = nil) {
+    init(agtopId: String?, tmuxSocket: String? = nil, machine: RemoteMachine? = nil, cards flavor: String = "default",
+         foreign: RemoteMachine? = nil) {
         self.tmuxSocket = tmuxSocket
+        self.machine = machine
+        idPrefix = flavor == "box" ? "box_" : "card_"
         let now = Date()
         func card(_ id: String, _ title: String, _ column: RemoteColumn, project: Int, runtime: RemoteRuntime,
                   live: Bool, busy: Bool = false, prs: [RemotePR] = [], queued: Int = 0, minutesAgo: Double) -> RemoteCard {
@@ -98,8 +133,28 @@ final class DemoHost: RemoteControlHost {
                 ] : [],
                 prs: prs, queuedPromptCount: queued,
                 queuedPrompts: (0..<queued).map { RemoteQueuedPrompt(id: "prompt_seed\($0)", text: "Also run the e2e suite once it passes") },
-                lastActivity: now.addingTimeInterval(-minutesAgo * 60), updatedAt: now
+                lastActivity: now.addingTimeInterval(-minutesAgo * 60), updatedAt: now,
+                machineId: machine?.id, machineName: machine?.name
             )
+        }
+        if flavor == "box" {
+            var cards: [CardState] = [
+                .init(card: card("box_backfill", "Nightly data backfill", .inProgress, project: 1, runtime: .tmux, live: true, busy: true, minutesAgo: 2),
+                      messages: Self.conversation("Nightly data backfill")),
+                .init(card: card("box_deploy", "Deploy the blog", .waiting, project: 0, runtime: .tmux, live: true, minutesAgo: 8),
+                      messages: Self.conversation("Deploy the blog")),
+                .init(card: card("box_certs", "Rotate the TLS certificates", .backlog, project: 1, runtime: .none, live: false, minutesAgo: 300),
+                      messages: []),
+            ]
+            if let foreign {
+                // A peer's card as sync brings it: the peer runs it, so no live state here.
+                var copy = card("card_wait", "Add dark mode to settings", .waiting, project: 0, runtime: .tmux, live: false, minutesAgo: 30)
+                copy.machineId = foreign.id
+                copy.machineName = foreign.name
+                cards.append(.init(card: copy, messages: []))
+            }
+            state.withLock { $0.cards = cards }
+            return
         }
         let cards: [CardState] = [
             .init(card: card("card_busy", "Fix the flaky checkout test", .inProgress, project: 0, runtime: .tmux, live: true, busy: true, queued: 1, minutesAgo: 1),
@@ -203,7 +258,7 @@ final class DemoHost: RemoteControlHost {
     }
 
     func board() async -> RemoteBoard {
-        state.withLock { s in RemoteBoard(cards: s.cards.map(\.card), projects: projects, generatedAt: Date()) }
+        state.withLock { s in RemoteBoard(cards: s.cards.map(\.card), projects: projects, generatedAt: Date(), machine: machine) }
     }
 
     func transcript(cardId: String, limit: Int, before: String?) async throws -> RemoteTranscript {
@@ -222,7 +277,7 @@ final class DemoHost: RemoteControlHost {
             s.counter += 1
             return s.counter
         }
-        let id = "card_task\(n)"
+        let id = "\(idPrefix)task\(n)"
         let launch = request.launch ?? true
         let worktree = request.worktree.map { $0.isEmpty ? "wt-\(n)" : $0 }
         let card = RemoteCard(
@@ -231,7 +286,7 @@ final class DemoHost: RemoteControlHost {
             worktreePath: worktree.map { "\(project.path)/.claude/worktrees/\($0)" }, assistant: request.assistant ?? "claude",
             runtime: launch ? .tmux : .none, isLive: launch, isBusy: launch, sessionId: launch ? UUID().uuidString.lowercased() : nil,
             terminals: launch ? [RemoteTerminal(sessionName: "\(project.name)-\(id)", label: "claude", isPrimary: true)] : [],
-            lastActivity: Date(), updatedAt: Date()
+            lastActivity: Date(), updatedAt: Date(), machineId: machine?.id, machineName: machine?.name
         )
         state.withLock { s in
             s.cards.append(CardState(card: card, messages: [RemoteMessage(id: "m0", role: .user, text: request.prompt, at: Date())]))
@@ -367,7 +422,8 @@ final class DemoHost: RemoteControlHost {
 
 let options = DemoOptions.parse(Array(CommandLine.arguments.dropFirst()))
 let devices = RemoteDeviceStore(path: options.devicesPath)
-let host = DemoHost(agtopId: options.agtopId, tmuxSocket: options.tmuxSocket)
+let host = DemoHost(agtopId: options.agtopId, tmuxSocket: options.tmuxSocket, machine: options.machine,
+                    cards: options.cards, foreign: options.foreign)
 let loopbackOnly = options.loopbackOnly
 let bindAddresses: @Sendable () -> [String] = {
     loopbackOnly ? [RemoteNetworkAddresses.loopback] : RemoteNetworkAddresses.bindable()
@@ -401,14 +457,19 @@ print("devices file: \(devices.path)")
 if let name = options.pairName {
     let (device, token) = try devices.add(name: name, scope: options.scope)
     let base = tailscale.first(where: { !$0.contains(":") }).map { "http://\($0):\(server.port)" } ?? "http://127.0.0.1:\(server.port)"
-    let link = RemotePairLink.make(url: base, token: token, name: RemoteControlServer.defaultHostName)
+    let link = RemotePairLink.make(url: base, token: token, name: options.machine?.name ?? RemoteControlServer.defaultHostName)
     print("paired \(device.name) (\(device.scope.rawValue)), id \(device.id)")
     print("token: \(token)")
     print("pair link: \(link)")
     print("try: curl -H 'Authorization: Bearer \(token)' \(base)/v1/board")
 }
 
-// Serve until killed.
+// Serve until killed, or until the exit file shows up.
 while true {
-    try await Task.sleep(for: .seconds(3600))
+    if let exitWhen = options.exitWhen, FileManager.default.fileExists(atPath: exitWhen) {
+        try? FileManager.default.removeItem(atPath: exitWhen)
+        print("exit file found, exiting")
+        exit(0)
+    }
+    try await Task.sleep(for: .milliseconds(options.exitWhen == nil ? 3_600_000 : 300))
 }
