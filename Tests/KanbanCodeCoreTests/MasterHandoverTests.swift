@@ -184,6 +184,9 @@ struct MasterHandoverTests {
         #expect(FileManager.default.fileExists(atPath: "\(worktreeB)/notes.txt"))
         let log = try await sh(["git", "log", "--format=%s", "-1"], in: worktreeB)
         #expect(log.contains("work"))
+        // Serving the uncommitted changes left the Mac's index alone.
+        let statusA = try await sh(["git", "status", "--porcelain"], in: worktreeA)
+        #expect(statusA.contains("?? notes.txt"))
         let transcriptB = try #require(adopted.sessionLink?.sessionPath)
         #expect(transcriptB == box.engine.transcriptPath(cwd: worktreeB, sessionId: sessionId))
         let copied = try String(contentsOfFile: transcriptB, encoding: .utf8)

@@ -265,8 +265,7 @@ extension MasterEngine {
         }
         var patch: String?
         if let worktree {
-            _ = await Self.git(["add", "-A", "-N"], in: worktree.path)
-            if let diff = await Self.git(["diff", "--no-color", "--no-ext-diff", "--binary", "HEAD"], in: worktree.path), diff.succeeded,
+            if let diff = await Self.uncommittedDiff(in: worktree.path), diff.succeeded,
                !diff.stdout.isEmpty, diff.stdout.utf8.count < 20 << 20 {
                 // The command runner trims the last newline, which git apply needs.
                 let text = diff.stdout.hasSuffix("\n") ? diff.stdout : diff.stdout + "\n"
@@ -492,8 +491,14 @@ extension MasterEngine {
             // What this worktree held from an earlier stay here is older than
             // what comes now; it is stashed, not lost.
             if let dirty = await git(["status", "--porcelain"], in: path), !dirty.stdout.isEmpty {
-                _ = await git(["stash", "push", "--include-untracked", "-m", "kanban handover \(ISO8601DateFormatter().string(from: Date()))"], in: path)
-                KanbanCodeLog.info("handover", "Stashed earlier changes of worktree \(name)")
+                // Unstaged first: an intent-to-add entry makes the stash fail.
+                _ = await git(["reset", "-q"], in: path)
+                let stash = await git(["stash", "push", "--include-untracked", "-m", "kanban handover \(ISO8601DateFormatter().string(from: Date()))"], in: path)
+                if stash?.succeeded == true {
+                    KanbanCodeLog.info("handover", "Stashed earlier changes of worktree \(name)")
+                } else {
+                    KanbanCodeLog.warn("handover", "Could not stash earlier changes of worktree \(name): \(stash?.stderr.prefix(300) ?? "no git")")
+                }
             }
             _ = await git(["fetch", "origin", branch], in: path)
             if await git(["merge", "--ff-only", "origin/\(branch)"], in: path)?.succeeded != true {
@@ -522,6 +527,23 @@ extension MasterEngine {
         return WorktreeLink(path: path, branch: branch)
     }
 
+    /// Everything uncommitted in a worktree, new files included, as a
+    /// binary diff against HEAD. Built in a copy of the index, so the
+    /// worktree's own index is left as it was.
+    nonisolated static func uncommittedDiff(in dir: String) async -> ShellCommand.Result? {
+        guard let indexPath = await git(["rev-parse", "--git-path", "index"], in: dir), indexPath.succeeded else { return nil }
+        let source = indexPath.stdout.hasPrefix("/") ? indexPath.stdout : (dir as NSString).appendingPathComponent(indexPath.stdout)
+        let temp = NSTemporaryDirectory() + "kanban-handover-index-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: temp) }
+        if FileManager.default.fileExists(atPath: source) {
+            try? FileManager.default.copyItem(atPath: source, toPath: temp)
+        }
+        var env = ShellCommand.loginEnvironment
+        env["GIT_INDEX_FILE"] = temp
+        _ = await git(["add", "-A"], in: dir, environment: env)
+        return await git(["diff", "--cached", "--no-color", "--no-ext-diff", "--binary", "HEAD"], in: dir, environment: env)
+    }
+
     nonisolated static func applyPatch(_ patch: Data, in dir: String) async throws {
         let file = NSTemporaryDirectory() + "kanban-handover-\(UUID().uuidString).patch"
         try patch.write(to: URL(fileURLWithPath: file))
@@ -546,9 +568,10 @@ extension MasterEngine {
         try out.write(to: URL(fileURLWithPath: path), options: .atomic)
     }
 
-    nonisolated static func git(_ arguments: [String], in dir: String, timeout: TimeInterval = 120) async -> ShellCommand.Result? {
+    nonisolated static func git(_ arguments: [String], in dir: String, timeout: TimeInterval = 120,
+                                environment: [String: String]? = nil) async -> ShellCommand.Result? {
         let git = ShellCommand.findExecutable("git") ?? "/usr/bin/git"
         return try? await ShellCommand.run(git, arguments: ["-c", "color.ui=false", "-c", "core.pager=cat"] + arguments,
-                                           currentDirectory: dir, timeout: timeout)
+                                           currentDirectory: dir, environment: environment, timeout: timeout)
     }
 }
