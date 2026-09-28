@@ -136,17 +136,17 @@ struct CardScreen: View {
                     .lineLimit(2)
             }
             HStack(spacing: 10) {
-                if let machineName {
-                    MachineTag(name: machineName, offline: !board.isOnline)
-                        .accessibilityIdentifier("cardMachine")
-                }
                 if let project = card.projectName {
                     Label(project, systemImage: "folder")
+                        .layoutPriority(2)
+                }
+                if let machineName {
+                    MachineLabel(name: machineName, offline: !board.isOnline)
                         .layoutPriority(1)
+                        .accessibilityIdentifier("cardMachine")
                 }
                 if let branch = card.branch, !branch.isEmpty {
                     Label(branch, systemImage: "arrow.triangle.branch")
-                        .truncationMode(.middle)
                 }
                 Spacer(minLength: 0)
                 PRBadges(prs: card.prs, linked: true)

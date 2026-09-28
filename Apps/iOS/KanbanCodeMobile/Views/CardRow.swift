@@ -64,15 +64,22 @@ struct CardRow: View {
         .accessibilityElement(children: .combine)
     }
 
+    /// Project, machine and branch. The project stays whole; the machine
+    /// and then the branch truncate.
     @ViewBuilder private var meta: some View {
-        let parts = [card.projectName, card.branch].compactMap { $0 }.filter { !$0.isEmpty }
-        if !parts.isEmpty {
+        let project = card.projectName.flatMap { $0.isEmpty ? nil : $0 }
+        let branch = card.branch.flatMap { $0.isEmpty ? nil : $0 }
+        if project != nil || branch != nil || machine != nil {
             HStack(spacing: 8) {
-                if let project = card.projectName {
+                if let project {
                     Label(project, systemImage: "folder")
+                        .layoutPriority(2)
+                }
+                if let machine {
+                    MachineLabel(name: machine, offline: machineOffline)
                         .layoutPriority(1)
                 }
-                if let branch = card.branch, !branch.isEmpty {
+                if let branch {
                     Label(branch, systemImage: "arrow.triangle.branch")
                 }
             }
@@ -83,11 +90,18 @@ struct CardRow: View {
         }
     }
 
+    /// Chips under the title. They never make the row wider than the list:
+    /// PR chips collapse to "+N".
     private var badges: some View {
+        ViewThatFits(in: .horizontal) {
+            badgeRow(prLimit: 2)
+            badgeRow(prLimit: 1)
+            badgeRow(prLimit: 0)
+        }
+    }
+
+    private func badgeRow(prLimit: Int) -> some View {
         HStack(spacing: 8) {
-            if let machine {
-                MachineTag(name: machine, offline: machineOffline)
-            }
             if showsColumn {
                 Text(card.column.displayName)
                     .font(.caption2.weight(.medium))
@@ -101,39 +115,43 @@ struct CardRow: View {
             if let date = card.lastActivity {
                 Text(date.relativeShort)
                     .font(.caption2)
+                    .lineLimit(1)
+                    .fixedSize()
                     .foregroundStyle(.secondary)
             }
             if card.queuedPromptCount > 0 {
                 Label("\(card.queuedPromptCount) queued", systemImage: "tray.full")
                     .labelStyle(CompactLabelStyle())
                     .font(.caption2)
+                    .lineLimit(1)
+                    .fixedSize()
                     .foregroundStyle(.orange)
             }
             Spacer(minLength: 0)
-            PRBadges(prs: card.prs)
+            PRBadges(prs: card.prs, limit: prLimit)
         }
     }
 }
 
-/// The machine a card runs on, greyed with "offline" while it cannot be reached.
-struct MachineTag: View {
+/// The machine a card runs on, in the grey of the project and branch,
+/// with "offline" while it cannot be reached. Truncates with an ellipsis.
+struct MachineLabel: View {
     let name: String
     var offline = false
 
     var body: some View {
-        HStack(spacing: 3) {
-            Image(systemName: offline ? "bolt.horizontal.circle" : "desktopcomputer")
-                .imageScale(.small)
+        Label {
             Text(offline ? "\(name), offline" : name)
+                .truncationMode(.tail)
+        } icon: {
+            Image(systemName: Self.icon(for: name))
         }
-        .font(.caption2.weight(.medium))
-        .lineLimit(1)
-        .fixedSize()
-        .foregroundStyle(offline ? Color.secondary : Color.indigo)
-        .padding(.horizontal, 6)
-        .padding(.vertical, 1)
-        .background((offline ? Color.gray : Color.indigo).opacity(0.14), in: Capsule())
         .accessibilityElement(children: .combine)
+    }
+
+    /// A laptop for a Mac, a server for anything else.
+    static func icon(for name: String) -> String {
+        name.localizedCaseInsensitiveContains("mac") ? "laptopcomputer" : "server.rack"
     }
 }
 

@@ -3,9 +3,9 @@ import XCTest
 /// Two masters at once, a Mac and an always-on box, as two demo servers
 /// sharing one devices file:
 ///
-///     .build/debug/kanban-code-remote-demo --port 7790 --machine machine_mac:Studio --pair iPhone
+///     .build/debug/kanban-code-remote-demo --port 7790 --machine "machine_mac:Rogerio's MacBook Pro" --pair iPhone
 ///     .build/debug/kanban-code-remote-demo --port 7791 --machine machine_box:rchaves-platform --cards box \
-///         --foreign machine_mac:Studio --exit-when .claude/tmp/multi-master/ios/kill-box
+///         --foreign "machine_mac:Rogerio's MacBook Pro" --exit-when .claude/tmp/multi-master/ios/kill-box
 ///
 /// KC_PAIR_LINK pairs the Mac (primary), KC_BOX_PAIR_LINK the box with the
 /// same token, KC_BOX_EXIT_FILE is the box's --exit-when file. The box
@@ -13,6 +13,9 @@ import XCTest
 /// once, as the Mac's. The last test takes the box offline, so restart it
 /// before running the class again.
 final class MultiMasterTests: KanbanUITestCase {
+    /// The Mac demo's machine name: as long as a real Mac's.
+    static let mac = "Rogerio's MacBook Pro"
+
     override func setUpWithError() throws {
         continueAfterFailure = false
         try launch(linkKey: "KC_PAIR_LINK", moreLinkKeys: ["KC_BOX_PAIR_LINK"])
@@ -22,16 +25,16 @@ final class MultiMasterTests: KanbanUITestCase {
         let boxCard = app.buttons["card-box_deploy"]
         let macCard = app.buttons["card-card_wait"]
         XCTAssertTrue(boxCard.waitForExistence(timeout: 15))
-        XCTAssertTrue(macCard.waitForExistence(timeout: 5))
+        XCTAssertTrue(macCard.waitForExistence(timeout: 15))
         sleep(1)
         shot("mm-01-merged-board")
         XCTAssertTrue(boxCard.label.contains("rchaves-platform"), boxCard.label)
-        XCTAssertTrue(macCard.label.contains("Studio"), macCard.label)
+        XCTAssertTrue(macCard.label.contains(Self.mac), macCard.label)
         // The box's synced copy of the Mac's card is not listed twice.
         XCTAssertEqual(app.buttons.matching(identifier: "card-card_wait").count, 1)
 
         app.buttons["machinesMenu"].tap()
-        let studio = app.buttons["machine-Studio"]
+        let studio = app.buttons["machine-\(Self.mac)"]
         let box = app.buttons["machine-rchaves-platform"]
         XCTAssertTrue(studio.waitForExistence(timeout: 5))
         XCTAssertTrue(studio.label.contains("Primary"), studio.label)
@@ -43,6 +46,29 @@ final class MultiMasterTests: KanbanUITestCase {
         studio.tap()
         XCTAssertTrue(waitFor(5) { studio.label.contains("Primary") })
         app.buttons["machinesDone"].tap()
+    }
+
+    /// card_busy has the long machine name, its column and seven PRs: the
+    /// chips collapse or truncate, and nothing leaves the screen.
+    func test1bRowsStayInsideTheScreen() throws {
+        let busy = app.buttons["card-card_busy"]
+        // The first launch after the simulator boots can take a while.
+        XCTAssertTrue(busy.waitForExistence(timeout: 40))
+        XCTAssertTrue(app.buttons["card-box_deploy"].waitForExistence(timeout: 15))
+        sleep(1)
+        shot("mm-01b-rows-fit")
+        let screen = app.windows.firstMatch.frame
+        for id in ["card_busy", "card_wait", "box_deploy", "box_backfill"] {
+            let row = app.buttons["card-\(id)"]
+            XCTAssertTrue(row.exists, id)
+            for element in [row] + row.descendants(matching: .any).allElementsBoundByIndex {
+                let frame = element.frame
+                guard !frame.isEmpty else { continue }
+                XCTAssertGreaterThanOrEqual(frame.minX, screen.minX - 0.5, "\(id): \(element.label) starts off screen: \(frame)")
+                XCTAssertLessThanOrEqual(frame.maxX, screen.maxX + 0.5, "\(id): \(element.label) ends off screen: \(frame)")
+            }
+        }
+        XCTAssertTrue(busy.label.contains("+"), "the PR chips did not collapse: \(busy.label)")
     }
 
     func test2PromptsGoToTheCardsOwnMachine() throws {
@@ -58,7 +84,7 @@ final class MultiMasterTests: KanbanUITestCase {
         goBack()
         openCard("card_wait")
         XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "cardMachine").firstMatch.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "cardMachine").firstMatch.label.contains("Studio"))
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "cardMachine").firstMatch.label.contains(Self.mac))
         send("Routed to the Mac")
         XCTAssertTrue(message(containing: "Got it: Routed to the Mac").waitForExistence(timeout: 15))
         shot("mm-05-mac-card-chat")
@@ -74,7 +100,7 @@ final class MultiMasterTests: KanbanUITestCase {
         newTask.tap()
         let picker = app.buttons["machinePicker"]
         XCTAssertTrue(picker.waitForExistence(timeout: 5))
-        XCTAssertTrue(picker.label.contains("Studio"), "the primary is the default: \(picker.label)")
+        XCTAssertTrue(picker.label.contains(Self.mac), "the primary is the default: \(picker.label)")
         picker.tap()
         app.buttons["rchaves-platform"].firstMatch.tap()
         XCTAssertTrue(waitFor(5) { picker.label.contains("rchaves-platform") }, picker.label)
@@ -102,8 +128,9 @@ final class MultiMasterTests: KanbanUITestCase {
         let down = app.buttons["machineDown-rchaves-platform"]
         XCTAssertTrue(down.waitForExistence(timeout: 20), "the box never showed as offline")
         XCTAssertTrue(down.label.contains("Offline since"), down.label)
+        // Off, the box's cards leave Live for their columns further down.
         let boxCard = app.buttons["card-box_deploy"]
-        XCTAssertTrue(boxCard.exists)
+        XCTAssertTrue(scrollTo(boxCard))
         XCTAssertTrue(boxCard.label.contains("offline"), boxCard.label)
         XCTAssertTrue(boxCard.label.contains("Machine offline"), "an offline machine's card still shows as live: \(boxCard.label)")
         XCTAssertFalse(app.buttons["card-card_wait"].label.contains("offline"))
@@ -120,19 +147,28 @@ final class MultiMasterTests: KanbanUITestCase {
         picker.tap()
         XCTAssertFalse(app.buttons["rchaves-platform"].exists, "an offline machine is offered for a new task")
         shot("mm-10-new-task-box-offline")
-        app.buttons["Studio"].firstMatch.tap()
+        app.buttons[Self.mac].firstMatch.tap()
         app.buttons["Cancel"].tap()
 
         // Relaunched with the box still off: its cards come from the cache.
         app.terminate()
         try launch(linkKey: "KC_PAIR_LINK", extraEnv: ["KANBANCODE_PAIR_ONLY": "0"])
-        XCTAssertTrue(app.buttons["card-box_deploy"].waitForExistence(timeout: 15))
         XCTAssertTrue(app.buttons["machineDown-rchaves-platform"].waitForExistence(timeout: 20))
+        XCTAssertTrue(scrollTo(app.buttons["card-box_deploy"]))
         sleep(1)
         shot("mm-11-relaunch-box-cached")
     }
 
     // MARK: Helpers
+
+    /// Scrolls the board down until `element` shows.
+    private func scrollTo(_ element: XCUIElement) -> Bool {
+        for _ in 0..<6 {
+            if element.waitForExistence(timeout: 2), element.isHittable { return true }
+            app.swipeUp()
+        }
+        return element.exists
+    }
 
     private func send(_ text: String) {
         XCTAssertTrue(composer.waitForExistence(timeout: 10))

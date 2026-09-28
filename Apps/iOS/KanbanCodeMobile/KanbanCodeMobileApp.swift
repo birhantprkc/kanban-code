@@ -89,6 +89,7 @@ struct RootView: View {
         }
         .task { fleet.sync() }
         .onChange(of: servers.servers) { fleet.sync() }
+        .onChange(of: servers.tokenRevision) { fleet.sync() }
         .overlay {
             if pairing.isChecking {
                 ProgressView("Pairing")

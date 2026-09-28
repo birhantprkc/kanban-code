@@ -1,6 +1,6 @@
 # Kanban Code for iPhone
 
-A remote control for Kanban Code on your Mac. Sessions keep running on the Mac; the phone shows the board, reads and sends to the conversation, starts tasks, and opens the card's terminal. The API it talks to is described in [docs/remote-control.md](../../docs/remote-control.md).
+A remote control for Kanban Code. Sessions keep running on the machines that run them (masters: the Mac app, or `kanban-code-server` on an always-on Linux box); the phone shows the board, reads and sends to the conversation, starts tasks, and opens the card's terminal. The API it talks to is described in [docs/remote-control.md](../../docs/remote-control.md).
 
 ## Build and run in the simulator
 
@@ -16,12 +16,20 @@ The UI tests need a server to talk to. Start the demo server and pass its pairin
 
 ```bash
 swift build --product kanban-code-remote-demo
-.build/debug/kanban-code-remote-demo --port 7790 --pair iPhone --tmux-socket kc-demo &
-.build/debug/kanban-code-remote-demo --port 7791 --pair agent --scope agent --devices .claude/tmp/agent-devices.json &
-TEST_RUNNER_KC_PAIR_LINK='<link printed on 7790>' \
-TEST_RUNNER_KC_AGENT_PAIR_LINK='<link printed on 7791>' \
-TEST_RUNNER_KC_SHOT_DIR="$PWD/.claude/tmp/ios-shots" make ios-test
+D=.claude/tmp/ios-demo
+.build/debug/kanban-code-remote-demo --port 7790 --devices $D/devices.json --tmux-socket kc-demo \
+  --machine "machine_mac:Rogerio's MacBook Pro" --pair iPhone &
+.build/debug/kanban-code-remote-demo --port 7791 --devices $D/devices.json \
+  --machine machine_box:rchaves-platform --cards box --foreign "machine_mac:Rogerio's MacBook Pro" \
+  --pair agent --scope agent --exit-when "$PWD/$D/kill-box" &
+TEST_RUNNER_KC_PAIR_LINK='kanbancode://pair?url=http://127.0.0.1:7790&token=<iPhone token>' \
+TEST_RUNNER_KC_BOX_PAIR_LINK='kanbancode://pair?url=http://127.0.0.1:7791&token=<iPhone token>' \
+TEST_RUNNER_KC_AGENT_PAIR_LINK='kanbancode://pair?url=http://127.0.0.1:7790&token=<agent token>' \
+TEST_RUNNER_KC_BOX_EXIT_FILE="$PWD/$D/kill-box" \
+TEST_RUNNER_KC_SHOT_DIR="$PWD/$D" make ios-test
 ```
+
+The two demos are two masters, a Mac and a box, sharing one devices file, so each token works on both. `MultiMasterTests` pairs both and checks the merged board, per-card routing, launching on a chosen machine, and the box going offline (it writes the `--exit-when` file, which stops the box demo; restart it before the next run).
 
 Pass links with `url=http://127.0.0.1:...`: the printed ones use the Tailscale address, which the Mac cannot reach from itself.
 
@@ -70,4 +78,6 @@ tailscale serve --bg --https=7780 http://127.0.0.1:7780
 
 and use `https://<mac>.<tailnet>.ts.net:7780` as the URL.
 
-Several Macs can be paired; switch between them from the Macs menu on the board. Tokens are kept in the Keychain.
+## Several machines
+
+Pair every master: the Mac and an always-on box (`kanban-code-server pair iPhone` on the box prints its link). The board shows the cards of all of them, each named with the machine that runs it; a card's chat, prompts, queue and terminals go to that machine. The Machines button on the board shows which are online and picks the primary: the default machine for new tasks, and the one to keep always on. A machine that cannot be reached (a sleeping Mac, a Mac on a VPN that cuts it off the tailnet) keeps its last board on the phone, shown as offline since its last answer. Tokens are kept in the Keychain.

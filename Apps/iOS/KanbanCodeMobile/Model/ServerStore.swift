@@ -18,6 +18,8 @@ struct SavedServer: Codable, Identifiable, Hashable {
 @Observable
 final class ServerStore {
     private(set) var servers: [SavedServer] = []
+    /// Goes up whenever a token changes, so boards reconnect with the new one.
+    private(set) var tokenRevision = 0
     var primaryID: UUID? {
         didSet { UserDefaults.standard.set(primaryID?.uuidString, forKey: Self.primaryKey) }
     }
@@ -54,6 +56,7 @@ final class ServerStore {
             servers.append(server)
         }
         Keychain.setToken(link.token, for: server.id)
+        tokenRevision += 1
         persist()
         if makePrimary || primary == nil { primaryID = server.id }
         return server

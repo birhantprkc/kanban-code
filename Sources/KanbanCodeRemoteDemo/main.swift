@@ -157,7 +157,8 @@ final class DemoHost: RemoteControlHost {
             return
         }
         let cards: [CardState] = [
-            .init(card: card("card_busy", "Fix the flaky checkout test", .inProgress, project: 0, runtime: .tmux, live: true, busy: true, queued: 1, minutesAgo: 1),
+            .init(card: card("card_busy", "Fix the flaky checkout test", .inProgress, project: 0, runtime: .tmux, live: true, busy: true,
+                             prs: (0..<7).map { RemotePR(number: 8320 + $0, status: $0 == 0 ? "open" : "merged") }, queued: 1, minutesAgo: 1),
                   messages: Self.conversation("Fix the flaky checkout test")),
             .init(card: card("card_agtop", "Refactor the billing webhooks", .inProgress, project: 1, runtime: .agtop, live: true, minutesAgo: 4),
                   messages: Self.conversation("Refactor the billing webhooks"), agtopId: agtopId),

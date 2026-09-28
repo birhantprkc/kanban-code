@@ -4,6 +4,10 @@ import KanbanCodeRemoteKit
 struct BoardScreen: View {
     let fleet: FleetModel
     @State private var path: [String] = []
+    /// The board's rows while a card is open on top of it. A list that
+    /// changes while covered reloads when focus comes back to one of its
+    /// cells, which UIKit refuses with a crash; so it waits for the card to close.
+    @State private var covered: (sections: [BoardSection], down: [BoardModel])?
     @State private var search = ""
     @State private var showNewTask = false
     @State private var showAddMac = false
@@ -35,6 +39,9 @@ struct BoardScreen: View {
                 }
         }
         .task { fleet.start() }
+        .onChange(of: path.isEmpty) { _, isEmpty in
+            covered = isEmpty ? nil : (sections(of: fleet.cards), downMasters)
+        }
         .sheet(isPresented: $showNewTask) {
             NewTaskSheet(fleet: fleet) { card, master in
                 master.upsert(card)
@@ -79,7 +86,7 @@ struct BoardScreen: View {
                     .buttonStyle(.borderedProminent)
             }
         } else if fleet.hasBoard {
-            let sections = sections(of: fleet.cards)
+            let sections = covered?.sections ?? sections(of: fleet.cards)
             if sections.isEmpty && fleet.isMulti && search.isEmpty {
                 List { machineStatusSection }
                     .listStyle(.insetGrouped)
@@ -208,6 +215,10 @@ struct BoardScreen: View {
 
     private var projects: [RemoteProject] { fleet.projects }
 
+    private var downMasters: [BoardModel] {
+        fleet.isMulti ? fleet.orderedMasters.filter { !$0.isOnline } : []
+    }
+
     private var filteredProjectName: String? {
         guard !projectFilter.isEmpty else { return nil }
         return projects.first { $0.name == projectFilter || $0.path == projectFilter }?.name
@@ -217,7 +228,7 @@ struct BoardScreen: View {
     /// A row per master that is not live, when there are several: its cards
     /// stay on the board as last seen.
     @ViewBuilder private var machineStatusSection: some View {
-        let down = fleet.isMulti ? fleet.orderedMasters.filter { !$0.isOnline } : []
+        let down = covered?.down ?? downMasters
         if !down.isEmpty {
             Section {
                 ForEach(down, id: \.server.id) { master in
