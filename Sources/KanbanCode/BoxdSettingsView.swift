@@ -73,19 +73,33 @@ struct BoxdSettingsView: View {
     @ViewBuilder
     private var sshSections: some View {
         Section("Machines") {
+            if !sshMachines.isEmpty {
+                HStack(spacing: 8) {
+                    Color.clear.frame(width: 8, height: 1)
+                    Text("Name").frame(width: 130, alignment: .leading)
+                    Text("Ssh target").frame(maxWidth: .infinity, alignment: .leading)
+                    Text("Repositories").frame(width: 130, alignment: .leading)
+                    Color.clear.frame(width: 16, height: 1)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
             ForEach($sshMachines) { $machine in
                 HStack(spacing: 8) {
                     Circle()
                         .fill(reachabilityColor(machine))
                         .frame(width: 8, height: 8)
                         .help(reachabilityHelp(machine))
-                    TextField("Name", text: $machine.name)
+                    TextField("Name", text: $machine.name, prompt: Text("name"))
+                        .labelsHidden()
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 130)
                     TextField("Ssh target", text: $machine.target, prompt: Text("user@host"))
+                        .labelsHidden()
                         .textFieldStyle(.roundedBorder)
                         .font(.system(.body, design: .monospaced))
                     TextField("Repositories", text: $machine.repoRoot, prompt: Text(SshMachine.defaultRepoRoot))
+                        .labelsHidden()
                         .textFieldStyle(.roundedBorder)
                         .font(.system(.body, design: .monospaced))
                         .frame(width: 130)
