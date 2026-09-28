@@ -82,6 +82,8 @@ public final class RemoteControlServer: Sendable {
     public let devices: RemoteDeviceStore
     /// Serves the peer sync routes (`/v1/links`, `/v1/peers`) when set.
     public let peerServer: (any PeerLinksServing)?
+    /// Serves the agent sync routes (`/v1/sync/*`, `/v1/optmem/run`) when set.
+    public let syncEngine: AgentSyncEngine?
     private let bindAddresses: @Sendable () -> [String]
     private let options: Options
     private let requestedPort: Int
@@ -94,11 +96,13 @@ public final class RemoteControlServer: Sendable {
         port: Int = RemoteAPI.defaultPort,
         bindAddresses: @escaping @Sendable () -> [String] = RemoteNetworkAddresses.bindable,
         options: Options = Options(),
-        peerServer: (any PeerLinksServing)? = nil
+        peerServer: (any PeerLinksServing)? = nil,
+        syncEngine: AgentSyncEngine? = nil
     ) {
         self.host = host
         self.devices = devices
         self.peerServer = peerServer
+        self.syncEngine = syncEngine
         self.requestedPort = port
         self.bindAddresses = bindAddresses
         self.options = options
@@ -354,6 +358,11 @@ public final class RemoteControlServer: Sendable {
             let rest = Array(seg.dropFirst())
             if let peerServer,
                let response = await RemoteLinksRoutes.handle(method: method, rest: rest, query: request.query, server: peerServer) {
+                return .response(response)
+            }
+            if let syncEngine,
+               let response = await RemoteSyncRoutes.handle(
+                   method: method, rest: rest, query: request.query, body: request.body, device: device, engine: syncEngine) {
                 return .response(response)
             }
             if rest.first == "cli" {

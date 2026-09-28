@@ -25,13 +25,15 @@ final class RemoteControlController {
     @ObservationIgnored private var applied: RemoteControlSettings?
     @ObservationIgnored private weak var engine: MasterEngine?
     @ObservationIgnored private var peerServer: (any PeerLinksServing)?
+    @ObservationIgnored private var syncEngine: AgentSyncEngine?
     @ObservationIgnored private var settingsObserver: NSObjectProtocol?
 
     private init() {}
 
     /// Wires the controller to the app's master engine and starts following
     /// the settings. Called once by the composition root.
-    func attach(engine: MasterEngine, peerServer: (any PeerLinksServing)?, settingsStore: SettingsStore) {
+    func attach(engine: MasterEngine, peerServer: (any PeerLinksServing)?, syncEngine: AgentSyncEngine?, settingsStore: SettingsStore) {
+        self.syncEngine = syncEngine
         self.engine = engine
         self.peerServer = peerServer
         settingsObserver = NotificationCenter.default.addObserver(
@@ -63,7 +65,7 @@ final class RemoteControlController {
         }
         guard let engine else { return }
         let host = MasterRemoteControlHost(engine: engine)
-        let server = RemoteControlServer(host: host, devices: deviceStore, port: settings.port, peerServer: peerServer)
+        let server = RemoteControlServer(host: host, devices: deviceStore, port: settings.port, peerServer: peerServer, syncEngine: syncEngine)
         do {
             try await server.start()
             self.host = host

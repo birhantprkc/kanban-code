@@ -17,6 +17,7 @@ final class ServerMaster {
     let orchestrator: BackgroundOrchestrator
     let identity: MachineIdentity
     let peerSync: PeerSync
+    let agentSync: AgentSyncEngine
     let reconciles: Bool
 
     init(home: String, reconciles: Bool) {
@@ -106,6 +107,9 @@ final class ServerMaster {
         }
         engine.peerSync = peerSync
         engine.installForeignCardHandler()
+        agentSync = AgentSyncEngine(kanbanHome: home, identity: identity) { [peerSync] in
+            await peerSync.syncPeers()
+        }
     }
 
     /// Pushover when configured, nothing otherwise: a headless host has no
@@ -128,6 +132,8 @@ final class ServerMaster {
 
         let peerSync = self.peerSync
         Task.detached { await peerSync.run() }
+        let agentSync = self.agentSync
+        Task.detached { await agentSync.run() }
         Task { await self.settingsLoop() }
         orchestrator.start()
         let orchestrator = self.orchestrator

@@ -1,0 +1,443 @@
+import Testing
+import Foundation
+@testable import KanbanCodeCore
+
+// MARK: - Helpers
+
+private func tempDir(_ name: String = "agentsync") -> String {
+    let path = NSTemporaryDirectory() + "\(name)-\(UUID().uuidString.prefix(8))"
+    try? FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
+    // /var and /private/var are the same folder on macOS; use the real path.
+    return (path as NSString).resolvingSymlinksInPath
+}
+
+private func write(_ path: String, _ text: String, mtime: Double? = nil) {
+    try? FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+    FileManager.default.createFile(atPath: path, contents: Data(text.utf8))
+    if let mtime {
+        try? FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: mtime)], ofItemAtPath: path)
+    }
+}
+
+private func read(_ path: String) -> String? {
+    FileManager.default.contents(atPath: path).map { String(decoding: $0, as: UTF8.self) }
+}
+
+/// One side of a two-machine mirror, driven by hand: scan, then take the
+/// other side's newer versions.
+private struct Side {
+    var home: String
+    var machine: String
+    var root: String
+    var manifest: [String: SyncItem] = [:]
+    var excludes = SyncExcludes(SyncConfig.defaultExcludes)
+
+    init(home: String, machine: String, entry: String = ".claude") {
+        self.home = home
+        self.machine = machine
+        self.root = home + "/" + entry
+    }
+
+    var scanner: SyncScanner { SyncScanner(home: home, machineId: machine) }
+
+    mutating func scan(now: Double = Date().timeIntervalSince1970) {
+        manifest = scanner.scan(root: root, excludes: excludes, previous: manifest, now: now)
+    }
+
+    /// Pulls `other` into this side; returns the actions taken.
+    @discardableResult
+    mutating func pull(from other: Side) throws -> [SyncAction] {
+        scan()
+        let actions = SyncPlanner.plan(local: manifest, remote: other.manifest)
+        let applier = SyncApplier(home: home)
+        for action in actions {
+            switch action {
+            case .adopt(let path, _):
+                manifest[path]?.synced = true
+            case .delete(let path, let remote):
+                manifest[path] = applier.delete(root: root, rel: path, remote: remote)
+            case .fetch(let path, let remote, let keep):
+                let content = remote.kind == .file ? other.scanner.content(root: other.root, rel: path) : nil
+                manifest[path] = try applier.write(root: root, rel: path, remote: remote, content: content, keepPrevious: keep)
+            }
+        }
+        return actions
+    }
+}
+
+/// The actions that touch the disk (an adopt only marks a path synced).
+private func changes(_ actions: [SyncAction]) -> [SyncAction] {
+    actions.filter { if case .adopt = $0 { false } else { true } }
+}
+
+// MARK: - Home rewriting
+
+@Suite("Agent sync: home folder rewriting")
+struct SyncHomeTests {
+    @Test func replacesStandaloneHomeOnly() {
+        let text = #"{"command": "/Users/rchaves/.kanban-code/hook.sh", "x": "/Users/rchavesX", "y": "/a/Users/rchaves/b", "z": "/Users/rchaves"}"#
+        let normalized = SyncHome.normalize(text, home: "/Users/rchaves")
+        #expect(normalized.contains(#""{{KANBAN_SYNC_HOME}}/.kanban-code/hook.sh""#))
+        #expect(normalized.contains("/Users/rchavesX"))
+        #expect(normalized.contains("/a/Users/rchaves/b"))
+        #expect(normalized.hasSuffix(#""z": "{{KANBAN_SYNC_HOME}}"}"#))
+        #expect(SyncHome.localize(normalized, home: "/root").contains(#""/root/.kanban-code/hook.sh""#))
+    }
+
+    @Test func rootHomeLeavesOtherRootsAlone() {
+        let text = "cd /root/Projects && ls /rootfs /x/root"
+        #expect(SyncHome.normalize(text, home: "/root") == "cd {{KANBAN_SYNC_HOME}}/Projects && ls /rootfs /x/root")
+    }
+
+    @Test func binaryContentTravelsUntouched() {
+        var data = Data("/Users/rchaves".utf8)
+        data.append(0)
+        #expect(SyncHome.normalize(data, home: "/Users/rchaves") == data)
+    }
+
+    @Test func expandsTilde() {
+        #expect(SyncHome.expand("~/.claude", home: "/root") == "/root/.claude")
+        #expect(SyncHome.expand("/etc/x", home: "/root") == "/etc/x")
+    }
+}
+
+// MARK: - Manifest
+
+@Suite("Agent sync: manifest scanning")
+struct SyncScannerTests {
+    @Test func recordsEditsAndDeletionsAndSkipsExcludes() throws {
+        let home = tempDir()
+        var side = Side(home: home, machine: "A")
+        write(side.root + "/CLAUDE.md", "hello", mtime: 1000)
+        write(side.root + "/commands/x.md", "x", mtime: 1000)
+        write(side.root + "/settings.local.json", "{}")
+        write(side.root + "/.trash/old.md", "old")
+        write(side.root + "/debug.log", "log")
+        side.scan(now: 2000)
+        #expect(Set(side.manifest.keys) == ["CLAUDE.md", "commands/x.md"])
+        #expect(side.manifest["CLAUDE.md"]?.origin == "A")
+        #expect(side.manifest["CLAUDE.md"]?.mtime == 1000)
+
+        let before = side.manifest
+        side.scan(now: 2100)
+        #expect(side.manifest == before, "an unchanged tree keeps its manifest")
+
+        write(side.root + "/CLAUDE.md", "hello again", mtime: 1500)
+        try FileManager.default.removeItem(atPath: side.root + "/commands/x.md")
+        side.scan(now: 3000)
+        #expect(side.manifest["CLAUDE.md"]?.mtime == 1500)
+        #expect(side.manifest["CLAUDE.md"]?.hash != before["CLAUDE.md"]?.hash)
+        #expect(side.manifest["commands/x.md"]?.deleted == true)
+        #expect(side.manifest["commands/x.md"]?.mtime == 3000)
+    }
+
+    @Test func homeRewrittenCopiesHashTheSame() {
+        let mac = tempDir(), box = tempDir()
+        var a = Side(home: mac, machine: "A"), b = Side(home: box, machine: "B")
+        write(a.root + "/settings.json", #"{"hook": "\#(mac)/.kanban-code/hook.sh"}"#)
+        write(b.root + "/settings.json", #"{"hook": "\#(box)/.kanban-code/hook.sh"}"#)
+        a.scan()
+        b.scan()
+        #expect(a.manifest["settings.json"]?.hash == b.manifest["settings.json"]?.hash)
+    }
+}
+
+// MARK: - Newest wins
+
+@Suite("Agent sync: newest wins between two machines")
+struct SyncMirrorTests {
+    @Test func editTravelsRewrittenAndDoesNotBounce() throws {
+        let mac = tempDir(), box = tempDir()
+        var a = Side(home: mac, machine: "A"), b = Side(home: box, machine: "B")
+        write(a.root + "/settings.json", #"{"hook": "\#(mac)/.kanban-code/hook.sh"}"#, mtime: 1000)
+        a.scan()
+        try b.pull(from: a)
+        #expect(read(b.root + "/settings.json") == #"{"hook": "\#(box)/.kanban-code/hook.sh"}"#)
+
+        // Neither side has anything left to take.
+        #expect(try changes(a.pull(from: b)).isEmpty)
+        #expect(try changes(b.pull(from: a)).isEmpty)
+        #expect(a.manifest["settings.json"]?.sameVersion(as: b.manifest["settings.json"]!) == true)
+    }
+
+    @Test func newerRemoteWinsAndOlderIsIgnored() throws {
+        let mac = tempDir(), box = tempDir()
+        var a = Side(home: mac, machine: "A"), b = Side(home: box, machine: "B")
+        write(a.root + "/CLAUDE.md", "v1", mtime: 1000)
+        a.scan()
+        try b.pull(from: a)
+
+        write(b.root + "/CLAUDE.md", "v2 from box", mtime: 2000)
+        b.scan()
+        let taken = try a.pull(from: b)
+        #expect(taken.count == 1)
+        #expect(read(a.root + "/CLAUDE.md") == "v2 from box")
+
+        // An older edit on the Mac does not beat the box's version.
+        write(a.root + "/CLAUDE.md", "old edit", mtime: 1500)
+        a.scan()
+        #expect(try changes(b.pull(from: a)).isEmpty)
+        #expect(read(b.root + "/CLAUDE.md") == "v2 from box")
+    }
+
+    @Test func deletionPropagates() throws {
+        let mac = tempDir(), box = tempDir()
+        var a = Side(home: mac, machine: "A"), b = Side(home: box, machine: "B")
+        write(a.root + "/commands/review.md", "review", mtime: 1000)
+        a.scan()
+        try b.pull(from: a)
+        #expect(read(b.root + "/commands/review.md") == "review")
+
+        try FileManager.default.removeItem(atPath: a.root + "/commands/review.md")
+        a.scan(now: Date().timeIntervalSince1970)
+        try b.pull(from: a)
+        #expect(!FileManager.default.fileExists(atPath: b.root + "/commands/review.md"))
+        #expect(!FileManager.default.fileExists(atPath: b.root + "/commands"), "an emptied folder goes too")
+        #expect(b.manifest["commands/review.md"]?.deleted == true)
+        #expect(try changes(a.pull(from: b)).isEmpty, "the deletion does not come back")
+    }
+
+    @Test func peerNeverDeletesAFileItNeverSaw() throws {
+        let mac = tempDir(), box = tempDir()
+        var a = Side(home: mac, machine: "A"), b = Side(home: box, machine: "B")
+        a.manifest["notes.md"] = SyncItem(hash: "", mtime: 9_999_999_999, origin: "A", deleted: true, synced: true)
+        write(b.root + "/notes.md", "box only", mtime: 1000)
+        try b.pull(from: a)
+        #expect(read(b.root + "/notes.md") == "box only")
+    }
+
+    @Test func firstSyncKeepsTheLoserOnce() throws {
+        let mac = tempDir(), box = tempDir()
+        var a = Side(home: mac, machine: "A"), b = Side(home: box, machine: "B")
+        write(a.root + "/settings.json", "mac settings", mtime: 2000)
+        write(b.root + "/settings.json", "box settings", mtime: 1000)
+        a.scan()
+        let actions = try b.pull(from: a)
+        #expect(actions == [.fetch(path: "settings.json", remote: a.manifest["settings.json"]!, keepPrevious: true)])
+        #expect(read(b.root + "/settings.json") == "mac settings")
+        #expect(read(b.root + "/settings.json.sync-prev") == "box settings")
+
+        // The kept copy is not synced, and a later overwrite does not replace it.
+        b.scan()
+        #expect(b.manifest["settings.json.sync-prev"] == nil)
+        write(a.root + "/settings.json", "mac settings 2", mtime: 3000)
+        a.scan()
+        try b.pull(from: a)
+        #expect(read(b.root + "/settings.json.sync-prev") == "box settings")
+        #expect(read(b.root + "/settings.json") == "mac settings 2")
+    }
+
+    @Test func symlinkTargetsAreRewritten() throws {
+        let mac = tempDir(), box = tempDir()
+        var a = Side(home: mac, machine: "A", entry: ".claude/skills")
+        var b = Side(home: box, machine: "B", entry: ".claude/skills")
+        try FileManager.default.createDirectory(atPath: a.root, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: a.root + "/review", withDestinationPath: mac + "/Projects/skills/skills/review")
+        try FileManager.default.createSymbolicLink(atPath: a.root + "/pptx", withDestinationPath: "../../.agents/skills/pptx")
+        write(a.root + "/boxd-cli/SKILL.md", "# boxd")
+        a.scan()
+        try b.pull(from: a)
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: b.root + "/review") == box + "/Projects/skills/skills/review")
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: b.root + "/pptx") == "../../.agents/skills/pptx")
+        #expect(read(b.root + "/boxd-cli/SKILL.md") == "# boxd")
+        #expect(try changes(a.pull(from: b)).isEmpty)
+        #expect(try changes(b.pull(from: a)).isEmpty)
+    }
+
+    @Test func singleFileSymlinkEntry() throws {
+        let mac = tempDir(), box = tempDir()
+        var a = Side(home: mac, machine: "A", entry: ".codex/AGENTS.md")
+        var b = Side(home: box, machine: "B", entry: ".codex/AGENTS.md")
+        try FileManager.default.createDirectory(atPath: mac + "/.codex", withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: a.root, withDestinationPath: mac + "/.claude/CLAUDE.md")
+        a.scan()
+        #expect(Set(a.manifest.keys) == [""])
+        try b.pull(from: a)
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: b.root) == box + "/.claude/CLAUDE.md")
+    }
+
+    @Test func executableBitTravels() throws {
+        let mac = tempDir(), box = tempDir()
+        var a = Side(home: mac, machine: "A", entry: ".optmem/memo")
+        var b = Side(home: box, machine: "B", entry: ".optmem/memo")
+        write(a.root, "#!/usr/bin/env python3\n")
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: a.root)
+        a.scan()
+        try b.pull(from: a)
+        #expect(FileManager.default.isExecutableFile(atPath: b.root))
+    }
+}
+
+// MARK: - One-way follow
+
+@Suite("Agent sync: follower copy of a home")
+struct SyncFollowTests {
+    @Test func followTakesEveryDifferenceAndDropsExtras() {
+        let item = { (hash: String) in SyncItem(hash: hash, mtime: 1, origin: "H") }
+        let local = ["memory/LOG.txt": item("old"), "memory/TREE/2": item("same"), "stray": item("x")]
+        let home = ["memory/LOG.txt": item("new"), "memory/TREE/2": item("same"), "WAKE.md": item("w")]
+        let actions = SyncPlanner.follow(local: local, home: home)
+        #expect(actions.map(\.path) == ["WAKE.md", "memory/LOG.txt", "stray"])
+        if case .delete = actions[2] {} else { Issue.record("stray should be deleted") }
+    }
+}
+
+// MARK: - OptMem spool
+
+@Suite("Agent sync: OptMem spool replay")
+struct OptmemSpoolTests {
+    @Test func replaysInOrderAndStopsAtTheFirstFailure() async throws {
+        let dir = tempDir("spool")
+        let spool = OptmemSpool(directory: dir)
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+        for (i, text) in ["first", "second", "third"].enumerated() {
+            try spool.enqueue(OptmemRunRequest(id: "id\(i)", argv: ["note", text], date: "2026-09-28"),
+                              at: base.addingTimeInterval(Double(i)))
+        }
+        #expect(spool.pending().map(\.request.argv[1]) == ["first", "second", "third"])
+
+        final class Box: @unchecked Sendable { var seen: [String] = [] }
+        let box = Box()
+        struct Down: Error {}
+        let partial = await spool.replay { request in
+            if request.argv[1] == "second" { throw Down() }
+            box.seen.append(request.argv[1])
+            return OptmemRunResult(status: 0, stdout: "Saved as #\(box.seen.count).", stderr: "")
+        }
+        #expect(partial.sent == 1)
+        #expect(partial.remaining == 2)
+        #expect(spool.pending().map(\.request.argv[1]) == ["second", "third"])
+
+        let rest = await spool.replay { request in
+            box.seen.append(request.argv[1])
+            return OptmemRunResult(status: 0, stdout: "", stderr: "")
+        }
+        #expect(rest.sent == 2)
+        #expect(rest.remaining == 0)
+        #expect(box.seen == ["first", "second", "third"])
+        #expect(read(dir + "/replayed.log")?.split(separator: "\n").count == 3)
+    }
+
+    @Test func aHeldLockSkipsTheRound() async throws {
+        let dir = tempDir("spool")
+        let spool = OptmemSpool(directory: dir)
+        try spool.enqueue(OptmemRunRequest(id: "a", argv: ["note", "x"]))
+        let lock = OptmemSpool.tryLock(dir + "/.lock")
+        #expect(lock != nil)
+        let result = await spool.replay { _ in OptmemRunResult(status: 0, stdout: "", stderr: "") }
+        #expect(result.sent == 0)
+        #expect(result.remaining == 1)
+        if let lock { close(lock) }
+    }
+}
+
+// MARK: - Engines talking
+
+/// Routes the sync calls of one engine to another, in process.
+private final class LoopbackTransport: SyncTransport, @unchecked Sendable {
+    var engines: [String: AgentSyncEngine] = [:]
+    var runs: [OptmemRunRequest] = []
+
+    func state(peer: SyncPeer) async throws -> SyncStateResponse {
+        guard let engine = engines[peer.machine.id] else { throw SyncTransportError.http(502, "down") }
+        return await engine.state()
+    }
+
+    func file(peer: SyncPeer, entryId: String, path: String) async throws -> Data {
+        guard let data = await engines[peer.machine.id]?.file(entryId: entryId, path: path) else {
+            throw SyncTransportError.http(404, path)
+        }
+        return data
+    }
+
+    func notify(peer: SyncPeer, machineId: String, what: String) async {
+        await engines[peer.machine.id]?.poke(machineId: machineId, what: what)
+    }
+
+    func optmemRun(url: String, token: String, request: OptmemRunRequest) async throws -> OptmemRunResult {
+        guard engines[url] != nil else { throw SyncTransportError.http(502, "down") }
+        runs.append(request)
+        return OptmemRunResult(status: 0, stdout: "Saved as #\(runs.count).", stderr: "")
+    }
+}
+
+@Suite("Agent sync: engines")
+struct AgentSyncEngineTests {
+    private func engine(home: String, identity: MachineIdentity, peer: MachineIdentity, transport: LoopbackTransport,
+                        entries: [SyncEntry]) throws -> AgentSyncEngine {
+        let kanban = home + "/.kanban-code"
+        try FileManager.default.createDirectory(atPath: kanban, withIntermediateDirectories: true)
+        try JSONEncoder().encode(SyncConfig(updatedAt: 1, entries: entries)).write(to: URL(fileURLWithPath: kanban + "/sync.json"))
+        var options = AgentSyncEngine.Options()
+        options.scanInterval = 0
+        options.pullInterval = 0
+        options.gitInterval = 1e9
+        let peerRef = SyncPeer(machine: peer, url: peer.id, token: "t", online: true)
+        return AgentSyncEngine(home: home, kanbanHome: kanban, identity: identity,
+                               peers: { [peerRef] }, transport: transport, options: options)
+    }
+
+    @Test func mirrorAndConfigTravelBetweenEngines() async throws {
+        let mac = tempDir(), box = tempDir()
+        let macId = MachineIdentity(id: "machine_mac", name: "mac")
+        let boxId = MachineIdentity(id: "machine_box", name: "box", alwaysOn: true)
+        let transport = LoopbackTransport()
+        let entries = [SyncEntry(mode: .mirror, path: "~/.claude/CLAUDE.md", excludes: SyncConfig.defaultExcludes)]
+        let a = try engine(home: mac, identity: macId, peer: boxId, transport: transport, entries: entries)
+        let b = try engine(home: box, identity: boxId, peer: macId, transport: transport, entries: entries)
+        transport.engines = [macId.id: a, boxId.id: b]
+
+        write(mac + "/.claude/CLAUDE.md", "memory at \(mac)/.optmem")
+        await a.round()
+        await b.round()
+        #expect(read(box + "/.claude/CLAUDE.md") == "memory at \(box)/.optmem")
+
+        // A new entry added on the Mac reaches the box's settings.
+        let more = entries + [SyncEntry(mode: .mirror, path: "~/.claude/commands", excludes: SyncConfig.defaultExcludes)]
+        await a.setEntries(more)
+        write(mac + "/.claude/commands/ship.md", "ship it")
+        await a.round()
+        await b.round()
+        #expect(await b.currentConfig().entries == more)
+        await b.round()
+        #expect(read(box + "/.claude/commands/ship.md") == "ship it")
+    }
+
+    @Test func followerWaitsForASeededHomeThenReplaysItsQueue() async throws {
+        let mac = tempDir(), box = tempDir()
+        let macId = MachineIdentity(id: "machine_mac", name: "mac")
+        let boxId = MachineIdentity(id: "machine_box", name: "box", alwaysOn: true)
+        let transport = LoopbackTransport()
+        let entries = [SyncEntry(mode: .optmem, path: "~/.optmem")]
+        let a = try engine(home: mac, identity: macId, peer: boxId, transport: transport, entries: entries)
+        let b = try engine(home: box, identity: boxId, peer: macId, transport: transport, entries: entries)
+        transport.engines = [macId.id: a, boxId.id: b]
+
+        let record = { (i: Int) in "#\(i) 2026-09-28 memory \(i)".padding(toLength: 319, withPad: " ", startingAt: 0) + "\n" }
+        write(mac + "/.optmem/memory/LOG.txt", record(0) + record(1))
+        write(mac + "/.optmem/WAKE.md", "mac wake")
+        write(box + "/.optmem/memory/LOG.txt", record(0))
+        write(box + "/.optmem/WAKE.md", "box wake")
+
+        // The home has fewer memories: the Mac keeps its own and does not forward.
+        await b.round()
+        await a.round()
+        #expect(read(mac + "/.optmem/memory/LOG.txt") == record(0) + record(1))
+        #expect(!FileManager.default.fileExists(atPath: mac + "/.optmem/home.json"))
+        #expect(await a.entryStatuses()["optmem:~/.optmem"]?.level == .warning)
+
+        // Seeded: the Mac follows the home and forwards to it.
+        write(box + "/.optmem/memory/LOG.txt", record(0) + record(1) + record(2))
+        write(box + "/.optmem/WAKE.md", "box wake 3")
+        try OptmemSpool(optmemRoot: mac + "/.optmem").enqueue(OptmemRunRequest(id: "q1", argv: ["note", "queued"]))
+        await b.round()
+        await a.round()
+        #expect(read(mac + "/.optmem/memory/LOG.txt") == record(0) + record(1) + record(2))
+        #expect(read(mac + "/.optmem/WAKE.md") == "box wake 3")
+        #expect(FileManager.default.fileExists(atPath: mac + "/.optmem/home.json"))
+        await a.round()
+        #expect(transport.runs.map(\.id) == ["q1"])
+        #expect(OptmemSpool(optmemRoot: mac + "/.optmem").pending().isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: box + "/.optmem/home.json"))
+    }
+}

@@ -24,6 +24,7 @@ final class AppComposition {
     let boxdSupervisor: BoxdMachineSupervisor
     let engine: MasterEngine
     let peerSync: PeerSync
+    let agentSync: AgentSyncEngine
     let transcriptMirror: PeerTranscriptMirror
 
     private init() {
@@ -182,9 +183,12 @@ final class AppComposition {
             let peers = Self.readPeers()
             Task { await peerSync.setPeers(peers) }
         }
+        let agentSync = AgentSyncEngine(identity: identity) { [peerSync] in await peerSync.syncPeers() }
+        Task.detached { await agentSync.run() }
         RemoteControlController.shared.attach(
             engine: engine,
             peerServer: BoardPeerLinksServer(store: boardStore, peerSync: peerSync),
+            syncEngine: agentSync,
             settingsStore: settings
         )
 
@@ -197,6 +201,7 @@ final class AppComposition {
         self.boxdSupervisor = supervisor
         self.engine = engine
         self.peerSync = peerSync
+        self.agentSync = agentSync
         self.transcriptMirror = mirror
         KanbanCodeLog.info("app", "services composed machine=\(identity.name) (\(identity.id))")
     }

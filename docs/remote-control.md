@@ -51,6 +51,8 @@ JSON bodies, up to 48 MiB. Dates are ISO 8601 with milliseconds, UTC (`2026-09-2
 | `GET /v1/cards/{id}/handover` | any | `RemoteHandoverInfo` |
 | `GET /v1/cards/{id}/transcript/raw?offset=0&limit=4194304` | any | transcript bytes, `X-Transcript-Size` header |
 | `GET /v1/links?since=&epoch=`, `POST /v1/links/changed`, `GET /v1/peers` | any | peer sync |
+| `GET /v1/sync/state`, `GET /v1/sync/file?entry=&path=`, `POST /v1/sync/changed?machine=&what=` | full | agent sync (Settings > Sync) |
+| `POST /v1/optmem/run` | full | `{"id", "argv", "date"}` → `{"status", "stdout", "stderr"}`: a memo command on the OptMem home |
 | `POST /v1/cli` | full | `RemoteCLIRequest` → `RemoteCLIResult` (`kanban channel`/`dm` only) |
 | `GET /v1/channels/files`, `GET /v1/channels/files/{path}?offset=` | any | channel files, for the mirror |
 | `PUT /v1/channels/files/{path}` | full | creates a missing channel file, 204 or 409 |
@@ -84,6 +86,14 @@ The Mac app and `kanban-code-server` (an always-on Linux box) are both masters: 
 - A master that runs all the time (`kanban-code-server`, `alwaysOn` in its identity) polls GitHub for the pull requests of every card while it is online, and writes them on cards other masters own; the others do not poll. With no such master online, the master with the lowest machine id polls. Masters send the repository (`host/owner/name`) of their project paths with the links, so the poller needs no checkout of them.
 - The always-on master is the channels home: channels and DMs live in its `~/.kanban-code/channels/`. Another master mirrors that directory (appends by offset, the rest whole, deletions follow; `read-state.json` and `drafts.json` stay local), writes `channels-home.json` for its CLI, and sends every channel write there: its `kanban channel`/`kanban dm` commands and its UI go through `POST /v1/cli`. The first time a Mac pairs with a home that has no channels, it copies its own there. Channel messages for a card another master runs are queued on that master (through the command inbox from the CLI).
 - `kanban subagent` and the other command inbox operations run on the master whose CLI wrote them, the box included.
+
+## Agent sync
+
+Settings > Sync keeps the agent setup the same on every master. The list lives in `~/.kanban-code/sync.json`; the copy with the newest `updatedAt` wins, so entries edited on the Mac reach the box. Each master only writes its own disk: it scans its entries every 5 seconds, sends `POST /v1/sync/changed` to its peers when something changed, and pulls `GET /v1/sync/state` from each online peer every minute or when poked.
+
+- `git` entries: cloned where missing (the origin URL comes from the entry or from a peer that has a clone), fetched and fast-forwarded every two minutes and when a peer says it pushed, local commits pushed. A clone that diverged from its upstream, or whose local changes block a fast-forward, is reported in Settings and left alone.
+- `mirror` entries (files or folders): a manifest per entry (`~/.kanban-code/sync/manifests/`) keeps each file's hash, mtime and origin machine. The newest version of each file wins; a deletion is a version too, so it travels. The hash is taken with the home folder replaced by a marker, so the Mac and Linux copies of one file hash the same and nothing bounces. Text files and symlink targets are rewritten to the local home (`/Users/rchaves` and `/root`). A path the two machines never agreed on is never deleted by a peer, and when a peer's newer version replaces it the local copy stays as `<name>.sync-prev` (once). Exclude patterns per entry: a name (`*.log`), a folder (`.trash/`) or a path in the entry.
+- `optmem` entry: the home (the always-on master unless the entry names one) keeps the memory. Every other master copies `memory/` and `WAKE.md` from it one way and writes `~/.optmem/home.json` (URL, token, optional ssh fallback). memo reads that file: `note`, `nap` and `forget` run on the home through `POST /v1/optmem/run` (or ssh), which numbers the memories and refreshes its `WAKE.md`; with the home unreachable they wait in `~/.optmem/spool/` and the master replays them in order once it answers. A home with fewer memories than a follower's copy was never seeded: the follower keeps writing locally and Settings asks to seed the home first.
 
 ## Terminal stream
 
