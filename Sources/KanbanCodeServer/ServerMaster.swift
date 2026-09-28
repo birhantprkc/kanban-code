@@ -2,14 +2,16 @@ import Foundation
 import KanbanCodeCore
 import KanbanCodeRemoteKit
 
-/// The service graph and loops of a headless master: the same BoardStore the
-/// Mac app drives, over the kanban home of this machine, plus peer sync.
-/// Launching and the hook-driven orchestration join it with the master engine.
+/// The service graph and loops of a headless master: the same BoardStore and
+/// master engine the Mac app drives, over the kanban home of this machine,
+/// plus peer sync. Sessions run here on agtop or tmux, as the settings say.
 @MainActor
 final class ServerMaster {
     let home: String
     let store: BoardStore
     let settingsStore: SettingsStore
+    let engine: MasterEngine
+    let orchestrator: BackgroundOrchestrator
     let identity: MachineIdentity
     let peerSync: PeerSync
     let reconciles: Bool
@@ -33,35 +35,82 @@ final class ServerMaster {
         if enabled.contains(.codex) {
             registry.register(.codex, discovery: CodexSessionDiscovery(), detector: CodexActivityDetector(), store: CodexSessionStore())
         }
+        let discovery = CompositeSessionDiscovery(registry: registry)
+        let activityDetector = CompositeActivityDetector(registry: registry, defaultDetector: claudeDetector)
 
         let coordination = CoordinationStore(basePath: home)
-        let tmux = TmuxAdapter()
+        let tmux = RoutingTmuxAdapter()
         let effectHandler = EffectHandler(
             coordinationStore: coordination,
             tmuxAdapter: tmux,
-            notifier: MacOSNotificationClient()
+            notifier: Self.notifier(settings)
         )
         let store = BoardStore(
             effectHandler: effectHandler,
-            discovery: CompositeSessionDiscovery(registry: registry),
+            discovery: discovery,
             coordinationStore: coordination,
-            activityDetector: CompositeActivityDetector(registry: registry, defaultDetector: claudeDetector),
+            activityDetector: activityDetector,
             settingsStore: settingsStore,
             ghAdapter: GhCliAdapter(),
             worktreeAdapter: GitWorktreeAdapter(),
             tmuxAdapter: tmux
         )
+        // Sessions other masters run on this host (over ssh) stay theirs.
+        store.adoptsDiscoveredSessions = false
         self.store = store
         self.settingsStore = settingsStore
 
         identity = MachineIdentityStore(basePath: home).loadOrCreate()
+
+        let orchestrator = BackgroundOrchestrator(
+            discovery: discovery,
+            coordinationStore: coordination,
+            activityDetector: activityDetector,
+            tmux: tmux,
+            prTracker: GhCliAdapter(),
+            notifier: Self.notifier(settings),
+            registry: registry
+        )
+        orchestrator.localMachineId = identity.id
+        orchestrator.notifiesUnlinkedSessions = false
+        orchestrator.setDispatch { [weak store] action in store?.dispatch(action) }
+        self.orchestrator = orchestrator
+
+        var platform = MasterPlatform()
+        platform.defaultAssistant = {
+            let enabled = Self.readSettings(home: home).settings?.enabledAssistants ?? [.claude]
+            return enabled.contains(.claude) ? .claude : (enabled.first ?? .claude)
+        }
+        engine = MasterEngine(
+            store: store,
+            settingsStore: settingsStore,
+            launcher: LaunchSession(tmux: tmux),
+            tmux: tmux,
+            registry: registry,
+            platform: platform
+        )
+
         peerSync = PeerSync(identity: identity, peers: settings?.peers ?? []) { [weak store] action in
             await MainActor.run { store?.dispatch(action) }
         }
+        engine.peerSync = peerSync
+        engine.installForeignCardHandler()
+    }
+
+    /// Pushover when configured, nothing otherwise: a headless host has no
+    /// notification center.
+    nonisolated static func notifier(_ settings: Settings?) -> NotifierPort? {
+        guard let notifications = settings?.notifications,
+              notifications.pushoverMode != .disabled,
+              let token = notifications.pushoverToken, let user = notifications.pushoverUserKey,
+              !token.isEmpty, !user.isEmpty
+        else { return nil }
+        return PushoverClient(token: token, userKey: user)
     }
 
     /// Loads the board, then runs the loops until the task is cancelled.
     func start() async {
+        installHooks()
         store.dispatch(.localMachineLoaded(identity))
         await store.loadSettingsAndCache()
         if reconciles { await store.reconcile() }
@@ -69,19 +118,44 @@ final class ServerMaster {
         let peerSync = self.peerSync
         Task.detached { await peerSync.run() }
         Task { await self.settingsLoop() }
+        orchestrator.start()
+        let orchestrator = self.orchestrator
+        let store = self.store
+        Task.detached {
+            await MasterEngine.watchHookEvents(kanbanHome: self.home) {
+                await orchestrator.processHookEvents()
+                await store.refreshActivity()
+            }
+        }
         if reconciles {
-            Task { await self.reconcileLoop() }
+            Task { await engine.runReconcileLoop() }
+        }
+        Task { await engine.runSelfCompactMonitor() }
+        Task { await engine.runSessionModelMonitor() }
+        Task { await engine.runOwnershipLoop() }
+    }
+
+    /// The assistants' hooks drive the busy state, the queue and the
+    /// notifications; the statusline feeds context usage.
+    private func installHooks() {
+        for assistant in CodingAssistant.allCases where assistant.supportsHooks {
+            guard (try? FileManager.default.contentsOfDirectory(atPath: NSHomeDirectory() + "/" + assistant.configDirName)) != nil else { continue }
+            if !HookManager.isInstalled(for: assistant) {
+                do {
+                    try HookManager.install(for: assistant)
+                    say("installed \(assistant.displayName) hooks")
+                } catch {
+                    say("could not install \(assistant.displayName) hooks: \(error)")
+                }
+            }
+        }
+        _ = HookManager.refreshHookScript()
+        if !HookManager.isStatusLineInstalled(for: .claude) {
+            try? HookManager.installStatusLine(for: .claude)
         }
     }
 
-    private func reconcileLoop() async {
-        while !Task.isCancelled {
-            try? await Task.sleep(for: .seconds(3))
-            await store.reconcile()
-        }
-    }
-
-    /// Picks up settings edits (projects, peers) without a restart.
+    /// Picks up settings edits (projects, peers, notifications) without a restart.
     private func settingsLoop() async {
         var last = Self.readSettings(home: home)
         while !Task.isCancelled {
@@ -89,6 +163,7 @@ final class ServerMaster {
             let current = Self.readSettings(home: home)
             guard current.raw != last.raw, let settings = current.settings else { continue }
             if settings.peers != last.settings?.peers { await peerSync.setPeers(settings.peers) }
+            orchestrator.updateNotifier(Self.notifier(settings))
             last = current
             await store.loadSettingsAndCache()
         }

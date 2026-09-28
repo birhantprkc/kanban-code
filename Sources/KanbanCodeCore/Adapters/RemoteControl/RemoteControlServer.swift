@@ -423,6 +423,25 @@ public final class RemoteControlServer: Sendable {
             case ("POST", "cards/*/resume"):
                 return .response(.json(try await host.resume(cardId: id)))
 
+            case ("POST", "cards/*/move"):
+                guard let body = try? JSONDecoder.remote.decode(RemoteMoveRequest.self, from: request.body),
+                      !body.to.trimmingCharacters(in: .whitespaces).isEmpty else {
+                    return .response(.error(400, "body must be {\"to\": \"<machine id or name>\"|\"mac\"}"))
+                }
+                return .response(.json(try await host.moveCard(cardId: id, to: body.to.trimmingCharacters(in: .whitespaces))))
+
+            case ("GET", "cards/*/handover"):
+                return .response(.json(try await host.handoverInfo(cardId: id)))
+
+            case ("GET", "cards/*/transcript/raw"):
+                let offset = max(Int(request.query["offset"] ?? "") ?? 0, 0)
+                let limit = min(max(Int(request.query["limit"] ?? "") ?? (4 << 20), 1), 16 << 20)
+                let raw = try await host.rawTranscript(cardId: id, offset: offset, limit: limit)
+                return .response(RemoteHTTPResponse(
+                    status: 200,
+                    headers: [("Content-Type", "application/octet-stream"), (RemoteRawTranscript.sizeHeader, String(raw.size))],
+                    body: raw.data))
+
             case ("GET", "events"):
                 guard request.wantsWebSocket else { return .response(.error(426, "WebSocket upgrade required")) }
                 return .events(device)
@@ -465,6 +484,7 @@ public final class RemoteControlServer: Sendable {
     private static let knownShapes: Set<String> = [
         "me", "board", "cards/*", "cards/*/transcript", "tasks", "cards/*/prompt", "cards/*/queue/*",
         "cards/*/interrupt", "cards/*/resume", "events", "cards/*/terminal",
+        "cards/*/move", "cards/*/handover", "cards/*/transcript/raw",
     ]
 
     static func response(for error: Error) -> RemoteHTTPResponse {

@@ -127,8 +127,6 @@ struct ContentView: View {
     @State var channelDraftImages: [String: [Data]] = [:]
     @State var dmDraftImages: [String: [Data]] = [:]
     @State var activeDialog: DialogState = .none
-    @State private var selfCompactTriggeredThresholds: [String: Set<Int>] = [:]
-    @State private var selfCompactPolicySignatures: [String: String] = [:]
     @State private var navigationBackStack: [DrawerNavigationTarget] = []
     @State private var navigationForwardStack: [DrawerNavigationTarget] = []
     @State private var suppressNextNavigationRecord = false
@@ -155,6 +153,7 @@ struct ContentView: View {
     let launcher: LaunchSession
     let tmuxAdapter: RoutingTmuxAdapter
     let boxdSupervisor: BoxdMachineSupervisor
+    let engine: MasterEngine
     let subagentCommandStore = SubagentCommandStore()
     let systemTray = SystemTray()
     let mutagenAdapter = MutagenAdapter()
@@ -220,6 +219,7 @@ struct ContentView: View {
         self.launcher = services.launcher
         self.tmuxAdapter = services.tmuxAdapter
         self.boxdSupervisor = services.boxdSupervisor
+        self.engine = services.engine
         self.hookEventsPath = (NSHomeDirectory() as NSString)
             .appendingPathComponent(".kanban-code/hook-events.jsonl")
         self.settingsFilePath = (NSHomeDirectory() as NSString)
@@ -1343,12 +1343,14 @@ struct ContentView: View {
         guard store.state.remoteMode == .boxd else { return }
         let adapter = BoxdCliAdapter()
         boxdAvailable = await adapter.isAvailable()
+        AppServices.boxdAvailable = boxdAvailable
         guard boxdAvailable else { return }
         if let machines = try? await adapter.listMachines() {
             boxdMachineNames = machines
                 .filter { $0.status != .destroyed }
                 .map(\.name)
                 .sorted()
+            AppServices.boxdMachineNames = boxdMachineNames
         }
     }
 
@@ -1470,14 +1472,11 @@ struct ContentView: View {
                 await watchSettingsFile(path: settingsFilePath)
             }
             .task(id: "refresh-timer") {
-                while !Task.isCancelled {
-                    // Adaptive: 3s when active, 10s when backgrounded
-                    let interval: Duration = store.appIsActive ? .seconds(3) : .seconds(10)
-                    try? await Task.sleep(for: interval)
-                    guard !Task.isCancelled else { break }
-                    await store.reconcile()
-                    systemTray.update()
-                }
+                // Adaptive: 3s when active, 10s when backgrounded
+                await engine.runReconcileLoop(
+                    interval: { [store] in store.appIsActive ? .seconds(3) : .seconds(10) },
+                    afterPass: { [systemTray] in systemTray.update() }
+                )
             }
             .task(id: "channels-bootstrap") {
                 // Initial load + start the file-system watcher (no polling).
@@ -1491,16 +1490,13 @@ struct ContentView: View {
                 }
             }
             .task(id: "self-compact-monitor") {
-                await selfCompactMonitorLoop()
+                await engine.runSelfCompactMonitor()
             }
             .task(id: "subagent-command-bootstrap") {
                 await monitorSubagentCommands()
             }
-            .task(id: "remote-control-handlers") {
-                registerRemoteControlHandlers()
-            }
             .task(id: "session-model-monitor") {
-                await sessionModelMonitorLoop()
+                await engine.runSessionModelMonitor()
             }
             .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeChannelsChanged).receive(on: RunLoop.main)) { _ in
                 store.dispatch(.refreshChannels)
@@ -2218,9 +2214,8 @@ struct ContentView: View {
         // Escape + prompt focused: send interrupt (Ctrl+C) to stop the assistant
         Button("") {
             guard AppShortcut.stopAssistant.isActive(in: shortcutContext) else { return }
-            if let card = store.state.selectedCard,
-               let session = card.link.tmuxLink?.sessionName {
-                Task { try? await AppServices.tmux.sendEscape(sessionName: session) }
+            if let card = store.state.selectedCard, card.link.tmuxLink != nil {
+                engine.interrupt(cardId: card.id)
             }
         }
         .keyboardShortcut(AppShortcut.stopAssistant.key, modifiers: AppShortcut.stopAssistant.modifiers)
@@ -3260,259 +3255,6 @@ struct ContentView: View {
             }
         }
         return out
-    }
-
-    private func selfCompactMonitorLoop() async {
-        while !Task.isCancelled {
-            let interval = await evaluateSelfCompactThresholds()
-            try? await Task.sleep(for: .seconds(interval))
-        }
-    }
-
-    @discardableResult
-    private func evaluateSelfCompactThresholds() async -> Int {
-        let settings = (try? await settingsStore.read()) ?? Settings()
-        let config = settings.selfCompact
-        let interval = max(10, config.pollIntervalSeconds)
-
-        let candidates = store.state.cards.compactMap { card -> (cardId: String, sessionId: String, sessionName: String, sessionPath: String?, rules: [SelfCompactRule])? in
-            let link = card.link
-            guard !link.manuallyArchived,
-                  link.effectiveAssistant.supportsContextThresholdSelfCompact,
-                  let sessionId = link.sessionLink?.sessionId,
-                  let sessionName = link.tmuxLink?.sessionName,
-                  store.state.tmuxSessions.contains(sessionName)
-            else { return nil }
-            let rules = SelfCompactPolicy.rules(
-                cardThresholdTokens: link.selfCompactContextThresholdTokens,
-                globalSettings: config
-            )
-            return (card.id, sessionId, sessionName, link.sessionLink?.sessionPath, rules)
-        }
-
-        var liveSessionIds = Set<String>()
-        for candidate in candidates {
-            liveSessionIds.insert(candidate.sessionId)
-            let rules = candidate.rules
-            let signature = SelfCompactPolicy.signature(for: rules)
-            let previousSignature = selfCompactPolicySignatures[candidate.sessionId]
-
-            guard let usage = ContextUsageReader.read(sessionId: candidate.sessionId) else { continue }
-            if Self.contextReadingIsStale(sessionId: candidate.sessionId, transcriptPath: candidate.sessionPath) {
-                // Nothing is marked as seen: the next poll re-reads once the
-                // statusline caught up with the transcript.
-                continue
-            }
-            let usedTokens = usage.currentContextTokens
-
-            if let previousSignature, previousSignature != signature {
-                removeQueuedSelfCompactWarnings(cardId: candidate.cardId, rules: rules)
-                selfCompactTriggeredThresholds[candidate.sessionId] = Set(
-                    rules.filter { $0.thresholdTokens <= usedTokens }.map(\.thresholdTokens)
-                )
-                selfCompactPolicySignatures[candidate.sessionId] = signature
-                continue
-            }
-            selfCompactPolicySignatures[candidate.sessionId] = signature
-
-            guard let firstThreshold = rules.first?.thresholdTokens else {
-                selfCompactTriggeredThresholds.removeValue(forKey: candidate.sessionId)
-                removeQueuedSelfCompactWarnings(cardId: candidate.cardId, rules: rules)
-                continue
-            }
-            if usedTokens < firstThreshold {
-                let hadCrossed = !(selfCompactTriggeredThresholds[candidate.sessionId] ?? []).isEmpty
-                selfCompactTriggeredThresholds.removeValue(forKey: candidate.sessionId)
-                removeQueuedSelfCompactWarnings(cardId: candidate.cardId, rules: rules)
-                if hadCrossed {
-                    await clearUnsentSelfCompactWarning(sessionName: candidate.sessionName, rules: rules)
-                }
-                continue
-            }
-
-            let seen = selfCompactTriggeredThresholds[candidate.sessionId] ?? []
-            let newlyCrossed = rules.filter { usedTokens >= $0.thresholdTokens && !seen.contains($0.thresholdTokens) }
-            guard let rule = newlyCrossed.max(by: { $0.thresholdTokens < $1.thresholdTokens }) else { continue }
-
-            var updatedSeen = seen
-            updatedSeen.formUnion(rules.filter { $0.thresholdTokens <= rule.thresholdTokens }.map(\.thresholdTokens))
-            selfCompactTriggeredThresholds[candidate.sessionId] = updatedSeen
-            await triggerSelfCompactRule(
-                rule,
-                allRules: rules,
-                cardId: candidate.cardId,
-                sessionId: candidate.sessionId,
-                sessionName: candidate.sessionName,
-                usedTokens: usedTokens
-            )
-        }
-
-        selfCompactTriggeredThresholds = selfCompactTriggeredThresholds.filter { liveSessionIds.contains($0.key) }
-        selfCompactPolicySignatures = selfCompactPolicySignatures.filter { liveSessionIds.contains($0.key) }
-        return interval
-    }
-
-    /// A card's `modelOverride` records what it was launched with, which stops
-    /// being true the moment anyone runs `/model` inside the session. Claude's
-    /// statusline is the only place the running model shows up, so poll it for
-    /// live sessions only, which keeps this to a handful of small file reads.
-    private func sessionModelMonitorLoop() async {
-        while !Task.isCancelled {
-            let sessionIds = store.state.links.values.compactMap { link -> String? in
-                guard link.tmuxLink != nil, !link.manuallyArchived else { return nil }
-                return link.sessionLink?.sessionId
-            }
-            var models: [String: String] = [:]
-            for sessionId in sessionIds {
-                if let alias = ContextUsageReader.read(sessionId: sessionId)?.modelAlias {
-                    models[sessionId] = alias
-                }
-            }
-            store.dispatch(.sessionModelsScanned(models))
-            try? await Task.sleep(for: .seconds(5))
-        }
-    }
-
-    private func triggerSelfCompactRule(_ rule: SelfCompactRule, allRules: [SelfCompactRule], cardId: String, sessionId: String, sessionName: String, usedTokens: Int) async {
-        switch rule.action {
-        case .queuePrompt:
-            let body = rule.message.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !body.isEmpty else { return }
-            removeQueuedSelfCompactWarnings(cardId: cardId, rules: allRules, throughThreshold: rule.thresholdTokens)
-            KanbanCodeLog.info("self-compact", "Queueing context warning for \(cardId.prefix(12)) at \(usedTokens) tokens")
-            store.dispatch(.addQueuedPrompt(
-                cardId: cardId,
-                prompt: QueuedPrompt(
-                    body: body,
-                    sendAutomatically: true,
-                    selfCompactThresholdTokens: rule.thresholdTokens
-                ),
-                placement: .front
-            ))
-
-        case .steer:
-            guard Self.selfCompactRuleStillApplies(rule, sessionId: sessionId) else {
-                KanbanCodeLog.info("self-compact", "Dropping steer for \(cardId.prefix(12)): context is under \(rule.thresholdTokens) again")
-                return
-            }
-            KanbanCodeLog.warn("self-compact", "Steering \(cardId.prefix(12)) at \(usedTokens) tokens")
-            try? await tmuxAdapter.pastePrompt(
-                to: sessionName,
-                text: SelfCompactPolicy.command(for: rule),
-                abortIf: Self.selfCompactAbortCheck(rule, sessionId: sessionId)
-            )
-
-        case .interrupt:
-            guard Self.selfCompactRuleStillApplies(rule, sessionId: sessionId) else {
-                KanbanCodeLog.info("self-compact", "Dropping interrupt for \(cardId.prefix(12)): context is under \(rule.thresholdTokens) again")
-                return
-            }
-            KanbanCodeLog.warn("self-compact", "Interrupting \(cardId.prefix(12)) at \(usedTokens) tokens")
-            try? await tmuxAdapter.interruptPrompt(
-                to: sessionName,
-                text: SelfCompactPolicy.command(for: rule),
-                abortIf: Self.selfCompactAbortCheck(rule, sessionId: sessionId)
-            )
-        }
-    }
-
-    /// Compares the context file of a session with its transcript: a context
-    /// file that stood still while the transcript moved holds a pre-compact
-    /// number and must not drive a steer.
-    nonisolated static func contextReadingIsStale(sessionId: String, transcriptPath: String?) -> Bool {
-        guard let transcriptPath else { return false }
-        let contextPath = (NSHomeDirectory() as NSString)
-            .appendingPathComponent(".kanban-code/context/\(sessionId).json")
-        let modified = { (path: String) -> Date? in
-            (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date
-        }
-        return SelfCompactPolicy.readingIsStale(
-            contextModifiedAt: modified(contextPath),
-            transcriptModifiedAt: modified(transcriptPath)
-        )
-    }
-
-    /// A fresh context read for the moment of the send. The read that picked the
-    /// rule can be one poll old, and the agent can compact in between.
-    nonisolated static func selfCompactRuleStillApplies(_ rule: SelfCompactRule, sessionId: String) -> Bool {
-        SelfCompactPolicy.shouldSend(
-            rule: rule,
-            currentContextTokens: ContextUsageReader.read(sessionId: sessionId)?.currentContextTokens
-        )
-    }
-
-    /// Stops the Enter retries of a pasted warning as soon as the context is
-    /// small again, so a message that took a compact to be read is not pressed
-    /// into the composer of a session that no longer needs it.
-    nonisolated static func selfCompactAbortCheck(_ rule: SelfCompactRule, sessionId: String) -> PromptAbortCheck {
-        { !selfCompactRuleStillApplies(rule, sessionId: sessionId) }
-    }
-
-    /// A warning pasted while the agent was busy can still sit unsent in the
-    /// composer after the compact. Clearing it stops the agent from reading an
-    /// old limit at its next Enter.
-    private func clearUnsentSelfCompactWarning(sessionName: String, rules: [SelfCompactRule]) async {
-        let messages = rules.map { SelfCompactPolicy.command(for: $0) }
-        guard let pane = try? await tmuxAdapter.capturePane(sessionName: sessionName),
-              SelfCompactPolicy.paneHasUnsentMessage(pane, messages: messages)
-        else { return }
-        KanbanCodeLog.info("self-compact", "Clearing unsent context warning in \(sessionName)")
-        _ = try? await tmuxAdapter.clearComposer(sessionName: sessionName)
-    }
-
-    private func removeQueuedSelfCompactWarnings(cardId: String, rules: [SelfCompactRule], throughThreshold: Int? = nil) {
-        let warningBodies = Set(
-            rules
-                .filter { $0.action == .queuePrompt }
-                .filter { rule in
-                    guard let throughThreshold else { return true }
-                    return rule.thresholdTokens <= throughThreshold
-                }
-                .map { $0.message.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-        )
-        guard let prompts = store.state.links[cardId]?.queuedPrompts else {
-            return
-        }
-        let promptIds = Self.queuedSelfCompactWarningIdsToRemove(
-            prompts: prompts,
-            warningBodies: warningBodies,
-            throughThreshold: throughThreshold
-        )
-        for promptId in promptIds {
-            KanbanCodeLog.info("self-compact", "Removing stale context warning for \(cardId.prefix(12))")
-            store.dispatch(.removeQueuedPrompt(cardId: cardId, promptId: promptId))
-        }
-    }
-
-    nonisolated static func queuedSelfCompactWarningIdsToRemove(
-        prompts: [QueuedPrompt],
-        warningBodies: Set<String>,
-        throughThreshold: Int?
-    ) -> [String] {
-        prompts
-            .filter {
-                isQueuedSelfCompactWarning(
-                    $0,
-                    warningBodies: warningBodies,
-                    throughThreshold: throughThreshold
-                )
-            }
-            .map(\.id)
-    }
-
-    nonisolated private static func isQueuedSelfCompactWarning(_ prompt: QueuedPrompt, warningBodies: Set<String>, throughThreshold: Int?) -> Bool {
-        if let threshold = prompt.selfCompactThresholdTokens {
-            guard let throughThreshold else { return true }
-            return threshold <= throughThreshold
-        }
-
-        // Backward compatibility for warnings queued by older builds before
-        // selfCompactThresholdTokens existed. New manual prompts do not get this
-        // path unless they exactly match a configured compact warning body.
-        return prompt.imagePaths?.isEmpty != false
-            && prompt.sendAutomatically
-            && warningBodies.contains(prompt.body.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     @MainActor

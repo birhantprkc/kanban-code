@@ -407,8 +407,47 @@ struct CardActionsMenu: View {
         }
     }
 
+    /// Where the card can continue: this Mac, the peer masters, the ssh
+    /// machines this Mac drives.
+    private var continueTargets: [(label: String, target: String)] {
+        let state = AppComposition.shared.store.state
+        var out: [(String, String)] = []
+        let owner = card.owner?.id
+        let onMachine = card.link.remote != nil && card.link.isRemote
+        if owner != nil || onMachine { out.append(("This Mac", "mac")) }
+        var names = Set<String>()
+        for status in state.peerStatuses.values.sorted(by: { ($0.machine?.name ?? "") < ($1.machine?.name ?? "") }) {
+            guard let machine = status.machine, machine.id != owner else { continue }
+            names.insert(machine.name.lowercased())
+            out.append((status.online ? machine.name : "\(machine.name) (offline)", machine.id))
+        }
+        if owner == nil, card.link.sessionLink != nil {
+            for machine in (state.boxdSettings?.sshMachines ?? []) where machine.isComplete && !names.contains(machine.name.lowercased()) {
+                if card.link.remote?.machineName == machine.name, card.link.isRemote { continue }
+                out.append(("\(machine.name) (over ssh)", machine.name))
+            }
+        }
+        return out
+    }
+
+    @ViewBuilder
+    private var continueOnSection: some View {
+        let targets = continueTargets
+        if !targets.isEmpty, card.link.sessionLink != nil || card.owner != nil {
+            Divider()
+            Menu {
+                ForEach(targets, id: \.target) { item in
+                    Button(item.label) { AppServices.moveCard(card.id, to: item.target) }
+                }
+            } label: {
+                Label("Continue on", systemImage: "arrow.right.arrow.left.circle")
+            }
+        }
+    }
+
     @ViewBuilder
     private var moveAndMigrateSection: some View {
+        continueOnSection
         if card.link.sessionLink != nil {
             let currentPath = card.link.projectPath
             let otherProjects = availableProjects.filter { $0.path != currentPath }

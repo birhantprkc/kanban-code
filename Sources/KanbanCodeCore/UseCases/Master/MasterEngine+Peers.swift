@@ -1,0 +1,534 @@
+import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
+import KanbanCodeRemoteKit
+
+/// A first launch this master handed to a peer: the peer adopts the card and
+/// starts it with this prompt.
+struct PeerLaunch: Sendable {
+    var prompt: String
+    var worktree: String?
+}
+
+public enum MasterPeerError: Error, LocalizedError, Equatable {
+    case unknownCard(String)
+    case notOwner(String)
+    case unknownPeer(String)
+    case peerOffline(String)
+    case busy(String)
+    case noProject(String)
+    case failed(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .unknownCard(let id): "no card \(id)"
+        case .notOwner(let id): "card \(id) runs on another master"
+        case .unknownPeer(let name): "no peer master \(name)"
+        case .peerOffline(let name): "\(name) is offline"
+        case .busy(let id): "card \(id) is launching or moving already"
+        case .noProject(let url): "no project with origin \(url) here; add it in Settings"
+        case .failed(let message): message
+        }
+    }
+}
+
+// MARK: - Peers
+
+extension MasterEngine {
+    /// The peer master `target` names, by machine id or name (any case).
+    public func peerMachine(named target: String) -> MachineIdentity? {
+        let wanted = target.trimmingCharacters(in: .whitespaces)
+        let lower = wanted.lowercased()
+        for status in store.state.peerStatuses.values {
+            guard let machine = status.machine else { continue }
+            if machine.id == wanted || machine.name.lowercased() == lower { return machine }
+        }
+        return nil
+    }
+
+    /// Whether `target` names this master.
+    public func isLocalMachine(_ target: String) -> Bool {
+        let state = store.state
+        return Self.isLocalTarget(target) || target == state.localMachineId
+            || (!state.localMachineName.isEmpty && target.lowercased() == state.localMachineName.lowercased())
+    }
+
+    /// Whether the peer with this machine id answered its last pull.
+    public func isPeerOnline(_ machineId: String) -> Bool {
+        store.state.peerStatuses.values.contains { $0.machine?.id == machineId && $0.online }
+    }
+
+    /// A client of the peer master with this machine id, with the token
+    /// this master holds for it.
+    public func peerClient(machineId: String) async -> RemoteClient? {
+        guard let peerSync, let peer = await peerSync.peer(forMachine: machineId),
+              let url = URL(string: peer.url.trimmingCharacters(in: .whitespacesAndNewlines))
+        else { return nil }
+        return RemoteClient(baseURL: url, token: peer.token)
+    }
+
+    /// The owner's client when another master owns the card.
+    public func ownerClient(forCard cardId: String) async -> RemoteClient? {
+        guard let link = store.state.links[cardId], let owner = link.ownerMachine,
+              owner != store.state.localMachineId, !store.state.localMachineId.isEmpty
+        else { return nil }
+        return await peerClient(machineId: owner)
+    }
+
+    /// Whether another master owns the card.
+    public func isForeign(_ cardId: String) -> Bool {
+        guard let owner = store.state.links[cardId]?.ownerMachine else { return false }
+        let local = store.state.localMachineId
+        return !local.isEmpty && owner != local
+    }
+
+    /// Sends the prompt and queue actions on cards another master owns to
+    /// that master, the way the phone does: the owner runs them.
+    public func installForeignCardHandler() {
+        store.foreignCardHandler = { [weak self] action in
+            self?.handleForeignAction(action) ?? false
+        }
+    }
+
+    func handleForeignAction(_ action: Action) -> Bool {
+        switch action {
+        case .addQueuedPrompt(let cardId, let prompt, _):
+            guard isForeign(cardId) else { return false }
+            forwardedPromptIds.insert(prompt.id)
+            let images = (prompt.imagePaths ?? []).compactMap { path -> RemoteImage? in
+                guard let data = FileManager.default.contents(atPath: path) else { return nil }
+                return RemoteImage(mediaType: MasterRemoteControlHost.mediaType(ofExtension: (path as NSString).pathExtension),
+                                   data: data.base64EncodedString())
+            }
+            forwardToOwner(cardId, "send the prompt") { client in
+                try await client.sendPrompt(cardId: cardId, text: prompt.body, mode: .queue, images: images)
+            }
+            return true
+        case .sendQueuedPrompt(let cardId, let promptId):
+            guard isForeign(cardId) else { return false }
+            if forwardedPromptIds.remove(promptId) != nil { return true }
+            forwardToOwner(cardId, "send the queued prompt") { client in
+                try await client.sendQueuedPromptNow(cardId: cardId, promptId: promptId)
+            }
+            return true
+        case .removeQueuedPrompt(let cardId, let promptId):
+            guard isForeign(cardId) else { return false }
+            forwardToOwner(cardId, "remove the queued prompt") { client in
+                try await client.removeQueuedPrompt(cardId: cardId, promptId: promptId)
+            }
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Runs `call` on the card's owner, reporting a failure on the board.
+    func forwardToOwner(_ cardId: String, _ what: String, _ call: @escaping @Sendable (RemoteClient) async throws -> Void) {
+        Task {
+            guard let client = await ownerClient(forCard: cardId) else {
+                store.dispatch(.setError("Could not \(what): \(peerName(store.state.links[cardId]?.ownerMachine ?? "")) is not a configured peer"))
+                return
+            }
+            do {
+                try await call(client)
+            } catch {
+                store.dispatch(.setError("Could not \(what) on \(peerName(store.state.links[cardId]?.ownerMachine ?? "")): \(error.localizedDescription)"))
+            }
+        }
+    }
+
+    /// Stops the running turn of a card, here or on its owner.
+    public func interrupt(cardId: String) {
+        if isForeign(cardId) {
+            forwardToOwner(cardId, "interrupt") { client in try await client.interrupt(cardId: cardId) }
+            return
+        }
+        guard let session = store.state.links[cardId]?.tmuxLink?.sessionName else { return }
+        let tmux = self.tmux
+        Task { try? await tmux.sendEscape(sessionName: session) }
+    }
+
+    /// Asks the peers to pull now.
+    public func notifyPeers() {
+        guard let peerSync else { return }
+        Task.detached { await peerSync.notifyPeers() }
+    }
+
+    // MARK: Moves
+
+    /// Continues a card somewhere else. `target` is a peer master (by id or
+    /// name: the card's ownership moves there), "mac"/"local" or this
+    /// master's name (the card comes back here from a machine this master
+    /// drives), or a boxd/ssh machine this master drives. A card another
+    /// master owns is moved by its owner.
+    public func moveCard(_ cardId: String, to target: String) async throws {
+        guard let link = store.state.links[cardId] else { throw MasterPeerError.unknownCard(cardId) }
+        if let client = await ownerClient(forCard: cardId) {
+            let forwarded = isLocalMachine(target) ? store.state.localMachineId : target
+            _ = try await client.move(cardId: cardId, to: forwarded)
+            return
+        }
+        guard store.state.isOwnedLocally(link) else { throw MasterPeerError.notOwner(cardId) }
+        if isLocalMachine(target) {
+            if link.remote != nil, link.isRemote { moveCardToMachine(cardId, to: "local") }
+            return
+        }
+        if let peer = peerMachine(named: target) {
+            try await handover(cardId: cardId, to: peer.id)
+            return
+        }
+        guard link.sessionLink != nil else { throw MasterPeerError.failed("card \(cardId) has no conversation to move") }
+        moveCardToMachine(cardId, to: target)
+    }
+
+    /// Hands a card this master owns to a peer: its session here ends, the
+    /// worktree branch goes to origin, and the card is released with
+    /// `migrating` set. The peer adopts it once the release reaches it:
+    /// it pulls the transcript (and uncommitted changes) from here and
+    /// resumes the conversation.
+    public func handover(cardId: String, to machineId: String) async throws {
+        guard let link = store.state.links[cardId] else { throw MasterPeerError.unknownCard(cardId) }
+        guard store.state.isOwnedLocally(link) else { throw MasterPeerError.notOwner(cardId) }
+        guard link.isLaunching != true, !handoversInFlight.contains(cardId) else { throw MasterPeerError.busy(cardId) }
+        guard await peerClient(machineId: machineId) != nil else { throw MasterPeerError.unknownPeer(machineId) }
+        guard isPeerOnline(machineId) else { throw MasterPeerError.peerOffline(peerName(machineId)) }
+        handoversInFlight.insert(cardId)
+        defer { handoversInFlight.remove(cardId) }
+        KanbanCodeLog.info("handover", "Releasing card=\(cardId.prefix(12)) to \(peerName(machineId))")
+
+        // A card on a machine this master drives comes back first, so its
+        // transcript here is complete.
+        if let remote = link.remote, link.isRemote, let boxdSupervisor {
+            let sid = link.sessionLink?.sessionId ?? link.id
+            let names = (link.tmuxLink?.allSessionNames ?? []) + ["\(link.effectiveAssistant.cliCommand)-\(sid.prefix(8))"]
+            await boxdSupervisor.leave(
+                machineName: remote.machineName,
+                sessionNames: Array(Set(names)),
+                localTranscript: link.sessionLink?.sessionPath,
+                remoteCwd: remote.remoteCwd)
+        }
+        // The conversation runs in one place only.
+        for name in link.tmuxLink?.allSessionNames ?? [] {
+            try? await tmux.killSession(name: name)
+        }
+        if link.tmuxLink != nil { try? await Task.sleep(for: .seconds(1)) }
+
+        if let worktree = link.worktreeLink, let branch = worktree.branch, !branch.isEmpty,
+           FileManager.default.fileExists(atPath: worktree.path) {
+            let pushed = await Self.git(["push", "-u", "origin", "HEAD:refs/heads/\(branch)"], in: worktree.path)
+            if pushed?.succeeded == true {
+                KanbanCodeLog.info("handover", "Pushed \(branch) from \(worktree.path)")
+            } else {
+                KanbanCodeLog.warn("handover", "Push of \(branch) failed: \(pushed?.stderr.prefix(300) ?? "no git")")
+            }
+        }
+        store.dispatch(.releaseCardOwnership(cardId: cardId, to: machineId))
+        guard store.state.links[cardId]?.ownerMachine == machineId else {
+            throw MasterPeerError.failed("card \(cardId) could not be released")
+        }
+        notifyPeers()
+    }
+
+    func peerName(_ machineId: String) -> String {
+        store.state.peerStatuses.values.first { $0.machine?.id == machineId }?.machine?.name ?? machineId
+    }
+
+    /// Hands a card that never ran to a peer, which launches it there.
+    func launchOnPeer(cardId: String, prompt: String, worktree: String?, peer: MachineIdentity) {
+        pendingPeerLaunches[cardId] = PeerLaunch(prompt: prompt, worktree: worktree)
+        KanbanCodeLog.info("handover", "Launching card=\(cardId.prefix(12)) on \(peer.name)")
+        if store.state.links[cardId]?.column == .backlog {
+            store.dispatch(.moveCard(cardId: cardId, to: .inProgress))
+        }
+        store.dispatch(.releaseCardOwnership(cardId: cardId, to: peer.id))
+        notifyPeers()
+    }
+
+    // MARK: Serving a handover
+
+    /// What a master adopting `cardId` needs from this one.
+    public func handoverInfo(cardId: String) async throws -> RemoteHandoverInfo {
+        guard let link = store.state.links[cardId] else { throw MasterPeerError.unknownCard(cardId) }
+        let transcript = link.sessionLink?.sessionPath
+        let size = transcript.flatMap { (try? FileManager.default.attributesOfItem(atPath: $0))?[.size] as? Int } ?? 0
+        let repoRoot = link.projectPath
+        let worktree = link.worktreeLink.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil }
+        var repoUrl: String?
+        if let dir = worktree?.path ?? repoRoot, FileManager.default.fileExists(atPath: dir) {
+            repoUrl = await Self.git(["remote", "get-url", "origin"], in: dir)
+                .flatMap { $0.succeeded ? $0.stdout.trimmingCharacters(in: .whitespacesAndNewlines) : nil }
+        }
+        var patch: String?
+        if let worktree {
+            _ = await Self.git(["add", "-A", "-N"], in: worktree.path)
+            if let diff = await Self.git(["diff", "--no-color", "--no-ext-diff", "--binary", "HEAD"], in: worktree.path), diff.succeeded,
+               !diff.stdout.isEmpty, diff.stdout.utf8.count < 20 << 20 {
+                // The command runner trims the last newline, which git apply needs.
+                let text = diff.stdout.hasSuffix("\n") ? diff.stdout : diff.stdout + "\n"
+                patch = Data(text.utf8).base64EncodedString()
+            }
+        }
+        let launch = pendingPeerLaunches[cardId]
+        var info = RemoteHandoverInfo(
+            cardId: cardId,
+            sessionId: link.sessionLink?.sessionId,
+            assistant: link.effectiveAssistant.rawValue,
+            projectPath: repoRoot,
+            cwd: worktree?.path ?? repoRoot,
+            repoUrl: repoUrl,
+            branch: worktree?.branch ?? link.worktreeLink?.branch,
+            worktreeName: (worktree?.path ?? link.worktreeLink?.path).map { ($0 as NSString).lastPathComponent }
+                .flatMap { $0.isEmpty ? nil : $0 },
+            patch: patch,
+            transcriptSize: size
+        )
+        if let launch {
+            info.launchPrompt = launch.prompt
+            info.launchWorktree = launch.worktree
+        }
+        return info
+    }
+
+    /// A slice of the card's transcript file.
+    public func rawTranscript(cardId: String, offset: Int, limit: Int) throws -> RemoteRawTranscript {
+        guard let link = store.state.links[cardId] else { throw MasterPeerError.unknownCard(cardId) }
+        guard let path = link.sessionLink?.sessionPath, let handle = FileHandle(forReadingAtPath: path) else {
+            return RemoteRawTranscript(data: Data(), offset: offset, size: 0)
+        }
+        defer { try? handle.close() }
+        let size = Int((try? handle.seekToEnd()) ?? 0)
+        guard offset < size else { return RemoteRawTranscript(data: Data(), offset: offset, size: size) }
+        try handle.seek(toOffset: UInt64(offset))
+        let data = try handle.read(upToCount: min(limit, size - offset)) ?? Data()
+        return RemoteRawTranscript(data: data, offset: offset, size: size)
+    }
+
+    // MARK: Adopting
+
+    /// Runs until cancelled: tells the peers when cards changed here, and
+    /// adopts the cards peers released to this master.
+    public func runOwnershipLoop() async {
+        var lastNotified = store.state.syncSeq
+        var lastAttempt: [String: Date] = [:]
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(500))
+            let seq = store.state.syncSeq
+            if seq != lastNotified {
+                lastNotified = seq
+                notifyPeers()
+            }
+            let local = store.state.localMachineId
+            guard !local.isEmpty else { continue }
+            for link in store.state.links.values where link.ownerMachine == local && link.migrating == true {
+                let id = link.id
+                guard !handoversInFlight.contains(id) else { continue }
+                if let last = lastAttempt[id], Date().timeIntervalSince(last) < 30 { continue }
+                lastAttempt[id] = Date()
+                handoversInFlight.insert(id)
+                Task {
+                    defer { handoversInFlight.remove(id) }
+                    do {
+                        try await adopt(cardId: id)
+                        lastAttempt[id] = nil
+                    } catch {
+                        KanbanCodeLog.warn("handover", "Adopting card=\(id.prefix(12)) failed: \(error.localizedDescription)")
+                        store.dispatch(.setError("Could not take over \(link.name ?? id): \(error.localizedDescription)"))
+                    }
+                }
+            }
+        }
+    }
+
+    /// Takes over a card a peer released to this master: its repository
+    /// and worktree here, its transcript, then its session.
+    func adopt(cardId: String) async throws {
+        guard let link = store.state.links[cardId] else { throw MasterPeerError.unknownCard(cardId) }
+        guard let from = link.ownerRev?.machine, from != store.state.localMachineId,
+              let client = await peerClient(machineId: from)
+        else { throw MasterPeerError.unknownPeer(link.ownerRev?.machine ?? "the releasing master") }
+        KanbanCodeLog.info("handover", "Adopting card=\(cardId.prefix(12)) from \(peerName(from))")
+        let info = try await client.handover(cardId: cardId)
+        let assistant = CodingAssistant(rawValue: info.assistant) ?? link.effectiveAssistant
+
+        let repoRoot = try await localRepository(repoUrl: info.repoUrl, fallback: info.projectPath)
+        var cwd = repoRoot
+        var worktreeLink: WorktreeLink?
+        if info.sessionId != nil, let name = info.worktreeName, let branch = info.branch {
+            worktreeLink = try await Self.checkoutWorktree(repoRoot: repoRoot, name: name, branch: branch)
+            cwd = worktreeLink!.path
+            if let patch = info.patch, let data = Data(base64Encoded: patch), !data.isEmpty {
+                try await Self.applyPatch(data, in: cwd)
+            }
+        }
+
+        var sessionLink: SessionLink?
+        if let sessionId = info.sessionId {
+            guard assistant == .claude else { throw MasterPeerError.failed("only Claude conversations move between masters") }
+            let path = transcriptPath(cwd: cwd, sessionId: sessionId)
+            var raw = Data()
+            while raw.count < info.transcriptSize {
+                let slice = try await client.rawTranscript(cardId: cardId, offset: raw.count)
+                if slice.data.isEmpty { break }
+                raw.append(slice.data)
+            }
+            var mappings: [PathMapping] = []
+            if let old = info.cwd, old != cwd { mappings.append(PathMapping(from: old, to: cwd)) }
+            if let old = info.projectPath, old != repoRoot, old != info.cwd { mappings.append(PathMapping(from: old, to: repoRoot)) }
+            try Self.writeTranscript(raw, to: path, rewriter: TranscriptPathRewriter(mappings))
+            sessionLink = SessionLink(sessionId: sessionId, sessionPath: path)
+            KanbanCodeLog.info("handover", "Transcript \(sessionId.prefix(8)) copied (\(raw.count) bytes) to \(path)")
+        }
+
+        store.dispatch(.adoptCard(cardId: cardId, sessionLink: sessionLink, worktreeLink: worktreeLink, projectPath: repoRoot))
+        guard store.state.links[cardId]?.migrating == nil else { throw MasterPeerError.failed("card \(cardId) could not be adopted") }
+        notifyPeers()
+
+        if sessionLink != nil {
+            resume(
+                cardId: cardId,
+                runRemotely: false,
+                skipPermissions: platform.skipPermissions(),
+                commandOverride: nil,
+                assistant: assistant,
+                keepSelection: true
+            )
+        } else if let prompt = info.launchPrompt {
+            let isGitRepo = FileManager.default.fileExists(atPath: (repoRoot as NSString).appendingPathComponent(".git"))
+            launch(
+                cardId: cardId,
+                prompt: prompt,
+                projectPath: repoRoot,
+                worktreeName: isGitRepo && assistant.supportsWorktree ? info.launchWorktree : nil,
+                runRemotely: false,
+                skipPermissions: platform.skipPermissions(),
+                assistant: assistant,
+                modelOverride: link.modelOverride,
+                keepSelection: true
+            )
+        }
+    }
+
+    /// The repository with origin `repoUrl` here: a configured project, or
+    /// a clone next to the others where this master may clone.
+    func localRepository(repoUrl: String?, fallback: String?) async throws -> String {
+        guard let repoUrl, let wanted = Self.normalizedRepoURL(repoUrl) else {
+            if let fallback, FileManager.default.fileExists(atPath: fallback) { return fallback }
+            throw MasterPeerError.noProject(fallback ?? "unknown")
+        }
+        var candidates = store.state.configuredProjects.map(\.effectiveRepoRoot)
+        let cloneDir = (platform.projectsDirectory as NSString).appendingPathComponent(Self.repoName(of: repoUrl))
+        candidates.append(cloneDir)
+        for dir in candidates where FileManager.default.fileExists(atPath: dir) {
+            let origin = await Self.git(["remote", "get-url", "origin"], in: dir)
+            if let out = origin?.stdout, origin?.succeeded == true, Self.normalizedRepoURL(out) == wanted {
+                await addProjectIfMissing(dir)
+                return dir
+            }
+        }
+        guard platform.clonesMissingProjects else { throw MasterPeerError.noProject(repoUrl) }
+        guard !FileManager.default.fileExists(atPath: cloneDir) else {
+            throw MasterPeerError.failed("\(cloneDir) exists and is not a clone of \(repoUrl)")
+        }
+        try? FileManager.default.createDirectory(atPath: platform.projectsDirectory, withIntermediateDirectories: true)
+        KanbanCodeLog.info("handover", "Cloning \(repoUrl) into \(cloneDir)")
+        let clone = await Self.git(["clone", repoUrl, cloneDir], in: platform.projectsDirectory, timeout: 1200)
+        guard clone?.succeeded == true else {
+            throw MasterPeerError.failed("git clone \(repoUrl) failed: \(clone?.stderr.prefix(300) ?? "no git")")
+        }
+        await addProjectIfMissing(cloneDir)
+        return cloneDir
+    }
+
+    private func addProjectIfMissing(_ path: String) async {
+        guard !store.state.configuredProjects.contains(where: { $0.effectiveRepoRoot == path || $0.path == path }) else { return }
+        try? await settingsStore.addProject(Project(path: path))
+        await store.loadSettingsAndCache()
+    }
+
+    /// `github.com/owner/repo` for the ssh and https forms of a remote.
+    nonisolated static func normalizedRepoURL(_ raw: String) -> String? {
+        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !s.isEmpty else { return nil }
+        while s.hasSuffix("/") { s.removeLast() }
+        if s.hasSuffix(".git") { s.removeLast(4) }
+        if let range = s.range(of: "://") {
+            s = String(s[range.upperBound...])
+            if let at = s.firstIndex(of: "@"), at < (s.firstIndex(of: "/") ?? s.endIndex) {
+                s = String(s[s.index(after: at)...])
+            }
+        } else if let at = s.firstIndex(of: "@"), let colon = s.firstIndex(of: ":"), at < colon {
+            s = String(s[s.index(after: at)..<colon]) + "/" + String(s[s.index(after: colon)...])
+        }
+        return s.lowercased()
+    }
+
+    nonisolated static func repoName(of url: String) -> String {
+        var name = (url.trimmingCharacters(in: .whitespacesAndNewlines) as NSString).lastPathComponent
+        if name.hasSuffix(".git") { name.removeLast(4) }
+        if let colon = name.lastIndex(of: ":") { name = String(name[name.index(after: colon)...]) }
+        return name.isEmpty ? "repo" : name
+    }
+
+    /// The worktree `name` of `repoRoot` on `branch`, from origin when the
+    /// branch is not here yet.
+    nonisolated static func checkoutWorktree(repoRoot: String, name: String, branch: String) async throws -> WorktreeLink {
+        let path = "\(repoRoot)/.claude/worktrees/\(name)"
+        if FileManager.default.fileExists(atPath: path) {
+            _ = await git(["fetch", "origin", branch], in: path)
+            if await git(["merge", "--ff-only", "origin/\(branch)"], in: path)?.succeeded != true {
+                KanbanCodeLog.warn("handover", "Worktree \(name) did not fast-forward to origin/\(branch)")
+            }
+            return WorktreeLink(path: path, branch: branch)
+        }
+        try? FileManager.default.createDirectory(atPath: "\(repoRoot)/.claude/worktrees", withIntermediateDirectories: true)
+        _ = await git(["fetch", "origin", branch], in: repoRoot)
+        let hasLocal = await git(["show-ref", "--verify", "--quiet", "refs/heads/\(branch)"], in: repoRoot)?.succeeded == true
+        let hasRemote = await git(["show-ref", "--verify", "--quiet", "refs/remotes/origin/\(branch)"], in: repoRoot)?.succeeded == true
+        let arguments: [String]
+        if hasLocal {
+            arguments = ["worktree", "add", path, branch]
+        } else if hasRemote {
+            arguments = ["worktree", "add", "--track", "-b", branch, path, "origin/\(branch)"]
+        } else {
+            arguments = ["worktree", "add", "-b", branch, path]
+        }
+        guard let result = await git(arguments, in: repoRoot), result.succeeded else {
+            throw MasterPeerError.failed("git worktree add \(name) failed")
+        }
+        if hasLocal, hasRemote {
+            _ = await git(["merge", "--ff-only", "origin/\(branch)"], in: path)
+        }
+        return WorktreeLink(path: path, branch: branch)
+    }
+
+    nonisolated static func applyPatch(_ patch: Data, in dir: String) async throws {
+        let file = NSTemporaryDirectory() + "kanban-handover-\(UUID().uuidString).patch"
+        try patch.write(to: URL(fileURLWithPath: file))
+        defer { try? FileManager.default.removeItem(atPath: file) }
+        let result = await git(["apply", "--binary", "--whitespace=nowarn", file], in: dir)
+        if result?.succeeded != true {
+            KanbanCodeLog.warn("handover", "Uncommitted changes did not apply in \(dir): \(result?.stderr.prefix(300) ?? "no git")")
+        }
+    }
+
+    /// Writes a transcript line by line with its paths rewritten.
+    nonisolated static func writeTranscript(_ raw: Data, to path: String, rewriter: TranscriptPathRewriter) throws {
+        try FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        var out = Data()
+        out.reserveCapacity(raw.count + 4096)
+        for line in raw.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: false) {
+            if line.isEmpty { continue }
+            let text = String(decoding: line, as: UTF8.self)
+            out.append(contentsOf: Array(rewriter.rewriteLine(text).utf8))
+            out.append(UInt8(ascii: "\n"))
+        }
+        try out.write(to: URL(fileURLWithPath: path), options: .atomic)
+    }
+
+    nonisolated static func git(_ arguments: [String], in dir: String, timeout: TimeInterval = 120) async -> ShellCommand.Result? {
+        let git = ShellCommand.findExecutable("git") ?? "/usr/bin/git"
+        return try? await ShellCommand.run(git, arguments: ["-c", "color.ui=false", "-c", "core.pager=cat"] + arguments,
+                                           currentDirectory: dir, timeout: timeout)
+    }
+}

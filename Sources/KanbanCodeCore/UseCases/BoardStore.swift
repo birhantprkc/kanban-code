@@ -166,6 +166,11 @@ public final class AppState: @unchecked Sendable {
     public var localMachineName: String = ""
     /// Live state of every configured peer, by `PeerConfig.id`.
     public var peerStatuses: [String: PeerStatus] = [:]
+    /// Local copies of the transcripts of cards other masters own, by
+    /// session id; the cards read their chat from here.
+    public var peerTranscriptPaths: [String: String] = [:]
+    /// Cards other masters own that are in a turn, as their owners report.
+    public var peerBusyCards: Set<String> = []
     /// Deleted cards, by id, kept for `LinkSync.tombstoneLifetime` so the
     /// deletion reaches every peer and wins over older edits.
     @ObservationIgnored public var tombstones: [String: Link] = [:]
@@ -302,9 +307,27 @@ public final class AppState: @unchecked Sendable {
     /// Rebuild all cached card arrays from current state.
     /// Only assigns when the result differs — prevents unnecessary SwiftUI re-renders.
     func rebuildCards() {
-        let newCards = links.values.map { link in
+        var machines: [String: (name: String, online: Bool)] = [:]
+        for status in peerStatuses.values {
+            if let machine = status.machine { machines[machine.id] = (machine.name, status.online) }
+        }
+        let newCards = links.values.map { original in
+            var link = original
+            var owner: CardOwner?
+            if let ownerId = link.ownerMachine, !localMachineId.isEmpty, ownerId != localMachineId {
+                let known = machines[ownerId]
+                owner = CardOwner(id: ownerId, name: known?.name ?? ownerId, online: known?.online ?? false)
+                // The chat of a card another master runs reads its local copy.
+                if let sid = link.sessionLink?.sessionId, let mirrored = peerTranscriptPaths[sid] {
+                    link.sessionLink?.sessionPath = mirrored
+                }
+            }
             let session = link.sessionLink.flatMap { sessions[$0.sessionId] }
             var activity = link.sessionLink.flatMap { activityMap[$0.sessionId] }
+            if owner != nil {
+                activity = peerBusyCards.contains(link.id) ? .activelyWorking
+                    : (link.tmuxLink != nil && link.tmuxLink?.isPrimaryDead != true ? .idleWaiting : nil)
+            }
             // The activity of a paused machine is frozen with it; the last
             // hook event may say the assistant was mid-tool.
             if link.remote?.pausedReason != nil, activity == .activelyWorking {
@@ -317,7 +340,8 @@ public final class AppState: @unchecked Sendable {
                 activityState: activity,
                 isBusy: busyCards.contains(link.id),
                 isRateLimited: rateLimited,
-                liveModel: link.sessionLink.flatMap { sessionModels[$0.sessionId] }
+                liveModel: link.sessionLink.flatMap { sessionModels[$0.sessionId] },
+                owner: owner
             )
         }
         if newCards != cards { cards = newCards }
@@ -551,6 +575,10 @@ public enum Action: Sendable {
     /// of the old owner are dropped; the session, worktree and project are
     /// replaced when given (their paths differ per machine).
     case adoptCard(cardId: String, sessionLink: SessionLink?, worktreeLink: WorktreeLink?, projectPath: String?)
+    /// A transcript of a card another master owns was copied to `path`.
+    case peerTranscriptMirrored(sessionId: String, path: String)
+    /// The cards other masters own that are in a turn right now.
+    case peerActivityScanned(busy: Set<String>)
 
     // Settings / misc
     case settingsLoaded(projects: [Project], excludedPaths: [String], remote: RemoteSettings?, remoteMode: RemoteMode = .boxd, boxd: BoxdSettings? = nil)
@@ -2506,6 +2534,14 @@ public enum Reducer {
             if state.peerStatuses[status.peerId] != status { state.peerStatuses[status.peerId] = status }
             return []
 
+        case .peerTranscriptMirrored(let sessionId, let path):
+            if state.peerTranscriptPaths[sessionId] != path { state.peerTranscriptPaths[sessionId] = path }
+            return []
+
+        case .peerActivityScanned(let busy):
+            if state.peerBusyCards != busy { state.peerBusyCards = busy }
+            return []
+
         case .releaseCardOwnership(let cardId, let machine):
             guard var link = state.links[cardId], state.isOwnedLocally(link),
                   machine != state.localMachineId, link.isLaunching != true
@@ -2630,6 +2666,15 @@ public final class BoardStore: @unchecked Sendable {
     private var lastAutoBranchDiscovery: ContinuousClock.Instant = .now - .seconds(120)
     private var lastAutoBranchDiscoveryByCard: [String: ContinuousClock.Instant] = [:]
     public var appIsActive: Bool = true
+
+    /// Whether sessions found on disk that no card knows become cards (in
+    /// All Sessions). A headless master turns it off: it only follows the
+    /// sessions it launched or adopted, not those another master runs here.
+    public var adoptsDiscoveredSessions = true
+
+    /// Takes the actions on a card another master owns that must run there
+    /// (prompts, queue); returns true when it took the action.
+    public var foreignCardHandler: (@MainActor (Action) -> Bool)?
     /// True between NSWorkspace willSleep and didWake (set by the app layer).
     /// Reconciles are skipped while the machine sleeps: overnight maintenance
     /// (dark) wakes otherwise fire the refresh timer every few minutes, each
@@ -2711,7 +2756,7 @@ public final class BoardStore: @unchecked Sendable {
             return false
         case .setPaletteOpen, .setDetailExpanded, .setPromptEditorFocused,
              .showDialog, .dismissDialog, .setError, .setNotice, .setLoading, .setIsRefreshingBacklog,
-             .launchProgress, .peerStatusChanged, .localMachineLoaded:
+             .launchProgress, .localMachineLoaded:
             return false
         case .refreshChannels, .refreshChannelMessages, .channelsLoaded,
              .channelMessagesLoaded, .createChannel, .sendChannelMessage,
@@ -2733,6 +2778,7 @@ public final class BoardStore: @unchecked Sendable {
 
     /// Dispatch an action. Reducer runs synchronously, effects run async.
     public func dispatch(_ action: Action) {
+        if let foreignCardHandler, foreignCardHandler(action) { return }
         #if DEBUG
         let t = CACurrentMediaTime()
         #endif
@@ -2929,7 +2975,11 @@ public final class BoardStore: @unchecked Sendable {
 
             let t1 = ContinuousClock.now
             let allSessions = try await discovery.discoverSessions()
-            let sessions = allSessions.filter { !state.deletedSessionIds.contains($0.id) }
+            var sessions = allSessions.filter { !state.deletedSessionIds.contains($0.id) }
+            if !adoptsDiscoveredSessions {
+                let known = Set(state.links.values.compactMap { $0.sessionLink?.sessionId })
+                sessions = sessions.filter { known.contains($0.id) }
+            }
             KanbanCodeLog.info("reconcile", "discoverSessions: \(t1.duration(to: .now)) (\(sessions.count) sessions)")
 
             // Use in-memory state as source of truth — NOT disk.

@@ -39,6 +39,31 @@ public protocol RemoteControlHost: AnyObject, Sendable {
 
     /// Yields whenever the board changed; the server throttles pushes.
     func boardChanges() -> AsyncStream<Void>
+
+    /// Up to `limit` bytes of the card's transcript file from `offset`, for
+    /// a master that mirrors or adopts the card.
+    func rawTranscript(cardId: String, offset: Int, limit: Int) async throws -> RemoteRawTranscript
+
+    /// What a master adopting the card needs to continue it.
+    func handoverInfo(cardId: String) async throws -> RemoteHandoverInfo
+
+    /// Continues the card elsewhere: another master (ownership moves there),
+    /// a machine this master drives, or back here.
+    func moveCard(cardId: String, to target: String) async throws -> RemoteCard
+}
+
+extension RemoteControlHost {
+    public func rawTranscript(cardId: String, offset: Int, limit: Int) async throws -> RemoteRawTranscript {
+        throw RemoteHostError.notFound("this host does not serve raw transcripts")
+    }
+
+    public func handoverInfo(cardId: String) async throws -> RemoteHandoverInfo {
+        throw RemoteHostError.notFound("this host does not hand cards over")
+    }
+
+    public func moveCard(cardId: String, to target: String) async throws -> RemoteCard {
+        throw RemoteHostError.notFound("this host does not move cards")
+    }
 }
 
 /// A host call that failed for a reason the client should see, with the

@@ -1,9 +1,8 @@
 import Foundation
-import KanbanCodeCore
 import KanbanCodeRemoteKit
 import Testing
 
-@testable import KanbanCode
+@testable import KanbanCodeCore
 
 private final class SentPrompts: TmuxManagerPort, @unchecked Sendable {
     private let lock = NSLock()
@@ -71,7 +70,7 @@ struct RemoteControlHostTests {
         func cleanup() { try? FileManager.default.removeItem(atPath: dir) }
     }
 
-    private func makeHost(agtop: AgtopCliAdapter = AgtopCliAdapter(executable: "/nonexistent/agtop")) -> (AppRemoteControlHost, BoardStore, SentPrompts) {
+    private func makeHost(agtop: AgtopCliAdapter = AgtopCliAdapter(executable: "/nonexistent/agtop")) -> (MasterRemoteControlHost, BoardStore, SentPrompts) {
         let tmux = SentPrompts()
         let dir = NSTemporaryDirectory() + "kanban-remote-host-\(UUID().uuidString)"
         let store = BoardStore(
@@ -84,7 +83,14 @@ struct RemoteControlHostTests {
             coordinationStore: CoordinationStore(basePath: dir)
         )
         let commands = tmuxCommands
-        let host = AppRemoteControlHost(store: store, agtop: agtop, runTmux: { commands.record($0, $1) }) { session in tmux.escape(session) }
+        let engine = MasterEngine(
+            store: store,
+            settingsStore: SettingsStore(basePath: dir),
+            launcher: LaunchSession(tmux: tmux),
+            tmux: RoutingTmuxAdapter(agtop: agtop),
+            registry: CodingAssistantRegistry()
+        )
+        let host = MasterRemoteControlHost(engine: engine, agtop: agtop, runTmux: { commands.record($0, $1) }) { session in tmux.escape(session) }
         return (host, store, tmux)
     }
 
@@ -287,7 +293,7 @@ struct RemoteControlHostTests {
         let agtop = try await host.terminalCommand(cardId: "card_a", sessionName: "agtop-0123abcd")
         #expect(Array(agtop.suffix(3)) == ["open", "0123abcd", "--solo"])
         let tmux = try await host.terminalCommand(cardId: "card_b", sessionName: "card-b")
-        #expect(tmux.last?.contains("attach-session -t 'card-b'") == true)
+        #expect(Array(tmux.suffix(3)) == ["attach-session", "-t", "card-b"])
         await #expect(throws: RemoteHostError.self) {
             _ = try await host.terminalCommand(cardId: "card_b", sessionName: "card-a")
         }

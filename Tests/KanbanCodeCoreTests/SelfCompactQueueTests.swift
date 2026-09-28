@@ -1,6 +1,5 @@
 import Testing
-@testable import KanbanCode
-import KanbanCodeCore
+@testable import KanbanCodeCore
 
 @Suite("Self-compact queue")
 struct SelfCompactQueueTests {
@@ -21,7 +20,7 @@ struct SelfCompactQueueTests {
             QueuedPrompt(id: "prompt_user_after", body: "another user prompt"),
         ]
 
-        let ids = ContentView.queuedSelfCompactWarningIdsToRemove(
+        let ids = MasterEngine.queuedSelfCompactWarningIdsToRemove(
             prompts: prompts,
             warningBodies: ["500k nudge", "600k nudge", "700k nudge"],
             throughThreshold: 600_000
@@ -37,7 +36,7 @@ struct SelfCompactQueueTests {
             QueuedPrompt(id: "prompt_legacy", body: "500k nudge", sendAutomatically: true),
         ]
 
-        let ids = ContentView.queuedSelfCompactWarningIdsToRemove(
+        let ids = MasterEngine.queuedSelfCompactWarningIdsToRemove(
             prompts: prompts,
             warningBodies: ["500k nudge"],
             throughThreshold: 600_000

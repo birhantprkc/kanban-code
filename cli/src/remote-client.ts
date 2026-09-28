@@ -911,6 +911,22 @@ export function registerRemoteCommands(program: Command, io: RemoteIO = defaultR
       })
     );
 
+  // ── terminal ──
+
+  remote
+    .command("attach <card>")
+    .description("Show one of the card's terminals here, live (the Mac or box that runs it keeps the session)")
+    .option("--session <name>", "terminal session name (default: the card's primary terminal)")
+    .action(
+      run(async (ref: string, opts: { session?: string }) => {
+        const { config } = resolveClientConfig(io.env);
+        const c = new RemoteClient(config.url, config.token, io.fetch);
+        const card = await findCard(c, ref);
+        const code = await attachTerminal(terminalSocketUrl(config.url, config.token, card.id, opts.session));
+        io.exit(code);
+      })
+    );
+
   // ── pairing, on the Mac ──
 
   remote
@@ -1002,4 +1018,64 @@ export async function waitForCard(
     if (opts.timeoutMs !== undefined && now - start >= opts.timeoutMs) return { card, timedOut: true };
     await io.sleep(opts.intervalMs);
   }
+}
+
+/** The WebSocket URL of a card's terminal, sized to this terminal. */
+export function terminalSocketUrl(baseUrl: string, token: string, cardId: string, session?: string): string {
+  const params = new URLSearchParams({
+    cols: String(process.stdout.columns || 80),
+    rows: String(process.stdout.rows || 24),
+    token,
+  });
+  if (session) params.set("session", session);
+  const ws = baseUrl.replace(/^http/i, "ws");
+  return `${ws}/v1/cards/${encodeURIComponent(cardId)}/terminal?${params.toString()}`;
+}
+
+/**
+ * Bridges this tty to a remote terminal: raw keystrokes out, bytes in,
+ * resizes as text frames. Resolves with 0 when the server closes the
+ * terminal and 1 when the connection fails.
+ */
+export function attachTerminal(url: string): Promise<number> {
+  const WS = (globalThis as { WebSocket?: new (url: string) => any }).WebSocket;
+  if (!WS) throw new RemoteCliError("This Node has no WebSocket; use Node 22 or newer.");
+  return new Promise((resolve) => {
+    const ws = new WS(url);
+    ws.binaryType = "arraybuffer";
+    const stdin = process.stdin;
+    let opened = false;
+    const restore = () => {
+      if (stdin.isTTY) stdin.setRawMode(false);
+      stdin.pause();
+      process.stdout.off("resize", onResize);
+    };
+    const onResize = () => {
+      if (ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: "resize", cols: process.stdout.columns, rows: process.stdout.rows }));
+      }
+    };
+    ws.onopen = () => {
+      opened = true;
+      if (stdin.isTTY) stdin.setRawMode(true);
+      stdin.resume();
+      stdin.on("data", (chunk: Buffer) => {
+        if (ws.readyState === 1) ws.send(chunk);
+      });
+      process.stdout.on("resize", onResize);
+    };
+    ws.onmessage = (event: { data: ArrayBuffer | string }) => {
+      process.stdout.write(typeof event.data === "string" ? event.data : Buffer.from(event.data));
+    };
+    ws.onerror = () => {};
+    ws.onclose = (event: { code: number; reason: string }) => {
+      restore();
+      if (!opened || (event.code !== 1000 && event.code !== 1001)) {
+        process.stderr.write(`\r\nTerminal connection closed (${event.code}${event.reason ? `: ${event.reason}` : ""}).\r\n`);
+        resolve(1);
+      } else {
+        resolve(0);
+      }
+    };
+  });
 }

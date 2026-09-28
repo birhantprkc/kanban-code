@@ -869,7 +869,11 @@ final class TerminalCache {
 
         let userShell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         let script: String
-        if let machine = AppServices.machine(forSession: sessionName) {
+        if let peer = AppServices.peerCard(forSession: sessionName),
+           let peerScript = AppServices.peerAttachScript(machineId: peer.machineId, cardId: peer.cardId, session: sessionName) {
+            // Another master runs the card: its terminal streams from there.
+            script = peerScript
+        } else if let machine = AppServices.machine(forSession: sessionName) {
             script = Self.remoteAttachScript(
                 boxd: AppServices.boxdPath,
                 machine: machine,

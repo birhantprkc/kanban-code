@@ -104,6 +104,8 @@ struct RemoteControlSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            PeersSettingsSection()
         }
         .formStyle(.grouped)
         .padding()

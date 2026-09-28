@@ -1,0 +1,901 @@
+import Foundation
+import KanbanCodeRemoteKit
+
+/// The master engine: launches and resumes cards, runs the loops that keep
+/// them in step (hooks, reconcile, self-compact, the live model), and
+/// creates cards for the remote API. The Mac app drives it from its views
+/// and a headless master (`kanban-code-server`) from its main loop, so both
+/// run the same code.
+@MainActor
+public final class MasterEngine {
+    public let store: BoardStore
+    public let settingsStore: SettingsStore
+    public let launcher: LaunchSession
+    public let tmux: RoutingTmuxAdapter
+    /// Boxd and ssh machines; nil where the master runs everything itself.
+    public let boxdSupervisor: BoxdMachineSupervisor?
+    public let mutagen: MutagenAdapter
+    public let registry: CodingAssistantRegistry
+    public var platform: MasterPlatform
+
+    /// Cards with a resume in flight. A resume is long (machine creation,
+    /// a transcript push); a second one for the same card must not start.
+    private var resumingCards: Set<String> = []
+
+    /// Self-compact bookkeeping, by session id.
+    var selfCompactTriggeredThresholds: [String: Set<Int>] = [:]
+    var selfCompactPolicySignatures: [String: String] = [:]
+
+    /// Handovers this master runs, by card id, so each runs once.
+    var handoversInFlight: Set<String> = []
+    /// First launches handed to a peer, served with the handover info.
+    var pendingPeerLaunches: [String: PeerLaunch] = [:]
+    /// Prompts added on a card another master owns and already sent there.
+    var forwardedPromptIds: Set<String> = []
+
+    /// Card sync with the other masters; nil when there are none.
+    public var peerSync: PeerSync?
+
+    public init(
+        store: BoardStore,
+        settingsStore: SettingsStore,
+        launcher: LaunchSession,
+        tmux: RoutingTmuxAdapter,
+        boxdSupervisor: BoxdMachineSupervisor? = nil,
+        mutagen: MutagenAdapter = MutagenAdapter(),
+        registry: CodingAssistantRegistry,
+        platform: MasterPlatform = MasterPlatform()
+    ) {
+        self.store = store
+        self.settingsStore = settingsStore
+        self.launcher = launcher
+        self.tmux = tmux
+        self.boxdSupervisor = boxdSupervisor
+        self.mutagen = mutagen
+        self.registry = registry
+        self.platform = platform
+    }
+
+    // MARK: - Launch
+
+    /// Starts a card's first session. The card goes to launching at once;
+    /// `completion` gets nil once the session runs, or the error.
+    public func launch(
+        cardId: String,
+        prompt: String,
+        projectPath: String,
+        worktreeName: String?,
+        runRemotely: Bool = true,
+        skipPermissions: Bool = true,
+        commandOverride: String? = nil,
+        images: [ImageAttachment] = [],
+        assistant: CodingAssistant = .claude,
+        serviceIdOverride: String? = nil,
+        modelOverride: String? = nil,
+        machineChoice: BoxdMachineChoice? = nil,
+        keepSelection: Bool = false,
+        completion: ((String?) -> Void)? = nil
+    ) {
+        if isForeign(cardId) {
+            // The master that owns the card starts it.
+            forwardToOwner(cardId, "start the card") { client in _ = try await client.resume(cardId: cardId) }
+            completion?(nil)
+            return
+        }
+        if runRemotely, let name = machineChoice?.machineName, let peer = peerMachine(named: name) {
+            // Another master runs it: the card moves there and starts there.
+            launchOnPeer(cardId: cardId, prompt: prompt, worktree: worktreeName, peer: peer)
+            completion?(nil)
+            return
+        }
+        let previouslySelectedCardId = store.state.selectedCardId
+        store.dispatch(.launchCard(cardId: cardId, prompt: prompt, projectPath: projectPath, worktreeName: worktreeName, runRemotely: runRemotely, commandOverride: commandOverride))
+        if keepSelection { store.dispatch(.selectCard(cardId: previouslySelectedCardId)) }
+        let effectiveModelOverride = modelOverride ?? store.state.links[cardId]?.modelOverride
+        // The reducer computed the unique tmux name and stored it in the link.
+        let predictedTmuxName = store.state.links[cardId]?.tmuxLink?.sessionName ?? cardId
+        KanbanCodeLog.info("launch", "Starting launch for card=\(cardId.prefix(12)) tmux=\(predictedTmuxName) project=\(projectPath)")
+        // A marker from an earlier run of this session name would let the
+        // terminal attach before the machine is ready.
+        platform.clearRemoteSessionReady(predictedTmuxName)
+        if runRemotely, store.state.remoteMode == .boxd, boxdSupervisor != nil {
+            platform.expectRemoteSession(predictedTmuxName)
+        }
+        let progress = LaunchProgress(cardId: cardId, store: store)
+
+        Task {
+            defer { progress.finish() }
+            do {
+                let settings = try? await settingsStore.read()
+
+                let shellOverride: String?
+                let extraEnv: [String: String]
+                let isRemote: Bool
+                let preamble: String?
+                // Where the assistant starts and which worktree flag it gets.
+                // On a boxd machine the app creates the worktree itself.
+                var launchPath = projectPath
+                var launchWorktreeName = assistant.supportsWorktree ? worktreeName : nil
+                var boxdPreparation: BoxdPreparation?
+
+                let cardLink = store.state.cards.first(where: { $0.id == cardId })?.link
+                let globalRemote = settings?.remote
+                let remoteMode = settings?.remoteMode ?? .boxd
+                if runRemotely, remoteMode == .boxd, let boxdSupervisor {
+                    let existingMachine = machineChoice?.machineName
+                        ?? (machineChoice == nil ? cardLink?.remote?.machineName : nil)
+                    progress.start()
+                    let preparation = try await boxdSupervisor.prepare(
+                        cardId: cardId,
+                        localProjectPath: projectPath,
+                        existingMachine: existingMachine,
+                        worktreeName: worktreeName,
+                        existingWorktree: cardLink?.worktreeLink,
+                        sessionNames: [predictedTmuxName],
+                        log: { line in progress.report(line) }
+                    )
+                    progress.report("Starting \(assistant.displayName) on \(preparation.machineName)")
+                    boxdPreparation = preparation
+                    shellOverride = nil
+                    extraEnv = preparation.extraEnv
+                    isRemote = true
+                    preamble = nil
+                    launchPath = preparation.remoteCwd
+                    launchWorktreeName = nil
+                } else if runRemotely, let remote = globalRemote, projectPath.hasPrefix(remote.localPath) {
+                    let mutagenSetup = await mutagenEnvironment(remote: remote, projectPath: projectPath, assistant: assistant)
+                    shellOverride = mutagenSetup.0
+                    extraEnv = mutagenSetup.1
+                    preamble = mutagenSetup.2
+                    isRemote = true
+                } else {
+                    shellOverride = nil
+                    extraEnv = [:]
+                    isRemote = false
+                    preamble = nil
+                }
+                let commandTemplate = settings?.commandTemplate(for: assistant, remote: isRemote)
+
+                // Resolve API service for this card and inject base URL env var if needed
+                let resolvedServiceId = serviceIdOverride ?? cardLink?.apiServiceId ?? settings?.defaultAPIServiceIds[assistant.rawValue]
+                let resolvedService = resolvedServiceId.flatMap { sid in
+                    settings?.apiServices.first { $0.id == sid && $0.assistant == assistant }
+                }
+                var serviceExtraEnv = extraEnv
+                if let svc = resolvedService,
+                   let envKey = assistant.baseURLEnvKey,
+                   let url = svc.baseURL, !url.isEmpty {
+                    serviceExtraEnv[envKey] = url
+                }
+                if let parentEnv = Self.subagentCacheEnv(parentCardId: cardLink?.parentCardId, assistant: assistant) {
+                    serviceExtraEnv.merge(parentEnv) { _, new in new }
+                }
+
+                if boxdPreparation == nil,
+                   agtopChoice(settings: settings, assistant: assistant, remote: isRemote, commandOverride: commandOverride) == .agtop {
+                    var cwd = projectPath
+                    var worktreeLink: WorktreeLink?
+                    if let worktreeName {
+                        let name = worktreeName.isEmpty ? BoxdLaunchPlanner.randomWorktreeName() : worktreeName
+                        progress.report("Creating worktree \(name)")
+                        let worktree = try await BoxdMachineSupervisor.createLocalWorktree(repoRoot: projectPath, name: name)
+                        cwd = worktree.path
+                        worktreeLink = worktree
+                    }
+                    let sessionId = UUID().uuidString.lowercased()
+                    let name = try await startOnAgtop(
+                        cardId: cardId,
+                        cwd: cwd,
+                        sessionId: sessionId,
+                        resume: false,
+                        prompt: prompt,
+                        images: images,
+                        extraEnv: serviceExtraEnv,
+                        skipPermissions: skipPermissions,
+                        model: effectiveModelOverride,
+                        commandTemplate: commandTemplate,
+                        service: resolvedService
+                    )
+                    let sessionLink = SessionLink(
+                        sessionId: sessionId,
+                        sessionPath: transcriptPath(cwd: cwd, sessionId: sessionId)
+                    )
+                    store.dispatch(.launchCompleted(cardId: cardId, tmuxName: name, sessionLink: sessionLink, worktreeLink: worktreeLink, isRemote: false))
+                    completion?(nil)
+                    return
+                }
+
+                // Snapshot existing session files for detection
+                let sessionFileExt = ".\(assistant.sessionFileExtension)"
+                let configDir = (NSHomeDirectory() as NSString).appendingPathComponent(assistant.configDirName)
+                let claudeProjectsDir = (configDir as NSString).appendingPathComponent("projects")
+                let encodedProject = SessionFileMover.encodeProjectPath(projectPath)
+                let sessionDir = (claudeProjectsDir as NSString).appendingPathComponent(encodedProject)
+                let existingCodexFiles = assistant == .codex
+                    ? Set(CodexSessionDiscovery.sessionFiles())
+                    : []
+
+                // When worktree is enabled, also snapshot worktree-related directories
+                // (worktrees create sessions in dirs like <encodedProject>-.claude-worktrees-<name>)
+                let dirsToSnapshot: [String]
+                if assistant == .gemini {
+                    // Gemini stores sessions in ~/.gemini/tmp/<slug>/chats/
+                    let tmpDir = (configDir as NSString).appendingPathComponent("tmp")
+                    let slugDirs = (try? FileManager.default.contentsOfDirectory(atPath: tmpDir)) ?? []
+                    dirsToSnapshot = slugDirs.map { slug in
+                        (tmpDir as NSString).appendingPathComponent(slug).appending("/chats")
+                    }
+                } else if assistant == .codex {
+                    // Codex stores sessions recursively under ~/.codex/sessions.
+                    dirsToSnapshot = []
+                } else if worktreeName != nil {
+                    let allDirs = (try? FileManager.default.contentsOfDirectory(atPath: claudeProjectsDir)) ?? []
+                    dirsToSnapshot = [sessionDir] + allDirs
+                        .filter { $0.hasPrefix(encodedProject) && $0 != encodedProject }
+                        .map { (claudeProjectsDir as NSString).appendingPathComponent($0) }
+                } else {
+                    dirsToSnapshot = [sessionDir]
+                }
+                var existingFilesByDir: [String: Set<String>] = [:]
+                for dir in dirsToSnapshot {
+                    existingFilesByDir[dir] = Set(
+                        ((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? [])
+                            .filter { $0.hasSuffix(sessionFileExt) }
+                    )
+                }
+
+                let tmuxName = try await launcher.launch(
+                    sessionName: predictedTmuxName,
+                    projectPath: launchPath,
+                    prompt: prompt,
+                    worktreeName: launchWorktreeName,
+                    shellOverride: shellOverride,
+                    extraEnv: serviceExtraEnv,
+                    commandOverride: commandOverride,
+                    commandTemplate: commandTemplate,
+                    skipPermissions: skipPermissions,
+                    preamble: preamble,
+                    assistant: assistant,
+                    service: resolvedService,
+                    modelOverride: effectiveModelOverride
+                )
+                KanbanCodeLog.info("launch", "Tmux session created: \(tmuxName)")
+                if let preparation = boxdPreparation, let boxdSupervisor {
+                    await boxdSupervisor.exportSessionEnvironment(
+                        machineName: preparation.machineName, sessionName: tmuxName, env: preparation.extraEnv)
+                    platform.markRemoteSessionReady(tmuxName, preparation.machineName)
+                }
+
+                // Show terminal immediately — clear isLaunching so UI switches
+                // from spinner to terminal view without waiting for session detection.
+                store.dispatch(.launchTmuxReady(cardId: cardId))
+
+                // Send images + prompt via send-keys after assistant is ready.
+                // Once tmux exists, prompt delivery is best-effort: a readiness
+                // timeout must not turn a live Codex session into a failed launch.
+                var promptDeliveryError: String?
+                if !prompt.isEmpty || !images.isEmpty {
+                    do {
+                        let imageSender = ImageSender(tmux: tmux)
+                        try await imageSender.waitForReady(sessionName: tmuxName, assistant: assistant)
+
+                        if let preparation = boxdPreparation, !images.isEmpty {
+                            // The clipboard does not reach the machine: the
+                            // images go over the bridge and the prompt points
+                            // at them by path.
+                            let remotePaths = try await uploadPromptImages(
+                                images, cardId: cardId, preparation: preparation)
+                            let promptToSend = PromptImageLayout.replacingMarkersWithMarkdown(in: prompt, imagePaths: remotePaths)
+                            if assistant.submitsPromptWithPaste {
+                                try await tmux.pastePrompt(to: tmuxName, text: promptToSend)
+                            } else {
+                                try await tmux.sendPrompt(to: tmuxName, text: promptToSend)
+                            }
+                        } else if !images.isEmpty && assistant.supportsImageUpload, let setClipboard = platform.setClipboardImage {
+                            try await imageSender.sendPromptWithImages(
+                                sessionName: tmuxName,
+                                prompt: prompt,
+                                images: images,
+                                assistant: assistant,
+                                setClipboard: setClipboard
+                            )
+                        } else if !prompt.isEmpty {
+                            let imagePaths = images.compactMap { image -> String? in
+                                if let tempPath = image.tempPath { return tempPath }
+                                var copy = image
+                                return try? copy.saveToTemp()
+                            }
+                            let promptToSend = PromptImageLayout.replacingMarkersWithMarkdown(in: prompt, imagePaths: imagePaths)
+                            if assistant.submitsPromptWithPaste {
+                                try await tmux.pastePrompt(to: tmuxName, text: promptToSend)
+                            } else {
+                                try await tmux.sendPrompt(to: tmuxName, text: promptToSend)
+                            }
+                        }
+                    } catch {
+                        promptDeliveryError = error.localizedDescription
+                        KanbanCodeLog.warn("launch", "Initial prompt delivery failed for card=\(cardId.prefix(12)) tmux=\(tmuxName): \(error.localizedDescription)")
+                    }
+                }
+
+                // Detect new session by polling for new session file
+                // Worktree launches, Gemini, and Codex need more attempts (slower startup)
+                // A remote session shows up after the bridge streams its first
+                // lines, so it gets the longest window.
+                let maxAttempts = boxdPreparation != nil ? 30
+                    : (worktreeName != nil || assistant == .gemini || assistant == .codex) ? 12 : 6
+                var sessionLink: SessionLink?
+                for attempt in 0..<maxAttempts {
+                    try? await Task.sleep(for: .milliseconds(500))
+
+                    if assistant == .codex {
+                        let currentFiles = Set(CodexSessionDiscovery.sessionFiles())
+                        let newFiles = currentFiles.subtracting(existingCodexFiles)
+                        if let sessionPath = Self.newestFile(from: Array(newFiles)),
+                           let sessionId = await CodexSessionParser.extractSessionId(from: sessionPath) {
+                            KanbanCodeLog.info("launch", "Detected Codex session file after \(attempt+1) attempts: \(sessionId.prefix(8))")
+                            sessionLink = SessionLink(sessionId: sessionId, sessionPath: sessionPath)
+                            break
+                        }
+                        continue
+                    }
+
+                    // Build list of dirs to scan (re-list for worktree — dir may appear mid-poll)
+                    let dirsToScan: [String]
+                    if assistant == .gemini {
+                        let tmpDir = (configDir as NSString).appendingPathComponent("tmp")
+                        let slugDirs = (try? FileManager.default.contentsOfDirectory(atPath: tmpDir)) ?? []
+                        dirsToScan = slugDirs.map { slug in
+                            (tmpDir as NSString).appendingPathComponent(slug).appending("/chats")
+                        }
+                    } else if worktreeName != nil {
+                        let allDirs = (try? FileManager.default.contentsOfDirectory(atPath: claudeProjectsDir)) ?? []
+                        dirsToScan = allDirs
+                            .filter { $0.hasPrefix(encodedProject) }
+                            .map { (claudeProjectsDir as NSString).appendingPathComponent($0) }
+                    } else {
+                        dirsToScan = [sessionDir]
+                    }
+
+                    for dir in dirsToScan {
+                        let baseline = existingFilesByDir[dir] ?? [] // empty for newly-created dirs
+                        let currentFiles = Set(
+                            ((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? [])
+                                .filter { $0.hasSuffix(sessionFileExt) }
+                        )
+                        if let newFile = currentFiles.subtracting(baseline).first {
+                            let sessionId: String
+                            if assistant == .gemini {
+                                // Gemini: extract sessionId from inside the JSON file
+                                let filePath = (dir as NSString).appendingPathComponent(newFile)
+                                if let data = try? Data(contentsOf: URL(fileURLWithPath: filePath)),
+                                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                                   let sid = obj["sessionId"] as? String {
+                                    sessionId = sid
+                                } else {
+                                    sessionId = (newFile as NSString).deletingPathExtension
+                                }
+                            } else {
+                                sessionId = (newFile as NSString).deletingPathExtension
+                            }
+                            let sessionPath = (dir as NSString).appendingPathComponent(newFile)
+                            KanbanCodeLog.info("launch", "Detected session file after \(attempt+1) attempts in \((dir as NSString).lastPathComponent): \(sessionId.prefix(8))")
+                            sessionLink = SessionLink(sessionId: sessionId, sessionPath: sessionPath)
+                            break
+                        }
+                    }
+                    if sessionLink != nil { break }
+                }
+
+                // If worktree launch, try to extract branch from the session file immediately
+                var worktreeLink: WorktreeLink? = boxdPreparation?.worktree
+                if worktreeLink == nil, worktreeName != nil, let sl = sessionLink, let sp = sl.sessionPath {
+                    worktreeLink = Self.extractWorktreeLink(sessionPath: sp, projectPath: projectPath)
+                }
+
+                store.dispatch(.launchCompleted(cardId: cardId, tmuxName: tmuxName, sessionLink: sessionLink, worktreeLink: worktreeLink, isRemote: isRemote))
+                if let promptDeliveryError, assistant.supportsImageUpload && !images.isEmpty {
+                    store.dispatch(.setError("Initial prompt/image delivery failed: \(promptDeliveryError)"))
+                }
+                completion?(promptDeliveryError)
+            } catch {
+                KanbanCodeLog.error("launch", "Launch failed for card=\(cardId.prefix(12)): \(error.localizedDescription)")
+                store.dispatch(.launchFailed(cardId: cardId, error: BoxdCliAdapter.shortMessage(of: error)))
+                completion?(error.localizedDescription)
+            }
+        }
+    }
+
+    /// The shell override, environment and preamble of a mutagen launch.
+    private func mutagenEnvironment(remote: RemoteSettings, projectPath: String, assistant: CodingAssistant) async -> (String?, [String: String], String?) {
+        try? RemoteShellManager.deploy()
+        let shellOverride = RemoteShellManager.shellOverridePath()
+        var env = RemoteShellManager.setupEnvironment(remote: remote, projectPath: projectPath)
+        // Some CLIs use `bash -c` directly, so prepend our remote
+        // dir to PATH so they find Kanban's bash wrapper first.
+        if assistant.requiresRemotePathWrapper {
+            let remoteDir = RemoteShellManager.remoteDirPath()
+            env["PATH"] = "\(remoteDir):$PATH"
+        }
+        let remoteDest = "\(remote.host):\(remote.remotePath)"
+        let ignores = remote.syncIgnores ?? MutagenAdapter.defaultIgnores
+        try? await mutagen.startSync(
+            localPath: remote.localPath,
+            remotePath: remoteDest,
+            name: "kanban-code-sync",
+            ignores: ignores
+        )
+        return (shellOverride, env, Self.remotePreamble(host: remote.host))
+    }
+
+    /// Writes prompt images to the machine and returns their paths there.
+    public func uploadPromptImages(_ images: [ImageAttachment], cardId: String, preparation: BoxdPreparation) async throws -> [String] {
+        guard let bridge = await boxdSupervisor?.bridge(for: preparation.machineName) else {
+            throw BoxdSupervisorError.notConnected(preparation.machineName)
+        }
+        var paths: [String] = []
+        for (index, image) in images.enumerated() {
+            let localPath: String
+            if let tempPath = image.tempPath {
+                localPath = tempPath
+            } else {
+                var copy = image
+                localPath = try copy.saveToTemp()
+            }
+            guard let data = FileManager.default.contents(atPath: localPath) else { continue }
+            let ext = (localPath as NSString).pathExtension.isEmpty ? "png" : (localPath as NSString).pathExtension
+            let remotePath = "\(preparation.remoteHome)/.kanban-code/images/\(cardId)/\(index + 1).\(ext)"
+            try await bridge.put(path: remotePath, data: data, mode: nil)
+            paths.append(remotePath)
+        }
+        return paths
+    }
+
+    nonisolated static func newestFile(from paths: [String]) -> String? {
+        paths.compactMap { path -> (String, Date)? in
+            guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+                  let mtime = attrs[.modificationDate] as? Date else { return nil }
+            return (path, mtime)
+        }
+        .max { $0.1 < $1.1 }?
+        .0
+    }
+
+    /// Extract worktreeLink from a newly-created session file by reading its first line for gitBranch and cwd.
+    public nonisolated static func extractWorktreeLink(sessionPath: String, projectPath: String) -> WorktreeLink? {
+        // Read metadata from the first line of the .jsonl — it has the actual cwd and gitBranch
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: sessionPath)),
+              let firstNewline = data.firstIndex(of: UInt8(ascii: "\n")),
+              let firstLine = String(data: data[data.startIndex..<firstNewline], encoding: .utf8),
+              let lineData = firstLine.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else {
+            return nil
+        }
+
+        // Use the cwd from the session metadata — it has the exact worktree path
+        // (avoids lossy decoding of the directory name which mangles dashes in worktree names)
+        let worktreePath: String
+        if let cwd = obj["cwd"] as? String,
+           cwd.contains("/.claude/worktrees/") || cwd.contains("/.claude-worktrees/") {
+            worktreePath = cwd
+        } else {
+            // Fallback: derive from directory name structure
+            // suffix is like ".claude-worktrees-<name>" or "claude-worktrees-<name>"
+            let sessionDir = (sessionPath as NSString).deletingLastPathComponent
+            let dirName = (sessionDir as NSString).lastPathComponent
+            let encodedProject = SessionFileMover.encodeProjectPath(projectPath)
+            guard dirName.hasPrefix(encodedProject) else { return nil }
+            let rest = String(dirName.dropFirst(encodedProject.count))
+            // Match known pattern: [-.]claude-worktrees-<worktreeName>
+            // Only convert the structural separators, keep worktree name dashes intact
+            guard let wtRange = rest.range(of: "claude-worktrees-") else { return nil }
+            let worktreeName = String(rest[wtRange.upperBound...])
+            worktreePath = projectPath + "/.claude/worktrees/" + worktreeName
+        }
+
+        var branchName: String?
+        if let branch = obj["gitBranch"] as? String {
+            branchName = branch.replacingOccurrences(of: "refs/heads/", with: "")
+        }
+
+        // Fallback: extract worktree name from path
+        if branchName == nil {
+            let components = worktreePath.components(separatedBy: "/.claude/worktrees/")
+            if components.count == 2 {
+                branchName = components[1]
+            }
+        }
+
+        guard let branchName, !branchName.isEmpty else { return nil }
+        KanbanCodeLog.info("launch", "Extracted worktreeLink: branch=\(branchName) path=\(worktreePath)")
+        return WorktreeLink(path: worktreePath, branch: branchName)
+    }
+
+    /// Subagents run on the 5-minute prompt cache tier. Their turns come in
+    /// short bursts, and the default 1-hour cache bills every cache write at
+    /// a higher rate, which makes a fleet of children far more expensive than
+    /// plain Claude Code subagents. Claude Code reads this env var since
+    /// v2.1.242; the other assistants ignore it, so it is only set for Claude.
+    public nonisolated static func subagentCacheEnv(parentCardId: String?, assistant: CodingAssistant) -> [String: String]? {
+        guard assistant == .claude, parentCardId != nil else { return nil }
+        return ["CLAUDE_CODE_PROMPT_CACHE_TTL": "5m"]
+    }
+
+    /// A shell preamble that flushes mutagen and shows the remote uname before the assistant starts.
+    public nonisolated static func remotePreamble(host: String) -> String {
+        // Use ; instead of && so a flush failure doesn't block claude from starting
+        "printf '\\e[2mSyncing files...\\e[0m' && mutagen sync flush --label-selector kanban=true 2>/dev/null; printf '\\e[2mRemote: %s\\e[0m\\n' \"$(ssh -o ConnectTimeout=5 \(host) uname -snr 2>/dev/null || echo 'unavailable')\""
+    }
+
+    // MARK: - Resume
+
+    /// Starts a card's session again from its conversation, here or on a
+    /// machine. Returns false when a resume of the card is already running.
+    @discardableResult
+    public func resume(
+        cardId: String,
+        runRemotely: Bool,
+        skipPermissions: Bool = true,
+        commandOverride: String?,
+        assistant: CodingAssistant = .claude,
+        serviceIdOverride: String? = nil,
+        modelOverride: String? = nil,
+        machineChoice: BoxdMachineChoice? = nil,
+        keepSelection: Bool = false,
+        afterDispatch: (() -> Void)? = nil
+    ) -> Bool {
+        guard let card = store.state.cards.first(where: { $0.id == cardId }) else { return false }
+        if isForeign(cardId) {
+            // The master that owns the card resumes it.
+            forwardToOwner(cardId, "resume the card") { client in _ = try await client.resume(cardId: cardId) }
+            return false
+        }
+        let effectiveModelOverride = modelOverride ?? card.link.modelOverride
+        let sessionId = card.link.sessionLink?.sessionId ?? card.link.id
+        // For worktree cards, cd into the worktree — that's where Claude stored the session data.
+        let projectPath: String
+        if let worktreePath = card.link.worktreeLink?.path, !worktreePath.isEmpty {
+            projectPath = worktreePath
+        } else {
+            projectPath = card.link.projectPath ?? NSHomeDirectory()
+        }
+
+        // If the session file lives under a different project key (e.g. a cleaned-up worktree),
+        // move it to the current projectPath so `claude --resume` can find it.
+        // Only applicable to Claude Code sessions (Gemini uses its own path scheme).
+        if assistant == .claude,
+           let sessionLink = card.link.sessionLink,
+           let sessionPath = sessionLink.sessionPath {
+            let expectedDir = platform.claudeProjectsDirectory + "/" + SessionFileMover.encodeProjectPath(projectPath)
+            let expectedPath = expectedDir + "/" + sessionId + ".jsonl"
+            if sessionPath != expectedPath,
+               FileManager.default.fileExists(atPath: sessionPath) {
+                KanbanCodeLog.info("resume", "Moving session file from worktree project key to \(expectedDir)")
+                if let newPath = try? SessionFileMover.moveSession(
+                    sessionId: sessionId, fromPath: sessionPath, toProjectPath: projectPath
+                ) {
+                    var updatedLink = card.link
+                    updatedLink.sessionLink = SessionLink(sessionId: sessionId, sessionPath: newPath)
+                    store.dispatch(.createManualTask(updatedLink))
+                }
+            }
+        }
+
+        // The terminal of the resumed session mounts as soon as the card
+        // resumes, so a card that leaves its machine routes its names
+        // locally first; otherwise the terminal would connect to the machine.
+        if !runRemotely {
+            let names = (card.link.tmuxLink?.allSessionNames ?? []) + ["\(assistant.cliCommand)-\(String(sessionId.prefix(8)))"]
+            for name in names { platform.unassignRemoteSession(name) }
+        }
+
+        let previouslySelectedCardId = store.state.selectedCardId
+        store.dispatch(.resumeCard(cardId: cardId))
+        if keepSelection { store.dispatch(.selectCard(cardId: previouslySelectedCardId)) }
+        afterDispatch?()
+        // A second click while a resume runs would race the first one on the
+        // machine: two transcript pushes to the same file corrupted each
+        // other before this guard existed.
+        guard resumingCards.insert(cardId).inserted else {
+            KanbanCodeLog.info("resume", "Resume already running for card=\(cardId.prefix(12)), ignoring")
+            return false
+        }
+        KanbanCodeLog.info("resume", "Starting resume for card=\(cardId.prefix(12)) session=\(sessionId.prefix(8))")
+        let progress = LaunchProgress(cardId: cardId, store: store)
+
+        Task {
+            defer {
+                progress.finish()
+                resumingCards.remove(cardId)
+            }
+            do {
+                let settings = try? await settingsStore.read()
+
+                let shellOverride: String?
+                let extraEnv: [String: String]
+                let isRemote: Bool
+                let preamble: String?
+                var resumePath = projectPath
+                var boxdPreparation: BoxdPreparation?
+                let resumeSessionName = "\(assistant.cliCommand)-\(String(sessionId.prefix(8)))"
+                platform.clearRemoteSessionReady(resumeSessionName)
+                if runRemotely, store.state.remoteMode == .boxd, boxdSupervisor != nil {
+                    platform.expectRemoteSession(resumeSessionName)
+                }
+
+                let globalRemote = settings?.remote
+                let remoteMode = settings?.remoteMode ?? .boxd
+                if runRemotely, remoteMode == .boxd, let boxdSupervisor {
+                    let currentMachine = card.link.remote?.machineName
+                    let existingMachine = machineChoice?.machineName
+                        ?? (machineChoice == nil ? currentMachine : nil)
+                    progress.start()
+                    // A card that moves from this Mac to a machine ends its
+                    // local session first, so the conversation never runs in
+                    // two places, and the transcript it pushes is complete.
+                    if !card.link.isRemote, let previous = card.link.tmuxLink?.sessionName,
+                       platform.machineForSession(previous) == nil {
+                        progress.report("Ending the session on this Mac")
+                        KanbanCodeLog.info("resume", "Ending local session \(previous) before moving card=\(cardId.prefix(12)) to a machine")
+                        try? await tmux.killSession(name: previous)
+                    }
+                    let preparation = try await boxdSupervisor.prepare(
+                        cardId: cardId,
+                        localProjectPath: projectPath,
+                        existingMachine: existingMachine,
+                        worktreeName: nil,
+                        existingWorktree: card.link.worktreeLink,
+                        sessionNames: [resumeSessionName],
+                        runInit: existingMachine == nil || existingMachine != currentMachine,
+                        log: { line in progress.report(line) }
+                    )
+                    boxdPreparation = preparation
+                    shellOverride = nil
+                    extraEnv = preparation.extraEnv
+                    isRemote = true
+                    preamble = nil
+                    resumePath = preparation.remoteCwd
+
+                    // The tmux session survives a pause, so a live one is
+                    // attached as it is. Otherwise the newer transcript wins
+                    // before a fresh `--resume` starts on the machine.
+                    var liveOnMachine = false
+                    if existingMachine == currentMachine {
+                        liveOnMachine = await boxdSupervisor.hasSession(machineName: preparation.machineName, sessionName: resumeSessionName)
+                    }
+                    if liveOnMachine, card.link.isRemote {
+                        KanbanCodeLog.info("resume", "Attaching to live remote tmux \(resumeSessionName) on \(preparation.machineName)")
+                        platform.markRemoteSessionReady(resumeSessionName, preparation.machineName)
+                        store.dispatch(.resumeCompleted(cardId: cardId, tmuxName: resumeSessionName, isRemote: true))
+                        return
+                    }
+                    if liveOnMachine {
+                        // The card continued locally after that session; the
+                        // newer transcript wins and a fresh --resume starts.
+                        KanbanCodeLog.info("resume", "Dropping stale remote tmux \(resumeSessionName) on \(preparation.machineName)")
+                        try? await tmux.killSession(name: resumeSessionName)
+                    }
+                    if let localTranscript = store.state.links[cardId]?.sessionLink?.sessionPath,
+                       FileManager.default.fileExists(atPath: localTranscript) {
+                        let localLines = BoxdLaunchPlanner.lineCount(ofFileAt: localTranscript)
+                        let remoteLines = await boxdSupervisor.remoteTranscriptLines(
+                            machineName: preparation.machineName, localPath: localTranscript, remoteCwd: preparation.remoteCwd)
+                        let decision = BoxdLaunchPlanner.resumeDecision(
+                            tmuxAlive: false, localTranscriptLines: localLines, remoteTranscriptLines: remoteLines)
+                        if decision == .pushThenResume {
+                            KanbanCodeLog.info("resume", "Pushing transcript \(sessionId.prefix(8)) to \(preparation.machineName) (\(localLines) > \(remoteLines) lines)")
+                            try await boxdSupervisor.pushTranscript(
+                                machineName: preparation.machineName,
+                                localPath: localTranscript,
+                                sessionId: sessionId,
+                                remoteCwd: preparation.remoteCwd,
+                                remoteLines: remoteLines,
+                                log: { progress.report($0) }
+                            )
+                        } else {
+                            KanbanCodeLog.info("resume", "Transcript \(sessionId.prefix(8)) already on \(preparation.machineName) (\(remoteLines) lines)")
+                        }
+                    }
+                } else if runRemotely, let remote = globalRemote, projectPath.hasPrefix(remote.localPath) {
+                    let mutagenSetup = await mutagenEnvironment(remote: remote, projectPath: projectPath, assistant: assistant)
+                    shellOverride = mutagenSetup.0
+                    extraEnv = mutagenSetup.1
+                    preamble = mutagenSetup.2
+                    isRemote = true
+                } else {
+                    shellOverride = nil
+                    extraEnv = [:]
+                    isRemote = false
+                    preamble = nil
+                    // A card that leaves its machine continues from the local
+                    // mirror. The machine is kept, stopped, and its tmux name
+                    // is released so the local tmux server can own it. A
+                    // worktree that only existed on the machine is created
+                    // here first.
+                    if let remote = card.link.remote, remote.mode == .boxd, let boxdSupervisor {
+                        progress.start()
+                        progress.report("Leaving \(remote.machineName)")
+                        // Every session the card has there ends: the one of
+                        // its launch may carry another name than the resume.
+                        let names = (card.link.tmuxLink?.allSessionNames ?? []) + [resumeSessionName]
+                        await boxdSupervisor.leave(
+                            machineName: remote.machineName,
+                            sessionNames: Array(Set(names)),
+                            localTranscript: store.state.links[cardId]?.sessionLink?.sessionPath,
+                            remoteCwd: remote.remoteCwd)
+                        if let worktree = card.link.worktreeLink,
+                           let repoRoot = card.link.projectPath,
+                           !FileManager.default.fileExists(atPath: worktree.path) {
+                            let name = (worktree.path as NSString).lastPathComponent
+                            progress.start()
+                            progress.report("Creating worktree \(name) locally")
+                            _ = try await BoxdMachineSupervisor.createLocalWorktree(repoRoot: repoRoot, name: name)
+                        }
+                    }
+                }
+                let commandTemplate = settings?.commandTemplate(for: assistant, remote: isRemote)
+
+                let resumeServiceId = serviceIdOverride ?? card.link.apiServiceId ?? settings?.defaultAPIServiceIds[assistant.rawValue]
+                let resolvedService = resumeServiceId.flatMap { sid in
+                    settings?.apiServices.first { $0.id == sid && $0.assistant == assistant }
+                }
+                var serviceExtraEnv = extraEnv
+                if let svc = resolvedService,
+                   let envKey = assistant.baseURLEnvKey,
+                   let url = svc.baseURL, !url.isEmpty {
+                    serviceExtraEnv[envKey] = url
+                }
+                if let parentEnv = Self.subagentCacheEnv(parentCardId: card.link.parentCardId, assistant: assistant) {
+                    serviceExtraEnv.merge(parentEnv) { _, new in new }
+                }
+
+                if boxdPreparation == nil,
+                   agtopChoice(settings: settings, assistant: assistant, remote: isRemote, commandOverride: commandOverride) == .agtop {
+                    await killTmuxSessions(of: sessionId)
+                    let name = try await startOnAgtop(
+                        cardId: cardId,
+                        cwd: resumePath,
+                        sessionId: sessionId,
+                        resume: true,
+                        prompt: nil,
+                        images: [],
+                        extraEnv: serviceExtraEnv,
+                        skipPermissions: skipPermissions,
+                        model: effectiveModelOverride,
+                        commandTemplate: commandTemplate,
+                        service: resolvedService
+                    )
+                    store.dispatch(.resumeCompleted(cardId: cardId, tmuxName: name, isRemote: false))
+                    return
+                }
+
+                let actualTmuxName = try await launcher.resume(
+                    sessionId: sessionId,
+                    projectPath: resumePath,
+                    shellOverride: shellOverride,
+                    extraEnv: serviceExtraEnv,
+                    commandOverride: commandOverride,
+                    commandTemplate: commandTemplate,
+                    skipPermissions: skipPermissions,
+                    preamble: preamble,
+                    assistant: assistant,
+                    service: resolvedService,
+                    modelOverride: effectiveModelOverride
+                )
+                KanbanCodeLog.info("resume", "Resume launched for card=\(cardId.prefix(12)) actualTmux=\(actualTmuxName)")
+                if let preparation = boxdPreparation, let boxdSupervisor {
+                    await boxdSupervisor.exportSessionEnvironment(
+                        machineName: preparation.machineName, sessionName: actualTmuxName, env: preparation.extraEnv)
+                    platform.markRemoteSessionReady(actualTmuxName, preparation.machineName)
+                }
+
+                store.dispatch(.resumeCompleted(cardId: cardId, tmuxName: actualTmuxName, isRemote: isRemote))
+            } catch {
+                KanbanCodeLog.warn("resume", "Resume failed for card=\(cardId.prefix(12)): \(error.localizedDescription)")
+                store.dispatch(.resumeFailed(cardId: cardId, error: BoxdCliAdapter.shortMessage(of: error)))
+                // The machine would sit running, billed by the hour, waiting
+                // for a retry that may never come. A stop keeps its disk and
+                // the next resume brings it back with a cold start.
+                if runRemotely, store.state.remoteMode == .boxd,
+                   let remote = store.state.links[cardId]?.remote,
+                   let boxdSupervisor,
+                   await boxdSupervisor.isConnected(remote.machineName) {
+                    KanbanCodeLog.info("resume", "Stopping \(remote.machineName) after the failed resume")
+                    await boxdSupervisor.stop(machineName: remote.machineName, reason: .manual)
+                }
+            }
+        }
+        return true
+    }
+
+    // MARK: - agtop
+
+    /// Where a card's Claude session runs, from the settings and the launch.
+    public func agtopChoice(
+        settings: Settings?,
+        assistant: CodingAssistant,
+        remote: Bool,
+        commandOverride: String?
+    ) -> AgtopLaunchPlanner.Choice {
+        let choice = AgtopLaunchPlanner.choose(
+            assistant: assistant,
+            runtime: settings?.runtime(for: assistant) ?? .tmux,
+            remote: remote,
+            commandOverride: commandOverride,
+            agtopInstalled: tmux.agtop.isAvailable
+        )
+        if case .fallback(let fallback) = choice {
+            KanbanCodeLog.info("agtop", "Running on tmux: \(fallback.reason)")
+            if fallback == .notInstalled {
+                store.dispatch(.setError("agtop is not installed, the session runs on tmux"))
+            }
+        }
+        return choice
+    }
+
+    /// Starts, or resumes, a card's Claude session on an agtop host and
+    /// returns its session name (`agtop-<id>`).
+    public func startOnAgtop(
+        cardId: String,
+        cwd: String,
+        sessionId: String,
+        resume: Bool,
+        prompt: String?,
+        images: [ImageAttachment],
+        extraEnv: [String: String],
+        skipPermissions: Bool,
+        model: String?,
+        commandTemplate: String?,
+        service: APIService?
+    ) async throws -> String {
+        let imagePaths = images.compactMap { image -> String? in
+            if let tempPath = image.tempPath { return tempPath }
+            var copy = image
+            return try? copy.saveToTemp()
+        }
+        let binary = try AgtopLaunchPlanner.wrapperCommand(template: commandTemplate, service: service)
+            .map { try Self.writeAgtopWrapper(cardId: cardId, command: $0) }
+        let request = AgtopLaunchPlanner.request(
+            cardId: cardId,
+            cwd: cwd,
+            sessionId: sessionId,
+            resume: resume,
+            name: store.state.links[cardId]?.name,
+            // agtop puts each image right after its [Image #N] marker.
+            prompt: prompt,
+            imagePaths: imagePaths,
+            extraEnv: extraEnv,
+            skipPermissions: skipPermissions,
+            model: model ?? service?.modelFlag,
+            binary: binary
+        )
+        let info = try await tmux.agtop.start(request)
+        let name = AgtopSessionName.name(agtopId: info.id)
+        KanbanCodeLog.info("agtop", "Started \(name) for card=\(cardId.prefix(12)) session=\(sessionId.prefix(8)) resume=\(resume)")
+        return name
+    }
+
+    /// Stops the tmux sessions of `sessionId` so its agtop host is the only
+    /// process writing the transcript.
+    public func killTmuxSessions(of sessionId: String) async {
+        let sid8 = String(sessionId.prefix(8))
+        guard let sessions = try? await tmux.listSessions() else { return }
+        for session in sessions where session.name.contains(sid8) && !AgtopSessionName.isAgtop(session.name) {
+            try? await tmux.killSession(name: session.name)
+        }
+    }
+
+    /// The transcript Claude writes here for a session started in `cwd`.
+    public func transcriptPath(cwd: String, sessionId: String) -> String {
+        "\(platform.claudeProjectsDirectory)/\(SessionFileMover.encodeProjectPath(cwd))/\(sessionId).jsonl"
+    }
+
+    private static func writeAgtopWrapper(cardId: String, command: String) throws -> String {
+        let dir = (NSHomeDirectory() as NSString).appendingPathComponent(".kanban-code/agtop")
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let path = "\(dir)/\(cardId)-claude.sh"
+        try AgtopLaunchPlanner.wrapperScript(command: command).write(toFile: path, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)
+        return path
+    }
+}

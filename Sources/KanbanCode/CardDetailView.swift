@@ -723,8 +723,8 @@ struct CardDetailView: View {
                 showCheckpointConfirm = true
             },
             onEscape: {
-                if let session = card.link.tmuxLink?.sessionName {
-                    Task { try? await AppServices.tmux.sendEscape(sessionName: session) }
+                if card.link.tmuxLink != nil {
+                    AppComposition.shared.engine.interrupt(cardId: card.id)
                 }
             },
             githubBaseURL: githubBaseURL,

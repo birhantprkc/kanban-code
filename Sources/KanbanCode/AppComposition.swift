@@ -22,6 +22,9 @@ final class AppComposition {
     let launcher: LaunchSession
     let tmuxAdapter: RoutingTmuxAdapter
     let boxdSupervisor: BoxdMachineSupervisor
+    let engine: MasterEngine
+    let peerSync: PeerSync
+    let transcriptMirror: PeerTranscriptMirror
 
     private init() {
         let claudeDiscovery = ClaudeCodeSessionDiscovery()
@@ -149,7 +152,38 @@ final class AppComposition {
             boardStore.dispatch(.selectCard(cardId: persistedCardId))
         }
 
-        RemoteControlController.shared.attach(store: boardStore, tmux: tmux, settingsStore: settings)
+        let engine = MasterEngine(
+            store: boardStore,
+            settingsStore: settings,
+            launcher: launch,
+            tmux: tmux,
+            boxdSupervisor: supervisor,
+            registry: registry,
+            platform: Self.platform()
+        )
+        // The machine identity is on the board before the first reconcile,
+        // so every card this Mac stamps carries it.
+        let identity = MachineIdentityStore().loadOrCreate(defaultName: RemoteControlServer.defaultHostName)
+        boardStore.dispatch(.localMachineLoaded(identity))
+        orch.localMachineId = identity.id
+        let peerSync = PeerSync(identity: identity, peers: Self.readPeers()) { [weak boardStore] action in
+            await MainActor.run { boardStore?.dispatch(action) }
+        }
+        engine.peerSync = peerSync
+        engine.installForeignCardHandler()
+        Task.detached { await peerSync.run() }
+        Task { await engine.runOwnershipLoop() }
+        let mirror = PeerTranscriptMirror(engine: engine)
+        Task { await mirror.run() }
+        NotificationCenter.default.addObserver(forName: .kanbanCodeSettingsChanged, object: nil, queue: .main) { _ in
+            let peers = Self.readPeers()
+            Task { await peerSync.setPeers(peers) }
+        }
+        RemoteControlController.shared.attach(
+            engine: engine,
+            peerServer: BoardPeerLinksServer(store: boardStore, peerSync: peerSync),
+            settingsStore: settings
+        )
 
         self.store = boardStore
         self.orchestrator = orch
@@ -158,6 +192,62 @@ final class AppComposition {
         self.launcher = launch
         self.tmuxAdapter = tmux
         self.boxdSupervisor = supervisor
-        KanbanCodeLog.info("app", "services composed")
+        self.engine = engine
+        self.peerSync = peerSync
+        self.transcriptMirror = mirror
+        KanbanCodeLog.info("app", "services composed machine=\(identity.name) (\(identity.id))")
+    }
+
+    /// Settings > Peers, read straight from the file.
+    private static func readPeers() -> [PeerConfig] {
+        let path = NSHomeDirectory() + "/.kanban-code/settings.json"
+        let settings = FileManager.default.contents(atPath: path).flatMap { try? JSONDecoder().decode(Settings.self, from: $0) }
+        return settings?.peers ?? []
+    }
+
+    /// What the master engine needs from the Mac: the clipboard, the remote
+    /// terminals of boxd and ssh machines, and the defaults of the launch
+    /// dialogs for launches from the remote API.
+    private static func platform() -> MasterPlatform {
+        var platform = MasterPlatform()
+        platform.setClipboardImage = { data in
+            DispatchQueue.main.async {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setData(data, forType: .png)
+            }
+        }
+        platform.expectRemoteSession = { AppServices.expectRemoteSession($0) }
+        platform.clearRemoteSessionReady = { AppServices.clearRemoteSessionReady($0) }
+        platform.markRemoteSessionReady = { AppServices.markRemoteSessionReady($0, machine: $1) }
+        platform.unassignRemoteSession = { AppServices.remoteRegistry?.unassign(sessionName: $0) }
+        platform.machineForSession = { AppServices.machine(forSession: $0) }
+        platform.remoteMachineChoice = { machine, projectPath in
+            let options = AppComposition.shared.remoteLaunchOptions()
+            return RemoteLaunchOptions.remoteMachineChoice(machine, options: options, projectPath: projectPath)
+        }
+        platform.defaultAssistant = {
+            // The assistant the New Task dialog last used.
+            let last = UserDefaults.standard.string(forKey: "selectedAssistant").flatMap(CodingAssistant.init(rawValue:))
+            return last.flatMap { ContentView.loadEnabledAssistants().contains($0) ? $0 : nil } ?? .claude
+        }
+        platform.skipPermissions = { ContentView.remoteSkipPermissions }
+        platform.terminalCommand = { session in AppServices.terminalCommand(forSession: session) }
+        platform.peerTerminalCommand = { machineId, cardId, session in
+            AppServices.peerTerminalCommand(machineId: machineId, cardId: cardId, session: session)
+        }
+        platform.clonesMissingProjects = false
+        return platform
+    }
+
+    /// The launch options of a remote API launch: the board's remote mode
+    /// and machines, no card.
+    func remoteLaunchOptions() -> RemoteLaunchOptions {
+        RemoteLaunchOptions(
+            mode: store.state.remoteMode,
+            mutagen: store.state.globalRemoteSettings,
+            boxd: store.state.remoteMode == .boxd ? (store.state.boxdSettings ?? BoxdSettings()) : nil,
+            availableMachines: AppServices.boxdMachineNames,
+            boxdAvailable: AppServices.boxdAvailable
+        )
     }
 }

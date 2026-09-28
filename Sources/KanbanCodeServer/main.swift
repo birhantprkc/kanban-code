@@ -19,7 +19,7 @@ struct ServerOptions {
     var loopbackOnly = false
     var hostName: String?
     var pairName: String?
-    var reconciles = false
+    var reconciles = true
     var scope: RemoteScope = .full
 
     var devicesFile: String {
@@ -44,6 +44,7 @@ struct ServerOptions {
             case "--host-name": o.hostName = value()
             case "--loopback-only": o.loopbackOnly = true
             case "--reconcile": o.reconciles = true
+            case "--no-reconcile": o.reconciles = false
             case "-h", "--help": usage(nil)
             default: usage("unknown argument \(args[i])")
             }
@@ -55,13 +56,14 @@ struct ServerOptions {
     static func usage(_ error: String?) -> Never {
         if let error { FileHandle.standardError.write(Data("error: \(error)\n\n".utf8)) }
         say("""
-        usage: kanban-code-server [--home <dir>] [--port <n>] [--devices <path>] [--host-name <name>] [--loopback-only] [--reconcile]
+        usage: kanban-code-server [--home <dir>] [--port <n>] [--devices <path>] [--host-name <name>] [--loopback-only] [--no-reconcile]
                kanban-code-server pair <name> [--scope full|agent] [--home <dir>] [--devices <path>]
 
           --home       kanban home (default ~/.kanban-code): links.json, settings.json, remote/devices.json
           --port       listen port (default: settings remoteControl.port, else \(RemoteAPI.defaultPort))
           --host-name  name clients show for this machine (default: the host name)
-          --reconcile  discover this machine's sessions and keep their cards in step, as the Mac app does
+          --no-reconcile  do not keep the cards in step with their sessions (on by default; only the
+                       sessions this master launched or adopted have cards)
           pair         adds a device and prints its token and kanbancode:// pair link; a running
                        server picks the device up without a restart
         """)
@@ -99,7 +101,7 @@ if let name = options.pairName {
 
 let master = ServerMaster(home: options.home, reconciles: options.reconciles)
 await master.start()
-let host = ServerHost(store: master.store)
+let host = MasterRemoteControlHost(engine: master.engine)
 let peerServer = BoardPeerLinksServer(store: master.store, peerSync: master.peerSync)
 
 let loopbackOnly = options.loopbackOnly

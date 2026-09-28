@@ -434,6 +434,18 @@ struct CardBadgesRow: View {
                 .foregroundStyle(.secondary)
         }
 
+        // Another master runs the card
+        if let owner = card.owner {
+            HStack(spacing: 2) {
+                Image(systemName: owner.online ? "server.rack" : "wifi.slash")
+                Text(owner.name)
+                    .lineLimit(1)
+            }
+            .font(.app(.caption2))
+            .foregroundStyle(owner.online ? Color.indigo : Color.secondary)
+            .help(owner.online ? "Runs on \(owner.name)" : "Runs on \(owner.name), which is offline")
+        }
+
         // Remote execution indicator
         if let remote = card.link.remote, remote.mode == .boxd {
             // The filled cloud means the session runs on the machine right

@@ -2,6 +2,19 @@ import Foundation
 import Observation
 
 /// A card on the Kanban board, combining Link + Session data for display.
+/// The master that runs a card, when it is not this one.
+public struct CardOwner: Sendable, Equatable, Hashable {
+    public let id: String
+    public let name: String
+    public let online: Bool
+
+    public init(id: String, name: String, online: Bool) {
+        self.id = id
+        self.name = name
+        self.online = online
+    }
+}
+
 public struct KanbanCodeCard: Identifiable, Sendable, Equatable {
     public let id: String // link.id — stable across refreshes
     public let link: Link
@@ -16,6 +29,8 @@ public struct KanbanCodeCard: Identifiable, Sendable, Equatable {
     /// Claude's statusline, so it reflects an in-session `/model` switch that
     /// the card's own `modelOverride` knows nothing about.
     public let liveModel: String?
+    /// Another master that owns and runs the card; nil for this one.
+    public let owner: CardOwner?
 
     public init(
         link: Link,
@@ -23,7 +38,8 @@ public struct KanbanCodeCard: Identifiable, Sendable, Equatable {
         activityState: ActivityState? = nil,
         isBusy: Bool = false,
         isRateLimited: Bool = false,
-        liveModel: String? = nil
+        liveModel: String? = nil,
+        owner: CardOwner? = nil
     ) {
         self.id = link.id
         self.link = link
@@ -32,6 +48,7 @@ public struct KanbanCodeCard: Identifiable, Sendable, Equatable {
         self.isBusy = isBusy
         self.isRateLimited = isRateLimited
         self.liveModel = liveModel
+        self.owner = owner
     }
 
     /// Whether Claude is confirmed actively working right now (not just waiting).

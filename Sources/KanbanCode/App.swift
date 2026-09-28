@@ -580,7 +580,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                let cardId = url.pathComponents.dropFirst().first, !cardId.isEmpty,
                let target = URLComponents(url: url, resolvingAgainstBaseURL: false)?
                    .queryItems?.first(where: { $0.name == "to" })?.value, !target.isEmpty {
-                RemoteControlController.shared.moveCard?(cardId, target)
+                Task { @MainActor in AppServices.moveCard(cardId, to: target) }
             }
             // kanbancode://open?path=/some/project
             if url.host == "open",

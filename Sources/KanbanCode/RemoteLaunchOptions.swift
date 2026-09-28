@@ -1,19 +1,6 @@
 import Foundation
 import KanbanCodeCore
 
-/// Which boxd machine a launch or resume goes to.
-enum BoxdMachineChoice: Equatable, Hashable {
-    /// A new machine from the configured snapshot.
-    case newMachine
-    /// A machine that already exists, by name.
-    case existing(String)
-
-    var machineName: String? {
-        if case .existing(let name) = self { return name }
-        return nil
-    }
-}
-
 /// What the launch dialogs need to offer the "run remotely" row.
 struct RemoteLaunchOptions {
     var mode: RemoteMode

@@ -24,6 +24,13 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
     private var didInitialLoad = false
     private var dispatch: (@MainActor @Sendable (Action) -> Void)?
 
+    /// This master's machine id: cards another master owns are notified by
+    /// that master, not here.
+    public var localMachineId: String?
+    /// Whether a session no card knows still notifies. A headless master
+    /// turns it off: those are sessions another master runs on this host.
+    public var notifiesUnlinkedSessions = true
+
     /// Prompt IDs currently being edited in the UI — skip auto-send for these.
     private var editingQueuedPromptIds: Set<String> = []
 
@@ -345,6 +352,8 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
         }
 
         let link = try? await coordinationStore.linkForSession(sessionId)
+        if link == nil, !notifiesUnlinkedSessions { return }
+        if let owner = link?.ownerMachine, let localMachineId, owner != localMachineId { return }
         let title = link?.displayTitle ?? "Session done"
 
         // Mirrors claude-pushover's do_notify() exactly:
