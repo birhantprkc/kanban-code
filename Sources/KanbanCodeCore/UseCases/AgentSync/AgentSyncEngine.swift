@@ -30,6 +30,7 @@ public actor AgentSyncEngine {
     let options: Options
 
     private(set) var config: SyncConfig
+    private var configStamp: String?
     private var manifests: [String: [String: SyncItem]] = [:]
     private var lastScan: Date = .distantPast
     private var gitInfo: [String: SyncGitInfo] = [:]
@@ -67,6 +68,7 @@ public actor AgentSyncEngine {
         self.git = git
         self.options = options
         self.config = Self.loadConfig(kanbanHome: kanbanHome)
+        self.configStamp = Self.stamp(Self.configPath(kanbanHome))
         for entry in config.entries where entry.mode != .git {
             manifests[entry.id] = Self.loadManifest(kanbanHome: kanbanHome, entryId: entry.id)
         }
@@ -112,6 +114,28 @@ public actor AgentSyncEngine {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         if let data = try? encoder.encode(config) { Self.writeAtomically(data, to: Self.configPath(kanbanHome)) }
+        configStamp = Self.stamp(Self.configPath(kanbanHome))
+    }
+
+    /// Size and modification time of a file, to notice edits from outside.
+    static func stamp(_ path: String) -> String? {
+        guard let info = SyncScanner.lstat(path) else { return nil }
+        return "\(info.size):\(info.mtime)"
+    }
+
+    /// A hand edit of `sync.json` (a box has no Settings window) counts as
+    /// an edit made here now.
+    private func reloadEditedConfig() async {
+        let path = Self.configPath(kanbanHome)
+        let current = Self.stamp(path)
+        guard current != configStamp else { return }
+        configStamp = current
+        guard let data = FileManager.default.contents(atPath: path),
+              let edited = try? JSONDecoder().decode(SyncConfig.self, from: data),
+              edited.entries != config.entries
+        else { return }
+        KanbanCodeLog.info("sync", "sync.json edited by hand")
+        await setEntries(edited.entries)
     }
 
     private func saveManifest(_ entryId: String) {
@@ -189,6 +213,7 @@ public actor AgentSyncEngine {
         guard poked || scanDue || gitDue else { return }
 
         if scanDue || poked {
+            await reloadEditedConfig()
             if scanAll() { await notifyPeers(what: "mirror") }
         }
         let peers = await self.peers()
@@ -316,7 +341,13 @@ public actor AgentSyncEngine {
         peerNames[remote.machine.id] = remote.machine.name
         adoptConfig(remote.config, from: remote.machine.name)
         for (id, info) in remote.git {
-            if let url = info.url, !url.isEmpty { learnedURLs[id] = url }
+            guard let url = info.url, !url.isEmpty, learnedURLs[id] != url else { continue }
+            learnedURLs[id] = url
+            // A clone missing here can start now rather than on the next timer.
+            if let entry = config.entries.first(where: { $0.id == id }),
+               !FileManager.default.fileExists(atPath: root(entry) + "/.git") {
+                pokedGit.insert(id)
+            }
         }
         scanAll()
         var changedLocally = false

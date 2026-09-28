@@ -403,6 +403,27 @@ struct AgentSyncEngineTests {
         #expect(read(box + "/.claude/commands/ship.md") == "ship it")
     }
 
+    @Test func handEditOfSyncJsonAppliesAndTravels() async throws {
+        let mac = tempDir(), box = tempDir()
+        let macId = MachineIdentity(id: "machine_mac", name: "mac")
+        let boxId = MachineIdentity(id: "machine_box", name: "box", alwaysOn: true)
+        let transport = LoopbackTransport()
+        let entries = [SyncEntry(mode: .mirror, path: "~/.claude/CLAUDE.md")]
+        let a = try engine(home: mac, identity: macId, peer: boxId, transport: transport, entries: entries)
+        let b = try engine(home: box, identity: boxId, peer: macId, transport: transport, entries: entries)
+        transport.engines = [macId.id: a, boxId.id: b]
+
+        let edited = entries + [SyncEntry(mode: .mirror, path: "~/.agents/skills")]
+        try await Task.sleep(for: .milliseconds(20))
+        try JSONEncoder().encode(SyncConfig(updatedAt: 1, entries: edited))
+            .write(to: URL(fileURLWithPath: box + "/.kanban-code/sync.json"))
+        await b.round()
+        #expect(await b.currentConfig().entries == edited)
+        #expect(await b.currentConfig().updatedAt > 1)
+        await a.round()
+        #expect(await a.currentConfig().entries == edited)
+    }
+
     @Test func followerWaitsForASeededHomeThenReplaysItsQueue() async throws {
         let mac = tempDir(), box = tempDir()
         let macId = MachineIdentity(id: "machine_mac", name: "mac")
