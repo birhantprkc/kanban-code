@@ -16,6 +16,15 @@ enum LinuxSpawn {
     /// other child started here inherits them before they are close-on-exec.
     private static let spawnLock = NSLock()
 
+    /// glibc's `posix_spawn_file_actions_addclosefrom_np` (2.34 and later),
+    /// which its headers only declare for `_GNU_SOURCE`; nil on an older glibc.
+    private typealias AddCloseFrom = @convention(c) (UnsafeMutablePointer<posix_spawn_file_actions_t>, Int32) -> Int32
+    private static let addCloseFrom: AddCloseFrom? = {
+        guard let handle = dlopen(nil, RTLD_NOW),
+              let symbol = dlsym(handle, "posix_spawn_file_actions_addclosefrom_np") else { return nil }
+        return unsafeBitCast(symbol, to: AddCloseFrom.self)
+    }()
+
     /// A pipe whose two ends are close-on-exec.
     private static func cloexecPipe() throws -> [Int32] {
         var fds: [Int32] = [-1, -1]
@@ -49,6 +58,12 @@ enum LinuxSpawn {
         }
         posix_spawn_file_actions_adddup2(&actions, outPipe[1], 1)
         posix_spawn_file_actions_adddup2(&actions, errPipe[1], 2)
+        // The child keeps only 0, 1 and 2. Any other descriptor open in this
+        // process at that moment (a file another thread is writing, a
+        // socket) would otherwise live on in children that outlast the
+        // command, such as agtop hosts: descriptors pile up, and a file
+        // still open for writing cannot be executed (ETXTBSY).
+        _ = addCloseFrom?(&actions, 3)
 
         var attr = posix_spawnattr_t()
         posix_spawnattr_init(&attr)
