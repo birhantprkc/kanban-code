@@ -359,6 +359,22 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
         }
     }
 
+    public func updateCard(cardId: String, _ update: RemoteCardUpdate) async throws -> RemoteCard {
+        try await MainActor.run { () throws -> RemoteCard in
+            _ = try card(cardId)
+            if let name = update.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+                store.dispatch(.renameCard(cardId: cardId, name: name))
+            }
+            if let column = update.column, let target = KanbanCodeColumn(rawValue: column.rawValue) {
+                store.dispatch(.moveCard(cardId: cardId, to: target))
+            }
+            if update.archived == true {
+                store.dispatch(.archiveCard(cardId: cardId))
+            }
+            return try remoteCard(cardId)
+        }
+    }
+
     public func moveCard(cardId: String, to target: String) async throws -> RemoteCard {
         do {
             try await engine.moveCard(cardId, to: target)

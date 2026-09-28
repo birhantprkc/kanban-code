@@ -45,6 +45,7 @@ JSON bodies, up to 48 MiB. Dates are ISO 8601 with milliseconds, UTC (`2026-09-2
 | `DELETE /v1/cards/{id}/queue/{promptId}` | any | 204 |
 | `POST /v1/cards/{id}/interrupt` | any | 204 |
 | `POST /v1/cards/{id}/resume` | any | `RemoteCard` |
+| `PATCH /v1/cards/{id}` | any | `RemoteCardUpdate` (`name`, `column`, `archived`) → `RemoteCard` |
 | `POST /v1/cards/{id}/move` | any | `RemoteMoveRequest` → `RemoteCard` |
 | `GET /v1/cards/{id}/handover` | any | `RemoteHandoverInfo` |
 | `GET /v1/cards/{id}/transcript/raw?offset=0&limit=4194304` | any | transcript bytes, `X-Transcript-Size` header |

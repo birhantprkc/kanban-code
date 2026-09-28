@@ -14,6 +14,21 @@ public struct RemoteMoveRequest: Codable, Sendable, Equatable {
     }
 }
 
+/// PATCH /v1/cards/{id}: edits of the card any master may make. Each field
+/// is optional; the ones given apply in the order name, column, archive.
+public struct RemoteCardUpdate: Codable, Sendable, Equatable {
+    public var name: String?
+    public var column: RemoteColumn?
+    /// true archives the card.
+    public var archived: Bool?
+
+    public init(name: String? = nil, column: RemoteColumn? = nil, archived: Bool? = nil) {
+        self.name = name
+        self.column = column
+        self.archived = archived
+    }
+}
+
 /// GET /v1/cards/{id}/handover: what a master adopting the card needs from
 /// the one that released it to continue the conversation.
 public struct RemoteHandoverInfo: Codable, Sendable, Equatable {
@@ -75,6 +90,14 @@ extension RemoteClient {
     /// POST /v1/cards/{id}/move
     public func move(cardId: String, to target: String) async throws -> RemoteCard {
         let request = makeRequest("POST", "v1/cards/\(Self.escape(cardId))/move", body: RemoteMoveRequest(to: target))
+        let (data, status) = try await rawData(for: request)
+        guard (200..<300).contains(status) else { throw RemoteClientError.from(status: status, body: data) }
+        return try JSONDecoder.remote.decode(RemoteCard.self, from: data)
+    }
+
+    /// PATCH /v1/cards/{id}
+    public func updateCard(cardId: String, _ update: RemoteCardUpdate) async throws -> RemoteCard {
+        let request = makeRequest("PATCH", "v1/cards/\(Self.escape(cardId))", body: update)
         let (data, status) = try await rawData(for: request)
         guard (200..<300).contains(status) else { throw RemoteClientError.from(status: status, body: data) }
         return try JSONDecoder.remote.decode(RemoteCard.self, from: data)

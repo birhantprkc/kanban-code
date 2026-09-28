@@ -262,6 +262,44 @@ struct MasterHandoverTests {
         #expect(boxLink.queuedPrompts == nil || boxLink.queuedPrompts?.first?.body == "from the mac")
     }
 
+    @Test("renames, moves and archives from either master converge on both")
+    func sharedEditsConverge() async throws {
+        let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("converge-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let mac = try TestMaster(name: "mac", root: root)
+        let box = try TestMaster(name: "box", root: root)
+        try await mac.serve()
+        try await box.serve()
+        try await mac.start(peerURL: box.url, peerToken: box.tokenForPeer)
+        try await box.start(peerURL: mac.url, peerToken: mac.tokenForPeer)
+        defer { mac.server.stop(); box.server.stop() }
+        box.store.dispatch(.createManualTask(Link(id: "card_c", name: "Start", projectPath: "/tmp/acme", column: .waiting)))
+        await mac.peerSync.pullAll()
+        await box.peerSync.pullAll()
+
+        let macClient = RemoteClient(baseURL: URL(string: mac.url)!, token: try mac.devices.add(name: "phone", scope: .full).token)
+        let boxClient = RemoteClient(baseURL: URL(string: box.url)!, token: try box.devices.add(name: "phone", scope: .full).token)
+        // One after the other: both edits stay.
+        _ = try await macClient.updateCard(cardId: "card_c", RemoteCardUpdate(name: "Renamed on the Mac"))
+        await box.peerSync.pullAll()
+        _ = try await boxClient.updateCard(cardId: "card_c", RemoteCardUpdate(column: .inReview))
+        await mac.peerSync.pullAll()
+        for master in [mac, box] {
+            #expect(master.store.state.links["card_c"]?.name == "Renamed on the Mac")
+            #expect(master.store.state.links["card_c"]?.column == .inReview)
+        }
+        // At the same time: both masters end on the same card.
+        _ = try await macClient.updateCard(cardId: "card_c", RemoteCardUpdate(name: "Mac wins?"))
+        _ = try await boxClient.updateCard(cardId: "card_c", RemoteCardUpdate(name: "Box wins?"))
+        await mac.peerSync.pullAll()
+        await box.peerSync.pullAll()
+        #expect(mac.store.state.links["card_c"]?.name == box.store.state.links["card_c"]?.name)
+        _ = try await macClient.updateCard(cardId: "card_c", RemoteCardUpdate(archived: true))
+        await box.peerSync.pullAll()
+        #expect(box.store.state.links["card_c"]?.manuallyArchived == true)
+        #expect(box.store.state.links["card_c"]?.ownerMachine == nil)
+    }
+
     @Test("a first launch on a peer releases the card and the peer starts it")
     func launchOnPeer() async throws {
         let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("peer-launch-\(UUID().uuidString)")

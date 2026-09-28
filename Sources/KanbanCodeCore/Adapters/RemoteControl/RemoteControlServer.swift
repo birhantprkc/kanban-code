@@ -369,6 +369,12 @@ public final class RemoteControlServer: Sendable {
                 let board = await host.board()
                 return .response(.json(Self.wantsAll(request) ? board : RemoteWorkingSet.filter(board)))
 
+            case ("PATCH", "cards/*"):
+                guard let body = try? JSONDecoder.remote.decode(RemoteCardUpdate.self, from: request.body) else {
+                    return .response(.error(400, "body must be {\"name\", \"column\", \"archived\"}, each optional"))
+                }
+                return .response(.json(try await host.updateCard(cardId: id, body)))
+
             case ("GET", "cards/*"):
                 guard let card = await host.board().cards.first(where: { $0.id == id }) else {
                     return .response(.error(404, "no card \(id)"))
