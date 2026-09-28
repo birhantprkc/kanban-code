@@ -13,10 +13,20 @@ import {
   Channel,
   ChannelMessage,
   appendDirectMessage,
+  defaultBaseDir,
   getChannel,
   persistMessageImages,
   sendMessage,
 } from "./channels.js";
+import {
+  collectForeignResponses,
+  enqueueForeignPrompt,
+  isForeignCard,
+  machineLabel,
+  portableImagePath,
+  readLocalMachine,
+} from "./machines.js";
+import { kanbanHome } from "./paths.js";
 import { formatHandle } from "./handles.js";
 import {
   relationshipLabel,
@@ -38,10 +48,31 @@ export interface FanOutOptions {
   sender?: Sender;
   liveSessionProbe?: LiveSessionProbe;
   includeOfflineInReport?: boolean;
+  /**
+   * This master's machine id. Cards another machine owns get the message
+   * through the command inbox instead of a tmux paste. Undefined reads
+   * `machine.json`; null treats every card as local.
+   */
+  localMachineId?: string | null;
+  /** Longest wait for the master to confirm foreign deliveries. */
+  foreignResponseTimeoutMs?: number;
+  /** Request id generator for foreign deliveries (tests). */
+  foreignRequestId?: () => string;
+  /** Channels base dir the message images were persisted under. */
+  baseDir?: string;
+}
+
+export interface Delivery {
+  handle: string;
+  tmuxSession?: string;
+  /** Owner machine (name or id) a foreign delivery was handed to. */
+  via?: string;
+  /** False while the master has not confirmed a foreign delivery yet. */
+  confirmed?: boolean;
 }
 
 export interface FanOutResult {
-  delivered: { handle: string; tmuxSession: string }[];
+  delivered: Delivery[];
   skippedOffline: { handle: string; reason: string }[];
   skippedSender: { handle: string };
 }
@@ -106,6 +137,21 @@ export function cardFromEnvironment(
   return links.find((link) => link.id === id);
 }
 
+// ── Foreign cards ────────────────────────────────────────────────────
+
+export const FOREIGN_RESPONSE_TIMEOUT_MS = 3_000;
+
+function resolveLocalMachineId(opts: FanOutOptions): string | undefined {
+  if (opts.localMachineId === null) return undefined;
+  return opts.localMachineId ?? readLocalMachine()?.id;
+}
+
+function portableImages(imagePaths: string[] | undefined, baseDir?: string): string[] | undefined {
+  if (!imagePaths || imagePaths.length === 0) return imagePaths;
+  const homes = [baseDir, kanbanHome(), defaultBaseDir()].filter((h): h is string => Boolean(h));
+  return imagePaths.map((p) => portableImagePath(p, homes));
+}
+
 // ── Formatting ────────────────────────────────────────────────────────
 
 function renderImageRefs(imagePaths?: string[]): string {
@@ -159,8 +205,10 @@ export function fanOutChannelMessage(
   const sender: Sender = opts.sender ?? pasteTmuxPrompt;
   const probe: LiveSessionProbe = opts.liveSessionProbe ?? ((_name) => true);
 
-  const delivered: { handle: string; tmuxSession: string }[] = [];
+  const localMachineId = resolveLocalMachineId(opts);
+  const delivered: Delivery[] = [];
   const skippedOffline: { handle: string; reason: string }[] = [];
+  const foreign: { requestId: string; delivery: Delivery }[] = [];
 
   for (const member of channel.members) {
     // Skip sender (both by cardId and by handle — the latter catches the human user case).
@@ -176,6 +224,20 @@ export function fanOutChannelMessage(
       continue;
     }
     const link = links.find((l) => l.id === member.cardId);
+    if (link && isForeignCard(link, localMachineId)) {
+      const text = formatChannelBroadcast(
+        channel.name,
+        msg.from.handle,
+        msg.body,
+        portableImages(msg.imagePaths, opts.baseDir),
+        msg.source === "external"
+      );
+      const request = enqueueForeignPrompt(link.id, text, opts.foreignRequestId?.());
+      const delivery: Delivery = { handle: member.handle, via: machineLabel(link.ownerMachine!), confirmed: false };
+      delivered.push(delivery);
+      foreign.push({ requestId: request.id, delivery });
+      continue;
+    }
     const session = link?.tmuxLink?.sessionName;
     if (!session) {
       skippedOffline.push({ handle: member.handle, reason: "no tmux session" });
@@ -200,6 +262,26 @@ export function fanOutChannelMessage(
     }
   }
 
+  if (foreign.length > 0) {
+    const answers = collectForeignResponses(
+      foreign.map((f) => f.requestId),
+      opts.foreignResponseTimeoutMs ?? FOREIGN_RESPONSE_TIMEOUT_MS
+    );
+    for (const { requestId, delivery } of foreign) {
+      const answer = answers.get(requestId);
+      if (!answer) continue;
+      if (answer.ok) {
+        delivery.confirmed = true;
+      } else {
+        delivered.splice(delivered.indexOf(delivery), 1);
+        skippedOffline.push({
+          handle: delivery.handle,
+          reason: `${delivery.via} refused: ${answer.error ?? "unknown error"}`,
+        });
+      }
+    }
+  }
+
   return {
     delivered,
     skippedOffline,
@@ -220,7 +302,7 @@ export function sendAndFanOut(
 ): { msg: ChannelMessage; result: FanOutResult } {
   const msg = sendMessage(channelName, from, body, baseDir, imagePaths, source);
   const channel = getChannel(channelName, baseDir)!;
-  const result = fanOutChannelMessage(channel, msg, links, opts);
+  const result = fanOutChannelMessage(channel, msg, links, { baseDir, ...opts });
   return { msg, result };
 }
 
@@ -234,7 +316,7 @@ export function sendDirectMessage(
   baseDir?: string,
   opts: FanOutOptions = {},
   imagePaths: string[] = []
-): { msg: ChannelMessage & { to: typeof to }; delivered: boolean; error?: string } {
+): { msg: ChannelMessage & { to: typeof to }; delivered: boolean; error?: string; via?: string } {
   const sender: Sender = opts.sender ?? pasteTmuxPrompt;
   const probe: LiveSessionProbe = opts.liveSessionProbe ?? ((_n) => true);
   const id = `msg_${Date.now().toString(36)}`;
@@ -253,6 +335,24 @@ export function sendDirectMessage(
     return { msg, delivered: false, error: "recipient has no tmux session (user)" };
   }
   const link = links.find((l) => l.id === to.cardId);
+  if (link && isForeignCard(link, resolveLocalMachineId(opts))) {
+    const text = formatDirectMessage(
+      from.handle,
+      body,
+      persisted.length > 0 ? portableImages(persisted, baseDir) : undefined,
+      subagentRelationship(from.cardId, to.cardId, links)
+    );
+    const via = machineLabel(link.ownerMachine!);
+    const request = enqueueForeignPrompt(link.id, text, opts.foreignRequestId?.());
+    const answer = collectForeignResponses(
+      [request.id],
+      opts.foreignResponseTimeoutMs ?? FOREIGN_RESPONSE_TIMEOUT_MS
+    ).get(request.id);
+    if (answer && !answer.ok) {
+      return { msg, delivered: false, error: `${via} refused: ${answer.error ?? "unknown error"}`, via };
+    }
+    return { msg, delivered: true, via };
+  }
   const session = link?.tmuxLink?.sessionName;
   if (!session) return { msg, delivered: false, error: "recipient has no tmux session" };
   if (!probe(session)) return { msg, delivered: false, error: "recipient offline" };

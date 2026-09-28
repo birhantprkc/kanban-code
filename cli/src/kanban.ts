@@ -41,6 +41,14 @@ import { runtimeSpec } from "./agents/runtime.js";
 import { installHooks } from "./hooks.js";
 import { runRemoteAgent } from "./remote-agent.js";
 import { runProxiedCommand, shouldProxy } from "./remote-proxy.js";
+import { localCallerCardId, routesToChannelsHome, runOnChannelsHome } from "./channels-home.js";
+import {
+  collectForeignResponses,
+  enqueueForeignPrompt,
+  isForeignCard,
+  machineLabel,
+  readLocalMachine,
+} from "./machines.js";
 import { registerRemoteCommands } from "./remote-client.js";
 import { Daemon } from "./agents/daemon.js";
 import { slackAppManifest, MANIFEST_INSTRUCTIONS } from "./slack/manifest.js";
@@ -437,6 +445,48 @@ async function queuePromptForCard(
   }
 }
 
+/**
+ * A card another master runs has no tmux session here. The prompt goes to the
+ * local master's inbox, which forwards it to the owner's queue; the owner sends
+ * it as soon as the agent is idle, whatever the requested mode.
+ */
+function sendToForeignCard(
+  card: Link,
+  message: string,
+  mode: DeliveryMode,
+  opts: { json?: boolean }
+): void {
+  const via = machineLabel(card.ownerMachine!);
+  const request = enqueueForeignPrompt(card.id, message);
+  const answer = collectForeignResponses([request.id], FOREIGN_SEND_TIMEOUT_MS).get(request.id);
+  const ok = answer ? answer.ok : true;
+  if (opts.json) {
+    output(
+      {
+        cardId: card.id,
+        mode,
+        message,
+        via,
+        ownerMachine: card.ownerMachine,
+        confirmed: Boolean(answer?.ok),
+        ok,
+        ...(answer?.error ? { error: answer.error } : {}),
+      },
+      { json: true }
+    );
+    if (!ok) process.exit(1);
+    return;
+  }
+  if (!ok) {
+    console.error(`Failed: ${via} refused: ${answer?.error ?? "unknown error"}`);
+    process.exit(1);
+  }
+  const suffix = answer ? "" : " (not confirmed yet)";
+  console.log(`Queued for ${card.name ?? card.id} via ${via}${suffix}`);
+}
+
+const FOREIGN_SEND_TIMEOUT_MS = 10_000;
+
 program
   .command("send")
   .description("Low-level: deliver a message to one card's session (not channel chat)")
@@ -457,6 +507,11 @@ program
     if (!card) {
       console.error(`Card not found: ${cardQuery}`);
       process.exit(1);
+    }
+
+    if (isForeignCard(card, readLocalMachine()?.id)) {
+      sendToForeignCard(card, message, mode, { json: opts.json });
+      return;
     }
 
     if (mode === "queue") {
@@ -1066,10 +1121,14 @@ program
  * or --as-user. Returns { cardId, handle }. cardId=null represents the user.
  */
 function humanHandle(): string {
+  const slugify = (name: string) =>
+    name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "user";
+  // A channels home runs commands for paired machines, whose human is the
+  // person at that machine rather than the account the home runs as.
+  const declared = process.env.KANBAN_HUMAN_HANDLE?.trim();
+  if (declared) return slugify(declared);
   try {
-    const u = userInfo().username;
-    const slug = u.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
-    return slug || "user";
+    return slugify(userInfo().username);
   } catch {
     return "user";
   }
@@ -1683,11 +1742,13 @@ channelCmd
     const channels = listChannels();
     const live = liveTmuxSet();
     const links = readLinks();
+    const localMachineId = readLocalMachine()?.id;
     const rows = channels.map((ch) => {
       const st = statChannel(ch.name);
       const onlineCount = ch.members.filter((m) => {
         if (m.cardId === null) return true;
         const link = links.find((l) => l.id === m.cardId);
+        if (isForeignCard(link, localMachineId)) return true;
         return link?.tmuxLink?.sessionName && live.has(link.tmuxLink.sessionName);
       }).length;
       return {
@@ -1822,13 +1883,15 @@ channelCmd
     }
     const live = liveTmuxSet();
     const links = readLinks();
+    const localMachineId = readLocalMachine()?.id;
     const rows = ch.members.map((m) => {
       let online = false;
       if (m.cardId === null) online = true;
       else {
         const link = links.find((l) => l.id === m.cardId);
         const s = link?.tmuxLink?.sessionName;
-        online = !!(s && live.has(s));
+        // Another master runs this card; its tmux session is not visible here.
+        online = isForeignCard(link, localMachineId) || !!(s && live.has(s));
       }
       return { handle: m.handle, cardId: m.cardId, online, joinedAt: m.joinedAt };
     });
@@ -1891,7 +1954,7 @@ channelCmd
       } else {
         console.log(`${formatHandle(caller.handle)} → #${clean}: ${body}`);
         if (result.delivered.length > 0) {
-          console.log(`  delivered to: ${result.delivered.map((d) => formatHandle(d.handle)).join(", ")}`);
+          console.log(`  delivered to: ${result.delivered.map((d) => formatHandle(d.handle) + (d.via ? ` (via ${d.via})` : "")).join(", ")}`);
         }
         if (result.skippedOffline.length > 0) {
           console.log(`  skipped: ${result.skippedOffline.map((d) => `${formatHandle(d.handle)} (${d.reason})`).join(", ")}`);
@@ -2095,7 +2158,7 @@ dmCmd
       const live = liveTmuxSet();
       const links = readLinks();
       const imagePaths: string[] = Array.isArray(opts.image) ? opts.image : [];
-      const { msg, delivered, error } = sendDirectMessage(
+      const { msg, delivered, error, via } = sendDirectMessage(
         caller,
         { cardId: target.id, handle: stripAt(handle) },
         body,
@@ -2105,9 +2168,9 @@ dmCmd
         imagePaths
       );
       if (opts.json) {
-        output({ msg, delivered, error }, { json: true });
+        output({ msg, delivered, error, ...(via ? { via } : {}) }, { json: true });
       } else {
-        const tag = delivered ? "delivered" : (error ?? "not delivered");
+        const tag = delivered ? (via ? `delivered (via ${via})` : "delivered") : (error ?? "not delivered");
         console.log(`${formatHandle(caller.handle)} → ${formatHandle(stripAt(handle))}: ${body} [${tag}]`);
       }
       if (!delivered) process.exit(2);
@@ -2223,6 +2286,21 @@ if (shouldProxy(proxyArgv)) {
     writeError: (text) => writeSyncToFd(2, text),
   });
   process.exit(code);
+}
+
+// ── Channels home gate ───────────────────────────────────────────────
+
+// Paired with a channels home, channel and DM commands run there, where the
+// channel data lives. The caller card is resolved here first: only this
+// machine knows which tmux session the command was typed in.
+if (routesToChannelsHome(proxyArgv)) {
+  const outcome = await runOnChannelsHome(proxyArgv, {
+    humanHandle: humanHandle(),
+    cardId: localCallerCardId(proxyArgv),
+    write: (text) => writeSyncToFd(1, text),
+    writeError: (text) => writeSyncToFd(2, text),
+  });
+  if (outcome !== "local") process.exit(outcome);
 }
 
 await program.parseAsync();

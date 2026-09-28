@@ -143,6 +143,8 @@ export interface Link {
   sortOrder?: number;
   assistant?: CodingAssistant;
   isLaunching?: boolean;
+  /** Machine id of the master that runs this card. Missing means this machine. */
+  ownerMachine?: string;
 }
 
 export interface TmuxSession {

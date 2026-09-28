@@ -23,6 +23,17 @@ export function hookEventsPath(): string {
   return join(kanbanHome(), "hook-events.jsonl");
 }
 
+/// This master's identity: `{"id", "name"}`. Cards key ownership on the id.
+export function machinePath(): string {
+  return join(kanbanHome(), "machine.json");
+}
+
+/// Present while this machine is paired with a channels home (another master
+/// that holds the channel and DM data): `{"machineId", "name", "url", "token"}`.
+export function channelsHomePath(): string {
+  return join(kanbanHome(), "channels-home.json");
+}
+
 export function commandInboxDir(): string {
   return join(kanbanHome(), "commands", "inbox");
 }

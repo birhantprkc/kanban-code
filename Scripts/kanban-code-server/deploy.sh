@@ -7,6 +7,8 @@
 # distribution) plus zlib1g-dev. The committed tree (HEAD) is unpacked into
 # ~/Projects/kanban-server on the host, built there in release mode with a static
 # Swift runtime, installed as /usr/local/bin/kanban-code-server and restarted.
+# The CLI from the same tree is built there too (node + pnpm on the host) and
+# installed into ~/.kanban-code/cli, which the host's `kanban` wrapper runs.
 set -euo pipefail
 
 HOST="${1:-root@51.159.202.175}"
@@ -30,4 +32,16 @@ sleep 2
 systemctl --no-pager --lines=5 status kanban-code-server
 curl -fsS http://127.0.0.1:7780/v1/health
 echo
+
+cd cli
+pnpm install --frozen-lockfile
+pnpm build
+rm -rf ~/.kanban-code/cli.new
+mkdir -p ~/.kanban-code/cli.new
+cp -a dist package.json node_modules docs ~/.kanban-code/cli.new/
+rm -rf ~/.kanban-code/cli.old
+if [ -d ~/.kanban-code/cli ]; then mv ~/.kanban-code/cli ~/.kanban-code/cli.old; fi
+mv ~/.kanban-code/cli.new ~/.kanban-code/cli
+rm -rf ~/.kanban-code/cli.old
+/usr/bin/node ~/.kanban-code/cli/dist/kanban.js --version
 REMOTE
