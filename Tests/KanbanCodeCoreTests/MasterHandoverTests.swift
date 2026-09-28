@@ -453,6 +453,12 @@ struct MasterRolesTests {
         #expect(!fm.fileExists(atPath: "\(macChannels)/dm/a_b.jsonl"))
         #expect(fm.fileExists(atPath: "\(macChannels)/read-state.json"))
 
+        // A file the home never had is never deleted here, nor copied again.
+        try Data("{}\n".utf8).write(to: URL(fileURLWithPath: "\(macChannels)/local-only.jsonl"))
+        await mac.engine.syncChannelsOnce(&mirror)
+        #expect(fm.fileExists(atPath: "\(macChannels)/local-only.jsonl"))
+        #expect(!fm.fileExists(atPath: "\(boxChannels)/local-only.jsonl"))
+
         // A second pairing does not copy again: the home's channels stand.
         try fm.removeItem(atPath: "\(boxChannels)")
         await mac.engine.syncChannelsOnce(&mirror)

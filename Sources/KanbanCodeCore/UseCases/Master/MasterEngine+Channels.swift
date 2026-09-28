@@ -274,8 +274,13 @@ public final class AsyncSignal: @unchecked Sendable {
 
 /// The local copy of the channels home's `channels/` directory. Message
 /// logs only grow, so a log that got longer is fetched from where the copy
-/// ends; any other change fetches the whole file. The first time a home
-/// with no channels at all is seen, this master's channels are copied there.
+/// ends; any other change fetches the whole file.
+///
+/// Until this master has copied its own channels to a home once, every
+/// local file the home lacks is sent there (create-only), so pairing merges
+/// both sides. A local file is removed only when it came from the home
+/// (the manifest lists it) and the home no longer has it; a file the home
+/// never had is never deleted here.
 struct ChannelsMirror {
     let home: String
     /// Remote size and mtime of each file as last written here.
@@ -285,38 +290,55 @@ struct ChannelsMirror {
         self.home = home
     }
 
-    private var root: String { MasterEngine.channelsDirectory(home: home) }
-
     private func seededMarker(_ machine: String) -> String {
         (home as NSString).appendingPathComponent("channels-seeded-\(machine)")
+    }
+
+    /// Paths this master holds because the home sent them.
+    private var manifestPath: String {
+        (home as NSString).appendingPathComponent("channels-mirror.json")
+    }
+
+    private func readManifest() -> Set<String> {
+        guard let data = FileManager.default.contents(atPath: manifestPath),
+              let paths = try? JSONDecoder().decode([String].self, from: data) else { return [] }
+        return Set(paths)
+    }
+
+    private func writeManifest(_ paths: Set<String>) {
+        guard let data = try? JSONEncoder().encode(paths.sorted()) else { return }
+        try? data.write(to: URL(fileURLWithPath: manifestPath), options: .atomic)
     }
 
     /// Returns whether a local file changed.
     mutating func sync(client: RemoteClient, homeMachine: String) async throws -> Bool {
         let fm = FileManager.default
         var remote = try await client.channelFiles()
-        if remote.isEmpty, !fm.fileExists(atPath: seededMarker(homeMachine)) {
-            let local = MasterEngine.listChannelFiles(home: home)
-            for file in local {
+        if !fm.fileExists(atPath: seededMarker(homeMachine)) {
+            let remotePaths = Set(remote.map(\.path))
+            var copied = 0
+            for file in MasterEngine.listChannelFiles(home: home) where !remotePaths.contains(file.path) {
                 guard let path = MasterEngine.channelFilePath(home: home, relative: file.path),
                       let data = fm.contents(atPath: path) else { continue }
-                try await client.seedChannelFile(file.path, data: data)
+                if try await client.seedChannelFile(file.path, data: data) { copied += 1 }
             }
+            // Only a seed that went through to the end counts.
             fm.createFile(atPath: seededMarker(homeMachine), contents: Data())
-            KanbanCodeLog.info("channels", "copied \(local.count) channel files to the channels home \(homeMachine)")
-            remote = try await client.channelFiles()
-        }
-        if !fm.fileExists(atPath: seededMarker(homeMachine)) {
-            fm.createFile(atPath: seededMarker(homeMachine), contents: Data())
+            KanbanCodeLog.info("channels", "copied \(copied) channel files to the channels home \(homeMachine)")
+            if copied > 0 { remote = try await client.channelFiles() }
         }
 
+        var manifest = readManifest()
+        let manifestBefore = manifest
         var changed = false
         let remotePaths = Set(remote.map(\.path))
         for file in remote {
             guard let path = MasterEngine.channelFilePath(home: home, relative: file.path) else { continue }
+            manifest.insert(file.path)
             if known[file.path] == file, fm.fileExists(atPath: path) { continue }
-            let localSize = (try? fm.attributesOfItem(atPath: path)[.size] as? NSNumber)?.intValue
-            let localMtime = ((try? fm.attributesOfItem(atPath: path)[.modificationDate]) as? Date)?.timeIntervalSince1970
+            let attributes = try? fm.attributesOfItem(atPath: path)
+            let localSize = (attributes?[.size] as? NSNumber)?.intValue
+            let localMtime = (attributes?[.modificationDate] as? Date)?.timeIntervalSince1970
             if localSize == file.size, let localMtime, abs(localMtime - file.mtime) < 0.001 {
                 known[file.path] = file
                 continue
@@ -336,12 +358,15 @@ struct ChannelsMirror {
             known[file.path] = file
             changed = true
         }
-        for file in MasterEngine.listChannelFiles(home: home) where !remotePaths.contains(file.path) {
-            guard let path = MasterEngine.channelFilePath(home: home, relative: file.path) else { continue }
+        for relative in manifest where !remotePaths.contains(relative) {
+            manifest.remove(relative)
+            known[relative] = nil
+            guard let path = MasterEngine.channelFilePath(home: home, relative: relative),
+                  fm.fileExists(atPath: path) else { continue }
             try? fm.removeItem(atPath: path)
-            known[file.path] = nil
             changed = true
         }
+        if manifest != manifestBefore { writeManifest(manifest) }
         return changed
     }
 }
