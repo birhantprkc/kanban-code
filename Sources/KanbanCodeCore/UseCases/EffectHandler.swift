@@ -16,6 +16,12 @@ public actor EffectHandler {
     private let notifier: NotifierPort?
     private let queuedPromptJournal: QueuedPromptJournal
     private let remoteMachines: (any RemoteMachineControl)?
+    /// The channels home when it is another master: channel writes go there.
+    private var channelsHome: (@Sendable () async -> ChannelsHomeRoute?)?
+
+    public func setChannelsHome(_ route: (@Sendable () async -> ChannelsHomeRoute?)?) {
+        channelsHome = route
+    }
 
     /// Creates a session on a machine, and reconnects the machine once when
     /// it answers no longer: the app can hold a machine as paused while it
@@ -74,6 +80,10 @@ public actor EffectHandler {
     }
 
     public func execute(_ effect: Effect, dispatch: @MainActor @Sendable (Action) -> Void) async {
+        if let argvAndImages = Self.channelsHomeCommand(for: effect), let route = await channelsHome?() {
+            await runOnChannelsHome(argvAndImages, effect: effect, route: route, dispatch: dispatch)
+            return
+        }
         switch effect {
         case .persistLinks(let links):
             do {
@@ -329,7 +339,7 @@ public actor EffectHandler {
                 let persistedImages = msg.imagePaths ?? []
                 let bodyText = "[Message from #\(channelName) @\(from.handle)]: \(body)"
                 for target in memberTargets {
-                    await fanOutOneMessage(target: target, body: bodyText, imagePaths: persistedImages)
+                    await fanOutOneMessage(target: target, body: bodyText, imagePaths: persistedImages, dispatch: dispatch)
                 }
             } catch {
                 KanbanCodeLog.warn("effect", "sendChannelMessageToDisk failed: \(error)")
@@ -396,7 +406,7 @@ public actor EffectHandler {
                 if let target = toTarget {
                     let persistedImages = msg.imagePaths ?? []
                     let bodyText = "[DM from @\(from.handle)]: \(body)"
-                    await fanOutOneMessage(target: target, body: bodyText, imagePaths: persistedImages)
+                    await fanOutOneMessage(target: target, body: bodyText, imagePaths: persistedImages, dispatch: dispatch)
                 }
             } catch {
                 KanbanCodeLog.warn("effect", "sendDMToDisk failed: \(error)")
@@ -405,14 +415,93 @@ public actor EffectHandler {
         }
     }
 
+    // MARK: - Channels on another master
+
+    /// The `kanban` command that makes a channel write on the channels home,
+    /// with the images it attaches; nil for effects that are not channel
+    /// writes. Channel order is this master's own (it is not sent).
+    static func channelsHomeCommand(for effect: Effect) -> (argv: [String], images: [String], human: String?)? {
+        func speaker(_ p: ChannelParticipant) -> (args: [String], human: String?) {
+            if let cardId = p.cardId { return (["--as", p.handle, "--as-card-id", cardId], nil) }
+            return (["--as-user"], p.handle)
+        }
+        func imageArgs(_ paths: [String]) -> [String] {
+            paths.flatMap { ["--image", "/images/proxy/\(($0 as NSString).lastPathComponent)"] }
+        }
+        switch effect {
+        case .createChannelOnDisk(let name, let by):
+            let who = speaker(by)
+            return (["channel", "create", name] + who.args, [], who.human)
+        case .deleteChannelOnDisk(let name):
+            return (["channel", "delete", name], [], nil)
+        case .renameChannelOnDisk(let old, let new):
+            return (["channel", "rename", old, new], [], nil)
+        case .leaveChannelOnDisk(let name, let member):
+            let who = speaker(member)
+            return (["channel", "leave", name] + who.args, [], who.human)
+        case .sendChannelMessageToDisk(let channelName, let from, let body, let imagePaths, _):
+            let who = speaker(from)
+            return (["channel", "send", channelName] + who.args + imageArgs(imagePaths) + ["--", body], imagePaths, who.human)
+        case .sendDMToDisk(let from, let to, let body, let imagePaths, _):
+            let who = speaker(from)
+            let target = to.cardId.map { ["--to-card-id", $0] } ?? []
+            return (["dm", "send", to.handle] + target + who.args + imageArgs(imagePaths) + ["--", body], imagePaths, who.human)
+        case .persistChannels:
+            return ([], [], nil)
+        default:
+            return nil
+        }
+    }
+
+    private func runOnChannelsHome(
+        _ command: (argv: [String], images: [String], human: String?),
+        effect: Effect,
+        route: ChannelsHomeRoute,
+        dispatch: @MainActor @Sendable (Action) -> Void
+    ) async {
+        guard !command.argv.isEmpty else { return }
+        let id = UUID().uuidString.lowercased()
+        let images = command.images.compactMap { path -> RemoteCLIRequest.Image? in
+            guard let data = FileManager.default.contents(atPath: path) else { return nil }
+            return RemoteCLIRequest.Image(name: (path as NSString).lastPathComponent, base64: data.base64EncodedString())
+        }
+        let argv = command.argv.map { $0.hasPrefix("/images/proxy/") ? "~/.kanban-code/images/proxy/\(id)/" + ($0 as NSString).lastPathComponent : $0 }
+        var env: [String: String] = [:]
+        if let human = command.human { env["KANBAN_HUMAN_HANDLE"] = human }
+        let request = RemoteCLIRequest(id: id, argv: argv, env: env, images: images.isEmpty ? nil : images)
+        do {
+            let result = try await route.client.runCLI(request)
+            if result.code != 0 {
+                let reason = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                await dispatch(.setError("\(route.name): \(reason.isEmpty ? "kanban \(command.argv.prefix(2).joined(separator: " ")) failed" : reason)"))
+            }
+        } catch {
+            await dispatch(.setError("Channels live on \(route.name), which did not answer: \(error.localizedDescription)"))
+        }
+        route.poke()
+        await dispatch(.refreshChannels)
+        switch effect {
+        case .sendChannelMessageToDisk(let channelName, _, _, _, _):
+            await dispatch(.refreshChannelMessages(channelName: channelName))
+        default:
+            break
+        }
+    }
+
     /// Fan out a single chat message to one target tmux session. When images
     /// are attached AND the assistant supports image upload, stage the body
     /// text first, paste images at `[Image #N]` marker positions, then submit
     /// once. Assistants that don't support image upload receive markdown image
     /// refs at those same marker positions.
-    private func fanOutOneMessage(target: ChannelMemberTarget, body: String, imagePaths: [String]) async {
+    private func fanOutOneMessage(target: ChannelMemberTarget, body: String, imagePaths: [String],
+                                  dispatch: @MainActor @Sendable (Action) -> Void) async {
         let canSendImages = target.assistant.supportsImageUpload && !imagePaths.isEmpty
         let bodyWithMarkdownImages = PromptImageLayout.replacingMarkersWithMarkdown(in: body, imagePaths: imagePaths)
+        if let cardId = target.foreignCardId {
+            // The owner master queues it (sent at once when the card is idle).
+            await dispatch(.addQueuedPrompt(cardId: cardId, prompt: QueuedPrompt(body: bodyWithMarkdownImages, sendAutomatically: true), placement: .back))
+            return
+        }
         do {
             if canSendImages, let tmux = tmuxAdapter,
                let remotePaths = try await remoteMachines?.uploadImages(sessionName: target.sessionName, imagePaths: imagePaths) {

@@ -118,6 +118,15 @@ extension MasterEngine {
                 try await client.removeQueuedPrompt(cardId: cardId, promptId: promptId)
             }
             return true
+        case .updateQueuedPrompt(let cardId, let promptId, let body, _):
+            guard isForeign(cardId) else { return false }
+            forwardToOwner(cardId, "edit the queued prompt") { client in
+                try await client.editQueuedPrompt(cardId: cardId, promptId: promptId, text: body)
+            }
+            return true
+        case .reorderQueuedPrompts(let cardId, _):
+            // The owner keeps its queue in the order it was sent.
+            return isForeign(cardId)
         default:
             return false
         }
@@ -132,6 +141,10 @@ extension MasterEngine {
             }
             do {
                 try await call(client)
+                // Show the owner's answer (queue, busy) without waiting for the next scan.
+                if let card = try? await client.card(id: cardId) {
+                    store.dispatch(.peerCardRead(cardId: cardId, state: PeerTranscriptMirror.state(of: card)))
+                }
             } catch {
                 store.dispatch(.setError("Could not \(what) on \(peerName(store.state.links[cardId]?.ownerMachine ?? "")): \(error.localizedDescription)"))
             }

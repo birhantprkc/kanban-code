@@ -63,7 +63,10 @@ final class ServerMaster {
         self.store = store
         self.settingsStore = settingsStore
 
-        identity = MachineIdentityStore(basePath: home).loadOrCreate()
+        var identity = MachineIdentityStore(basePath: home).loadOrCreate()
+        // A server runs all the time: it keeps the channels and polls GitHub.
+        identity.alwaysOn = true
+        self.identity = identity
 
         let orchestrator = BackgroundOrchestrator(
             discovery: discovery,
@@ -80,6 +83,10 @@ final class ServerMaster {
         self.orchestrator = orchestrator
 
         var platform = MasterPlatform()
+        platform.kanbanHome = home
+        let cli = (home as NSString).appendingPathComponent("cli/dist/kanban.js")
+        platform.cliScript = FileManager.default.fileExists(atPath: cli) ? cli : nil
+        platform.nodePath = ShellCommand.findExecutable("node")
         if getuid() == 0 { platform.sessionEnvironment["IS_SANDBOX"] = "1" }
         platform.defaultAssistant = {
             let enabled = Self.readSettings(home: home).settings?.enabledAssistants ?? [.claude]
@@ -137,6 +144,7 @@ final class ServerMaster {
         Task { await engine.runSelfCompactMonitor() }
         Task { await engine.runSessionModelMonitor() }
         Task { await engine.runOwnershipLoop() }
+        Task { await engine.monitorSubagentCommands() }
     }
 
     /// The assistants' hooks drive the busy state, the queue and the

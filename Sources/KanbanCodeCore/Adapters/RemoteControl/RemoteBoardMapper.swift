@@ -162,7 +162,7 @@ public enum RemoteBoardMapper {
 extension AppState {
     /// This master, once its identity is loaded.
     public var localMachineIdentity: MachineIdentity? {
-        localMachineId.isEmpty ? nil : MachineIdentity(id: localMachineId, name: localMachineName)
+        localMachineId.isEmpty ? nil : MachineIdentity(id: localMachineId, name: localMachineName, alwaysOn: localMachineAlwaysOn ? true : nil)
     }
 
     /// Names of the peer masters seen so far, by machine id.

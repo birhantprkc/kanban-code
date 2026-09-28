@@ -39,6 +39,15 @@ public final class MasterEngine {
     /// Card sync with the other masters; nil when there are none.
     public var peerSync: PeerSync?
 
+    /// Wakes the channels mirror after a channel write.
+    let channelsPoke = AsyncSignal()
+    /// Display name of the channels home while it is another master.
+    public internal(set) var channelsHomeName: String?
+
+    /// The inbox of the `kanban` commands the CLI hands to this master.
+    public lazy var subagentCommands = SubagentCommandStore(
+        baseURL: URL(fileURLWithPath: platform.kanbanHome).appendingPathComponent("commands", isDirectory: true))
+
     public init(
         store: BoardStore,
         settingsStore: SettingsStore,

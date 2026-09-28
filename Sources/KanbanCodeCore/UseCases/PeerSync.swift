@@ -105,6 +105,8 @@ public actor PeerSync {
     /// minute rather than on every pull.
     private var statusDispatchedAt: [String: Date] = [:]
     private var pokedPeers: Set<String> = []
+    /// Last repository slugs each peer sent, to dispatch only changes.
+    private var repoSlugs: [String: [String: String]] = [:]
     private var pokedAll = false
 
     public init(
@@ -160,6 +162,10 @@ public actor PeerSync {
             guard page.machine.id != identity.id else { throw PeerSyncError.selfPeer }
             if !page.links.isEmpty {
                 await dispatch(.peerLinksMerged(peer: page.machine.id, links: page.links))
+            }
+            if let slugs = page.repoSlugs, slugs != repoSlugs[peer.id] {
+                repoSlugs[peer.id] = slugs
+                await dispatch(.peerRepoSlugsLoaded(peer: page.machine.id, slugs: slugs))
             }
             cursors[peer.id] = Cursor(epoch: page.epoch, seq: page.seq)
             await report(PeerStatus(peerId: peer.id, machine: page.machine, online: true, lastSeen: .now))
@@ -252,11 +258,14 @@ public actor PeerSync {
 extension BoardStore {
     /// This machine's identity as the board knows it.
     public var localMachine: MachineIdentity {
-        MachineIdentity(id: state.localMachineId, name: state.localMachineName)
+        MachineIdentity(id: state.localMachineId, name: state.localMachineName,
+                        alwaysOn: state.localMachineAlwaysOn ? true : nil)
     }
 
     /// The page `GET /v1/links` answers with.
     public func peerLinksPage(since: Int?, epoch: String?) -> LinksPage {
-        state.linksPage(machine: localMachine, since: since, epoch: epoch)
+        var page = state.linksPage(machine: localMachine, since: since, epoch: epoch)
+        page.repoSlugs = localRepoSlugs.isEmpty ? nil : localRepoSlugs
+        return page
     }
 }

@@ -38,10 +38,42 @@ extension Optional where Wrapped == SyncStamp {
 public struct MachineIdentity: Codable, Sendable, Equatable, Hashable {
     public var id: String
     public var name: String
+    /// Set by a master that runs all the time (`kanban-code-server`). Such a
+    /// master is the channels home and polls pull requests while it is online.
+    public var alwaysOn: Bool?
 
-    public init(id: String = KSUID.generate(prefix: "machine"), name: String) {
+    public init(id: String = KSUID.generate(prefix: "machine"), name: String, alwaysOn: Bool? = nil) {
         self.id = id
         self.name = name
+        self.alwaysOn = alwaysOn
+    }
+}
+
+/// Which master does the work only one of them should do.
+public enum MasterRoles {
+    /// The master that polls GitHub for the pull requests of every card:
+    /// an always-on master when one is online, else the one with the lowest
+    /// machine id among the masters online. Both sides compute the same
+    /// answer from what they see, and when they see each other differently
+    /// the worst case is both polling.
+    public static func prPollingLeader(local: MachineIdentity, peers: [PeerStatus]) -> String {
+        let candidates = [local] + peers.filter(\.online).compactMap(\.machine)
+        return candidates.min { a, b in
+            let aOn = a.alwaysOn == true, bOn = b.alwaysOn == true
+            if aOn != bOn { return aOn }
+            return a.id < b.id
+        }!.id
+    }
+
+    /// The master that keeps channels and direct messages: an always-on
+    /// peer, online or not, when this master is not always-on itself; nil
+    /// when that is this master. Channel data lives in one place, so a home
+    /// that is offline makes channel writes fail rather than fork.
+    public static func channelsHome(local: MachineIdentity, peers: [PeerStatus]) -> PeerStatus? {
+        guard local.alwaysOn != true else { return nil }
+        return peers
+            .filter { $0.machine?.alwaysOn == true }
+            .min { ($0.machine?.id ?? "") < ($1.machine?.id ?? "") }
     }
 }
 
@@ -128,12 +160,17 @@ public struct LinksPage: Codable, Sendable, Equatable {
     /// True when the page carries every served link, not a delta.
     public var full: Bool
     public var links: [Link]
+    /// GitHub repository ("host/owner/name") of each project path the
+    /// serving master's cards use, so a master that has no checkout of a
+    /// repository can still look up its pull requests.
+    public var repoSlugs: [String: String]?
 
-    public init(machine: MachineIdentity, epoch: String, seq: Int, full: Bool, links: [Link]) {
+    public init(machine: MachineIdentity, epoch: String, seq: Int, full: Bool, links: [Link], repoSlugs: [String: String]? = nil) {
         self.machine = machine
         self.epoch = epoch
         self.seq = seq
         self.full = full
         self.links = links
+        self.repoSlugs = repoSlugs
     }
 }

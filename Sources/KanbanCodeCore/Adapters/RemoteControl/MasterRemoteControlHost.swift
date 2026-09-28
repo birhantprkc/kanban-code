@@ -219,6 +219,50 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
         }
     }
 
+    public func editQueuedPrompt(cardId: String, promptId: String, text: String) async throws {
+        if let owner = await ownerClient(cardId) {
+            return try await forwarded { try await owner.editQueuedPrompt(cardId: cardId, promptId: promptId, text: text) }
+        }
+        if promptId.hasPrefix("agtop-") {
+            // agtop has no edit: the old message leaves the queue and the new
+            // text joins it (a busy host queues what it is sent).
+            try await agtopQueueAction(cardId: cardId, promptId: promptId, send: false)
+            let session = try await MainActor.run { try liveSession(cardId).session }
+            guard let agtopId = AgtopSessionName.agtopId(fromName: session) else { return }
+            try await agtop.send(id: agtopId, text: text)
+            await readAgtopQueue(session: session, agtopId: agtopId)
+            return
+        }
+        try await MainActor.run {
+            let prompt = try queuedPrompt(cardId, promptId)
+            store.dispatch(.updateQueuedPrompt(cardId: cardId, promptId: promptId, body: text,
+                                               sendAutomatically: prompt.sendAutomatically))
+        }
+    }
+
+    // MARK: Channels home
+
+    public func runCLI(_ request: RemoteCLIRequest) async throws -> RemoteCLIResult {
+        await engine.runCLI(request)
+    }
+
+    public func channelFiles() async throws -> [RemoteChannelFile] {
+        let home = await MainActor.run { engine.platform.kanbanHome }
+        return MasterEngine.listChannelFiles(home: home)
+    }
+
+    public func channelFile(path: String, offset: Int) async throws -> Data {
+        let home = await MainActor.run { engine.platform.kanbanHome }
+        return try MasterEngine.readChannelFile(home: home, relative: path, offset: offset)
+    }
+
+    public func seedChannelFile(path: String, data: Data) async throws -> Bool {
+        let home = await MainActor.run { engine.platform.kanbanHome }
+        let created = try MasterEngine.seedChannelFile(home: home, relative: path, data: data)
+        if created { await MainActor.run { store.dispatch(.refreshChannels) } }
+        return created
+    }
+
     @MainActor
     @discardableResult
     private func queuedPrompt(_ cardId: String, _ promptId: String) throws -> QueuedPrompt {

@@ -54,6 +54,14 @@ public final class GhCliAdapter: PRTrackerPort, @unchecked Sendable {
         slugLock.withLock { slugCache[repoRoot] = slug }
     }
 
+    /// Records the repository ("host/owner/name") of a path with no checkout
+    /// here, as another master reported it.
+    public func rememberSlug(_ key: String, forRoot repoRoot: String) {
+        let parts = key.split(separator: "/").map(String.init)
+        guard parts.count == 3 else { return }
+        storeSlug((owner: parts[1], name: parts[2], host: parts[0]), for: repoRoot)
+    }
+
     public func resolveRepoSlug(repoRoot: String) async -> (owner: String, name: String, host: String)? {
         if let hit = cachedSlug(for: repoRoot) {
             return hit
@@ -312,6 +320,9 @@ public final class GhCliAdapter: PRTrackerPort, @unchecked Sendable {
         repoName repoNameOverride: String? = nil
     ) async throws -> (byBranch: [String: PullRequest], byNumber: [Int: PullRequest]) {
         guard !branches.isEmpty || !prNumbers.isEmpty else { return ([:], [:]) }
+        // A path another master reported has no checkout here; the query
+        // names the repository, so any directory runs it.
+        let runDir = FileManager.default.fileExists(atPath: repoRoot) ? repoRoot : NSHomeDirectory()
 
         // Repo identity from the cached local-git resolution, not an API call
         let ownerLogin: String
@@ -363,7 +374,7 @@ public final class GhCliAdapter: PRTrackerPort, @unchecked Sendable {
         let result = try await ShellCommand.run(
             ghPath,
             arguments: ["api", "graphql", "-f", "query=\(query)"],
-            currentDirectory: repoRoot
+            currentDirectory: runDir
         )
 
         // GraphQL may return partial data + errors, or fail entirely.
@@ -390,7 +401,7 @@ public final class GhCliAdapter: PRTrackerPort, @unchecked Sendable {
             // Retry branches as a single batch (they rarely fail)
             if !branchAliases.isEmpty {
                 let branchQuery = "query { repository(owner: \"\(ownerLogin)\", name: \"\(repoName)\") { \(branchAliases.map { alias, branch in "\(alias): pullRequests(headRefName: \"\(branch)\", first: 1, states: [OPEN, CLOSED, MERGED], orderBy: {field: CREATED_AT, direction: DESC}) { nodes { number title state url headRefName reviewDecision mergeStateStatus reviews(states: APPROVED) { totalCount } } }" }.joined(separator: "\n")) } }"
-                let brResult = try? await ShellCommand.run(ghPath, arguments: ["api", "graphql", "-f", "query=\(branchQuery)"], currentDirectory: repoRoot)
+                let brResult = try? await ShellCommand.run(ghPath, arguments: ["api", "graphql", "-f", "query=\(branchQuery)"], currentDirectory: runDir)
                 if let brData = brResult?.stdout.data(using: .utf8),
                    let brRoot = try? JSONSerialization.jsonObject(with: brData) as? [String: Any],
                    let brRepo = (brRoot["data"] as? [String: Any])?["repository"] as? [String: Any] {
@@ -407,7 +418,7 @@ public final class GhCliAdapter: PRTrackerPort, @unchecked Sendable {
             // Retry each PR number individually
             for (_, number) in numberAliases {
                 let singleQuery = "query { repository(owner: \"\(ownerLogin)\", name: \"\(repoName)\") { pullRequest(number: \(number)) { number title state url headRefName reviewDecision mergeStateStatus reviews(states: APPROVED) { totalCount } } } }"
-                let sResult = try? await ShellCommand.run(ghPath, arguments: ["api", "graphql", "-f", "query=\(singleQuery)"], currentDirectory: repoRoot)
+                let sResult = try? await ShellCommand.run(ghPath, arguments: ["api", "graphql", "-f", "query=\(singleQuery)"], currentDirectory: runDir)
                 guard let sData = sResult?.stdout.data(using: .utf8),
                       let sRoot = try? JSONSerialization.jsonObject(with: sData) as? [String: Any],
                       let sRepo = (sRoot["data"] as? [String: Any])?["repository"] as? [String: Any],

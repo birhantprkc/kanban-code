@@ -100,19 +100,26 @@ public final class PeerTranscriptMirror {
         try? handle.write(contentsOf: data)
     }
 
-    /// Reads which of their cards the online peers have in a turn.
+    /// Reads the cards the online peers own: live, in a turn, queued.
     private func scanActivity(online: Set<String>) async {
-        var busy: Set<String> = []
+        var cards: [String: PeerCardState] = [:]
         for machineId in online {
             guard let client = await engine.peerClient(machineId: machineId),
                   let board = try? await client.board() else { continue }
             let links = engine.store.state.links
-            for card in board.cards where card.isBusy && links[card.id]?.ownerMachine == machineId {
-                busy.insert(card.id)
+            for card in board.cards where links[card.id]?.ownerMachine == machineId {
+                cards[card.id] = Self.state(of: card)
             }
         }
-        if engine.store.state.peerBusyCards != busy {
-            engine.store.dispatch(.peerActivityScanned(busy: busy))
+        if engine.store.state.peerCards != cards {
+            engine.store.dispatch(.peerActivityScanned(cards: cards))
         }
+    }
+
+    public nonisolated static func state(of card: RemoteCard) -> PeerCardState {
+        PeerCardState(
+            isLive: card.isLive,
+            isBusy: card.isBusy,
+            queue: card.queuedPrompts.map { QueuedPrompt(id: $0.id, body: $0.text, sendAutomatically: true) })
     }
 }

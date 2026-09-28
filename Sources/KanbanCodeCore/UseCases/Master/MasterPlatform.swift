@@ -88,6 +88,14 @@ public struct MasterPlatform: Sendable {
     /// `IS_SANDBOX=1` so Claude accepts skipped permissions).
     public var sessionEnvironment: [String: String] = [:]
 
+    /// This master's kanban home: links.json, settings.json, the command inbox.
+    public var kanbanHome: String = (NSHomeDirectory() as NSString).appendingPathComponent(".kanban-code")
+
+    /// The bundled `kanban` CLI (`dist/kanban.js`) and the node that runs it,
+    /// for commands other masters hand to this one (`POST /v1/cli`).
+    public var cliScript: String?
+    public var nodePath: String?
+
     /// Claude's projects directory, where transcripts live by working directory.
     public var claudeProjectsDirectory: String = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/projects")
 

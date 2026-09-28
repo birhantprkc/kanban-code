@@ -42,6 +42,7 @@ JSON bodies, up to 48 MiB. Dates are ISO 8601 with milliseconds, UTC (`2026-09-2
 | `POST /v1/tasks` | any | `RemoteTaskRequest` → `RemoteCard`, 201 |
 | `POST /v1/cards/{id}/prompt` | any | `RemotePromptRequest` → 204 |
 | `POST /v1/cards/{id}/queue/{promptId}` | any | 204 |
+| `PATCH /v1/cards/{id}/queue/{promptId}` | any | `{"text"}` → 204 |
 | `DELETE /v1/cards/{id}/queue/{promptId}` | any | 204 |
 | `POST /v1/cards/{id}/interrupt` | any | 204 |
 | `POST /v1/cards/{id}/resume` | any | `RemoteCard` |
@@ -50,6 +51,9 @@ JSON bodies, up to 48 MiB. Dates are ISO 8601 with milliseconds, UTC (`2026-09-2
 | `GET /v1/cards/{id}/handover` | any | `RemoteHandoverInfo` |
 | `GET /v1/cards/{id}/transcript/raw?offset=0&limit=4194304` | any | transcript bytes, `X-Transcript-Size` header |
 | `GET /v1/links?since=&epoch=`, `POST /v1/links/changed`, `GET /v1/peers` | any | peer sync |
+| `POST /v1/cli` | full | `RemoteCLIRequest` → `RemoteCLIResult` (`kanban channel`/`dm` only) |
+| `GET /v1/channels/files`, `GET /v1/channels/files/{path}?offset=` | any | channel files, for the mirror |
+| `PUT /v1/channels/files/{path}` | full | creates a missing channel file, 204 or 409 |
 | `GET /v1/events?all=1` (WebSocket) | any | `RemoteEvent` text frames |
 | `GET /v1/cards/{id}/terminal?session=<name>&cols=80&rows=24` (WebSocket) | full | terminal bytes |
 | `GET /.well-known/openapi.json` | none | OpenAPI 3.1 of the above |
@@ -75,6 +79,11 @@ The Mac app and `kanban-code-server` (an always-on Linux box) are both masters: 
 - `POST /v1/tasks` with `machine` naming a peer creates the card here and hands it to that peer, which starts it. `project` may also be a repository URL: the master finds the project with that origin, or clones it into `~/Projects` (a box).
 - `POST /v1/cards/{id}/move` with `{"to": "<machine id or name>"}` continues a card on a peer master, or `"mac"`/`"local"` for the master that answers. A move to a peer is a handover: the session ends, the worktree branch is pushed to origin, the card is released; the peer reads `handover` (origin, branch, uncommitted changes as a base64 git diff), checks out the worktree, copies the transcript through `transcript/raw` with its paths rewritten, adopts the card and resumes it. Only Claude conversations move. A name that is not a peer is a boxd or ssh machine this master drives.
 - The Mac keeps a copy of each foreign card's transcript under `~/.kanban-code/peers/<machine>/transcripts/` for its chat view. When a peer is offline its cards stay on the board, marked offline.
+- Shared card fields (name, column, order, pin, archive, prompt, pull requests...) merge per field: each carries its own stamp in `fieldRevs`, and the newer stamp wins, so edits of different fields on two masters both stay.
+- Liveness, turn state and the queue of a foreign card (agtop's queue included) come from its owner's board, read every few seconds. Send now, edit (`PATCH /queue/{promptId}`), remove and new prompts go to the owner.
+- A master that runs all the time (`kanban-code-server`, `alwaysOn` in its identity) polls GitHub for the pull requests of every card while it is online, and writes them on cards other masters own; the others do not poll. With no such master online, the master with the lowest machine id polls. Masters send the repository (`host/owner/name`) of their project paths with the links, so the poller needs no checkout of them.
+- The always-on master is the channels home: channels and DMs live in its `~/.kanban-code/channels/`. Another master mirrors that directory (appends by offset, the rest whole, deletions follow; `read-state.json` and `drafts.json` stay local), writes `channels-home.json` for its CLI, and sends every channel write there: its `kanban channel`/`kanban dm` commands and its UI go through `POST /v1/cli`. The first time a Mac pairs with a home that has no channels, it copies its own there. Channel messages for a card another master runs are queued on that master (through the command inbox from the CLI).
+- `kanban subagent` and the other command inbox operations run on the master whose CLI wrote them, the box included.
 
 ## Terminal stream
 

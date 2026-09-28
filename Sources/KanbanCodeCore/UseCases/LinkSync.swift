@@ -292,6 +292,24 @@ public enum LinkSync {
         return out
     }
 
+    /// The pull requests of `current` after a poll found `polled` for it:
+    /// known ones take the fresh status, new ones are added unless the user
+    /// dismissed them, and none is removed.
+    public static func mergedPRLinks(current: Link, polled: [PRLink]) -> [PRLink] {
+        var out = current.prLinks
+        for pr in polled {
+            if let i = out.firstIndex(where: { $0.number == pr.number }) {
+                out[i].status = pr.status
+                out[i].title = pr.title
+                out[i].url = pr.url
+                out[i].mergeStateStatus = pr.mergeStateStatus
+            } else if !current.manualOverrides.isPRDismissed(pr.number) {
+                out.append(pr)
+            }
+        }
+        return out
+    }
+
     // MARK: - Local edits
 
     /// Actions a user takes on a card's shared fields. On a card another
@@ -334,6 +352,13 @@ extension AppState {
 
     public func isOwnedLocally(_ link: Link) -> Bool {
         LinkSync.isOwnedLocally(link, localMachine: localMachineId)
+    }
+
+    /// Whether this master polls GitHub for pull requests (see
+    /// `MasterRoles.prPollingLeader`). A master with no identity yet is alone.
+    public var isPRPollingLeader: Bool {
+        guard let local = localMachineIdentity else { return true }
+        return MasterRoles.prPollingLeader(local: local, peers: Array(peerStatuses.values)) == local.id
     }
 
     /// Takes the tombstones and clock from what links.json held at startup.
@@ -411,10 +436,17 @@ extension Reducer {
             var link = after
             let owned = state.isOwnedLocally(old ?? after)
             if !owned, let old {
-                guard allowsForeign else {
-                    state.links[id] = old
-                    linksRewritten = true
-                    return
+                if !allowsForeign {
+                    // The master that polls GitHub keeps every card's pull
+                    // requests, its own or not; nothing else a background
+                    // pass does touches a card another master runs.
+                    guard case .reconciled = action, state.isPRPollingLeader, old.prLinks != after.prLinks else {
+                        state.links[id] = old
+                        linksRewritten = true
+                        return
+                    }
+                    link = old
+                    link.prLinks = after.prLinks
                 }
                 LinkSync.copyOwned(from: old, to: &link)
             }

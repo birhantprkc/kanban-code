@@ -34,12 +34,30 @@ public enum DialogState: Equatable, Sendable {
 /// message effects; the effect handler uses `assistant` to decide whether
 /// to paste images via `ImageSender` (Claude/Gemini) or fall back to a
 /// text-only notification.
+/// A card another master owns, as its owner reports it.
+public struct PeerCardState: Sendable, Equatable {
+    public var isLive: Bool
+    public var isBusy: Bool
+    /// Its queue, oldest first; agtop's queued messages have `agtop-` ids.
+    public var queue: [QueuedPrompt]
+
+    public init(isLive: Bool, isBusy: Bool, queue: [QueuedPrompt] = []) {
+        self.isLive = isLive
+        self.isBusy = isBusy
+        self.queue = queue
+    }
+}
+
 public struct ChannelMemberTarget: Sendable, Equatable {
     public let sessionName: String
     public let assistant: CodingAssistant
-    public init(sessionName: String, assistant: CodingAssistant) {
+    /// Set when another master runs the card: the message goes to that
+    /// master as a queued prompt instead of a local tmux paste.
+    public let foreignCardId: String?
+    public init(sessionName: String, assistant: CodingAssistant, foreignCardId: String? = nil) {
         self.sessionName = sessionName
         self.assistant = assistant
+        self.foreignCardId = foreignCardId
     }
 }
 
@@ -164,13 +182,19 @@ public final class AppState: @unchecked Sendable {
     public var localMachineId: String = ""
     /// This master's display name.
     public var localMachineName: String = ""
+    /// This master runs all the time (`kanban-code-server`).
+    public var localMachineAlwaysOn = false
+    /// GitHub repository ("host/owner/name") of the project paths peers'
+    /// cards use, for pull request lookups of paths with no checkout here.
+    public var peerRepoSlugs: [String: String] = [:]
     /// Live state of every configured peer, by `PeerConfig.id`.
     public var peerStatuses: [String: PeerStatus] = [:]
     /// Local copies of the transcripts of cards other masters own, by
     /// session id; the cards read their chat from here.
     public var peerTranscriptPaths: [String: String] = [:]
-    /// Cards other masters own that are in a turn, as their owners report.
-    public var peerBusyCards: Set<String> = []
+    /// Cards other masters own, as their owners report them: live, in a
+    /// turn, and what waits in their queue (agtop's included).
+    public var peerCards: [String: PeerCardState] = [:]
     /// Deleted cards, by id, kept for `LinkSync.tombstoneLifetime` so the
     /// deletion reaches every peer and wins over older edits.
     @ObservationIgnored public var tombstones: [String: Link] = [:]
@@ -325,8 +349,15 @@ public final class AppState: @unchecked Sendable {
             let session = link.sessionLink.flatMap { sessions[$0.sessionId] }
             var activity = link.sessionLink.flatMap { activityMap[$0.sessionId] }
             if owner != nil {
-                activity = peerBusyCards.contains(link.id) ? .activelyWorking
-                    : (link.tmuxLink != nil && link.tmuxLink?.isPrimaryDead != true ? .idleWaiting : nil)
+                if let peer = peerCards[link.id] {
+                    // The owner's word on liveness and the queue beats the
+                    // synced links, which trail it by a sync round.
+                    activity = peer.isBusy ? .activelyWorking : (peer.isLive ? .idleWaiting : nil)
+                    if link.tmuxLink != nil { link.tmuxLink?.isPrimaryDead = peer.isLive ? nil : true }
+                    link.queuedPrompts = peer.queue.isEmpty ? nil : peer.queue
+                } else {
+                    activity = link.tmuxLink != nil && link.tmuxLink?.isPrimaryDead != true ? .idleWaiting : nil
+                }
             }
             // The activity of a paused machine is frozen with it; the last
             // hook event may say the assistant was mid-tool.
@@ -568,6 +599,8 @@ public enum Action: Sendable {
     /// A page of cards pulled from the peer with machine id `peer`.
     case peerLinksMerged(peer: String, links: [Link])
     case peerStatusChanged(PeerStatus)
+    /// The GitHub repository of each project path a peer's cards use.
+    case peerRepoSlugsLoaded(peer: String, slugs: [String: String])
     /// Hands a card this machine owns to `machine`: the card keeps its
     /// state and is marked migrating until that machine adopts it.
     case releaseCardOwnership(cardId: String, to: String)
@@ -578,7 +611,9 @@ public enum Action: Sendable {
     /// A transcript of a card another master owns was copied to `path`.
     case peerTranscriptMirrored(sessionId: String, path: String)
     /// The cards other masters own that are in a turn right now.
-    case peerActivityScanned(busy: Set<String>)
+    case peerActivityScanned(cards: [String: PeerCardState])
+    /// One card another master owns, as its owner just reported it.
+    case peerCardRead(cardId: String, state: PeerCardState?)
 
     // Settings / misc
     case settingsLoaded(projects: [Project], excludedPaths: [String], remote: RemoteSettings?, remoteMode: RemoteMode = .boxd, boxd: BoxdSettings? = nil)
@@ -1427,7 +1462,8 @@ public enum Reducer {
                       let link = state.links[cid],
                       let sess = link.tmuxLink?.sessionName
                 else { return nil }
-                return ChannelMemberTarget(sessionName: sess, assistant: link.effectiveAssistant)
+                return ChannelMemberTarget(sessionName: sess, assistant: link.effectiveAssistant,
+                                           foreignCardId: state.isOwnedLocally(link) ? nil : link.id)
             }()
             return [.sendDMToDisk(from: from, to: to, body: body, imagePaths: imagePaths, toTarget: target)]
 
@@ -1534,7 +1570,8 @@ public enum Reducer {
                           let link = state.links[cardId],
                           let sess = link.tmuxLink?.sessionName
                     else { return nil }
-                    return ChannelMemberTarget(sessionName: sess, assistant: link.effectiveAssistant)
+                    return ChannelMemberTarget(sessionName: sess, assistant: link.effectiveAssistant,
+                                           foreignCardId: state.isOwnedLocally(link) ? nil : link.id)
                 }
             }()
             return [.sendChannelMessageToDisk(channelName: channelName, from: from, body: body, imagePaths: imagePaths, memberTargets: memberTargets)]
@@ -2204,8 +2241,19 @@ public enum Reducer {
                     continue
                 }
                 if let existing = mergedLinks[link.id] {
-                    // A card another master runs is its owner's to update.
-                    if !state.isOwnedLocally(existing) { continue }
+                    // A card another master runs is its owner's to update,
+                    // except for the pull requests the polling master finds.
+                    if !state.isOwnedLocally(existing) {
+                        if state.isPRPollingLeader {
+                            let prs = LinkSync.mergedPRLinks(current: existing, polled: link.prLinks)
+                            if prs != existing.prLinks {
+                                var updated = existing
+                                updated.prLinks = prs
+                                mergedLinks[link.id] = updated
+                            }
+                        }
+                        continue
+                    }
                     link.parentCardId = existing.parentCardId
                     link.modelOverride = existing.modelOverride
                     link.selfCompactContextThresholdTokens = existing.selfCompactContextThresholdTokens
@@ -2525,10 +2573,15 @@ public enum Reducer {
         case .localMachineLoaded(let identity):
             state.localMachineId = identity.id
             state.localMachineName = identity.name
+            state.localMachineAlwaysOn = identity.alwaysOn == true
             return []
 
         case .peerLinksMerged(let peer, let links):
             return reducePeerLinksMerged(state: state, peer: peer, incoming: links)
+
+        case .peerRepoSlugsLoaded(_, let slugs):
+            for (path, slug) in slugs { state.peerRepoSlugs[path] = slug }
+            return []
 
         case .peerStatusChanged(let status):
             if state.peerStatuses[status.peerId] != status { state.peerStatuses[status.peerId] = status }
@@ -2538,8 +2591,12 @@ public enum Reducer {
             if state.peerTranscriptPaths[sessionId] != path { state.peerTranscriptPaths[sessionId] = path }
             return []
 
-        case .peerActivityScanned(let busy):
-            if state.peerBusyCards != busy { state.peerBusyCards = busy }
+        case .peerActivityScanned(let cards):
+            if state.peerCards != cards { state.peerCards = cards }
+            return []
+
+        case .peerCardRead(let cardId, let card):
+            if state.peerCards[cardId] != card { state.peerCards[cardId] = card }
             return []
 
         case .releaseCardOwnership(let cardId, let machine):
@@ -2699,6 +2756,9 @@ public final class BoardStore: @unchecked Sendable {
     /// the evidence.
     private var lastTmuxSessionNames: Set<String>?
     private var cachedPRsByBranch: [String: PullRequest] = [:]
+    /// GitHub repository ("host/owner/name") of the project paths of the
+    /// cards this master runs, served to peers with the links.
+    public private(set) var localRepoSlugs: [String: String] = [:]
     private var cachedPRsByRepoAndNumber: [String: [Int: PullRequest]] = [:]
     /// "host/owner/name" → number → PR, for pull requests routed by the
     /// repository their own URL names rather than by the card's project.
@@ -2756,7 +2816,7 @@ public final class BoardStore: @unchecked Sendable {
             return false
         case .setPaletteOpen, .setDetailExpanded, .setPromptEditorFocused,
              .showDialog, .dismissDialog, .setError, .setNotice, .setLoading, .setIsRefreshingBacklog,
-             .launchProgress, .localMachineLoaded:
+             .launchProgress, .localMachineLoaded, .peerRepoSlugsLoaded:
             return false
         case .refreshChannels, .refreshChannelMessages, .channelsLoaded,
              .channelMessagesLoaded, .createChannel, .sendChannelMessage,
@@ -3098,7 +3158,18 @@ public final class BoardStore: @unchecked Sendable {
             let pullRequests = cachedPRsByBranch  // branch → PR for reconciler
             let prsByRepoAndNumber = cachedPRsByRepoAndNumber  // repo → number → PR
             let prsByRepoKeyAndNumber = cachedPRsByRepoKeyAndNumber  // "host/owner/name" → number → PR
-            if let ghAdapter, shouldFetchPRs, prFetchTask == nil {
+            // One master polls GitHub for every card (MasterRoles); the
+            // others get pull requests with the cards.
+            let pollsPRs = state.isPRPollingLeader
+            if let ghAdapter {
+                await rememberRepoSlugs(links: existingLinks, ghAdapter: ghAdapter, leader: pollsPRs)
+            }
+            if !pollsPRs {
+                cachedPRsByBranch = [:]
+                cachedPRsByRepoAndNumber = [:]
+                cachedPRsByRepoKeyAndNumber = [:]
+            }
+            if let ghAdapter, pollsPRs, shouldFetchPRs, prFetchTask == nil {
                 lastGHLookup = .now
                 prFetchTask = Task { [weak self] in
                     await self?.fetchPRData(
@@ -3231,6 +3302,26 @@ public final class BoardStore: @unchecked Sendable {
             KanbanCodeLog.info("reconcile", "FAILED after \(reconcileStart.duration(to: .now)): \(error)")
             dispatch(.setError(error.localizedDescription))
             dispatch(.setLoading(false))
+        }
+    }
+
+    /// Resolves the repository of each project path this master's cards
+    /// use (local git, cached), for peers; the polling master also learns
+    /// the repositories of paths only a peer has.
+    private func rememberRepoSlugs(links: [Link], ghAdapter: GhCliAdapter, leader: Bool) async {
+        var roots: Set<String> = []
+        for link in links where state.isOwnedLocally(link) {
+            if let root = link.projectPath, !root.isEmpty { roots.insert(root) }
+            for repo in (link.discoveredRepos ?? [:]).values { roots.insert(repo) }
+        }
+        for root in roots where localRepoSlugs[root] == nil && FileManager.default.fileExists(atPath: root) {
+            if let slug = await ghAdapter.resolveRepoSlug(repoRoot: root) {
+                localRepoSlugs[root] = "\(slug.host)/\(slug.owner)/\(slug.name)"
+            }
+        }
+        guard leader else { return }
+        for (root, slug) in state.peerRepoSlugs where !FileManager.default.fileExists(atPath: root) {
+            ghAdapter.rememberSlug(slug, forRoot: root)
         }
     }
 

@@ -154,7 +154,6 @@ struct ContentView: View {
     let tmuxAdapter: RoutingTmuxAdapter
     let boxdSupervisor: BoxdMachineSupervisor
     let engine: MasterEngine
-    let subagentCommandStore = SubagentCommandStore()
     let systemTray = SystemTray()
     let mutagenAdapter = MutagenAdapter()
     let hookEventsPath: String
@@ -1493,7 +1492,7 @@ struct ContentView: View {
                 await engine.runSelfCompactMonitor()
             }
             .task(id: "subagent-command-bootstrap") {
-                await monitorSubagentCommands()
+                await engine.monitorSubagentCommands()
             }
             .task(id: "session-model-monitor") {
                 await engine.runSessionModelMonitor()
@@ -1565,7 +1564,7 @@ struct ContentView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeCLICommand).receive(on: RunLoop.main)) { notification in
                 if let requestId = notification.userInfo?["requestId"] as? String {
-                    Task { await processSubagentCommand(id: requestId) }
+                    Task { await engine.processSubagentCommand(id: requestId) }
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeAddLink).receive(on: RunLoop.main)) { notification in

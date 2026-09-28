@@ -54,6 +54,18 @@ public protocol RemoteControlHost: AnyObject, Sendable {
     /// Continues the card elsewhere: another master (ownership moves there),
     /// a machine this master drives, or back here.
     func moveCard(cardId: String, to target: String) async throws -> RemoteCard
+
+    /// Replaces the text of a queued prompt.
+    func editQueuedPrompt(cardId: String, promptId: String, text: String) async throws
+
+    /// Runs a `kanban channel|dm` command another master handed over.
+    func runCLI(_ request: RemoteCLIRequest) async throws -> RemoteCLIResult
+
+    /// The files of `channels/`, for the masters that mirror them.
+    func channelFiles() async throws -> [RemoteChannelFile]
+    func channelFile(path: String, offset: Int) async throws -> Data
+    /// Creates a file of `channels/` that does not exist yet; false when it does.
+    func seedChannelFile(path: String, data: Data) async throws -> Bool
 }
 
 extension RemoteControlHost {
@@ -71,6 +83,26 @@ extension RemoteControlHost {
 
     public func updateCard(cardId: String, _ update: RemoteCardUpdate) async throws -> RemoteCard {
         throw RemoteHostError.notFound("this host does not edit cards")
+    }
+
+    public func editQueuedPrompt(cardId: String, promptId: String, text: String) async throws {
+        throw RemoteHostError.notFound("this host does not edit queued prompts")
+    }
+
+    public func runCLI(_ request: RemoteCLIRequest) async throws -> RemoteCLIResult {
+        throw RemoteHostError.notFound("this host does not run commands for other masters")
+    }
+
+    public func channelFiles() async throws -> [RemoteChannelFile] {
+        throw RemoteHostError.notFound("this host does not serve channels")
+    }
+
+    public func channelFile(path: String, offset: Int) async throws -> Data {
+        throw RemoteHostError.notFound("this host does not serve channels")
+    }
+
+    public func seedChannelFile(path: String, data: Data) async throws -> Bool {
+        throw RemoteHostError.notFound("this host does not serve channels")
     }
 }
 

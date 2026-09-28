@@ -1,10 +1,14 @@
 import Foundation
-import KanbanCodeCore
 
-extension ContentView {
-    func monitorSubagentCommands() async {
+// MARK: - Subagent commands
+
+/// The `kanban subagent` / `kanban send --mode queue` / `kanban relink`
+/// commands the CLI drops in the command inbox. Every master answers the
+/// ones written on its own machine, for the cards it runs.
+extension MasterEngine {
+    public func monitorSubagentCommands() async {
         do {
-            let recovered = try await subagentCommandStore.recoverInterruptedRequests()
+            let recovered = try await subagentCommands.recoverInterruptedRequests()
             if recovered > 0 {
                 KanbanCodeLog.warn("subagent", "Recovered \(recovered) interrupted CLI command(s)")
             }
@@ -17,9 +21,9 @@ extension ContentView {
         }
     }
 
-    func processPendingSubagentCommands() async {
+    public func processPendingSubagentCommands() async {
         do {
-            for id in try await subagentCommandStore.pendingRequestIds() {
+            for id in try await subagentCommands.pendingRequestIds() {
                 await processSubagentCommand(id: id)
             }
         } catch {
@@ -27,14 +31,14 @@ extension ContentView {
         }
     }
 
-    func processSubagentCommand(id: String) async {
+    public func processSubagentCommand(id: String) async {
         let request: SubagentCommandRequest
         do {
-            guard let claimed = try await subagentCommandStore.claim(id: id) else { return }
+            guard let claimed = try await subagentCommands.claim(id: id) else { return }
             request = claimed
         } catch {
             KanbanCodeLog.error("subagent", "Could not claim command \(id): \(error.localizedDescription)")
-            try? await subagentCommandStore.respond(SubagentCommandResponse(
+            try? await subagentCommands.respond(SubagentCommandResponse(
                 id: id,
                 ok: false,
                 error: "Kanban Code could not read this subagent command: \(error.localizedDescription)"
@@ -44,12 +48,12 @@ extension ContentView {
 
         do {
             let cardId = try await executeSubagentCommand(request)
-            try await subagentCommandStore.respond(
+            try await subagentCommands.respond(
                 SubagentCommandResponse(id: request.id, ok: true, cardId: cardId)
             )
         } catch {
             KanbanCodeLog.error("subagent", "Command \(request.id) failed: \(error.localizedDescription)")
-            try? await subagentCommandStore.respond(
+            try? await subagentCommands.respond(
                 SubagentCommandResponse(id: request.id, ok: false, error: error.localizedDescription)
             )
         }
@@ -108,7 +112,7 @@ extension ContentView {
                 cardId: child.id,
                 thresholdTokens: request.contextThresholdTokens
             ))
-            await Self.waitForPersistedLink(cardId: child.id, reaching: "context threshold") {
+            await waitForPersistedLink(cardId: child.id, reaching: "context threshold") {
                 $0.selfCompactContextThresholdTokens == request.contextThresholdTokens
             }
             return child.id
@@ -117,14 +121,14 @@ extension ContentView {
             // outlive a resume, which would otherwise relaunch the old model.
             let child = try ownedSubagent(from: parent.id, targetId: request.cardId)
             store.dispatch(.setCardModel(cardId: child.id, model: request.model))
-            await Self.waitForPersistedLink(cardId: child.id, reaching: "model \(request.model ?? "default")") {
+            await waitForPersistedLink(cardId: child.id, reaching: "model \(request.model ?? "default")") {
                 $0.modelOverride == request.model
             }
             return child.id
         case .archive:
             let child = try ownedSubagent(from: parent.id, targetId: request.cardId)
             store.dispatch(.archiveCard(cardId: child.id))
-            await Self.waitForPersistedLink(cardId: child.id, reaching: "archived") { $0.manuallyArchived }
+            await waitForPersistedLink(cardId: child.id, reaching: "archived") { $0.manuallyArchived }
             return child.id
         case .resume:
             var child = try ownedSubagent(from: parent.id, targetId: request.cardId)
@@ -132,12 +136,12 @@ extension ContentView {
             child.column = .inProgress
             child.updatedAt = .now
             store.dispatch(.createManualTask(child))
-            await Self.waitForPersistedLink(cardId: child.id, reaching: "unarchived") { !$0.manuallyArchived }
+            await waitForPersistedLink(cardId: child.id, reaching: "unarchived") { !$0.manuallyArchived }
             // A resumed child follows its parent's CURRENT location, not the
             // one it was spawned in: a parent moved onto a boxd machine takes
             // its children there, and a parent brought back local resumes
             // them locally off the transcript mirror.
-            executeResume(
+            _ = resume(
                 cardId: child.id,
                 runRemotely: parent.isRemote,
                 commandOverride: nil,
@@ -145,7 +149,7 @@ extension ContentView {
                 serviceIdOverride: child.apiServiceId,
                 modelOverride: child.modelOverride,
                 machineChoice: parent.remote.map { .existing($0.machineName) },
-                focusCard: false
+                keepSelection: true
             )
             return child.id
         }
@@ -181,13 +185,13 @@ extension ContentView {
     /// Card mutations persist through an async effect, so answering the CLI
     /// straight after `dispatch` lets the next `kanban subagent list` read a
     /// links.json that still shows the old state. Wait for the write to land.
-    private static func waitForPersistedLink(
+    private func waitForPersistedLink(
         cardId: String,
         reaching description: String,
         satisfies: (Link) -> Bool
     ) async {
         for _ in 0..<40 {
-            if let persisted = CoordinationStore.readLinksSnapshot().first(where: { $0.id == cardId }),
+            if let persisted = CoordinationStore.readLinksSnapshot(basePath: platform.kanbanHome).first(where: { $0.id == cardId }),
                satisfies(persisted) {
                 return
             }
@@ -212,7 +216,7 @@ extension ContentView {
         }
         let queued = QueuedPrompt(body: prompt, sendAutomatically: true)
         store.dispatch(.addQueuedPrompt(cardId: card.id, prompt: queued, placement: .back))
-        await Self.waitForPersistedLink(cardId: card.id, reaching: "queued") { link in
+        await waitForPersistedLink(cardId: card.id, reaching: "queued") { link in
             link.queuedPrompts?.contains { $0.id == queued.id } == true
         }
         return card.id
@@ -240,7 +244,7 @@ extension ContentView {
             cardId: card.id,
             sessionLink: SessionLink(sessionId: sessionId, sessionPath: sessionPath)
         ))
-        await Self.waitForPersistedLink(cardId: card.id, reaching: "session \(sessionId.prefix(8))") {
+        await waitForPersistedLink(cardId: card.id, reaching: "session \(sessionId.prefix(8))") {
             $0.sessionLink?.sessionId == sessionId
         }
         return card.id
@@ -302,7 +306,7 @@ extension ContentView {
         child.promptBody = deliveryPrompt
         store.dispatch(.createManualTask(child))
         let deliveryError = await withCheckedContinuation { continuation in
-            executeLaunch(
+            launch(
                 cardId: child.id,
                 prompt: deliveryPrompt,
                 projectPath: launchPath,
@@ -312,7 +316,7 @@ extension ContentView {
                 serviceIdOverride: child.apiServiceId,
                 modelOverride: model,
                 machineChoice: parent.remote.map { .existing($0.machineName) },
-                focusCard: false,
+                keepSelection: true,
                 completion: { continuation.resume(returning: $0) }
             )
         }
@@ -340,8 +344,8 @@ extension ContentView {
         }
         let sourceAssistant = source.effectiveAssistant
         let targetAssistant = request.assistant ?? sourceAssistant
-        guard let sourceStore = assistantRegistry.store(for: sourceAssistant),
-              let targetStore = assistantRegistry.store(for: targetAssistant) else {
+        guard let sourceStore = registry.store(for: sourceAssistant),
+              let targetStore = registry.store(for: targetAssistant) else {
             throw SubagentCommandExecutionError.assistantUnavailable(targetAssistant)
         }
 
@@ -389,7 +393,7 @@ extension ContentView {
         store.dispatch(.createManualTask(child))
         // The fork lands beside its source: same machine when the source runs
         // on boxd, local otherwise.
-        executeResume(
+        _ = resume(
             cardId: child.id,
             runRemotely: source.isRemote,
             commandOverride: nil,
@@ -397,7 +401,7 @@ extension ContentView {
             serviceIdOverride: child.apiServiceId,
             modelOverride: child.modelOverride,
             machineChoice: source.remote.map { .existing($0.machineName) },
-            focusCard: false
+            keepSelection: true
         )
         do {
             try await deliverForkGoalWhenReady(
@@ -410,6 +414,27 @@ extension ContentView {
             throw error
         }
         return child.id
+    }
+
+    /// Where an assistant writes the transcript of a session forked into
+    /// `directory`.
+    public nonisolated static func forkedSessionPath(
+        assistant: CodingAssistant,
+        sessionId: String,
+        directory: String
+    ) -> String {
+        switch assistant {
+        case .claude:
+            return (directory as NSString).appendingPathComponent("\(sessionId).jsonl")
+        case .gemini:
+            return (directory as NSString).appendingPathComponent("session-forked-\(sessionId).json")
+        case .codex:
+            return CodexSessionStore.sessionFilePath(
+                sessionId: sessionId,
+                in: directory,
+                prefix: "rollout-forked"
+            )
+        }
     }
 
     private func queueUndeliveredSubagentPrompt(cardId: String, prompt: String) {
@@ -478,15 +503,15 @@ extension ContentView {
     ) async throws {
         for _ in 0..<120 {
             if let sessionName = store.state.links[cardId]?.tmuxLink?.sessionName,
-               let liveSessions = try? await tmuxAdapter.listSessions(),
+               let liveSessions = try? await tmux.listSessions(),
                liveSessions.contains(where: { $0.name == sessionName }) {
                 do {
-                    let sender = ImageSender(tmux: tmuxAdapter)
+                    let sender = ImageSender(tmux: tmux)
                     try await sender.waitForReady(sessionName: sessionName, assistant: assistant)
                     if assistant.submitsPromptWithPaste {
-                        try await tmuxAdapter.pastePrompt(to: sessionName, text: prompt)
+                        try await tmux.pastePrompt(to: sessionName, text: prompt)
                     } else {
-                        try await tmuxAdapter.sendPrompt(to: sessionName, text: prompt)
+                        try await tmux.sendPrompt(to: sessionName, text: prompt)
                     }
                     return
                 } catch {

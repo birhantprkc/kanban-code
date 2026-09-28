@@ -261,7 +261,7 @@ extension ContentView {
                     sessionPath: sessionPath, targetDirectory: targetDir
                 )
                 let dir = targetDir ?? (sessionPath as NSString).deletingLastPathComponent
-                let newPath = Self.forkedSessionPath(
+                let newPath = MasterEngine.forkedSessionPath(
                     assistant: card.link.effectiveAssistant,
                     sessionId: newSessionId,
                     directory: dir
@@ -295,25 +295,6 @@ extension ContentView {
             } catch {
                 KanbanCodeLog.error("fork", "Fork failed: \(error)")
             }
-        }
-    }
-
-    static func forkedSessionPath(
-        assistant: CodingAssistant,
-        sessionId: String,
-        directory: String
-    ) -> String {
-        switch assistant {
-        case .claude:
-            return (directory as NSString).appendingPathComponent("\(sessionId).jsonl")
-        case .gemini:
-            return (directory as NSString).appendingPathComponent("session-forked-\(sessionId).json")
-        case .codex:
-            return CodexSessionStore.sessionFilePath(
-                sessionId: sessionId,
-                in: directory,
-                prefix: "rollout-forked"
-            )
         }
     }
 

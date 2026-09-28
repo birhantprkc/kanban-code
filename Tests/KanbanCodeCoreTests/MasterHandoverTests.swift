@@ -12,6 +12,8 @@ private final class RecordingTmux: TmuxManagerPort, @unchecked Sendable {
     private let lock = NSLock()
     private var _created: [(name: String, command: String?)] = []
     private var _killed: [String] = []
+    private var _pasted: [String] = []
+    var pasted: [String] { lock.withLock { _pasted } }
     var created: [(name: String, command: String?)] { lock.withLock { _created } }
     var killed: [String] { lock.withLock { _killed } }
 
@@ -21,8 +23,8 @@ private final class RecordingTmux: TmuxManagerPort, @unchecked Sendable {
     }
     func killSession(name: String) async throws { lock.withLock { _killed.append(name) } }
     func findSessionForWorktree(sessions: [TmuxSession], worktreePath: String, branch: String?) -> TmuxSession? { nil }
-    func sendPrompt(to sessionName: String, text: String) async throws {}
-    func pastePrompt(to sessionName: String, text: String) async throws {}
+    func sendPrompt(to sessionName: String, text: String) async throws { lock.withLock { _pasted.append(text) } }
+    func pastePrompt(to sessionName: String, text: String) async throws { lock.withLock { _pasted.append(text) } }
     func pasteText(to sessionName: String, text: String) async throws {}
     func submitPrompt(to sessionName: String) async throws {}
     func capturePane(sessionName: String) async throws -> String { "" }
@@ -45,10 +47,10 @@ private final class TestMaster {
     /// A token this master issued, for the other one.
     var tokenForPeer = ""
 
-    init(name: String, root: String) throws {
+    init(name: String, root: String, alwaysOn: Bool = false) throws {
         home = "\(root)/\(name)"
         try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
-        identity = MachineIdentity(name: name)
+        identity = MachineIdentity(name: name, alwaysOn: alwaysOn ? true : nil)
         let coordination = CoordinationStore(basePath: home)
         store = BoardStore(
             effectHandler: EffectHandler(
@@ -60,6 +62,7 @@ private final class TestMaster {
         var platform = MasterPlatform()
         platform.projectsDirectory = "\(home)/Projects"
         platform.claudeProjectsDirectory = "\(home)/claude-projects"
+        platform.kanbanHome = home
         engine = MasterEngine(
             store: store,
             settingsStore: SettingsStore(basePath: home),
@@ -338,5 +341,179 @@ struct MasterHandoverTests {
         #expect(box.store.state.links["card_new"]?.projectPath == "\(box.home)/Projects/widgets")
         for _ in 0..<50 where box.tmux.created.isEmpty { try await Task.sleep(for: .milliseconds(50)) }
         #expect(box.tmux.created.count == 1)
+    }
+}
+
+// MARK: - Roles, channels and commands across masters
+
+@Suite("Masters share the work only one of them does", .serialized)
+@MainActor
+struct MasterRolesTests {
+    private func peer(_ id: String, online: Bool, alwaysOn: Bool = false) -> PeerStatus {
+        PeerStatus(peerId: "peer_\(id)", machine: MachineIdentity(id: id, name: id, alwaysOn: alwaysOn ? true : nil), online: online)
+    }
+
+    @Test("the always-on master polls pull requests while online, else the lowest machine id")
+    func prLeader() {
+        let mac = MachineIdentity(id: "machine_m", name: "mac")
+        #expect(MasterRoles.prPollingLeader(local: mac, peers: [peer("machine_z", online: true, alwaysOn: true)]) == "machine_z")
+        #expect(MasterRoles.prPollingLeader(local: mac, peers: [peer("machine_z", online: false, alwaysOn: true)]) == "machine_m")
+        #expect(MasterRoles.prPollingLeader(local: mac, peers: [peer("machine_a", online: true)]) == "machine_a")
+        #expect(MasterRoles.prPollingLeader(local: mac, peers: [peer("machine_x", online: true)]) == "machine_m")
+        let box = MachineIdentity(id: "machine_z", name: "box", alwaysOn: true)
+        #expect(MasterRoles.prPollingLeader(local: box, peers: [peer("machine_m", online: true)]) == "machine_z")
+    }
+
+    @Test("the channels home is the always-on master, online or not")
+    func channelsHome() {
+        let mac = MachineIdentity(id: "machine_m", name: "mac")
+        #expect(MasterRoles.channelsHome(local: mac, peers: [peer("machine_a", online: true)]) == nil)
+        #expect(MasterRoles.channelsHome(local: mac, peers: [peer("machine_z", online: false, alwaysOn: true)])?.machine?.id == "machine_z")
+        let box = MachineIdentity(id: "machine_z", name: "box", alwaysOn: true)
+        #expect(MasterRoles.channelsHome(local: box, peers: [peer("machine_m", online: true)]) == nil)
+    }
+
+    @Test("the polling master writes pull requests on cards another master runs; the other master does not")
+    func prLinksOnForeignCards() {
+        func master(_ identity: MachineIdentity, peer other: PeerStatus) -> AppState {
+            let state = AppState()
+            _ = Reducer.reduce(state: state, action: .localMachineLoaded(identity))
+            _ = Reducer.reduce(state: state, action: .peerStatusChanged(other))
+            var foreign = Link(id: "card_f", name: "Mac card", projectPath: "/Users/acme/widgets", column: .inProgress,
+                               worktreeLink: WorktreeLink(path: "/Users/acme/widgets/.wt/x", branch: "feat/x"))
+            foreign.ownerMachine = "machine_m"
+            foreign.prLinks = [PRLink(number: 1, status: .reviewNeeded)]
+            state.links[foreign.id] = foreign
+            return state
+        }
+        var polled = Link(id: "card_f", name: "Mac card", projectPath: "/Users/acme/widgets", column: .done)
+        polled.ownerMachine = "machine_m"
+        polled.prLinks = [PRLink(number: 1, status: .merged), PRLink(number: 2, url: "https://github.com/acme/widgets/pull/2", status: .reviewNeeded)]
+        let result = ReconciliationResult(links: [polled], sessions: [], activityMap: [:], tmuxSessions: [])
+
+        let box = master(MachineIdentity(id: "machine_z", name: "box", alwaysOn: true), peer: peer("machine_m", online: true))
+        _ = Reducer.reduce(state: box, action: .reconciled(result))
+        let onBox = box.links["card_f"]
+        #expect(onBox?.prLinks.map(\.number) == [1, 2])
+        #expect(onBox?.prLinks.first?.status == .merged)
+        // Only the pull requests: the column is the owner's to decide.
+        #expect(onBox?.column == .inProgress)
+        #expect(onBox?.fieldRevs?["prLinks"]?.machine == "machine_z")
+
+        let mac = master(MachineIdentity(id: "machine_y", name: "other mac"), peer: peer("machine_z", online: true, alwaysOn: true))
+        _ = Reducer.reduce(state: mac, action: .reconciled(result))
+        #expect(mac.links["card_f"]?.prLinks.map(\.number) == [1])
+        #expect(mac.isPRPollingLeader == false)
+    }
+
+    @Test("a Mac mirrors the channels of an always-on master, after copying its own there once")
+    func channelsMirror() async throws {
+        let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("channels-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let mac = try TestMaster(name: "mac", root: root)
+        let box = try TestMaster(name: "box", root: root, alwaysOn: true)
+        try await mac.serve()
+        try await box.serve()
+        try await mac.start(peerURL: box.url, peerToken: box.tokenForPeer)
+        try await box.start(peerURL: mac.url, peerToken: mac.tokenForPeer)
+        defer { mac.server.stop(); box.server.stop() }
+        box.store.dispatch(.localMachineLoaded(box.identity))
+        await mac.peerSync.pullAll()
+        #expect(mac.store.state.peerStatuses.values.first?.machine?.alwaysOn == true)
+
+        let fm = FileManager.default
+        let macChannels = "\(mac.home)/channels"
+        let boxChannels = "\(box.home)/channels"
+        try fm.createDirectory(atPath: "\(macChannels)/dm", withIntermediateDirectories: true)
+        try Data(#"{"channels":[{"id":"ch_1","name":"general","createdAt":"2026-09-28T00:00:00Z","createdBy":{"cardId":null,"handle":"acme"},"members":[]}]}"#.utf8)
+            .write(to: URL(fileURLWithPath: "\(macChannels)/channels.json"))
+        try Data("{\"id\":\"m1\"}\n".utf8).write(to: URL(fileURLWithPath: "\(macChannels)/general.jsonl"))
+        try Data("{\"id\":\"d1\"}\n".utf8).write(to: URL(fileURLWithPath: "\(macChannels)/dm/a_b.jsonl"))
+        try Data("{}".utf8).write(to: URL(fileURLWithPath: "\(macChannels)/read-state.json"))
+
+        var mirror = ChannelsMirror(home: mac.home)
+        await mac.engine.syncChannelsOnce(&mirror)
+        // First pairing: the Mac's channels were copied to the home, not what it read.
+        #expect(fm.fileExists(atPath: "\(boxChannels)/channels.json"))
+        #expect(fm.contents(atPath: "\(boxChannels)/dm/a_b.jsonl") == Data("{\"id\":\"d1\"}\n".utf8))
+        #expect(!fm.fileExists(atPath: "\(boxChannels)/read-state.json"))
+        let info = try #require(fm.contents(atPath: "\(mac.home)/channels-home.json"))
+        #expect(String(decoding: info, as: UTF8.self).contains(box.identity.id))
+
+        // The home writes; the mirror follows: appends, new files, deletions.
+        let log = try FileHandle(forWritingTo: URL(fileURLWithPath: "\(boxChannels)/general.jsonl"))
+        try log.seekToEnd()
+        try log.write(contentsOf: Data("{\"id\":\"m2\"}\n".utf8))
+        try log.close()
+        try Data("{\"id\":\"n1\"}\n".utf8).write(to: URL(fileURLWithPath: "\(boxChannels)/new.jsonl"))
+        try fm.removeItem(atPath: "\(boxChannels)/dm/a_b.jsonl")
+        await mac.engine.syncChannelsOnce(&mirror)
+        #expect(fm.contents(atPath: "\(macChannels)/general.jsonl") == Data("{\"id\":\"m1\"}\n{\"id\":\"m2\"}\n".utf8))
+        #expect(fm.contents(atPath: "\(macChannels)/new.jsonl") == Data("{\"id\":\"n1\"}\n".utf8))
+        #expect(!fm.fileExists(atPath: "\(macChannels)/dm/a_b.jsonl"))
+        #expect(fm.fileExists(atPath: "\(macChannels)/read-state.json"))
+
+        // A second pairing does not copy again: the home's channels stand.
+        try fm.removeItem(atPath: "\(boxChannels)")
+        await mac.engine.syncChannelsOnce(&mirror)
+        #expect(!fm.fileExists(atPath: "\(boxChannels)/channels.json"))
+
+        // Paths that leave the channels directory are refused.
+        #expect(MasterEngine.channelFilePath(home: box.home, relative: "../links.json") == nil)
+        #expect(MasterEngine.channelFilePath(home: box.home, relative: "read-state.json") == nil)
+    }
+
+    @Test("the home runs only channel and DM commands for other masters")
+    func cliAllowlist() async throws {
+        let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("cli-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let box = try TestMaster(name: "box", root: root, alwaysOn: true)
+        let refused = await box.engine.runCLI(RemoteCLIRequest(argv: ["launch", "--prompt", "x"]))
+        #expect(refused.code == 2)
+        let missing = await box.engine.runCLI(RemoteCLIRequest(argv: ["channel", "list"]))
+        #expect(missing.code == 1)
+        #expect(missing.stderr.contains("not installed"))
+    }
+
+    @Test("a queued prompt the CLI writes for a card another master runs reaches that master")
+    func inboxToForeignCard() async throws {
+        let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("inbox-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let mac = try TestMaster(name: "mac", root: root)
+        let box = try TestMaster(name: "box", root: root, alwaysOn: true)
+        try await mac.serve()
+        try await box.serve()
+        try await mac.start(peerURL: box.url, peerToken: box.tokenForPeer)
+        try await box.start(peerURL: mac.url, peerToken: mac.tokenForPeer)
+        defer { mac.server.stop(); box.server.stop() }
+        mac.store.dispatch(.createManualTask(Link(
+            id: "card_mac", name: "On the Mac", projectPath: "/tmp/acme", column: .inProgress,
+            sessionLink: SessionLink(sessionId: "sid-mac"), tmuxLink: TmuxLink(sessionName: "mac-session")
+        )))
+        mac.store.dispatch(.tmuxLivenessScanned(live: ["mac-session"]))
+        await box.peerSync.pullAll()
+        await mac.peerSync.pullAll()
+        #expect(box.engine.isForeign("card_mac"))
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let request = SubagentCommandRequest(
+            id: "req_1", operation: .enqueuePrompt, createdAt: formatter.string(from: .now),
+            parentCardId: "card_mac", cardId: "card_mac", prompt: "[Message from #general @acme]: hello")
+        let inbox = "\(box.home)/commands/inbox"
+        try FileManager.default.createDirectory(atPath: inbox, withIntermediateDirectories: true)
+        try JSONEncoder().encode(request).write(to: URL(fileURLWithPath: "\(inbox)/req_1.json"))
+        await box.engine.processPendingSubagentCommands()
+        let text = "[Message from #general @acme]: hello"
+        func arrived() -> Bool {
+            mac.store.state.links["card_mac"]?.queuedPrompts?.first?.body == text || mac.tmux.pasted.contains(text)
+        }
+        for _ in 0..<100 where !arrived() {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        // The Mac queued it, or sent it at once since the card is idle.
+        #expect(arrived())
+        #expect(box.store.state.links["card_mac"]?.queuedPrompts == nil)
+        #expect(!box.tmux.pasted.contains(text))
     }
 }
