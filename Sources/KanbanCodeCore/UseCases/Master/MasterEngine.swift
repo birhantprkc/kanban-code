@@ -110,7 +110,7 @@ public final class MasterEngine {
         // A marker from an earlier run of this session name would let the
         // terminal attach before the machine is ready.
         platform.clearRemoteSessionReady(predictedTmuxName)
-        if runRemotely, store.state.remoteMode == .boxd, boxdSupervisor != nil {
+        if runRemotely, store.state.remoteMode.runsOnMachines, boxdSupervisor != nil {
             platform.expectRemoteSession(predictedTmuxName)
         }
         let progress = LaunchProgress(cardId: cardId, store: store)
@@ -132,8 +132,8 @@ public final class MasterEngine {
 
                 let cardLink = store.state.cards.first(where: { $0.id == cardId })?.link
                 let globalRemote = settings?.remote
-                let remoteMode = settings?.remoteMode ?? .boxd
-                if runRemotely, remoteMode == .boxd, let boxdSupervisor {
+                let remoteMode = settings?.remoteMode ?? .ssh
+                if runRemotely, remoteMode.runsOnMachines, let boxdSupervisor {
                     let existingMachine = machineChoice?.machineName
                         ?? (machineChoice == nil ? cardLink?.remote?.machineName : nil)
                     progress.start()
@@ -151,7 +151,7 @@ public final class MasterEngine {
                     shellOverride = nil
                     extraEnv = preparation.extraEnv
                     isRemote = true
-                    preamble = nil
+                    preamble = BoxdMachineSupervisor.sessionPreamble
                     launchPath = preparation.remoteCwd
                     launchWorktreeName = nil
                 } else if runRemotely, let remote = globalRemote, projectPath.hasPrefix(remote.localPath) {
@@ -214,6 +214,36 @@ public final class MasterEngine {
                         sessionPath: transcriptPath(cwd: cwd, sessionId: sessionId)
                     )
                     store.dispatch(.launchCompleted(cardId: cardId, tmuxName: name, sessionLink: sessionLink, worktreeLink: worktreeLink, isRemote: false))
+                    completion?(nil)
+                    return
+                }
+
+                if let preparation = boxdPreparation,
+                   let machineAgtop = await machineAgtop(
+                       machineName: preparation.machineName, settings: settings, assistant: assistant,
+                       commandOverride: commandOverride, service: resolvedService) {
+                    let sessionId = UUID().uuidString.lowercased()
+                    let name = try await startOnAgtop(
+                        cardId: cardId,
+                        cwd: preparation.remoteCwd,
+                        sessionId: sessionId,
+                        resume: false,
+                        prompt: prompt,
+                        images: images,
+                        extraEnv: serviceExtraEnv,
+                        skipPermissions: skipPermissions,
+                        model: effectiveModelOverride,
+                        commandTemplate: nil,
+                        service: resolvedService,
+                        agtop: machineAgtop
+                    )
+                    await boxdSupervisor?.assignSession(name, to: preparation.machineName)
+                    platform.markRemoteSessionReady(name, preparation.machineName)
+                    let localCwd = BoxdLaunchPlanner.localPath(
+                        ofRemote: preparation.remoteCwd, remoteRoot: preparation.remoteProjectPath,
+                        localRoot: BoxdMachineSupervisor.repositoryRoot(of: projectPath))
+                    let sessionLink = SessionLink(sessionId: sessionId, sessionPath: transcriptPath(cwd: localCwd, sessionId: sessionId))
+                    store.dispatch(.launchCompleted(cardId: cardId, tmuxName: name, sessionLink: sessionLink, worktreeLink: preparation.worktree, isRemote: true))
                     completion?(nil)
                     return
                 }
@@ -632,13 +662,13 @@ public final class MasterEngine {
                 var boxdPreparation: BoxdPreparation?
                 let resumeSessionName = "\(assistant.cliCommand)-\(String(sessionId.prefix(8)))"
                 platform.clearRemoteSessionReady(resumeSessionName)
-                if runRemotely, store.state.remoteMode == .boxd, boxdSupervisor != nil {
+                if runRemotely, store.state.remoteMode.runsOnMachines, boxdSupervisor != nil {
                     platform.expectRemoteSession(resumeSessionName)
                 }
 
                 let globalRemote = settings?.remote
-                let remoteMode = settings?.remoteMode ?? .boxd
-                if runRemotely, remoteMode == .boxd, let boxdSupervisor {
+                let remoteMode = settings?.remoteMode ?? .ssh
+                if runRemotely, remoteMode.runsOnMachines, let boxdSupervisor {
                     let currentMachine = card.link.remote?.machineName
                     let existingMachine = machineChoice?.machineName
                         ?? (machineChoice == nil ? currentMachine : nil)
@@ -666,12 +696,23 @@ public final class MasterEngine {
                     shellOverride = nil
                     extraEnv = preparation.extraEnv
                     isRemote = true
-                    preamble = nil
+                    preamble = BoxdMachineSupervisor.sessionPreamble
                     resumePath = preparation.remoteCwd
 
                     // The tmux session survives a pause, so a live one is
                     // attached as it is. Otherwise the newer transcript wins
                     // before a fresh `--resume` starts on the machine.
+                    let agtopName = AgtopSessionName.name(sessionId: sessionId)
+                    if existingMachine == currentMachine, card.link.isRemote,
+                       card.link.tmuxLink?.sessionName == agtopName {
+                        await boxdSupervisor.assignSession(agtopName, to: preparation.machineName)
+                        if await boxdSupervisor.hasSession(machineName: preparation.machineName, sessionName: agtopName) {
+                            KanbanCodeLog.info("resume", "Attaching to live agtop \(agtopName) on \(preparation.machineName)")
+                            platform.markRemoteSessionReady(agtopName, preparation.machineName)
+                            store.dispatch(.resumeCompleted(cardId: cardId, tmuxName: agtopName, isRemote: true))
+                            return
+                        }
+                    }
                     var liveOnMachine = false
                     if existingMachine == currentMachine {
                         liveOnMachine = await boxdSupervisor.hasSession(machineName: preparation.machineName, sessionName: resumeSessionName)
@@ -783,6 +824,33 @@ public final class MasterEngine {
                     return
                 }
 
+                if let preparation = boxdPreparation,
+                   let machineAgtop = await machineAgtop(
+                       machineName: preparation.machineName, settings: settings, assistant: assistant,
+                       commandOverride: commandOverride, service: resolvedService) {
+                    // The conversation runs in one place only: its tmux
+                    // sessions, here or on the machine, end first.
+                    await killTmuxSessions(of: sessionId)
+                    let name = try await startOnAgtop(
+                        cardId: cardId,
+                        cwd: resumePath,
+                        sessionId: sessionId,
+                        resume: true,
+                        prompt: nil,
+                        images: [],
+                        extraEnv: serviceExtraEnv,
+                        skipPermissions: skipPermissions,
+                        model: effectiveModelOverride,
+                        commandTemplate: nil,
+                        service: resolvedService,
+                        agtop: machineAgtop
+                    )
+                    await boxdSupervisor?.assignSession(name, to: preparation.machineName)
+                    platform.markRemoteSessionReady(name, preparation.machineName)
+                    store.dispatch(.resumeCompleted(cardId: cardId, tmuxName: name, isRemote: true))
+                    return
+                }
+
                 let actualTmuxName = try await launcher.resume(
                     sessionId: sessionId,
                     projectPath: resumePath,
@@ -810,7 +878,7 @@ public final class MasterEngine {
                 // The machine would sit running, billed by the hour, waiting
                 // for a retry that may never come. A stop keeps its disk and
                 // the next resume brings it back with a cold start.
-                if runRemotely, store.state.remoteMode == .boxd,
+                if runRemotely, store.state.remoteMode.runsOnMachines,
                    let remote = store.state.links[cardId]?.remote,
                    let boxdSupervisor,
                    await boxdSupervisor.isConnected(remote.machineName) {
@@ -847,6 +915,36 @@ public final class MasterEngine {
         return choice
     }
 
+    /// agtop on an ssh machine, when a card launched or resumed there runs
+    /// on it: the settings pick agtop for the assistant and the machine has
+    /// it. A command template or an API service launcher wraps `claude` in a
+    /// script of this machine, so those cards stay on tmux there.
+    public func machineAgtop(
+        machineName: String,
+        settings: Settings?,
+        assistant: CodingAssistant,
+        commandOverride: String?,
+        service: APIService?
+    ) async -> AgtopCliAdapter? {
+        guard settings?.runtime(for: assistant) == .agtop else { return nil }
+        guard let boxdSupervisor, await boxdSupervisor.isHost(machineName) else { return nil }
+        let choice = AgtopLaunchPlanner.choose(
+            assistant: assistant, runtime: .agtop, remote: false,
+            commandOverride: commandOverride, agtopInstalled: tmux.registry.agtop(for: machineName) != nil)
+        guard choice == .agtop, let agtop = tmux.registry.agtop(for: machineName) else {
+            if case .fallback(let fallback) = choice {
+                KanbanCodeLog.info("agtop", "Running on tmux on \(machineName): \(fallback.reason)")
+            }
+            return nil
+        }
+        let template = settings?.commandTemplate(for: assistant, remote: true)
+        guard AgtopLaunchPlanner.wrapperCommand(template: template, service: service) == nil else {
+            KanbanCodeLog.info("agtop", "Running on tmux on \(machineName): the command template or API service wraps claude")
+            return nil
+        }
+        return agtop
+    }
+
     /// Starts, or resumes, a card's Claude session on an agtop host and
     /// returns its session name (`agtop-<id>`).
     public func startOnAgtop(
@@ -860,7 +958,8 @@ public final class MasterEngine {
         skipPermissions: Bool,
         model: String?,
         commandTemplate: String?,
-        service: APIService?
+        service: APIService?,
+        agtop: AgtopCliAdapter? = nil
     ) async throws -> String {
         let imagePaths = images.compactMap { image -> String? in
             if let tempPath = image.tempPath { return tempPath }
@@ -883,7 +982,7 @@ public final class MasterEngine {
             model: model ?? service?.modelFlag,
             binary: binary
         )
-        let info = try await tmux.agtop.start(request)
+        let info = try await (agtop ?? tmux.agtop).start(request)
         let name = AgtopSessionName.name(agtopId: info.id)
         KanbanCodeLog.info("agtop", "Started \(name) for card=\(cardId.prefix(12)) session=\(sessionId.prefix(8)) resume=\(resume)")
         return name

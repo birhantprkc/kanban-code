@@ -7,27 +7,34 @@ extension RemoteMode {
     /// Title of the mode in the Remote settings tab.
     var settingsTitle: String {
         switch self {
-        case .boxd: "Boxd integration"
-        case .mutagen: "Mutagen + Claude Remote Exec"
+        case .ssh: "SSH machines"
+        case .boxd: "boxd"
+        case .mutagen: "Mutagen"
         }
     }
 
-    /// One paragraph that tells the user what the mode does.
+    /// One line on what the mode does.
     var settingsDescription: String {
         switch self {
+        case .ssh:
+            "Run cards on always-on machines you own, reached over ssh or Tailscale."
         case .boxd:
-            "Create cloud sandboxes for each coding assistant and run tmux and coding sessions fully remotely, but sync back jsonl to keep all conversations. Requires a boxd account."
+            "Each card gets its own boxd cloud machine, paused when idle. Needs a boxd account."
         case .mutagen:
-            "Sync files with a remote machine, run the tmux and coding assistant locally but executing commands remotely. Best for delegating cpu and ram resources locally but resilient to network latency disconnects. Works with any linux remote machine."
+            "Sync files with one ssh host. The assistant runs on this Mac and runs its commands on the host."
         }
     }
 }
 
 // MARK: - Boxd form
 
-/// Form sections of the boxd remote mode. Used inside the `Form` of the
-/// Remote settings tab, so the body is a set of `Section`s.
+/// Form sections of the ssh and boxd remote modes, which share one
+/// `BoxdSettings` block: the ssh mode shows the ssh machines, the boxd mode
+/// the boxd machine and lifecycle, and both the project setup. Used inside
+/// the `Form` of the Remote settings tab, so the body is a set of `Section`s.
 struct BoxdSettingsView: View {
+    let mode: RemoteMode
+
     @State private var snapshotName = BoxdSettings.defaultSnapshotName
     @State private var sourceMachine = BoxdSettings.defaultSourceMachine
     @State private var folderTemplate = BoxdSettings.defaultFolderTemplate
@@ -54,24 +61,18 @@ struct BoxdSettingsView: View {
     private static let minimumMinutes = max(1, BoxdSettings.minimumInactivityTimeoutSeconds / 60)
 
     var body: some View {
-        if !boxdAvailable {
-            Section("Dependency") {
-                HStack {
-                    Label("boxd", systemImage: "minus.circle")
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text("https://boxd.sh")
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.orange)
-                        .textSelection(.enabled)
-                }
-                Text("Install the boxd CLI and log in: https://boxd.sh")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            }
+        if mode == .ssh {
+            sshSections
+        } else {
+            boxdSections
         }
+        projectSection
+            .task(id: mode) { await load() }
+    }
 
-        Section("Ssh machines") {
+    @ViewBuilder
+    private var sshSections: some View {
+        Section("Machines") {
             ForEach($sshMachines) { $machine in
                 HStack(spacing: 8) {
                     Circle()
@@ -100,7 +101,7 @@ struct BoxdSettingsView: View {
             .onChange(of: sshMachines) { scheduleSave() }
 
             HStack {
-                Button("Add ssh machine") {
+                Button("Add machine") {
                     sshMachines.append(SshMachine(name: "machine-\(sshMachines.count + 1)", target: ""))
                 }
                 .controlSize(.small)
@@ -109,9 +110,36 @@ struct BoxdSettingsView: View {
                     .disabled(sshMachines.isEmpty)
             }
 
-            Text("Always-on machines reached with ssh, as root or a user with tmux, git, node and the coding assistant installed. Cards launched there share the machine and are never paused or removed by the app. Repositories are cloned into the folder on the right.")
+            Text("Each machine needs tmux, git, node and the coding assistant, and agtop to run cards on agtop. Repositories are cloned into the folder on the right. Cards share the machine, the app never stops it.")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
+        }
+
+
+        Section("Masters") {
+            Text("A machine that also runs kanban-code-server can own cards itself and keep them going while this Mac sleeps. Pair it in Settings > Remote Control > Peers.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    @ViewBuilder
+    private var boxdSections: some View {
+        if !boxdAvailable {
+            Section("Dependency") {
+                HStack {
+                    Label("boxd", systemImage: "minus.circle")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("https://boxd.sh")
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.orange)
+                        .textSelection(.enabled)
+                }
+                Text("Install the boxd CLI and log in: https://boxd.sh")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
         }
 
         Section("Machine") {
@@ -157,14 +185,38 @@ struct BoxdSettingsView: View {
                 .foregroundStyle(.tertiary)
         }
 
-        Section("Project") {
-            TextField("Project folder", text: $folderTemplate)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.body, design: .monospaced))
-                .onChange(of: folderTemplate) { scheduleSave() }
-            Text("`${repo_name}` is the GitHub repository name of the project.")
+        Section("Lifecycle") {
+            HStack {
+                Text("Pause after inactivity")
+                Spacer()
+                TextField("", value: $inactivityMinutes, format: .number)
+                    .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 60)
+                Text("minutes")
+                    .foregroundStyle(.secondary)
+                Stepper("", value: $inactivityMinutes, in: Self.minimumMinutes...1440)
+                    .labelsHidden()
+            }
+            .onChange(of: inactivityMinutes) { scheduleSave() }
+
+            Text("The machine is paused when the session shows no activity for this long.")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
+        }
+    }
+
+    private var projectSection: some View {
+        Section("Project") {
+            if mode == .boxd {
+                TextField("Project folder", text: $folderTemplate)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.body, design: .monospaced))
+                    .onChange(of: folderTemplate) { scheduleSave() }
+                Text("`${repo_name}` is the GitHub repository name of the project.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("Initialization command")
@@ -188,27 +240,6 @@ struct BoxdSettingsView: View {
                     .foregroundStyle(.tertiary)
             }
         }
-
-        Section("Lifecycle") {
-            HStack {
-                Text("Pause after inactivity")
-                Spacer()
-                TextField("", value: $inactivityMinutes, format: .number)
-                    .textFieldStyle(.roundedBorder)
-                    .multilineTextAlignment(.trailing)
-                    .frame(width: 60)
-                Text("minutes")
-                    .foregroundStyle(.secondary)
-                Stepper("", value: $inactivityMinutes, in: Self.minimumMinutes...1440)
-                    .labelsHidden()
-            }
-            .onChange(of: inactivityMinutes) { scheduleSave() }
-
-            Text("The machine is paused when the session shows no activity for this long.")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-        }
-        .task { await load() }
     }
 
     // MARK: - Derived values
@@ -248,6 +279,7 @@ struct BoxdSettingsView: View {
         loaded = true
         Task { await probeSshMachines() }
 
+        guard mode == .boxd else { return }
         let adapter = BoxdCliAdapter()
         boxdAvailable = await adapter.isAvailable()
         if boxdAvailable {

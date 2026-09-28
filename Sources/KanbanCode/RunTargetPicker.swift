@@ -1,8 +1,8 @@
 import SwiftUI
 import KanbanCodeCore
 
-/// The "Run on" row of the launch dialogs in boxd mode: this Mac, the ssh
-/// machines with whether they answer, and the boxd machines.
+/// The "Run on" row of the launch dialogs in the ssh and boxd modes: this
+/// Mac, then the machines of the mode (see `RunTargetOption.options`).
 struct RunTargetPicker: View {
     let remote: RemoteLaunchOptions
     @Binding var runRemotely: Bool
@@ -37,6 +37,7 @@ struct RunTargetPicker: View {
     }
 
     private func probe() async {
+        guard remote.mode == .ssh else { return }
         await withTaskGroup(of: (String, Bool).self) { group in
             for machine in remote.sshMachines {
                 group.addTask { (machine.name, await SshHostPort.isReachable(target: machine.target)) }

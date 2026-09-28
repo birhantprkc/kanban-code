@@ -11,10 +11,10 @@ struct BoxdSettingsTests {
 
     // MARK: - Defaults
 
-    @Test("A fresh Settings uses the boxd mode and no boxd block")
+    @Test("A fresh Settings uses the ssh machines mode and no boxd block")
     func freshDefaults() {
         let settings = Settings()
-        #expect(settings.remoteMode == .boxd)
+        #expect(settings.remoteMode == .ssh)
         #expect(settings.boxd == nil)
         #expect(settings.assistantCommands.isEmpty)
     }
@@ -63,9 +63,10 @@ struct BoxdSettingsTests {
 
     // MARK: - Mode decoding
 
-    @Test("A settings file with no remote block decodes as boxd")
-    func modeDefaultsToBoxd() throws {
-        #expect(try decode("{}").remoteMode == .boxd)
+    @Test("A settings file with no remote block decodes as ssh machines")
+    func modeDefaultsToSsh() throws {
+        #expect(try decode("{}").remoteMode == .ssh)
+        #expect(try decode(#"{"remoteMode":"ssh"}"#).remoteMode == .ssh)
     }
 
     @Test("A settings file with only a mutagen remote block keeps the mutagen mode")
@@ -97,7 +98,7 @@ struct BoxdSettingsTests {
     @Test("An unknown remoteMode value falls back instead of failing the file")
     func unknownMode() throws {
         let settings = try decode(#"{"remoteMode":"carrier-pigeon","promptTemplate":"/orchestrate"}"#)
-        #expect(settings.remoteMode == .boxd)
+        #expect(settings.remoteMode == .ssh)
         #expect(settings.promptTemplate == "/orchestrate")
     }
 

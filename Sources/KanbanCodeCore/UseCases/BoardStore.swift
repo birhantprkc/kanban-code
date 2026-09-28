@@ -151,7 +151,7 @@ public final class AppState: @unchecked Sendable {
     public var globalRemoteSettings: RemoteSettings?
 
     /// Which remote backend a "Run remotely" launch uses.
-    public var remoteMode: RemoteMode = .boxd
+    public var remoteMode: RemoteMode = .ssh
 
     /// Settings of the boxd remote mode (from Settings.boxd).
     public var boxdSettings: BoxdSettings?

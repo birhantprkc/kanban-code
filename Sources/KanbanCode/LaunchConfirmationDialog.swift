@@ -279,7 +279,7 @@ struct LaunchConfirmationDialog: View {
 
     @ViewBuilder
     private var remoteSection: some View {
-        if remoteMode == .boxd, canRunRemotely, let remoteOptions {
+        if remoteMode.runsOnMachines, canRunRemotely, let remoteOptions {
             RunTargetPicker(remote: remoteOptions, runRemotely: $runRemotely, machineChoice: $machineChoice)
         } else {
             Toggle(remoteToggleLabel, isOn: canRunRemotely ? $runRemotely : .constant(false))
@@ -320,12 +320,18 @@ struct LaunchConfirmationDialog: View {
     }
 
     private var remoteToggleLabel: String {
-        remoteMode == .boxd ? "Run on boxd" : "Run remotely"
+        switch remoteMode {
+        case .ssh: "Run on an ssh machine"
+        case .boxd: "Run on boxd"
+        case .mutagen: "Run remotely"
+        }
     }
 
     private var remoteHint: String? {
         guard !canRunRemotely else { return nil }
         switch remoteMode {
+        case .ssh:
+            return "Add an ssh machine in Settings > Remote"
         case .boxd:
             if remoteOptions?.boxd == nil { return "Configure boxd in Settings > Remote" }
             return "Install the boxd CLI to run on boxd"
@@ -394,9 +400,9 @@ struct LaunchConfirmationDialog: View {
         runRemotely && canRunRemotely
     }
 
-    /// True when the session runs on a boxd machine.
+    /// True when the session runs on a machine: an ssh machine or boxd.
     private var runsOnBoxd: Bool {
-        remoteMode == .boxd && effectiveRunRemotely
+        remoteMode.runsOnMachines && effectiveRunRemotely
     }
 
     private var commandPreview: String {

@@ -445,7 +445,7 @@ struct AssistantsSettingsView: View {
             }
             .onChange(of: claudeRuntime) { saveRuntime() }
             Text(agtopInstalled || claudeRuntime == .tmux
-                ? "agtop keeps each session running in the background and shows it in the card's terminal. Remote cards and custom commands keep running on tmux. Applies to new launches and resumes."
+                ? "agtop keeps each session running in the background and shows it in the card's terminal. Cards on an ssh machine run on agtop there when the machine has it. Custom commands and boxd cards run on tmux. Applies to new launches and resumes."
                 : "agtop is not installed. Install it with `go install github.com/0xdeafcafe/agtop/cmd/agtop@latest`, sessions run on tmux until then.")
                 .font(.caption)
                 .foregroundStyle(agtopInstalled || claudeRuntime == .tmux ? .tertiary : .secondary)
@@ -1284,7 +1284,7 @@ struct RemoteSettingsView: View {
     @State private var syncIgnoresText = ""
     @State private var saveTask: Task<Void, Never>?
     @State private var mutagenAvailable = false
-    @State private var remoteMode: RemoteMode = .boxd
+    @State private var remoteMode: RemoteMode = .ssh
     @State private var loaded = false
 
     private let settingsStore = SettingsStore()
@@ -1297,8 +1297,8 @@ struct RemoteSettingsView: View {
                 }
             }
 
-            if remoteMode == .boxd {
-                BoxdSettingsView()
+            if remoteMode.runsOnMachines {
+                BoxdSettingsView(mode: remoteMode)
             } else {
                 mutagenSections
             }
@@ -1313,7 +1313,7 @@ struct RemoteSettingsView: View {
 
     @ViewBuilder
     private var mutagenSections: some View {
-        Section("SSH") {
+        Section("Host") {
             TextField("Remote Host", text: $remoteHost)
                 .textFieldStyle(.roundedBorder)
                 .onChange(of: remoteHost) { scheduleSave() }

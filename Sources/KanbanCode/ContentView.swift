@@ -891,7 +891,7 @@ struct ContentView: View {
                             var image = ImageAttachment(data: imageData)
                             Task {
                                 guard let path = try? image.saveToTemp() else { return }
-                                try? await self.tmuxAdapter.agtop.send(id: agtopId, text: "", imagePaths: [path])
+                                try? await self.tmuxAdapter.agtop(forSession: sessionName).send(id: agtopId, text: "", imagePaths: [path])
                             }
                             return
                         }
@@ -1326,7 +1326,7 @@ struct ContentView: View {
         return RemoteLaunchOptions(
             mode: store.state.remoteMode,
             mutagen: store.state.globalRemoteSettings,
-            boxd: store.state.remoteMode == .boxd ? (store.state.boxdSettings ?? BoxdSettings()) : nil,
+            boxd: store.state.remoteMode.runsOnMachines ? (store.state.boxdSettings ?? BoxdSettings()) : nil,
             cardMachine: machine,
             cardMachineState: machine.flatMap { store.state.remoteMachineStates[$0] }
                 ?? link?.remote?.pausedReason.map { RemoteMachineState.paused($0) },
@@ -1680,7 +1680,7 @@ struct ContentView: View {
                 }
 
                 ToolbarItem(placement: .navigation) {
-                    if store.state.remoteMode == .boxd {
+                    if store.state.remoteMode.runsOnMachines {
                         if !store.state.remoteMachineStates.isEmpty {
                             boxdStatusView
                         }

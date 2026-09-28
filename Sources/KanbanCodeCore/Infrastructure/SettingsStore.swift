@@ -41,7 +41,7 @@ public struct Settings: Codable, Sendable {
         github: GitHubSettings = GitHubSettings(),
         notifications: NotificationSettings = NotificationSettings(),
         remote: RemoteSettings? = nil,
-        remoteMode: RemoteMode = .boxd,
+        remoteMode: RemoteMode = .ssh,
         boxd: BoxdSettings? = nil,
         sessionTimeout: SessionTimeoutSettings = SessionTimeoutSettings(),
         promptTemplate: String = "",
@@ -117,7 +117,7 @@ public struct Settings: Codable, Sendable {
         } else if remote != nil {
             remoteMode = .mutagen
         } else {
-            remoteMode = .boxd
+            remoteMode = .ssh
         }
         sessionTimeout = (try? container.decodeIfPresent(SessionTimeoutSettings.self, forKey: .sessionTimeout)) ?? SessionTimeoutSettings()
         // Backward-compat: try "promptTemplate" first, fall back to "skill"
@@ -204,10 +204,16 @@ public struct Settings: Codable, Sendable {
 
 /// Backend used to run a card on another machine.
 public enum RemoteMode: String, Codable, Sendable, CaseIterable {
+    /// Cards run on always-on machines reached over ssh (`BoxdSettings.sshMachines`).
+    case ssh
     /// Each card runs on its own boxd cloud machine.
     case boxd
     /// One SSH host with Mutagen file sync, the assistant runs on the Mac.
     case mutagen
+
+    /// The card runs on a machine through the machine supervisor: an ssh
+    /// machine or a boxd one. The mutagen mode runs it on this Mac.
+    public var runsOnMachines: Bool { self != .mutagen }
 }
 
 /// Settings of the boxd remote mode.

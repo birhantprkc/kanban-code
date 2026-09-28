@@ -36,9 +36,9 @@ struct RemoteLaunchOptionsTests {
             lastRunRemote: nil, cardMachine: nil, mode: .mutagen, projectPath: project) == true)
     }
 
-    private func options(boxdAvailable: Bool = true, cardMachine: String? = nil, available: [String] = []) -> RemoteLaunchOptions {
+    private func options(mode: RemoteMode = .boxd, boxdAvailable: Bool = true, cardMachine: String? = nil, available: [String] = []) -> RemoteLaunchOptions {
         RemoteLaunchOptions(
-            mode: .boxd,
+            mode: mode,
             boxd: BoxdSettings(snapshotName: "snap", sshMachines: [
                 SshMachine(name: "box", target: "root@10.0.0.1"),
                 SshMachine(name: "draft", target: ""),
@@ -48,30 +48,39 @@ struct RemoteLaunchOptionsTests {
             boxdAvailable: boxdAvailable)
     }
 
-    @Test("Run on offers this Mac, the ssh machines with their state, then boxd")
-    func runTargets() {
-        let targets = RunTargetOption.options(for: options(available: ["kanban-repo-1", "box"]), reachability: ["box": true])
+    @Test("Run on offers this Mac and the ssh machines with their state in the ssh mode")
+    func runTargetsSsh() {
+        let targets = RunTargetOption.options(for: options(mode: .ssh, available: ["kanban-repo-1"]), reachability: ["box": true])
+        #expect(targets.map(\.label) == ["This Mac", "box (online)"])
+        #expect(targets[1].target == .machine(.existing("box")))
+        #expect(RunTargetOption.options(for: options(mode: .ssh), reachability: ["box": false])[1].label == "box (offline)")
+        #expect(RunTargetOption.options(for: options(mode: .ssh))[1].label == "box (checking)")
+        #expect(options(mode: .ssh, boxdAvailable: false).canRunRemotely(projectPath: project))
+    }
+
+    @Test("Run on offers this Mac and the boxd machines in the boxd mode")
+    func runTargetsBoxd() {
+        let targets = RunTargetOption.options(for: options(available: ["kanban-repo-1", "box"]))
         #expect(targets.map(\.label) == [
             "This Mac",
-            "box (online)",
             "boxd: new machine from snapshot snap",
             "boxd: kanban-repo-1",
         ])
-        #expect(targets[1].target == .machine(.existing("box")))
-        #expect(RunTargetOption.options(for: options(), reachability: ["box": false])[1].label == "box (offline)")
-        #expect(RunTargetOption.options(for: options())[1].label == "box (checking)")
-        // Without the boxd CLI only the Mac and the ssh machines are left.
-        #expect(RunTargetOption.options(for: options(boxdAvailable: false)).map(\.label) == ["This Mac", "box (checking)"])
-        #expect(options(boxdAvailable: false).canRunRemotely(projectPath: project))
+        // Without the boxd CLI only the Mac is left, and nothing runs remotely.
+        #expect(RunTargetOption.options(for: options(boxdAvailable: false)).map(\.label) == ["This Mac"])
+        #expect(!options(boxdAvailable: false).canRunRemotely(projectPath: project))
+        // A card already on an ssh machine keeps its machine on offer.
+        #expect(RunTargetOption.options(for: options(cardMachine: "box")).map(\.label).last == "box")
     }
 
-    @Test("A card on an ssh machine opens on it, and the last pick of a project is kept while it is offered")
+    @Test("A card on a machine opens on it, and the last pick of a project is kept while it is offered")
     func initialMachine() {
         #expect(options(cardMachine: "box").initialMachineChoice(projectPath: project) == .existing("box"))
         #expect(options().initialMachineChoice(projectPath: project) == .newMachine)
+        #expect(options(mode: .ssh).initialMachineChoice(projectPath: project) == .existing("box"))
         #expect(options(boxdAvailable: false).initialMachineChoice(projectPath: project) == .existing("box"))
-        RemoteLaunchOptions.rememberMachineChoice(.existing("box"), projectPath: project)
-        #expect(options().initialMachineChoice(projectPath: project) == .existing("box"))
+        RemoteLaunchOptions.rememberMachineChoice(.existing("kanban-repo-1"), projectPath: project)
+        #expect(options(available: ["kanban-repo-1"]).initialMachineChoice(projectPath: project) == .existing("kanban-repo-1"))
         RemoteLaunchOptions.rememberMachineChoice(.existing("gone"), projectPath: project)
         #expect(options().initialMachineChoice(projectPath: project) == .newMachine)
         UserDefaults.standard.removeObject(forKey: "runOnMachine_\(project)")
