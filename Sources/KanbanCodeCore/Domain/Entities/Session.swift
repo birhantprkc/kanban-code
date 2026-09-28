@@ -48,8 +48,9 @@ public struct Session: Identifiable, Sendable, Equatable {
     /// Display title: custom name → summary → first prompt → session ID prefix.
     public var displayTitle: String {
         if let name, !name.isEmpty { return name }
-        if let firstPrompt, !firstPrompt.isEmpty {
-            return String(firstPrompt.prefix(100))
+        if let firstPrompt {
+            let prompt = InjectedPromptText.strip(firstPrompt)
+            if !prompt.isEmpty { return String(prompt.prefix(100)) }
         }
         return String(id.prefix(8)) + "..."
     }

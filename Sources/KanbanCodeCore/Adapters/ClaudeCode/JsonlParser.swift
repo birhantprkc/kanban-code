@@ -80,11 +80,10 @@ public enum JsonlParser {
             // Extract first user message (skip metadata injected by Claude Code)
             if type == "user" && !foundFirstUserMessage {
                 if isMetadataMessage(obj) { continue }
+                let text = extractTextContent(from: obj).map { InjectedPromptText.strip(stripMetadataTags($0)) }
+                if let text, text.isEmpty { continue }
                 foundFirstUserMessage = true
-                if let text = extractTextContent(from: obj) {
-                    metadata.firstPrompt = stripMetadataTags(text)
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                }
+                if let text { metadata.firstPrompt = text }
             }
 
             // Stop early — we only need first prompt + enough messages to confirm non-empty

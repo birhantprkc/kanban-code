@@ -74,8 +74,7 @@ public enum CodexSessionParser {
                 metadata.messageCount += 1
                 sawConversationItem = true
                 if role == "user", metadata.firstPrompt == nil {
-                    let text = textParts(from: payload["content"]).joined(separator: "\n")
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    let text = InjectedPromptText.strip(textParts(from: payload["content"]).joined(separator: "\n"))
                     if !text.isEmpty {
                         metadata.firstPrompt = String(text.prefix(500))
                     }

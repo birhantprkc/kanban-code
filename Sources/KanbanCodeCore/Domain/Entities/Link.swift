@@ -339,7 +339,10 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
     /// Best display title from link data alone: name → promptBody → branch → PR title → session ID.
     public var displayTitle: String {
         if let name, !name.isEmpty { return name }
-        if let promptBody, !promptBody.isEmpty { return String(promptBody.prefix(100)) }
+        if let promptBody {
+            let prompt = InjectedPromptText.strip(promptBody)
+            if !prompt.isEmpty { return String(prompt.prefix(100)) }
+        }
         if let branch = worktreeLink?.branch, !branch.isEmpty { return branch }
         if let prTitle = prLink?.title, !prTitle.isEmpty { return prTitle }
         if let sid = sessionLink?.sessionId { return sid }
