@@ -10,6 +10,7 @@
 
 import type { Command } from "commander";
 import { InvalidArgumentError, Option } from "commander";
+import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { kanbanHome } from "./paths.js";
@@ -1033,6 +1034,16 @@ export function terminalSocketUrl(baseUrl: string, token: string, cardId: string
 }
 
 /**
+ * Turns the tty's LF to CRLF output translation (ONLCR) on or off. Node's
+ * raw mode leaves it on, and a full-screen program on the other side moves
+ * down a row with a bare LF that must keep the column: translated, every
+ * such row starts at column 0 and the screen draws shifted.
+ */
+function setOutputNewlineTranslation(on: boolean): void {
+  spawnSync("stty", [on ? "onlcr" : "-onlcr"], { stdio: ["inherit", "ignore", "ignore"] });
+}
+
+/**
  * Bridges this tty to a remote terminal: raw keystrokes out, bytes in,
  * resizes as text frames. Resolves with 0 when the server closes the
  * terminal and 1 when the connection fails.
@@ -1046,7 +1057,10 @@ export function attachTerminal(url: string): Promise<number> {
     const stdin = process.stdin;
     let opened = false;
     const restore = () => {
-      if (stdin.isTTY) stdin.setRawMode(false);
+      if (stdin.isTTY) {
+        stdin.setRawMode(false);
+        setOutputNewlineTranslation(true);
+      }
       stdin.pause();
       process.stdout.off("resize", onResize);
     };
@@ -1057,7 +1071,14 @@ export function attachTerminal(url: string): Promise<number> {
     };
     ws.onopen = () => {
       opened = true;
-      if (stdin.isTTY) stdin.setRawMode(true);
+      // The size in the URL is the one when the terminal started; a resize
+      // since then (the view laying out) would otherwise never reach the
+      // remote pty, and a full-screen program there draws for the wrong size.
+      onResize();
+      if (stdin.isTTY) {
+        stdin.setRawMode(true);
+        setOutputNewlineTranslation(false);
+      }
       stdin.resume();
       stdin.on("data", (chunk: Buffer) => {
         if (ws.readyState === 1) ws.send(chunk);
