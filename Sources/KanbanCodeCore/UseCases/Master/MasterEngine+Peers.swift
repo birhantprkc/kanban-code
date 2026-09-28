@@ -417,9 +417,9 @@ extension MasterEngine {
                 KanbanCodeLog.info("handover", "Transcript \(sessionId.prefix(8)) already here at \(path), kept")
             } else {
                 try Self.writeTranscript(raw, to: path, rewriter: TranscriptPathRewriter(mappings))
+                KanbanCodeLog.info("handover", "Transcript \(sessionId.prefix(8)) copied (\(raw.count) bytes) to \(path)")
             }
             sessionLink = SessionLink(sessionId: sessionId, sessionPath: path)
-            KanbanCodeLog.info("handover", "Transcript \(sessionId.prefix(8)) copied (\(raw.count) bytes) to \(path)")
         }
 
         store.dispatch(.adoptCard(cardId: cardId, sessionLink: sessionLink, worktreeLink: worktreeLink, projectPath: repoRoot))

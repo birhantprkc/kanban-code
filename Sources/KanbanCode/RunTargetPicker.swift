@@ -25,6 +25,7 @@ struct RunTargetPicker: View {
                   systemImage: "info.circle")
                 .font(.app(.caption2))
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(.leading, 20)
         }
     }
