@@ -223,6 +223,7 @@ extension MasterEngine {
                 KanbanCodeLog.warn("handover", "Push of \(branch) failed: \(pushed?.stderr.prefix(300) ?? "no git")")
             }
         }
+        releasedCards[cardId] = store.state.links[cardId]
         store.dispatch(.releaseCardOwnership(cardId: cardId, to: machineId))
         guard store.state.links[cardId]?.ownerMachine == machineId else {
             throw MasterPeerError.failed("card \(cardId) could not be released")
@@ -241,6 +242,7 @@ extension MasterEngine {
         if store.state.links[cardId]?.column == .backlog {
             store.dispatch(.moveCard(cardId: cardId, to: .inProgress))
         }
+        releasedCards[cardId] = store.state.links[cardId]
         store.dispatch(.releaseCardOwnership(cardId: cardId, to: peer.id))
         notifyPeers()
     }
@@ -249,7 +251,9 @@ extension MasterEngine {
 
     /// What a master adopting `cardId` needs from this one.
     public func handoverInfo(cardId: String) async throws -> RemoteHandoverInfo {
-        guard let link = store.state.links[cardId] else { throw MasterPeerError.unknownCard(cardId) }
+        // The card as it was when this master released it: the new owner's
+        // edits may already have landed here.
+        guard let link = releasedCards[cardId] ?? store.state.links[cardId] else { throw MasterPeerError.unknownCard(cardId) }
         let transcript = link.sessionLink?.sessionPath
         let size = transcript.flatMap { (try? FileManager.default.attributesOfItem(atPath: $0))?[.size] as? Int } ?? 0
         let repoRoot = link.projectPath
@@ -269,6 +273,7 @@ extension MasterEngine {
                 patch = Data(text.utf8).base64EncodedString()
             }
         }
+        KanbanCodeLog.info("handover", "Serving card=\(cardId.prefix(12)) transcript=\(transcript ?? "none") (\(size) bytes)")
         let launch = pendingPeerLaunches[cardId]
         var info = RemoteHandoverInfo(
             cardId: cardId,
@@ -292,7 +297,7 @@ extension MasterEngine {
 
     /// A slice of the card's transcript file.
     public func rawTranscript(cardId: String, offset: Int, limit: Int) throws -> RemoteRawTranscript {
-        guard let link = store.state.links[cardId] else { throw MasterPeerError.unknownCard(cardId) }
+        guard let link = releasedCards[cardId] ?? store.state.links[cardId] else { throw MasterPeerError.unknownCard(cardId) }
         guard let path = link.sessionLink?.sessionPath, let handle = FileHandle(forReadingAtPath: path) else {
             return RemoteRawTranscript(data: Data(), offset: offset, size: 0)
         }
@@ -320,6 +325,11 @@ extension MasterEngine {
             }
             let local = store.state.localMachineId
             guard !local.isEmpty else { continue }
+            // A released card stops being served once its new owner took it.
+            for (id, _) in releasedCards where store.state.links[id]?.migrating != true {
+                releasedCards[id] = nil
+                pendingPeerLaunches[id] = nil
+            }
             for link in store.state.links.values where link.ownerMachine == local && link.migrating == true {
                 let id = link.id
                 guard !handoversInFlight.contains(id) else { continue }
@@ -365,6 +375,10 @@ extension MasterEngine {
         var sessionLink: SessionLink?
         if let sessionId = info.sessionId {
             guard assistant == .claude else { throw MasterPeerError.failed("only Claude conversations move between masters") }
+            // An empty transcript would replace the conversation with nothing.
+            guard info.transcriptSize > 0 else {
+                throw MasterPeerError.failed("\(peerName(from)) has no transcript for this card yet")
+            }
             let path = transcriptPath(cwd: cwd, sessionId: sessionId)
             var raw = Data()
             while raw.count < info.transcriptSize {
@@ -475,6 +489,12 @@ extension MasterEngine {
     nonisolated static func checkoutWorktree(repoRoot: String, name: String, branch: String) async throws -> WorktreeLink {
         let path = "\(repoRoot)/.claude/worktrees/\(name)"
         if FileManager.default.fileExists(atPath: path) {
+            // What this worktree held from an earlier stay here is older than
+            // what comes now; it is stashed, not lost.
+            if let dirty = await git(["status", "--porcelain"], in: path), !dirty.stdout.isEmpty {
+                _ = await git(["stash", "push", "--include-untracked", "-m", "kanban handover \(ISO8601DateFormatter().string(from: Date()))"], in: path)
+                KanbanCodeLog.info("handover", "Stashed earlier changes of worktree \(name)")
+            }
             _ = await git(["fetch", "origin", branch], in: path)
             if await git(["merge", "--ff-only", "origin/\(branch)"], in: path)?.succeeded != true {
                 KanbanCodeLog.warn("handover", "Worktree \(name) did not fast-forward to origin/\(branch)")

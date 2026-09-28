@@ -3157,6 +3157,12 @@ public final class BoardStore: @unchecked Sendable {
                 connectedRemoteMachines: connectedMachines
             )
             var mergedLinks = CardReconciler.reconcile(existing: existingLinks, snapshot: snapshot)
+            // A card moving between masters is frozen until the new owner
+            // adopts it: its session and worktree are the releasing master's.
+            let migrating = Dictionary(existingLinks.filter { $0.migrating == true }.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            if !migrating.isEmpty {
+                mergedLinks = mergedLinks.map { migrating[$0.id] ?? $0 }
+            }
             KanbanCodeLog.info("reconcile", "reconciler: \(t3.duration(to: .now)) (\(existingLinks.count) existing → \(mergedLinks.count) merged)")
 
             // Update existing PR statuses from the by-number results. A pull

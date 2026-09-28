@@ -102,6 +102,12 @@ private func sh(_ args: [String], in dir: String) async throws -> String {
     return result.stdout
 }
 
+private struct FixedDiscovery: SessionDiscovery {
+    let sessions: [Session]
+    func discoverSessions() async throws -> [Session] { sessions }
+    func discoverNewOrModified(since: Date) async throws -> [Session] { sessions }
+}
+
 @Suite("Master handover between peers", .serialized)
 @MainActor
 struct MasterHandoverTests {
@@ -193,6 +199,34 @@ struct MasterHandoverTests {
         #expect(mac.store.state.links["card_move"]?.ownerMachine == box.identity.id)
         #expect(mac.store.state.links["card_move"]?.migrating == nil)
         #expect(mac.engine.isForeign("card_move"))
+    }
+
+    @Test("reconcile leaves a card released to this master alone until it is adopted")
+    func migratingIsFrozen() async throws {
+        let dir = (NSTemporaryDirectory() as NSString).appendingPathComponent("frozen-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let coordination = CoordinationStore(basePath: dir)
+        let store = BoardStore(
+            effectHandler: EffectHandler(coordinationStore: coordination, tmuxAdapter: RecordingTmux(),
+                                         queuedPromptJournal: QueuedPromptJournal(basePath: dir)),
+            discovery: FixedDiscovery(sessions: [Session(id: "sid-1", projectPath: "/box/repo", jsonlPath: "/box/stale.jsonl")]),
+            coordinationStore: coordination
+        )
+        store.dispatch(.localMachineLoaded(MachineIdentity(id: "machine_box", name: "box")))
+        var link = Link(id: "card_x", name: "Moving", projectPath: "/mac/repo", column: .waiting,
+                        sessionLink: SessionLink(sessionId: "sid-1", sessionPath: "/mac/live.jsonl"))
+        link.ownerMachine = "machine_mac"
+        link.ownerRev = SyncStamp(counter: 5, machine: "machine_mac")
+        store.dispatch(.peerLinksMerged(peer: "machine_mac", links: [link]))
+        var release = link
+        release.ownerMachine = "machine_box"
+        release.migrating = true
+        release.ownerRev = SyncStamp(counter: 6, machine: "machine_mac")
+        store.dispatch(.peerLinksMerged(peer: "machine_mac", links: [release]))
+        #expect(store.state.links["card_x"]?.migrating == true)
+        await store.reconcile()
+        #expect(store.state.links["card_x"]?.sessionLink?.sessionPath == "/mac/live.jsonl")
+        #expect(store.state.links["card_x"]?.ownerRev == SyncStamp(counter: 6, machine: "machine_mac"))
     }
 
     @Test("a prompt on a card another master owns goes to that master")
