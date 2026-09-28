@@ -113,7 +113,7 @@ struct BoardScreen: View {
                             ForEach(collapsed ? Array(section.cards.prefix(Self.columnPreviewCount)) : section.cards) { entry in
                                 NavigationLink(value: entry.card.id) {
                                     CardRow(card: entry.card, showsColumn: section.id == Self.liveSectionID,
-                                            machine: fleet.isMulti ? entry.machineName : nil,
+                                            machine: fleet.showsMachines ? entry.machineName : nil,
                                             machineOffline: !entry.master.isOnline)
                                 }
                                 .accessibilityIdentifier("card-\(entry.card.id)")
@@ -262,7 +262,7 @@ struct BoardScreen: View {
                 return false
             }
             guard !query.isEmpty else { return true }
-            return [card.title, card.projectName, card.branch, fleet.isMulti ? entry.machineName : nil]
+            return [card.title, card.projectName, card.branch, fleet.showsMachines ? entry.machineName : nil]
                 .compactMap { $0?.lowercased() }
                 .contains { $0.contains(query) }
                 || card.prs.contains { "#\($0.number)".contains(query) }

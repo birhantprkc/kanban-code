@@ -72,6 +72,12 @@ final class FleetModel {
 
     var isMulti: Bool { masters.count > 1 }
 
+    /// Cards name their machine when more than one machine runs them: several
+    /// masters paired, or one master listing cards synced from its peers.
+    var showsMachines: Bool {
+        isMulti || Set(masters.flatMap { $0.board?.cards.compactMap(\.machineId) ?? [] }).count > 1
+    }
+
     /// Primary first, then the order they were paired in.
     var orderedMasters: [BoardModel] {
         guard let primary else { return masters }

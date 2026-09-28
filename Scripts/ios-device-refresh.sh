@@ -37,7 +37,7 @@ import json, sys
 for d in json.load(open(sys.argv[1]))["result"]["devices"]:
     c, h = d.get("connectionProperties", {}), d.get("hardwareProperties", {})
     if h.get("platform") == "iOS" and c.get("pairingState") == "paired" and (
-        c.get("tunnelState") == "connected" or c.get("transportType") == "localNetwork"):
+        c.get("tunnelState") == "connected" or c.get("transportType") in ("localNetwork", "wired")):
         print(h["udid"])
 EOF
 )

@@ -9,7 +9,7 @@ struct FleetCardScreen: View {
 
     var body: some View {
         if let entry = fleet.entry(cardId: cardId) {
-            CardScreen(cardId: cardId, board: entry.master, machineName: fleet.isMulti ? entry.machineName : nil,
+            CardScreen(cardId: cardId, board: entry.master, machineName: fleet.showsMachines ? entry.machineName : nil,
                        fallback: entry.card)
                 .id(entry.master.server.id)
         } else {
