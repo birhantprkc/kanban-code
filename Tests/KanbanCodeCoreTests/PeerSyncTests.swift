@@ -281,7 +281,7 @@ struct LinkSyncMergeTests {
 
         let dead = LinkSync.merge(local: live, incoming: newerDeath, from: "B", localMachine: "M", now: now)
         #expect(dead?.isTombstone == true)
-        #expect(dead?.name == nil)
+        #expect(dead?.name == "live")
         #expect(dead?.rev == stamp(6, "B"))
         #expect(LinkSync.merge(local: live, incoming: olderDeath, from: "B", localMachine: "M", now: now)?.isTombstone == false)
 
@@ -767,5 +767,150 @@ struct PeerSyncLoopTests {
         #expect(!String(decoding: peers!.body, as: UTF8.self).contains("secret"))
 
         #expect(await RemoteLinksRoutes.handle(method: "GET", rest: ["board"], query: [:], server: server) == nil)
+    }
+}
+
+// MARK: - Per-field last writer wins
+
+/// A shared-field edit stamped the way the reducer stamps it.
+private func edit(_ base: Link, at s: SyncStamp, _ change: (inout Link) -> Void) -> Link {
+    var link = base
+    change(&link)
+    var revs = LinkSync.explicitFieldRevs(of: base) ?? [:]
+    for name in LinkSync.changedSharedFields(base, link) { revs[name] = s }
+    revs["deletedAt"] = s
+    link.fieldRevs = revs
+    link.rev = s
+    return link
+}
+
+@Suite("Peer sync: per-field last writer wins")
+struct LinkSyncPerFieldTests {
+    @Test("edits of different fields on two masters both survive")
+    func differentFieldsBothSurvive() {
+        let base = card(name: "base", owner: "A", rev: stamp(1, "A"))
+        let rename = edit(base, at: stamp(2, "A")) { $0.name = "renamed on A" }
+        let move = edit(base, at: stamp(2, "B")) { $0.column = .done; $0.manualOverrides.column = true }
+        for (first, second) in [(rename, move), (move, rename)] {
+            let merged = applyAll([(first, "A"), (second, "B")], to: base, machine: "M")
+            #expect(merged?.name == "renamed on A")
+            #expect(merged?.column == .done)
+            #expect(merged?.manualOverrides.column == true)
+            #expect(merged?.rev == stamp(2, "B"))
+            #expect(merged?.fieldRevs?["name"] == stamp(2, "A"))
+            #expect(merged?.fieldRevs?["column"] == stamp(2, "B"))
+        }
+    }
+
+    @Test("the same field edited on two masters: the newer stamp wins")
+    func sameFieldNewerWins() {
+        let base = card(name: "base", owner: "A", rev: stamp(1, "A"))
+        let onA = edit(base, at: stamp(3, "A")) { $0.name = "A" }
+        let onB = edit(base, at: stamp(3, "B")) { $0.name = "B" }
+        #expect(applyAll([(onA, "A"), (onB, "B")], to: base, machine: "M")?.name == "B")
+        #expect(applyAll([(onB, "B"), (onA, "A")], to: base, machine: "M")?.name == "B")
+    }
+
+    @Test("a deletion loses to a newer edit of any field, and keeps the fields it did not see")
+    func deletionAndResurrection() {
+        let base = card(name: "base", owner: "A", rev: stamp(1, "A"))
+        let pinned = edit(base, at: stamp(2, "B")) { $0.pinnedAt = now }
+        let delete = LinkSync.tombstone(of: base, deletedAt: now, rev: stamp(3, "A"))
+        let rename = edit(base, at: stamp(4, "C")) { $0.name = "back" }
+        let result = applyAll([(pinned, "B"), (delete, "A"), (rename, "C")], to: base, machine: "M")
+        #expect(result?.isTombstone == false)
+        #expect(result?.name == "back")
+        #expect(result?.pinnedAt == now)
+
+        let lateDelete = LinkSync.tombstone(of: base, deletedAt: now, rev: stamp(5, "A"))
+        #expect(applyAll([(rename, "C"), (lateDelete, "A")], to: base, machine: "M")?.isTombstone == true)
+    }
+
+    @Test("per-field versions, an old peer's whole-group version and owner updates converge in every order")
+    func convergesInEveryOrder() {
+        var base = card(name: "base", column: .inProgress, owner: "A", rev: stamp(1, "A"), ownerRev: stamp(1, "A"), tmux: "t0")
+        base.fieldRevs = LinkSync.explicitFieldRevs(of: base)
+        let rename = edit(base, at: stamp(4, "B")) { $0.name = "renamed on B" }
+        let move = edit(base, at: stamp(4, "C")) { $0.column = .done; $0.manualOverrides.column = true }
+        let pin = edit(base, at: stamp(2, "B")) { $0.pinnedAt = now; $0.pinnedSortOrder = 1 }
+        let prompt = edit(base, at: stamp(5, "A")) { $0.promptBody = "new prompt" }
+        let delete = LinkSync.tombstone(of: base, deletedAt: now, rev: stamp(3, "C"))
+        var legacy = base
+        legacy.fieldRevs = nil
+        legacy.name = "old peer"
+        legacy.sortOrder = 9
+        legacy.rev = stamp(1, "D")
+        var ownerUpdate = base
+        ownerUpdate.tmuxLink = TmuxLink(sessionName: "t1")
+        ownerUpdate.ownerRev = stamp(3, "A")
+
+        let versions: [(Link, String)] = [
+            (rename, "B"), (move, "C"), (pin, "B"), (prompt, "A"), (delete, "C"), (legacy, "D"), (ownerUpdate, "A"),
+        ]
+        let orders = permutations(versions)
+        #expect(orders.count == 5040)
+        for machine in ["M", "B"] {
+            let first = applyAll(orders[0], to: base, machine: machine)
+            for order in orders {
+                let once = applyAll(order, to: base, machine: machine)
+                #expect(once == first, "order changed the result on \(machine)")
+                #expect(applyAll(order, to: once, machine: machine) == once, "not idempotent on \(machine)")
+            }
+            #expect(first?.isTombstone == false)
+            #expect(first?.name == "renamed on B")
+            #expect(first?.column == .done)
+            #expect(first?.pinnedAt == now)
+            #expect(first?.pinnedSortOrder == 1)
+            #expect(first?.promptBody == "new prompt")
+            #expect(first?.sortOrder == 9)
+            #expect(first?.tmuxLink?.sessionName == "t1")
+            #expect(first?.rev == stamp(5, "A"))
+        }
+    }
+
+    @Test("merge is commutative for every pair of versions")
+    func pairwiseCommutative() {
+        let base = card(name: "base", owner: "A", rev: stamp(1, "A"))
+        let versions = [
+            edit(base, at: stamp(2, "A")) { $0.name = "x" },
+            edit(base, at: stamp(2, "B")) { $0.column = .done },
+            edit(base, at: stamp(3, "B")) { $0.name = "y"; $0.sortOrder = 4 },
+            LinkSync.tombstone(of: base, deletedAt: now, rev: stamp(3, "A")),
+            card(name: "legacy", owner: "A", rev: stamp(2, "C")),
+        ]
+        for a in versions {
+            for b in versions {
+                let ab = applyAll([(a, "P"), (b, "Q")], to: base, machine: "M")
+                let ba = applyAll([(b, "Q"), (a, "P")], to: base, machine: "M")
+                #expect(ab == ba)
+            }
+        }
+    }
+
+    @Test("two machines edit different fields of the same card and end equal")
+    func twoMachinesDifferentFields() {
+        let aCards = state(machine: "A", [
+            card("card_1", name: "one", owner: nil, rev: stamp(1, "A"), ownerRev: stamp(1, "A"), tmux: "a1"),
+        ])
+        let bCards = state(machine: "B", [])
+        let idA = MachineIdentity(id: "A", name: "a")
+        let idB = MachineIdentity(id: "B", name: "b")
+        func exchange() {
+            _ = Reducer.reduce(state: bCards, action: .peerLinksMerged(peer: "A", links: aCards.linksPage(machine: idA, since: nil, epoch: nil).links))
+            _ = Reducer.reduce(state: aCards, action: .peerLinksMerged(peer: "B", links: bCards.linksPage(machine: idB, since: nil, epoch: nil).links))
+        }
+        exchange()
+        // B's clock runs ahead, so its edit carries the newer stamp overall.
+        bCards.syncClock = 20
+        _ = Reducer.reduce(state: aCards, action: .renameCard(cardId: "card_1", name: "renamed on A"))
+        _ = Reducer.reduce(state: bCards, action: .moveCard(cardId: "card_1", to: .done))
+        exchange()
+        exchange()
+        let a = aCards.links["card_1"]!
+        let b = bCards.links["card_1"]!
+        #expect(a.name == "renamed on A" && b.name == "renamed on A")
+        #expect(a.column == .done && b.column == .done)
+        #expect(a.fieldRevs == b.fieldRevs)
+        #expect(a.rev == b.rev)
     }
 }

@@ -293,6 +293,13 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
     /// launch state, queued prompts, machine). Only the owner stamps it.
     public var ownerRev: SyncStamp?
 
+    /// Version of each shared field, keyed by property name. A merge takes
+    /// every shared field from the version with the newer stamp for that
+    /// field, so edits of different fields on two masters both survive.
+    /// Missing (cards written before per-field stamps) means every shared
+    /// field is at `rev`.
+    public var fieldRevs: [String: SyncStamp]?
+
     /// Set while the owner hands the card to `ownerMachine`: the release is
     /// written, the adopting machine has not taken it yet.
     public var migrating: Bool?
@@ -445,6 +452,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         ownerMachine: String? = nil,
         rev: SyncStamp? = nil,
         ownerRev: SyncStamp? = nil,
+        fieldRevs: [String: SyncStamp]? = nil,
         migrating: Bool? = nil,
         deletedAt: Date? = nil
     ) {
@@ -485,6 +493,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         self.ownerMachine = ownerMachine
         self.rev = rev
         self.ownerRev = ownerRev
+        self.fieldRevs = fieldRevs
         self.migrating = migrating
         self.deletedAt = deletedAt
     }
@@ -498,7 +507,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         case selfCompactContextThresholdTokens
         case isRemote, remote, isLaunching, launchedAt, sortOrder, pinnedAt, pinnedSortOrder
         case discoveredBranches, discoveredRepos, assistant, apiServiceId, headless
-        case ownerMachine, rev, ownerRev, migrating, deletedAt
+        case ownerMachine, rev, ownerRev, fieldRevs, migrating, deletedAt
         // Typed links (new nested format)
         case sessionLink, tmuxLink, worktreeLink, prLinks, issueLink, queuedPrompts, browserTabs
         // Old format keys (for reading legacy format)
@@ -541,6 +550,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         ownerMachine = try? c.decodeIfPresent(String.self, forKey: .ownerMachine)
         rev = try? c.decodeIfPresent(SyncStamp.self, forKey: .rev)
         ownerRev = try? c.decodeIfPresent(SyncStamp.self, forKey: .ownerRev)
+        fieldRevs = try? c.decodeIfPresent([String: SyncStamp].self, forKey: .fieldRevs)
         migrating = try? c.decodeIfPresent(Bool.self, forKey: .migrating)
         deletedAt = try? c.decodeIfPresent(Date.self, forKey: .deletedAt)
 
@@ -641,6 +651,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         try c.encodeIfPresent(ownerMachine, forKey: .ownerMachine)
         try c.encodeIfPresent(rev, forKey: .rev)
         try c.encodeIfPresent(ownerRev, forKey: .ownerRev)
+        try c.encodeIfPresent(fieldRevs, forKey: .fieldRevs)
         try c.encodeIfPresent(migrating, forKey: .migrating)
         try c.encodeIfPresent(deletedAt, forKey: .deletedAt)
 

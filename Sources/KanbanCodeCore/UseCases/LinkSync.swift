@@ -9,37 +9,77 @@ import Foundation
 ///   prompts, machine): only the owner writes them, versioned by `ownerRev`,
 ///   and a merge takes them only from a version the owner stamped;
 /// - shared fields (name, column, order, pin, archive, prompt, parent...):
-///   any master edits them, versioned by `rev`, last writer wins.
-/// A deletion is a shared edit: the tombstone carries a `rev` and wins over
-/// older edits, loses to newer ones.
+///   any master edits them, each field versioned on its own in `fieldRevs`,
+///   last writer wins per field. `rev` is the newest of those stamps.
+/// A deletion is a shared edit of `deletedAt`: it wins over older edits and
+/// loses to newer ones, since every edit of a live card also stamps
+/// `deletedAt` (as "still alive").
 ///
-/// The merge picks each group from the version with the higher stamp, so
-/// applying the same versions in any order, any number of times, lands on
-/// the same card.
+/// The merge picks each shared field, and the owner group, from the version
+/// with the higher stamp, so applying the same versions in any order, any
+/// number of times, lands on the same card.
 public enum LinkSync {
     /// Tombstones older than this are dropped, and ignored when a peer sends one.
     public static let tombstoneLifetime: TimeInterval = 30 * 24 * 3600
 
     // MARK: - Field groups
 
+    /// One shared field: its property name, and how to compare and copy it.
+    struct SharedField: Sendable {
+        let name: String
+        let same: @Sendable (Link, Link) -> Bool
+        let copy: @Sendable (Link, inout Link) -> Void
+
+        init<T: Equatable & Sendable>(_ name: String, _ key: WritableKeyPath<Link, T> & Sendable) {
+            self.name = name
+            self.same = { $0[keyPath: key] == $1[keyPath: key] }
+            self.copy = { src, dst in dst[keyPath: key] = src[keyPath: key] }
+        }
+    }
+
+    static let sharedFields: [SharedField] = [
+        SharedField("name", \.name),
+        SharedField("column", \.column),
+        SharedField("manualOverrides", \.manualOverrides),
+        SharedField("manuallyArchived", \.manuallyArchived),
+        SharedField("promptBody", \.promptBody),
+        SharedField("promptImagePaths", \.promptImagePaths),
+        SharedField("parentCardId", \.parentCardId),
+        SharedField("modelOverride", \.modelOverride),
+        SharedField("selfCompactContextThresholdTokens", \.selfCompactContextThresholdTokens),
+        SharedField("prLinks", \.prLinks),
+        SharedField("issueLink", \.issueLink),
+        SharedField("sortOrder", \.sortOrder),
+        SharedField("pinnedAt", \.pinnedAt),
+        SharedField("pinnedSortOrder", \.pinnedSortOrder),
+        SharedField("assistant", \.assistant),
+        SharedField("deletedAt", \.deletedAt),
+    ]
+
+    /// The stamp of shared field `name` in `link`: its own stamp, or `rev`
+    /// for a card written before per-field stamps.
+    public static func fieldStamp(_ name: String, of link: Link) -> SyncStamp? {
+        link.fieldRevs?[name] ?? (link.fieldRevs == nil ? link.rev : nil)
+    }
+
+    /// Every shared field's stamp, spelled out (cards written before
+    /// per-field stamps get `rev` for each field). nil when nothing is stamped.
+    static func explicitFieldRevs(of link: Link) -> [String: SyncStamp]? {
+        var out: [String: SyncStamp] = [:]
+        for f in sharedFields {
+            if let s = fieldStamp(f.name, of: link) { out[f.name] = s }
+        }
+        return out.isEmpty ? nil : out
+    }
+
+    /// Names of the shared fields that differ between `a` and `b`.
+    public static func changedSharedFields(_ a: Link, _ b: Link) -> [String] {
+        sharedFields.filter { !$0.same(a, b) }.map(\.name)
+    }
+
     /// Copies the shared fields (and the deletion mark) of `src` into `dst`.
     public static func copyShared(from src: Link, to dst: inout Link) {
-        dst.name = src.name
-        dst.column = src.column
-        dst.manualOverrides = src.manualOverrides
-        dst.manuallyArchived = src.manuallyArchived
-        dst.promptBody = src.promptBody
-        dst.promptImagePaths = src.promptImagePaths
-        dst.parentCardId = src.parentCardId
-        dst.modelOverride = src.modelOverride
-        dst.selfCompactContextThresholdTokens = src.selfCompactContextThresholdTokens
-        dst.prLinks = src.prLinks
-        dst.issueLink = src.issueLink
-        dst.sortOrder = src.sortOrder
-        dst.pinnedAt = src.pinnedAt
-        dst.pinnedSortOrder = src.pinnedSortOrder
-        dst.assistant = src.assistant
-        dst.deletedAt = src.deletedAt
+        for f in sharedFields { f.copy(src, &dst) }
     }
 
     /// Copies the owner fields of `src` into `dst`.
@@ -65,22 +105,7 @@ public enum LinkSync {
     }
 
     public static func sharedEqual(_ a: Link, _ b: Link) -> Bool {
-        a.name == b.name
-            && a.column == b.column
-            && a.manualOverrides == b.manualOverrides
-            && a.manuallyArchived == b.manuallyArchived
-            && a.promptBody == b.promptBody
-            && a.promptImagePaths == b.promptImagePaths
-            && a.parentCardId == b.parentCardId
-            && a.modelOverride == b.modelOverride
-            && a.selfCompactContextThresholdTokens == b.selfCompactContextThresholdTokens
-            && a.prLinks == b.prLinks
-            && a.issueLink == b.issueLink
-            && a.sortOrder == b.sortOrder
-            && a.pinnedAt == b.pinnedAt
-            && a.pinnedSortOrder == b.pinnedSortOrder
-            && a.assistant == b.assistant
-            && a.deletedAt == b.deletedAt
+        sharedFields.allSatisfy { $0.same(a, b) }
     }
 
     public static func ownedEqual(_ a: Link, _ b: Link) -> Bool {
@@ -106,11 +131,7 @@ public enum LinkSync {
 
     /// Property names per group; a test checks every `Link` property sits in
     /// exactly one of them, so a new field cannot silently skip sync.
-    static let sharedFieldNames: Set<String> = [
-        "name", "column", "manualOverrides", "manuallyArchived", "promptBody", "promptImagePaths",
-        "parentCardId", "modelOverride", "selfCompactContextThresholdTokens", "prLinks", "issueLink",
-        "sortOrder", "pinnedAt", "pinnedSortOrder", "assistant", "deletedAt",
-    ]
+    static var sharedFieldNames: Set<String> { Set(sharedFields.map(\.name)) }
     static let ownedFieldNames: Set<String> = [
         "projectPath", "source", "createdAt", "lastActivity", "sessionLink", "tmuxLink", "worktreeLink",
         "queuedPrompts", "discoveredBranches", "discoveredRepos", "isRemote", "remote", "apiServiceId",
@@ -118,7 +139,7 @@ public enum LinkSync {
     ]
     /// Per-machine fields that never travel, plus the sync metadata.
     static let localFieldNames: Set<String> = [
-        "id", "updatedAt", "lastOpenedAt", "browserTabs", "rev", "ownerRev",
+        "id", "updatedAt", "lastOpenedAt", "browserTabs", "rev", "ownerRev", "fieldRevs",
     ]
 
     // MARK: - Ownership
@@ -135,15 +156,16 @@ public enum LinkSync {
 
     // MARK: - Tombstones
 
-    /// The tombstone a deletion leaves: the owner fields stay (a resurrecting
-    /// edit may be older on that group), the shared fields are dropped (a
-    /// resurrecting edit always brings its own).
+    /// The tombstone a deletion stamped `rev` leaves: every field stays
+    /// (an edit that brings the card back only brings the fields it wrote),
+    /// `deletedAt` is set and stamped.
     public static func tombstone(of link: Link, deletedAt: Date, rev: SyncStamp?) -> Link {
         var t = link
-        var blank = Link(id: link.id)
-        blank.deletedAt = deletedAt
-        copyShared(from: blank, to: &t)
-        t.rev = rev
+        var revs = explicitFieldRevs(of: link) ?? [:]
+        if let rev { revs["deletedAt"] = rev }
+        t.fieldRevs = revs.isEmpty ? nil : revs
+        t.deletedAt = deletedAt
+        t.rev = [link.rev, rev].compactMap { $0 }.max()
         t.browserTabs = nil
         t.lastOpenedAt = nil
         return t
@@ -161,7 +183,8 @@ public enum LinkSync {
     /// Returns the new local record.
     ///
     /// - A card this machine owns and is launching is left alone.
-    /// - Shared fields come from the version with the higher `rev`.
+    /// - Each shared field comes from the version with the higher stamp for
+    ///   that field.
     /// - Owner fields come from the incoming version only when its `ownerRev`
     ///   is newer and was stamped by the card's current owner as this
     ///   machine knows it. An ownership release is written by the old owner,
@@ -190,9 +213,22 @@ public enum LinkSync {
         }
 
         var result = local
-        if Optional.isNewer(incoming.rev, than: local.rev) {
-            copyShared(from: incoming, to: &result)
-            result.rev = incoming.rev
+        // Stamps are only spelled out once a field actually moves, so a
+        // version with nothing newer leaves the local record as it was.
+        if sharedFields.contains(where: { Optional.isNewer(fieldStamp($0.name, of: incoming), than: fieldStamp($0.name, of: local)) }) {
+            var revs: [String: SyncStamp] = [:]
+            for f in sharedFields {
+                let mine = fieldStamp(f.name, of: local)
+                let theirs = fieldStamp(f.name, of: incoming)
+                if Optional.isNewer(theirs, than: mine) {
+                    f.copy(incoming, &result)
+                    revs[f.name] = theirs
+                } else if let mine {
+                    revs[f.name] = mine
+                }
+            }
+            result.fieldRevs = revs
+            result.rev = revs.values.max()
         }
         let currentOwner = owner(of: local, localMachine: localMachine)
         if Optional.isNewer(incoming.ownerRev, than: local.ownerRev),
@@ -200,8 +236,9 @@ public enum LinkSync {
             copyOwned(from: incoming, to: &result)
             result.ownerRev = incoming.ownerRev
         }
-        if result.isTombstone, !local.isTombstone || result.rev != local.rev {
-            result = tombstone(of: result, deletedAt: result.deletedAt!, rev: result.rev)
+        if result.isTombstone {
+            result.browserTabs = nil
+            result.lastOpenedAt = nil
         }
         if result != local { result.updatedAt = max(now, local.updatedAt) }
         return result
@@ -384,9 +421,20 @@ extension Reducer {
             if old == nil, state.tombstones.removeValue(forKey: id) != nil {
                 tombstonesChanged = true
             }
-            let sharedChanged = old.map { !LinkSync.sharedEqual($0, link) } ?? true
+            let changedFields = old.map { LinkSync.changedSharedFields($0, link) }
+                ?? LinkSync.sharedFields.map(\.name)
+            let sharedChanged = !changedFields.isEmpty
             let ownedChanged = owned && (old.map { !LinkSync.ownedEqual($0, link) } ?? true)
-            if sharedChanged { link.rev = state.nextSyncStamp() }
+            if sharedChanged {
+                let s = state.nextSyncStamp()
+                var revs = old.flatMap { LinkSync.explicitFieldRevs(of: $0) } ?? [:]
+                for name in changedFields { revs[name] = s }
+                // Any edit of a live card says it is alive: it wins over an
+                // older deletion made on another master.
+                revs["deletedAt"] = s
+                link.fieldRevs = revs
+                link.rev = s
+            }
             if ownedChanged { link.ownerRev = state.nextSyncStamp() }
             if sharedChanged || ownedChanged { state.markSyncChanged(id) }
             if link != after {
