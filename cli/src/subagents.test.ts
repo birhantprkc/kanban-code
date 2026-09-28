@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  defaultNotify,
   appliesModelSwitchDirectly,
   assertOwnedSubagent,
   buildSubagentPrompt,
@@ -311,4 +312,18 @@ describe("subagent list presentation", () => {
     assert.match(rendered, /430k tok \$1\.25/);
     assert.match(rendered, /430k\/1\.0M ctx \(43%\)/);
   });
+});
+
+test("off macOS the CLI leaves the inbox to kanban-code-server and wakes no app", () => {
+  const original = Object.getOwnPropertyDescriptor(process, "platform")!;
+  const path = process.env.PATH;
+  Object.defineProperty(process, "platform", { value: "linux" });
+  // With no PATH, running `pgrep` or `open` would throw.
+  process.env.PATH = "";
+  try {
+    assert.doesNotThrow(() => defaultNotify("req_linux"));
+  } finally {
+    Object.defineProperty(process, "platform", original);
+    process.env.PATH = path;
+  }
 });

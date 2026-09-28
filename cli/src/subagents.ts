@@ -240,7 +240,10 @@ export function kanbanCodeIsRunning(): boolean {
  * terminal pane this command was typed into. So only use the deep link to wake
  * the app when it is not running at all.
  */
-function defaultNotify(requestId: string): void {
+export function defaultNotify(requestId: string): void {
+  // Elsewhere the master is kanban-code-server, which polls the inbox and
+  // has no app to wake.
+  if (process.platform !== "darwin") return;
   if (kanbanCodeIsRunning()) return;
   execFileSync("open", ["-g", `kanbancode://command/${requestId}`], { stdio: "ignore" });
 }
