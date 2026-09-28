@@ -26,7 +26,8 @@ enum RemoteOpenAPI {
     },
     "/v1/cards/{id}": {
       "parameters": [{"$ref": "#/components/parameters/CardId"}],
-      "get": {"summary": "One card", "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Card"}}}}, "404": {"$ref": "#/components/responses/Error"}}}
+      "get": {"summary": "One card", "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Card"}}}}, "404": {"$ref": "#/components/responses/Error"}}},
+      "patch": {"summary": "Rename, move or archive the card: {\"name\", \"column\", \"archived\"}, each optional; syncs to the other masters", "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Card"}}}}, "404": {"$ref": "#/components/responses/Error"}}}
     },
     "/v1/cards/{id}/transcript": {
       "parameters": [
