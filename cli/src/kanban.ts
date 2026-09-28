@@ -170,10 +170,23 @@ function output(data: unknown, opts: { json?: boolean }) {
 
 program
   .command("open")
-  .description("Open a project in Kanban Code app")
-  .argument("[path]", "Project path (defaults to current directory)", ".")
+  .description("Open a project folder, or a card by its id, in the Kanban Code app")
+  .argument("[path]", "Project folder or card id (defaults to current directory)", ".")
   .action((path: string) => {
+    if (/^card_[A-Za-z0-9]+$/.test(path)) {
+      try {
+        execSync(`open "kanbancode://card/${path}"`, { stdio: "ignore" });
+      } catch {
+        console.error("Failed to open KanbanCode app");
+        process.exit(1);
+      }
+      return;
+    }
     const resolved = resolve(path);
+    if (!existsSync(resolved)) {
+      console.error(`'${path}' is not a folder: kanban open takes a project folder or a card id`);
+      process.exit(1);
+    }
     const kanbanDir = join(homedir(), ".kanban-code");
     mkdirSync(kanbanDir, { recursive: true });
     writeFileSync(join(kanbanDir, "open-project"), resolved);
