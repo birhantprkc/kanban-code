@@ -28,7 +28,7 @@ install -m 0644 Scripts/kanban-code-server/kanban-code-server.service /etc/syste
 systemctl daemon-reload
 systemctl enable kanban-code-server >/dev/null
 systemctl restart kanban-code-server
-sleep 2
+for i in \$(seq 1 30); do curl -fsS -o /dev/null http://127.0.0.1:7780/v1/health && break; sleep 1; done
 systemctl --no-pager --lines=5 status kanban-code-server
 curl -fsS http://127.0.0.1:7780/v1/health
 echo
