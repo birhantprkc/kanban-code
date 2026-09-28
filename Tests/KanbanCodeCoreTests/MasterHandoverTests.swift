@@ -406,6 +406,26 @@ struct MasterRolesTests {
         #expect(mac.isPRPollingLeader == false)
     }
 
+    @Test("a card another master runs shows under the project here with the same repository")
+    func projectMapping() {
+        let state = AppState()
+        _ = Reducer.reduce(state: state, action: .localMachineLoaded(MachineIdentity(id: "machine_m", name: "mac")))
+        var foreign = Link(id: "card_b", name: "Box card", projectPath: "/root/Projects/widgets", column: .inProgress)
+        foreign.ownerMachine = "machine_z"
+        state.links[foreign.id] = foreign
+        var other = Link(id: "card_o", name: "Unknown repo", projectPath: "/root/Projects/other", column: .inProgress)
+        other.ownerMachine = "machine_z"
+        state.links[other.id] = other
+        _ = Reducer.reduce(state: state, action: .peerRepoSlugsLoaded(peer: "machine_z", slugs: [
+            "/root/Projects/widgets": "github.com/acme/widgets", "/root/Projects/other": "github.com/acme/other",
+        ]))
+        _ = Reducer.reduce(state: state, action: .localProjectSlugsResolved(["/Users/acme/Projects/widgets": "github.com/ACME/widgets"]))
+        #expect(state.cards.first { $0.id == "card_b" }?.link.projectPath == "/Users/acme/Projects/widgets")
+        #expect(state.cards.first { $0.id == "card_o" }?.link.projectPath == "/root/Projects/other")
+        // The stored card keeps its owner's path, for the owner and handovers.
+        #expect(state.links["card_b"]?.projectPath == "/root/Projects/widgets")
+    }
+
     @Test("a Mac mirrors the channels of an always-on master, after copying its own there once")
     func channelsMirror() async throws {
         let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("channels-\(UUID().uuidString)")

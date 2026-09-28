@@ -187,6 +187,10 @@ public final class AppState: @unchecked Sendable {
     /// GitHub repository ("host/owner/name") of the project paths peers'
     /// cards use, for pull request lookups of paths with no checkout here.
     public var peerRepoSlugs: [String: String] = [:]
+    /// Repository ("host/owner/name") of each configured project here, so
+    /// a card another master runs shows under the project here that checks
+    /// out the same repository.
+    public var localProjectSlugs: [String: String] = [:]
     /// Live state of every configured peer, by `PeerConfig.id`.
     public var peerStatuses: [String: PeerStatus] = [:]
     /// Local copies of the transcripts of cards other masters own, by
@@ -330,6 +334,14 @@ public final class AppState: @unchecked Sendable {
 
     /// Rebuild all cached card arrays from current state.
     /// Only assigns when the result differs — prevents unnecessary SwiftUI re-renders.
+    /// The configured project here that checks out the repository a peer's
+    /// project path does.
+    func localProjectPath(forPeerPath path: String) -> String? {
+        if localProjectSlugs[path] != nil { return nil }
+        guard let slug = peerRepoSlugs[path]?.lowercased() else { return nil }
+        return localProjectSlugs.first { $0.value.lowercased() == slug }?.key
+    }
+
     func rebuildCards() {
         var machines: [String: (name: String, online: Bool)] = [:]
         for status in peerStatuses.values {
@@ -339,6 +351,11 @@ public final class AppState: @unchecked Sendable {
             var link = original
             var owner: CardOwner?
             if let ownerId = link.ownerMachine, !localMachineId.isEmpty, ownerId != localMachineId {
+                // Its owner's path means nothing here: show it under the
+                // project here with the same repository.
+                if let path = link.projectPath, let local = localProjectPath(forPeerPath: path) {
+                    link.projectPath = local
+                }
                 let known = machines[ownerId]
                 owner = CardOwner(id: ownerId, name: known?.name ?? ownerId, online: known?.online ?? false)
                 // The chat of a card another master runs reads its local copy.
@@ -601,6 +618,8 @@ public enum Action: Sendable {
     case peerStatusChanged(PeerStatus)
     /// The GitHub repository of each project path a peer's cards use.
     case peerRepoSlugsLoaded(peer: String, slugs: [String: String])
+    /// The repository of each configured project here.
+    case localProjectSlugsResolved([String: String])
     /// Hands a card this machine owns to `machine`: the card keeps its
     /// state and is marked migrating until that machine adopts it.
     case releaseCardOwnership(cardId: String, to: String)
@@ -2581,6 +2600,13 @@ public enum Reducer {
 
         case .peerRepoSlugsLoaded(_, let slugs):
             for (path, slug) in slugs { state.peerRepoSlugs[path] = slug }
+            state.rebuildCards()
+            return []
+
+        case .localProjectSlugsResolved(let slugs):
+            guard state.localProjectSlugs != slugs else { return [] }
+            state.localProjectSlugs = slugs
+            state.rebuildCards()
             return []
 
         case .peerStatusChanged(let status):
@@ -2816,7 +2842,7 @@ public final class BoardStore: @unchecked Sendable {
             return false
         case .setPaletteOpen, .setDetailExpanded, .setPromptEditorFocused,
              .showDialog, .dismissDialog, .setError, .setNotice, .setLoading, .setIsRefreshingBacklog,
-             .launchProgress, .localMachineLoaded, .peerRepoSlugsLoaded:
+             .launchProgress, .localMachineLoaded, .peerRepoSlugsLoaded, .localProjectSlugsResolved:
             return false
         case .refreshChannels, .refreshChannelMessages, .channelsLoaded,
              .channelMessagesLoaded, .createChannel, .sendChannelMessage,
@@ -3319,6 +3345,14 @@ public final class BoardStore: @unchecked Sendable {
                 localRepoSlugs[root] = "\(slug.host)/\(slug.owner)/\(slug.name)"
             }
         }
+        var projectSlugs: [String: String] = [:]
+        for project in state.configuredProjects where FileManager.default.fileExists(atPath: project.path) {
+            if let slug = await ghAdapter.resolveRepoSlug(repoRoot: project.path) {
+                projectSlugs[project.path] = "\(slug.host)/\(slug.owner)/\(slug.name)"
+            }
+        }
+        for (path, slug) in projectSlugs { localRepoSlugs[path] = slug }
+        if projectSlugs != state.localProjectSlugs { dispatch(.localProjectSlugsResolved(projectSlugs)) }
         guard leader else { return }
         for (root, slug) in state.peerRepoSlugs where !FileManager.default.fileExists(atPath: root) {
             ghAdapter.rememberSlug(slug, forRoot: root)
