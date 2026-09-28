@@ -107,14 +107,18 @@ struct SyncSettingsView: View {
             }
             if entry.mode == .optmem {
                 HStack {
-                    TextField("Home machine (blank: the always-on master)", text: Binding(
+                    Text("Home").foregroundStyle(.secondary)
+                    TextField("", text: Binding(
                         get: { entry.home ?? "" },
                         set: { value in update(entry.id) { $0.home = value.isEmpty ? nil : value } }
-                    ))
-                    TextField("ssh fallback, e.g. root@host", text: Binding(
+                    ), prompt: Text("the always-on master"))
+                    .labelsHidden()
+                    Text("ssh fallback").foregroundStyle(.secondary)
+                    TextField("", text: Binding(
                         get: { entry.ssh ?? "" },
                         set: { value in update(entry.id) { $0.ssh = value.isEmpty ? nil : value } }
-                    ))
+                    ), prompt: Text("none, e.g. root@host"))
+                    .labelsHidden()
                 }
                 .font(.caption)
             }
@@ -138,7 +142,8 @@ struct SyncSettingsView: View {
         if let status {
             parts.append(status.message)
             if let count = status.count {
-                parts.append(entry.mode == .optmem ? "\(count) memories" : "\(count) files")
+                let noun = entry.mode == .optmem ? "memor" + (count == 1 ? "y" : "ies") : "file" + (count == 1 ? "" : "s")
+                parts.append("\(count) \(noun)")
             }
             if let last = status.lastSync {
                 parts.append("synced " + RelativeDateTimeFormatter().localizedString(for: last, relativeTo: Date()))
@@ -146,8 +151,11 @@ struct SyncSettingsView: View {
         } else {
             parts.append("waiting for the first round")
         }
-        if entry.mode == .mirror, !entry.excludes.isEmpty {
-            parts.append("excludes " + entry.excludes.joined(separator: " "))
+        if entry.mode == .mirror {
+            let extra = entry.excludes.filter { !SyncConfig.defaultExcludes.contains($0) }
+            let dropped = SyncConfig.defaultExcludes.filter { !entry.excludes.contains($0) }
+            if !extra.isEmpty { parts.append("also excludes " + extra.joined(separator: " ")) }
+            if !dropped.isEmpty { parts.append("syncs " + dropped.joined(separator: " ")) }
         }
         return parts.joined(separator: " · ")
     }

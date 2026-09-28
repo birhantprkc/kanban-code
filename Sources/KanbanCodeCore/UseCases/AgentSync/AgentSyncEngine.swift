@@ -228,6 +228,12 @@ public actor AgentSyncEngine {
             }
         }
         pokedPeers.removeAll()
+        if !peers.contains(where: \.online) {
+            for entry in config.entries where entry.enabled && entry.mode == .mirror {
+                let files = (manifests[entry.id] ?? [:]).values.filter { !$0.deleted }.count
+                setStatus(entry, .info, peers.isEmpty ? "no peer machine yet" : "no peer online", count: files)
+            }
+        }
         if gitDue || !pokedGit.isEmpty {
             let only = gitDue ? nil : pokedGit
             pokedGit.removeAll()
@@ -499,7 +505,7 @@ public actor AgentSyncEngine {
                 }
                 let left = spool.pending().count
                 if left > 0 {
-                    setStatus(entry, .warning, "\(left) memo command\(left == 1 ? "" : "s") queued until \(peer.machine.name) answers", count: left)
+                    setStatus(entry, .warning, "\(left) memo command\(left == 1 ? "" : "s") queued until \(peer.machine.name) answers")
                 } else if queued > 0 || statuses[entry.id] == nil {
                     setStatus(entry, .info, "following the memory on \(peer.machine.name)")
                 }
