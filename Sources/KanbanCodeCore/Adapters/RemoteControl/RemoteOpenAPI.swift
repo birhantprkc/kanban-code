@@ -115,11 +115,14 @@ enum RemoteOpenAPI {
           "parentCardId": {"type": ["string", "null"]},
           "archived": {"type": "boolean"},
           "lastActivity": {"type": ["string", "null"], "format": "date-time"},
-          "updatedAt": {"type": "string", "format": "date-time"}
+          "updatedAt": {"type": "string", "format": "date-time"},
+          "machineId": {"type": ["string", "null"], "description": "the master that owns the card; send its prompts, transcript and terminal calls there"},
+          "machineName": {"type": ["string", "null"]}
         }
       },
+      "Machine": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string"}}},
       "Project": {"type": "object", "properties": {"path": {"type": "string"}, "name": {"type": "string"}}},
-      "Board": {"type": "object", "properties": {"cards": {"type": "array", "items": {"$ref": "#/components/schemas/Card"}}, "projects": {"type": "array", "items": {"$ref": "#/components/schemas/Project"}}, "generatedAt": {"type": "string", "format": "date-time"}}},
+      "Board": {"type": "object", "properties": {"cards": {"type": "array", "items": {"$ref": "#/components/schemas/Card"}}, "projects": {"type": "array", "items": {"$ref": "#/components/schemas/Project"}}, "generatedAt": {"type": "string", "format": "date-time"}, "machine": {"$ref": "#/components/schemas/Machine", "description": "the master serving this board"}}},
       "Message": {"type": "object", "properties": {"id": {"type": "string"}, "role": {"type": "string", "enum": ["user", "assistant", "tool", "system"]}, "text": {"type": "string"}, "at": {"type": ["string", "null"], "format": "date-time"}}},
       "Transcript": {"type": "object", "properties": {"cardId": {"type": "string"}, "messages": {"type": "array", "items": {"$ref": "#/components/schemas/Message"}}, "olderCursor": {"type": ["string", "null"]}}},
       "TaskRequest": {

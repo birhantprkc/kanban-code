@@ -127,6 +127,19 @@ public struct RemoteTerminal: Codable, Sendable, Equatable, Identifiable {
     }
 }
 
+/// A master: a machine that runs sessions and serves this API. With several
+/// masters (a Mac and an always-on box), every card belongs to one of them.
+public struct RemoteMachine: Codable, Sendable, Equatable, Hashable, Identifiable {
+    /// Stable id, `~/.kanban-code/machine.json` on the master.
+    public var id: String
+    public var name: String
+
+    public init(id: String, name: String) {
+        self.id = id
+        self.name = name
+    }
+}
+
 public struct RemoteCard: Codable, Sendable, Equatable, Identifiable {
     public var id: String
     public var title: String
@@ -152,6 +165,12 @@ public struct RemoteCard: Codable, Sendable, Equatable, Identifiable {
     public var archived: Bool
     public var lastActivity: Date?
     public var updatedAt: Date
+    /// The master that owns the card and runs its session. Prompts, the
+    /// transcript and terminals of the card go to that master. Nil on a
+    /// server from before several masters.
+    public var machineId: String?
+    /// Display name of `machineId`, when the serving master knows it.
+    public var machineName: String?
 
     public init(
         id: String, title: String, column: RemoteColumn, projectPath: String? = nil, projectName: String? = nil,
@@ -159,7 +178,7 @@ public struct RemoteCard: Codable, Sendable, Equatable, Identifiable {
         isLive: Bool = false, isBusy: Bool = false, sessionId: String? = nil, terminals: [RemoteTerminal] = [],
         prs: [RemotePR] = [], queuedPromptCount: Int = 0, queuedPrompts: [RemoteQueuedPrompt] = [],
         parentCardId: String? = nil, archived: Bool = false,
-        lastActivity: Date? = nil, updatedAt: Date
+        lastActivity: Date? = nil, updatedAt: Date, machineId: String? = nil, machineName: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -181,6 +200,8 @@ public struct RemoteCard: Codable, Sendable, Equatable, Identifiable {
         self.archived = archived
         self.lastActivity = lastActivity
         self.updatedAt = updatedAt
+        self.machineId = machineId
+        self.machineName = machineName
     }
 }
 
@@ -192,7 +213,7 @@ extension RemoteCard {
     private enum CodingKeys: String, CodingKey {
         case id, title, column, projectPath, projectName, branch, worktreePath, assistant, runtime
         case isLive, isBusy, sessionId, terminals, prs, queuedPromptCount, queuedPrompts, parentCardId, archived
-        case lastActivity, updatedAt
+        case lastActivity, updatedAt, machineId, machineName
     }
 
     public init(from decoder: Decoder) throws {
@@ -217,7 +238,9 @@ extension RemoteCard {
             parentCardId: try c.decodeIfPresent(String.self, forKey: .parentCardId),
             archived: try c.decodeIfPresent(Bool.self, forKey: .archived) ?? false,
             lastActivity: try c.decodeIfPresent(Date.self, forKey: .lastActivity),
-            updatedAt: try c.decode(Date.self, forKey: .updatedAt)
+            updatedAt: try c.decode(Date.self, forKey: .updatedAt),
+            machineId: try c.decodeIfPresent(String.self, forKey: .machineId),
+            machineName: try c.decodeIfPresent(String.self, forKey: .machineName)
         )
     }
 
@@ -243,6 +266,8 @@ extension RemoteCard {
         if archived { try c.encode(true, forKey: .archived) }
         try c.encodeIfPresent(lastActivity, forKey: .lastActivity)
         try c.encode(updatedAt, forKey: .updatedAt)
+        try c.encodeIfPresent(machineId, forKey: .machineId)
+        try c.encodeIfPresent(machineName, forKey: .machineName)
     }
 }
 
@@ -315,11 +340,15 @@ public struct RemoteBoard: Codable, Sendable, Equatable {
     public var cards: [RemoteCard]
     public var projects: [RemoteProject]
     public var generatedAt: Date
+    /// The master serving this board. Its board may also list cards other
+    /// masters own (synced from them); `RemoteCard.machineId` tells.
+    public var machine: RemoteMachine?
 
-    public init(cards: [RemoteCard], projects: [RemoteProject], generatedAt: Date) {
+    public init(cards: [RemoteCard], projects: [RemoteProject], generatedAt: Date, machine: RemoteMachine? = nil) {
         self.cards = cards
         self.projects = projects
         self.generatedAt = generatedAt
+        self.machine = machine
     }
 }
 

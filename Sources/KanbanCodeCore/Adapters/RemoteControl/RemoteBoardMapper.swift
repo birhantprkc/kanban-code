@@ -9,12 +9,17 @@ public enum RemoteBoardMapper {
         projects: [Project],
         liveSessions: Set<String>,
         agtopQueues: [String: [String]] = [:],
+        machine: MachineIdentity? = nil,
+        machineNames: [String: String] = [:],
         generatedAt: Date = Date()
     ) -> RemoteBoard {
         RemoteBoard(
-            cards: cards.map { card($0, liveSessions: liveSessions, agtopQueues: agtopQueues) }.sorted(by: order),
+            cards: cards.map {
+                card($0, liveSessions: liveSessions, agtopQueues: agtopQueues, machine: machine, machineNames: machineNames)
+            }.sorted(by: order),
             projects: projects.map { RemoteProject(path: $0.path, name: $0.name) },
-            generatedAt: generatedAt
+            generatedAt: generatedAt,
+            machine: machine.map { RemoteMachine(id: $0.id, name: $0.name) }
         )
     }
 
@@ -29,14 +34,20 @@ public enum RemoteBoardMapper {
     /// `agtopQueues` holds the queues of live agtop hosts by session name:
     /// an agtop card lists its host's queue ahead of any prompt the app
     /// itself holds for it.
+    ///
+    /// `machine` is the serving master: a card with no `ownerMachine` is
+    /// its own. `machineNames` names the other masters by id.
     public static func card(_ card: KanbanCodeCard, liveSessions: Set<String>,
-                            agtopQueues: [String: [String]] = [:]) -> RemoteCard {
+                            agtopQueues: [String: [String]] = [:],
+                            machine: MachineIdentity? = nil,
+                            machineNames: [String: String] = [:]) -> RemoteCard {
         let link = card.link
         let hostQueue = link.tmuxLink.flatMap { agtopQueues[$0.sessionName] } ?? []
         let queued = hostQueue.enumerated().map { RemoteQueuedPrompt(id: agtopPromptId(index: $0.offset, text: $0.element), text: $0.element) }
             + (link.queuedPrompts ?? []).map {
                 RemoteQueuedPrompt(id: $0.id, text: $0.body, imageCount: $0.imagePaths?.count ?? 0)
             }
+        let owner = link.ownerMachine ?? machine?.id
         return RemoteCard(
             id: link.id,
             title: card.displayTitle,
@@ -57,7 +68,9 @@ public enum RemoteBoardMapper {
             parentCardId: link.parentCardId,
             archived: link.manuallyArchived,
             lastActivity: link.lastActivity,
-            updatedAt: link.updatedAt
+            updatedAt: link.updatedAt,
+            machineId: owner,
+            machineName: owner.flatMap { $0 == machine?.id ? machine?.name : machineNames[$0] }
         )
     }
 
@@ -143,5 +156,21 @@ public enum RemoteBoardMapper {
         let key = trimmed.lowercased()
         return projects.first { $0.name.lowercased() == key }
             ?? projects.first { ($0.path as NSString).lastPathComponent.lowercased() == key }
+    }
+}
+
+extension AppState {
+    /// This master, once its identity is loaded.
+    public var localMachineIdentity: MachineIdentity? {
+        localMachineId.isEmpty ? nil : MachineIdentity(id: localMachineId, name: localMachineName)
+    }
+
+    /// Names of the peer masters seen so far, by machine id.
+    public var peerMachineNames: [String: String] {
+        var out: [String: String] = [:]
+        for status in peerStatuses.values {
+            if let machine = status.machine { out[machine.id] = machine.name }
+        }
+        return out
     }
 }
