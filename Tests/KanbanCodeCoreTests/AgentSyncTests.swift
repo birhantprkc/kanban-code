@@ -197,6 +197,22 @@ struct SyncMirrorTests {
         #expect(try changes(a.pull(from: b)).isEmpty, "the deletion does not come back")
     }
 
+    @Test func deletingAReceivedFileDeletesItAtItsOrigin() throws {
+        let mac = tempDir(), box = tempDir()
+        var a = Side(home: mac, machine: "A"), b = Side(home: box, machine: "B")
+        write(b.root + "/commands/check.md", "check", mtime: 1000)
+        b.scan()
+        try a.pull(from: b)
+        #expect(read(a.root + "/commands/check.md") == "check")
+
+        // The Mac deletes it before the box ever pulled from the Mac.
+        try FileManager.default.removeItem(atPath: a.root + "/commands/check.md")
+        a.scan()
+        #expect(b.manifest["commands/check.md"]?.synced == false)
+        try b.pull(from: a)
+        #expect(!FileManager.default.fileExists(atPath: b.root + "/commands/check.md"))
+    }
+
     @Test func peerNeverDeletesAFileItNeverSaw() throws {
         let mac = tempDir(), box = tempDir()
         var a = Side(home: mac, machine: "A"), b = Side(home: box, machine: "B")

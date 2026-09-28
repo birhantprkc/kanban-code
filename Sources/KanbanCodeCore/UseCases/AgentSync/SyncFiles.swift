@@ -196,7 +196,7 @@ public struct SyncScanner: Sendable {
             if isExcluded(rel: rel, excludes: excludes, only: only) { continue }
             out[rel] = SyncItem(
                 kind: prev.kind, hash: "", mtime: max(now, prev.mtime), origin: machineId,
-                deleted: true, mode: prev.mode, synced: prev.synced
+                deleted: true, mode: prev.mode, previousHash: prev.hash, synced: prev.synced
             )
         }
         return out
@@ -313,8 +313,11 @@ public enum SyncPlanner {
             }
             guard r.isNewer(than: l) else { continue }
             if r.deleted {
-                // A file the peers never agreed on is not theirs to delete.
-                if l.synced { actions.append(.delete(path: path, remote: r)) }
+                // A peer deletes only a version it saw: one the two machines
+                // agreed on, or exactly the one it deleted.
+                if l.synced || (r.previousHash == l.hash && !l.deleted) {
+                    actions.append(.delete(path: path, remote: r))
+                }
             } else {
                 actions.append(.fetch(path: path, remote: r, keepPrevious: !l.synced && !l.deleted))
             }

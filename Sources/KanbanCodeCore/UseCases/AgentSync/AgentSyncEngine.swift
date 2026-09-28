@@ -365,7 +365,11 @@ public actor AgentSyncEngine {
                 setStatus(entry, .ok, note, count: files, synced: true)
             }
         }
-        if changedLocally { lastScan = .distantPast }
+        if changedLocally {
+            lastScan = .distantPast
+            // The peer pulls back at once and sees its versions arrived.
+            await transport.notify(peer: peer, machineId: identity.id, what: "mirror")
+        }
         for entry in config.entries where entry.enabled && entry.mode == .optmem {
             guard remote.optmemHome.contains(entry.id), let theirs = remote.manifests[entry.id] else { continue }
             await follow(entry: entry, home: theirs, peer: peer)

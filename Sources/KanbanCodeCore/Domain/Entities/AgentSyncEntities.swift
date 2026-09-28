@@ -141,6 +141,9 @@ public struct SyncItem: Codable, Sendable, Equatable {
     public var mode: Int
     /// Symlink target with the home folder replaced by the marker.
     public var target: String?
+    /// A deletion: the hash of the version that was deleted, so a peer
+    /// holding exactly that version deletes it even if it never synced it.
+    public var previousHash: String?
     /// This path matched a peer's version at least once. A path that never
     /// did keeps its local copy as `<name>.sync-prev` when a peer's newer
     /// version replaces it, and is never deleted by a peer.
@@ -158,6 +161,7 @@ public struct SyncItem: Codable, Sendable, Equatable {
         deleted: Bool = false,
         mode: Int = 0o644,
         target: String? = nil,
+        previousHash: String? = nil,
         synced: Bool = false,
         size: Int? = nil,
         fileMtime: Double? = nil
@@ -169,6 +173,7 @@ public struct SyncItem: Codable, Sendable, Equatable {
         self.deleted = deleted
         self.mode = mode
         self.target = target
+        self.previousHash = previousHash
         self.synced = synced
         self.size = size
         self.fileMtime = fileMtime
