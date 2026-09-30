@@ -365,11 +365,14 @@ public final class AppState: @unchecked Sendable {
         guard cardInputsVersion != builtCardInputsVersion else { return }
         builtCardInputsVersion = cardInputsVersion
         let started = DispatchTime.now().uptimeNanoseconds
-        var built: UInt64 = 0
-        var filtered: UInt64 = 0
+        var built = started
+        var filtered = started
         defer {
-            let total = DispatchTime.now().uptimeNanoseconds - started
+            let now = DispatchTime.now().uptimeNanoseconds
+            let total = now - started
             if total > 16_000_000 {
+                built = max(built, started)
+                filtered = max(filtered, built)
                 KanbanCodeLog.info("rebuild-perf", String(
                     format: "rebuildCards %.1fms (build %.1fms, filter %.1fms) cards=%d",
                     Double(total) / 1e6, Double(built - started) / 1e6, Double(filtered - built) / 1e6, cards.count))
@@ -424,13 +427,16 @@ public final class AppState: @unchecked Sendable {
                 owner: owner
             )
         }
-        if newCards != cards { cards = newCards }
+        let cardsChanged = newCards != cards
+        if cardsChanged { cards = newCards }
         built = DispatchTime.now().uptimeNanoseconds
 
         let newSelected = selectedCardId.flatMap { id in cards.first { $0.id == id } }
         if newSelected != selectedCard { selectedCard = newSelected }
 
+        // Everything below derives from the cards and the project filter.
         let memoKey = [selectedProjectPath ?? ""] + excludedPaths
+        guard cardsChanged || memoKey != projectFilterMemoKey else { return }
         if memoKey != projectFilterMemoKey {
             projectFilterMemo = [:]
             projectFilterMemoKey = memoKey
@@ -939,11 +945,19 @@ public enum Reducer {
         reduce(state: state, action: action)
     }
 
+    /// Runs `action`, stamps what it changed for peer sync, then rebuilds
+    /// the cards (a no-op when none of their inputs changed).
     public static func reduce(state: AppState, action: Action) -> [Effect] {
-        if case .peerLinksMerged = action { return reduceAction(state: state, action: action) }
+        if case .peerLinksMerged = action {
+            let effects = reduceAction(state: state, action: action)
+            state.rebuildCards()
+            return effects
+        }
         let before = state.links
         let effects = reduceAction(state: state, action: action)
-        return stampLocalChanges(state: state, before: before, action: action, effects: effects)
+        let stamped = stampLocalChanges(state: state, before: before, action: action, effects: effects)
+        state.rebuildCards()
+        return stamped
     }
 
     static func reduceAction(state: AppState, action: Action) -> [Effect] {
@@ -1195,7 +1209,6 @@ public enum Reducer {
             // than walking every card each time the scan comes back identical.
             guard state.sessionModels != models else { return [] }
             state.sessionModels = models
-            state.rebuildCards()
             return []
 
         case .setCardModel(let cardId, let model):
@@ -2280,7 +2293,6 @@ public enum Reducer {
                 "reconcile",
                 "tmux liveness: cleared \(removedSessionNames.count) dead session(s): \(removedSessionNames.prefix(5).joined(separator: ", "))\(removedSessionNames.count > 5 ? ", …" : "")"
             )
-            state.rebuildCards()
             var effects: [Effect] = [.persistLinks(Array(state.links.values))]
             if !removedSessionNames.isEmpty {
                 effects.append(.cleanupTerminalCache(sessionNames: removedSessionNames))
@@ -2288,7 +2300,6 @@ public enum Reducer {
             return effects
 
         case .reconciled(let result):
-            var cardInputsChanged = false
 
             // Equality-gated assignments — only trigger @Observable change notifications
             // for fields that actually differ. Prevents unnecessary SwiftUI re-renders
@@ -2308,11 +2319,9 @@ public enum Reducer {
             )
             if state.sessions != newSessions {
                 state.sessions = newSessions
-                cardInputsChanged = true
             }
             if state.activityMap != result.activityMap {
                 state.activityMap = result.activityMap
-                cardInputsChanged = true
             }
 
             // Merge reconciled links using last-writer-wins on updatedAt.
@@ -2518,7 +2527,6 @@ public enum Reducer {
             let linksChanged = state.links != mergedLinks
             if linksChanged {
                 state.links = mergedLinks
-                cardInputsChanged = true
             }
             state.lastRefresh = Date()
             if state.isLoading { state.isLoading = false }
@@ -2527,12 +2535,8 @@ public enum Reducer {
             if let selectedId = state.selectedCardId,
                !mergedLinks.keys.contains(selectedId) {
                 state.selectedCardId = nil
-                cardInputsChanged = true
             }
 
-            if cardInputsChanged {
-                state.rebuildCards()
-            }
 
             return linksChanged ? [.persistLinks(Array(mergedLinks.values))] : []
 
@@ -2672,13 +2676,11 @@ public enum Reducer {
 
         case .peerRepoSlugsLoaded(_, let slugs):
             for (path, slug) in slugs { state.peerRepoSlugs[path] = slug }
-            state.rebuildCards()
             return []
 
         case .localProjectSlugsResolved(let slugs):
             guard state.localProjectSlugs != slugs else { return [] }
             state.localProjectSlugs = slugs
-            state.rebuildCards()
             return []
 
         case .peerStatusChanged(let status):
@@ -2753,7 +2755,6 @@ public enum Reducer {
         case .setRateLimitedRepos(let repos):
             guard state.rateLimitedRepos != repos else { return [] }
             state.rateLimitedRepos = repos
-            state.rebuildCards()
             return []
 
         case .setSelectedProject(let path):
@@ -2905,50 +2906,16 @@ public final class BoardStore: @unchecked Sendable {
         return queues
     }
 
-    /// Actions that only toggle UI state and don't affect card data — skip rebuildCards().
-    private static func needsRebuild(_ action: Action) -> Bool {
-        switch action {
-        case .reconciled, .setRateLimitedRepos, .tmuxLivenessScanned, .sessionModelsScanned,
-             .agtopQueuesScanned, .agtopQueueRead:
-            // These reducers diff their card inputs and rebuild only when the
-            // derived card snapshots can actually change. A periodic PR/status
-            // pass that produces the same links must not relayout the board.
-            return false
-        case .setPaletteOpen, .setDetailExpanded, .setPromptEditorFocused,
-             .showDialog, .dismissDialog, .setError, .setNotice, .setLoading, .setIsRefreshingBacklog,
-             .launchProgress, .localMachineLoaded, .peerRepoSlugsLoaded, .localProjectSlugsResolved:
-            return false
-        case .refreshChannels, .refreshChannelMessages, .channelsLoaded,
-             .channelMessagesLoaded, .createChannel, .sendChannelMessage,
-             .channelMessageAppended, .markChannelRead, .channelReadStateLoaded,
-             .refreshChannelReadState, .setAppFrontmost, .deleteChannel,
-             .renameChannel, .reorderChannel, .kickChannelMember, .draftsLoaded,
-             .setChannelDraft, .setDMDraft, .loadDrafts,
-             .refreshDMMessages, .dmMessagesLoaded, .sendDirectMessage,
-             .dmMessageAppended:
-            // Channel/DM history, read markers, and drafts are deliberately
-            // independent from card layout. Rebuilding cards here was a major
-            // source of channel hangs because every JSONL tail reload forced
-            // board/sidebar recomputation while chat was rendering.
-            return false
-        default:
-            return true
-        }
-    }
-
     /// Dispatch an action. Reducer runs synchronously, effects run async.
     public func dispatch(_ action: Action) {
         if let foreignCardHandler, foreignCardHandler(action) { return }
         let t = DispatchTime.now().uptimeNanoseconds
         let effects = Reducer.reduce(state: state, action: action)
-        let reduced = DispatchTime.now().uptimeNanoseconds
-        if Self.needsRebuild(action) { state.rebuildCards() }
         let totalMs = Double(DispatchTime.now().uptimeNanoseconds - t) / 1_000_000
         if totalMs > 16 {
             // Mirror gives the case name without serializing associated values.
             let actionName = Mirror(reflecting: action).children.first?.label ?? String(describing: action)
-            KanbanCodeLog.info("dispatch-perf", String(
-                format: "dispatch(%@): %.1fms (reduce %.1fms)", actionName, totalMs, Double(reduced - t) / 1_000_000))
+            KanbanCodeLog.info("dispatch-perf", String(format: "dispatch(%@): %.1fms", actionName, totalMs))
         }
         for effect in effects {
             Task { [weak self] in
@@ -2962,7 +2929,6 @@ public final class BoardStore: @unchecked Sendable {
     /// Dispatch an action and wait for all its effects to complete.
     public func dispatchAndWait(_ action: Action) async {
         let effects = Reducer.reduce(state: state, action: action)
-        if Self.needsRebuild(action) { state.rebuildCards() }
         await withTaskGroup(of: Void.self) { group in
             for effect in effects {
                 group.addTask { [weak self] in
