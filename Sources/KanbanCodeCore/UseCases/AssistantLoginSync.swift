@@ -121,8 +121,8 @@ public struct AssistantLogin: Sendable, Equatable {
         case (.absent, .some): return .pull
         case (.present, nil): return .push
         case (.present(let local), .some(let remote)):
-            if let localAccount, let remoteAccount, localAccount != remoteAccount { return .push }
             if local.fingerprint == remote.fingerprint { return .none }
+            if let localAccount, let remoteAccount, localAccount != remoteAccount { return .push }
             return remote.freshness > local.freshness ? .pull : .push
         }
     }
@@ -248,6 +248,39 @@ public struct MacLoginStore: LocalLoginStore {
     }
 }
 
+/// Whose account the tokens of a Claude login belong to. The account a
+/// `~/.claude.json` names can lag the tokens beside it (another tool
+/// switched one and not the other), so the tokens themselves are asked.
+public protocol ClaudeTokenOwnerResolver: Sendable {
+    /// The account uuid, nil when it can't be told (expired token, offline).
+    func owner(of login: AssistantLogin) async -> String?
+}
+
+/// Asks Anthropic's profile endpoint, once per set of tokens.
+public actor AnthropicTokenOwner: ClaudeTokenOwnerResolver {
+    public static let shared = AnthropicTokenOwner()
+    private var owners: [String: String] = [:]
+
+    public func owner(of login: AssistantLogin) async -> String? {
+        guard login.kind == .claude else { return nil }
+        if let known = owners[login.fingerprint] { return known }
+        guard login.freshness > Date().timeIntervalSince1970,
+              let object = try? JSONSerialization.jsonObject(with: login.data) as? [String: Any],
+              let token = (object["claudeAiOauth"] as? [String: Any])?["accessToken"] as? String,
+              let url = URL(string: "https://api.anthropic.com/api/oauth/profile") else { return nil }
+        var request = URLRequest(url: url, timeoutInterval: 8)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let profile = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let uuid = (profile["account"] as? [String: Any])?["uuid"] as? String, !uuid.isEmpty else { return nil }
+        if owners.count > 64 { owners.removeAll() }
+        owners[login.fingerprint] = uuid
+        return uuid
+    }
+}
+
 /// Brings the logins of one machine and the Mac to the same copy.
 public struct AssistantLoginSync: Sendable {
     public struct Change: Equatable, Sendable {
@@ -268,12 +301,20 @@ public struct AssistantLoginSync: Sendable {
     private let store: any LocalLoginStore
     private let remoteHome: String
     private let machineName: String
+    private let owners: any ClaudeTokenOwnerResolver
 
-    public init(runner: any RemoteCommandRunner, store: any LocalLoginStore, remoteHome: String, machineName: String = "machine") {
+    public init(
+        runner: any RemoteCommandRunner,
+        store: any LocalLoginStore,
+        remoteHome: String,
+        machineName: String = "machine",
+        owners: any ClaudeTokenOwnerResolver = AnthropicTokenOwner.shared
+    ) {
         self.runner = runner
         self.store = store
         self.remoteHome = remoteHome
         self.machineName = machineName
+        self.owners = owners
     }
 
     /// Runs node wherever the machine has it: boxd machines keep it in
@@ -329,8 +370,17 @@ public struct AssistantLoginSync: Sendable {
             let remoteAccount: String?
             switch kind {
             case .claude:
-                localAccount = await store.claudeAccount()?["accountUuid"] as? String
-                remoteAccount = remoteClaudeAccount
+                // Asked only when the tokens differ: equal tokens move nothing.
+                let differ = local.login != nil && remote != nil && local.login?.fingerprint != remote?.fingerprint
+                var localOwner: String?
+                var remoteOwner: String?
+                if differ, let localLogin = local.login, let remote {
+                    localOwner = await owners.owner(of: localLogin)
+                    remoteOwner = await owners.owner(of: remote)
+                }
+                let named = await store.claudeAccount()?["accountUuid"] as? String
+                localAccount = localOwner ?? named
+                remoteAccount = remoteOwner ?? remoteClaudeAccount
             case .codex:
                 localAccount = local.login?.accountId
                 remoteAccount = remote?.accountId
@@ -338,10 +388,7 @@ public struct AssistantLoginSync: Sendable {
             let decision = AssistantLogin.decide(
                 local: local, remote: remote, localAccount: localAccount, remoteAccount: remoteAccount)
             guard decision != .none else { continue }
-            // Tokens already equal with only the machine's account record
-            // behind is a repair, not a change of account.
             let accountChanged = localAccount != nil && remoteAccount != nil && localAccount != remoteAccount
-                && local.login?.fingerprint != remote?.fingerprint
             let remotePath = "\(remoteHome)/\(kind.remoteRelativePath)"
             do {
                 switch decision {
@@ -387,3 +434,4 @@ public struct AssistantLoginSync: Sendable {
         return "\(when) #\(login.fingerprint.prefix(8))"
     }
 }
+

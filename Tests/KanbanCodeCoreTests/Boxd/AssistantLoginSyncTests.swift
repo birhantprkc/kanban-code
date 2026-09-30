@@ -40,6 +40,17 @@ final class FakeLoginStore: LocalLoginStore, @unchecked Sendable {
     func claudeAccount() async -> [String: Any]? { withLock(lock) { _account } }
 }
 
+/// Token owners by access token.
+struct FakeOwners: ClaudeTokenOwnerResolver {
+    let byToken: [String: String]
+    init(_ byToken: [String: String]) { self.byToken = byToken }
+    func owner(of login: AssistantLogin) async -> String? {
+        let object = try? JSONSerialization.jsonObject(with: login.data) as? [String: Any]
+        let token = (object?["claudeAiOauth"] as? [String: Any])?["accessToken"] as? String
+        return token.flatMap { byToken[$0] }
+    }
+}
+
 private func claudeLogin(access: String, expiresAt: Int) -> Data {
     let json = """
     {"claudeAiOauth":{"accessToken":"\(access)","refreshToken":"sk-ant-ort01-r","expiresAt":\(expiresAt),"scopes":["user:inference"],"subscriptionType":"max"}}
@@ -92,6 +103,7 @@ struct AssistantLoginTests {
         #expect(AssistantLogin.decide(local: .present(older), remote: newer, localAccount: "a", remoteAccount: "b") == .push)
         #expect(AssistantLogin.decide(local: .present(older), remote: newer, localAccount: nil, remoteAccount: "b") == .pull)
         #expect(AssistantLogin.decide(local: .absent, remote: newer, localAccount: "a", remoteAccount: "b") == .pull)
+        #expect(AssistantLogin.decide(local: .present(newer), remote: newer, localAccount: "a", remoteAccount: "b") == .none)
     }
 
     @Test("A Mac login that could not be read is never replaced")
@@ -323,8 +335,8 @@ struct AssistantLoginSyncTests {
         }
     }
 
-    @Test("Equal tokens under a stale account record only repair the record, quietly")
-    func accountRecordRepair() async {
+    @Test("Equal tokens move nothing, whatever account each side's record names")
+    func equalTokensIgnoreAccountRecords() async {
         let login = claudeLogin(access: "same", expiresAt: 2_000)
         let runner = FakeRemoteCommandRunner()
         runner.script(readCall(), remoteAnswer(claude: login, codex: nil, claudeAccount: "u2"))
@@ -332,7 +344,33 @@ struct AssistantLoginSyncTests {
 
         let changes = await AssistantLoginSync(runner: runner, store: store, remoteHome: home).run()
 
-        #expect(changes == [AssistantLoginSync.Change(kind: .claude, decision: .push, accountChanged: false)])
+        #expect(changes.isEmpty)
+        #expect(runner.files.isEmpty)
+    }
+
+    @Test("The tokens' owner beats the account the records name")
+    func tokenOwnerDecides() async {
+        // The Mac's record and the machine's both name u1, but the machine
+        // holds u2's fresher tokens: they must not come back to the Mac.
+        let local = claudeLogin(access: "mac", expiresAt: 2_000)
+        let remote = claudeLogin(access: "machine", expiresAt: 3_000)
+        let runner = FakeRemoteCommandRunner()
+        runner.script(readCall(), remoteAnswer(claude: remote, codex: nil, claudeAccount: "u1"))
+        let store = FakeLoginStore(logins: [.claude: local], account: ["accountUuid": "u1"])
+        let owners = FakeOwners(["mac": "u1", "machine": "u2"])
+
+        let changes = await AssistantLoginSync(runner: runner, store: store, remoteHome: home, owners: owners).run()
+
+        #expect(changes == [AssistantLoginSync.Change(kind: .claude, decision: .push, accountChanged: true)])
+        #expect(runner.files["/home/boxd/.claude/.credentials.json"] == local)
+        #expect(store.writes.isEmpty)
+
+        let sameOwner = FakeOwners(["mac": "u1", "machine": "u1"])
+        let runner2 = FakeRemoteCommandRunner()
+        runner2.script(readCall(), remoteAnswer(claude: remote, codex: nil, claudeAccount: "u9"))
+        let store2 = FakeLoginStore(logins: [.claude: local], account: ["accountUuid": "u1"])
+        let pulled = await AssistantLoginSync(runner: runner2, store: store2, remoteHome: home, owners: sameOwner).run()
+        #expect(pulled == [AssistantLoginSync.Change(kind: .claude, decision: .pull)])
     }
 
     @Test("Equal copies move nothing, each assistant on its own")
