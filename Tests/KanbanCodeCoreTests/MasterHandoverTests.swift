@@ -13,12 +13,19 @@ private final class RecordingTmux: TmuxManagerPort, @unchecked Sendable {
     private var _created: [(name: String, command: String?)] = []
     private var _killed: [String] = []
     private var _pasted: [String] = []
+    private var _failCreate: String?
     var pasted: [String] { lock.withLock { _pasted } }
+    /// Makes every new session fail with this message.
+    var failCreate: String? {
+        get { lock.withLock { _failCreate } }
+        set { lock.withLock { _failCreate = newValue } }
+    }
     var created: [(name: String, command: String?)] { lock.withLock { _created } }
     var killed: [String] { lock.withLock { _killed } }
 
     func listSessions() async throws -> [TmuxSession] { [] }
     func createSession(name: String, path: String, command: String?) async throws {
+        if let failure = failCreate { throw TmuxError.createFailed(name: name, message: failure) }
         lock.withLock { _created.append((name, command)) }
     }
     func killSession(name: String) async throws { lock.withLock { _killed.append(name) } }
@@ -647,5 +654,187 @@ struct MasterRolesTests {
         #expect(arrived())
         #expect(box.store.state.links["card_mac"]?.queuedPrompts == nil)
         #expect(!box.tmux.pasted.contains(text))
+    }
+
+    @Test("a resume while the card is still moving here waits for the adoption, and every master says it is moving")
+    func resumeWhileMoving() async throws {
+        let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("moving-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let origin = "\(root)/origin/widgets.git"
+        let repoA = "\(root)/mac/widgets"
+        try FileManager.default.createDirectory(atPath: "\(root)/origin", withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: "\(root)/mac", withIntermediateDirectories: true)
+        try await sh(["git", "init", "--bare", "-q", origin], in: root)
+        try await sh(["git", "clone", "-q", origin, repoA], in: root)
+        try await sh(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"], in: repoA)
+        try await sh(["git", "push", "-q", "origin", "HEAD"], in: repoA)
+
+        let mac = try TestMaster(name: "mac", root: root)
+        let box = try TestMaster(name: "box", root: root)
+        try await mac.serve()
+        try await box.serve()
+        try await mac.start(peerURL: box.url, peerToken: box.tokenForPeer)
+        try await box.start(peerURL: mac.url, peerToken: mac.tokenForPeer)
+        defer { mac.server.stop(); box.server.stop() }
+
+        let sessionId = "0f1e2d3c-aaaa-bbbb-cccc-000000000003"
+        let transcriptA = mac.engine.transcriptPath(cwd: repoA, sessionId: sessionId)
+        try FileManager.default.createDirectory(atPath: (transcriptA as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        let line = #"{"type":"user","cwd":"\#(repoA)","message":{"role":"user","content":"hello"}}"#
+        try String(repeating: line + "\n", count: 200).write(toFile: transcriptA, atomically: true, encoding: .utf8)
+        mac.store.dispatch(.createManualTask(Link(
+            id: "card_big", name: "Big transcript", projectPath: repoA, column: .waiting,
+            sessionLink: SessionLink(sessionId: sessionId, sessionPath: transcriptA)
+        )))
+        await mac.peerSync.pullAll()
+        await box.peerSync.pullAll()
+
+        try await mac.engine.moveCard("card_big", to: "box")
+        await box.peerSync.pullAll()
+        #expect(box.store.state.links["card_big"]?.migrating == true)
+        #expect(box.store.state.links["card_big"]?.projectPath == repoA)
+
+        // The Mac shows the move where "session ended" was, with no resume.
+        let macStatus = try #require(mac.store.state.cards.first { $0.id == "card_big" }?.sessionStatus)
+        #expect(macStatus == .moving("Moving to box"))
+        #expect(!macStatus.canResume)
+
+        // The box does not start it on the Mac's folder: it waits.
+        #expect(!box.engine.resume(cardId: "card_big", runRemotely: false, commandOverride: nil))
+        #expect(box.tmux.created.isEmpty)
+        #expect(box.store.state.startFailure("card_big") == nil)
+        #expect(box.store.state.cards.first { $0.id == "card_big" }?.sessionStatus == .moving("Moving here from mac"))
+
+        // A resume asked over the API is answered with the move, not a silent failure.
+        let phone = RemoteClient(baseURL: URL(string: box.url)!, token: try box.devices.add(name: "phone", scope: .full).token)
+        do {
+            _ = try await phone.resume(cardId: "card_big")
+            Issue.record("a resume of a card still moving here succeeded")
+        } catch {
+            #expect(error.localizedDescription.contains("Moving here from mac"))
+        }
+
+        // The box copies the transcript; the Mac, which serves it, shows how far.
+        try await box.engine.adopt(cardId: "card_big")
+        let size = try #require((try FileManager.default.attributesOfItem(atPath: transcriptA))[.size] as? Int)
+        #expect(mac.store.state.cardStarts["card_big"] == .moving(HandoverProgress(copiedBytes: size, totalBytes: size)))
+        #expect(mac.store.state.handoverLine(cardId: "card_big")?.contains("copying the transcript") == true)
+
+        // The adoption resumes it once, in the box's folder.
+        for _ in 0..<50 where box.tmux.created.isEmpty { try await Task.sleep(for: .milliseconds(50)) }
+        #expect(box.tmux.created.count == 1)
+        #expect(box.tmux.created.first?.command?.contains("--resume \(sessionId)") == true)
+        #expect(box.store.state.links["card_big"]?.projectPath == "\(box.home)/Projects/widgets")
+
+        await mac.peerSync.pullAll()
+        #expect(mac.store.state.links["card_big"]?.migrating == nil)
+        if case .moving = mac.store.state.cards.first(where: { $0.id == "card_big" })?.sessionStatus {
+            Issue.record("the Mac still shows the move after the adoption")
+        }
+    }
+
+    @Test("a start that fails on the owner answers the caller, and the card here shows why")
+    func remoteStartFailureReachesTheCaller() async throws {
+        let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("start-fail-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let mac = try TestMaster(name: "mac", root: root)
+        let box = try TestMaster(name: "box", root: root)
+        try await mac.serve()
+        try await box.serve()
+        try await mac.start(peerURL: box.url, peerToken: box.tokenForPeer)
+        try await box.start(peerURL: mac.url, peerToken: mac.tokenForPeer)
+        defer { mac.server.stop(); box.server.stop() }
+
+        let folder = "\(root)/box-repo"
+        try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+        box.store.dispatch(.createManualTask(Link(
+            id: "card_fail", name: "Fails", projectPath: folder, column: .waiting,
+            sessionLink: SessionLink(sessionId: "0f1e2d3c-aaaa-bbbb-cccc-000000000004")
+        )))
+        await mac.peerSync.pullAll()
+        await box.peerSync.pullAll()
+        #expect(mac.engine.isForeign("card_fail"))
+        box.tmux.failCreate = "no such folder"
+
+        // The Mac's resume goes to the box; the box's failure comes back to the card here.
+        mac.engine.resume(cardId: "card_fail", runRemotely: false, commandOverride: nil)
+        func failure() -> String? {
+            if case .failed(let line) = mac.store.state.cards.first(where: { $0.id == "card_fail" })?.sessionStatus { return line }
+            return nil
+        }
+        for _ in 0..<100 where failure() == nil { try await Task.sleep(for: .milliseconds(50)) }
+        let line = try #require(failure())
+        #expect(line.contains("Could not resume the card on box"))
+        #expect(line.contains("no such folder"))
+        #expect(mac.store.state.cards.first { $0.id == "card_fail" }?.sessionStatus.canResume == true)
+
+        // The box's own card says the same, and the phone reads it.
+        #expect(box.store.state.startFailure("card_fail")?.contains("no such folder") == true)
+        let phone = RemoteClient(baseURL: URL(string: box.url)!, token: try box.devices.add(name: "phone", scope: .full).token)
+        let card = try await phone.card(id: "card_fail")
+        #expect(card.sessionStatus?.kind == .failed)
+        #expect(card.sessionStatus?.canResume == true)
+    }
+
+    @Test("the resume dialog's pick moves a card another master runs, and the owner resumes it otherwise")
+    func movePick() async throws {
+        let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("pick-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let mac = try TestMaster(name: "mac", root: root)
+        let box = try TestMaster(name: "box", root: root)
+        try await mac.serve()
+        try await box.serve()
+        try await mac.start(peerURL: box.url, peerToken: box.tokenForPeer)
+        try await box.start(peerURL: mac.url, peerToken: mac.tokenForPeer)
+        defer { mac.server.stop(); box.server.stop() }
+        box.store.dispatch(.createManualTask(Link(
+            id: "card_box", name: "On the box", projectPath: "/tmp/acme", column: .waiting,
+            sessionLink: SessionLink(sessionId: "sid-box"))))
+        await mac.peerSync.pullAll()
+
+        #expect(mac.store.state.ownerMachineChoice(cardId: "card_box") == "box")
+        #expect(mac.engine.movePick(forForeignCard: "card_box", runRemotely: true, machineChoice: .existing("box")) == nil)
+        #expect(mac.engine.movePick(forForeignCard: "card_box", runRemotely: false, machineChoice: nil) == "mac")
+        #expect(mac.engine.movePick(forForeignCard: "card_box", runRemotely: true, machineChoice: .existing("gpu-box")) == "gpu-box")
+        // A card this master runs is resumed the usual way.
+        mac.store.dispatch(.createManualTask(Link(id: "card_mac", name: "Here", projectPath: "/tmp/acme", column: .waiting)))
+        #expect(mac.engine.movePick(forForeignCard: "card_mac", runRemotely: false, machineChoice: nil) == nil)
+    }
+
+    @Test("an adoption takes the bytes it already mirrors and copies only the rest")
+    func adoptionReusesTheMirror() async throws {
+        let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("mirror-seed-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let mac = try TestMaster(name: "mac", root: root)
+        let box = try TestMaster(name: "box", root: root)
+        try await mac.serve()
+        try await box.serve()
+        try await mac.start(peerURL: box.url, peerToken: box.tokenForPeer)
+        try await box.start(peerURL: mac.url, peerToken: mac.tokenForPeer)
+        defer { mac.server.stop(); box.server.stop() }
+        let sessionId = "0f1e2d3c-aaaa-bbbb-cccc-000000000005"
+        let transcript = "\(root)/mac-transcript.jsonl"
+        let lines = (0..<50).map { #"{"type":"user","message":{"role":"user","content":"line \#($0)"}}"# }
+        try (lines.joined(separator: "\n") + "\n").write(toFile: transcript, atomically: true, encoding: .utf8)
+        mac.store.dispatch(.createManualTask(Link(
+            id: "card_seed", name: "Seed", projectPath: root, column: .waiting,
+            sessionLink: SessionLink(sessionId: sessionId, sessionPath: transcript))))
+        await box.peerSync.pullAll()
+        let client = try #require(await box.engine.peerClient(machineId: mac.identity.id))
+        let data = try Data(contentsOf: URL(fileURLWithPath: transcript))
+
+        let mirror = "\(root)/mirror.jsonl"
+        try data.prefix(1000).write(to: URL(fileURLWithPath: mirror))
+        let seeded = await MasterEngine.mirroredPrefix(at: mirror, size: data.count, cardId: "card_seed", client: client)
+        #expect(seeded == data.prefix(1000))
+
+        // A mirror that is not the start of the transcript is not used.
+        var wrong = Data(data.prefix(1000))
+        wrong[wrong.count - 1] = UInt8(ascii: "X")
+        try wrong.write(to: URL(fileURLWithPath: mirror))
+        #expect(await MasterEngine.mirroredPrefix(at: mirror, size: data.count, cardId: "card_seed", client: client) == nil)
+        // Nor one longer than the transcript.
+        try (data + data).write(to: URL(fileURLWithPath: mirror))
+        #expect(await MasterEngine.mirroredPrefix(at: mirror, size: data.count, cardId: "card_seed", client: client) == nil)
     }
 }

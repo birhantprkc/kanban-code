@@ -70,7 +70,8 @@ public enum RemoteBoardMapper {
             lastActivity: link.lastActivity,
             updatedAt: link.updatedAt,
             machineId: owner,
-            machineName: owner.flatMap { $0 == machine?.id ? machine?.name : machineNames[$0] }
+            machineName: owner.flatMap { $0 == machine?.id ? machine?.name : machineNames[$0] },
+            sessionStatus: card.sessionStatus.remote(for: link)
         )
     }
 

@@ -390,6 +390,20 @@ public enum CardReconciler {
 
             for sess in externalSessions {
                 guard !alreadyLinkedTmux.contains(sess.name) else { continue }
+                // A rush host is the assistant session of the card whose
+                // conversation it runs, never a tool in a folder: it goes to
+                // that card only, and only when the card has no session (a
+                // resume in flight names it in its own time).
+                if let agtopId = AgtopSessionName.agtopId(fromName: sess.name) {
+                    guard let (cardId, link) = linksById.first(where: {
+                        $0.value.sessionLink.map { AgtopSessionName.agtopId(sessionId: $0.sessionId) } == agtopId
+                    }), link.tmuxLink == nil else { continue }
+                    var linked = link
+                    linked.tmuxLink = TmuxLink(sessionName: sess.name)
+                    linksById[cardId] = linked
+                    KanbanCodeLog.info("reconciler", "rush host \(sess.name) matched to card \(cardId.prefix(12)) by session")
+                    continue
+                }
                 // Find the best card: prefer exact worktree/project match over prefix
                 var bestMatch: (String, Link)?
                 var prefixMatch: (String, Link)?

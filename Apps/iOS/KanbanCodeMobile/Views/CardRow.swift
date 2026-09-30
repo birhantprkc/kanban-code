@@ -25,6 +25,7 @@ struct StatusDot: View {
 
     private var color: Color {
         if unknown { return .gray.opacity(0.6) }
+        if card.sessionStatus?.kind == .failed { return .red }
         if card.isBusy { return .blue }
         if card.isLive { return .green }
         return .gray.opacity(0.6)
@@ -32,6 +33,8 @@ struct StatusDot: View {
 
     private var label: String {
         if unknown { return "Machine offline" }
+        if card.sessionStatus?.kind == .moving { return "Moving" }
+        if card.sessionStatus?.kind == .failed { return "Failed to start" }
         if card.isBusy { return "Working" }
         if card.isLive { return "Live" }
         return "Not running"

@@ -16,6 +16,9 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
     /// machine that hosts the session.
     private let agtopFor: @Sendable (String) throws -> AgtopCliAdapter
     private let queueWatch = QueueWatchFlag()
+    /// How long a resume request waits for the start to succeed or fail
+    /// before it answers with the card as it is. Below the clients' 30 s.
+    public var resumeOutcomeWait: TimeInterval = 20
 
     @MainActor
     public init(engine: MasterEngine,
@@ -374,10 +377,24 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
         if let owner = await ownerClient(cardId) {
             return try await forwarded { try await owner.resume(cardId: cardId) }
         }
-        let current = try await MainActor.run { try remoteCard(cardId) }
+        let current = try await MainActor.run { () throws -> RemoteCard in
+            if let moving = engine.stillMovingHere(cardId) { throw RemoteHostError.conflict(moving) }
+            return try remoteCard(cardId)
+        }
         if current.isLive { return current }
         await MainActor.run { engine.resumeRemoteCard(cardId) }
-        try? await Task.sleep(for: .milliseconds(200))
+        // The caller may be another master or a phone that shows nothing of
+        // this board: a start that fails is its answer, not a line in a log
+        // here. A start still running after the wait answers with the card.
+        let deadline = Date().addingTimeInterval(resumeOutcomeWait)
+        repeat {
+            try? await Task.sleep(for: .milliseconds(200))
+            let (failure, launching) = await MainActor.run {
+                (store.state.startFailure(cardId), store.state.links[cardId]?.isLaunching == true)
+            }
+            if let failure { throw RemoteHostError.conflict(failure) }
+            if !launching { break }
+        } while Date() < deadline
         return try await MainActor.run { try remoteCard(cardId) }
     }
 

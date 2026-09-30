@@ -506,24 +506,18 @@ struct ContentView: View {
             }
     }
 
-    /// The state of the machine of a card, for the resume bar of its detail.
-    private func machineState(of card: KanbanCodeCard) -> RemoteMachineState? {
-        card.link.remote.flatMap { store.state.remoteMachineStates[$0.machineName] }
-    }
-
-    /// Cmd+Enter on a card: the machine when a live session waits on a
-    /// paused one, the assistant otherwise.
+    /// Cmd+Enter on a card: what its status bar offers, the machine when a
+    /// live session waits on a paused one, the assistant otherwise.
     func resumeCardOrMachine(cardId: String) {
-        if let card = store.state.cards.first(where: { $0.id == cardId }),
-           let remote = card.link.remote,
-           RemoteMachineOverlay.state(
-               remote: remote, machineState: machineState(of: card), hasLiveSession: card.link.tmuxLink != nil,
-               isRemote: card.link.isRemote
-           ).canResume {
+        guard let card = store.state.cards.first(where: { $0.id == cardId }) else { return }
+        switch card.sessionStatus {
+        case .machine(let state) where state.canResume:
             resumeMachine(for: cardId)
+        case .ended, .failed:
+            resumeCard(cardId: cardId)
+        default:
             return
         }
-        resumeCard(cardId: cardId)
     }
 
     /// "Resume machine" on a card. The machine comes back first. A paused
@@ -572,7 +566,6 @@ struct ContentView: View {
                     startCard(cardId: card.id)
                 }
             },
-            remoteMachineState: machineState(of: card),
             onResumeMachine: { resumeMachine(for: card.id) },
             onRename: { name in
                 store.dispatch(.renameCard(cardId: card.id, name: name))
@@ -689,8 +682,7 @@ struct ContentView: View {
                 get: { isExpandedDetail },
                 set: { isExpandedDetail = $0 }
             ),
-            isDroppingImage: $isDroppingImage,
-            launchStatus: store.state.launchProgress[card.id]
+            isDroppingImage: $isDroppingImage
         )
     }
 
@@ -982,7 +974,10 @@ struct ContentView: View {
                     onLaunch: { editedPrompt, createWorktree, worktreeBranch, runRemotely, skipPermissions, commandOverride, images, selectedServiceId in
                         let machineChoice = pendingMachineChoice
                         pendingMachineChoice = nil
-                        if config.isResume {
+                        if config.isResume, let target = engine.movePick(
+                            forForeignCard: config.cardId, runRemotely: runRemotely, machineChoice: machineChoice) {
+                            engine.moveCardReporting(config.cardId, to: target)
+                        } else if config.isResume {
                             executeResume(cardId: config.cardId, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride, assistant: config.assistant, serviceIdOverride: selectedServiceId, modelOverride: config.modelOverride, machineChoice: machineChoice)
                         } else {
                             let wtName: String? = createWorktree ? (worktreeBranch ?? config.worktreeName ?? "") : nil
@@ -1328,6 +1323,7 @@ struct ContentView: View {
             mutagen: store.state.globalRemoteSettings,
             boxd: store.state.remoteMode.runsOnMachines ? (store.state.boxdSettings ?? BoxdSettings()) : nil,
             cardMachine: machine,
+            ownerMachine: cardId.flatMap { store.state.ownerMachineChoice(cardId: $0) },
             cardMachineState: machine.flatMap { store.state.remoteMachineStates[$0] }
                 ?? link?.remote?.pausedReason.map { RemoteMachineState.paused($0) },
             // Only a card that has run before has a last run to follow.

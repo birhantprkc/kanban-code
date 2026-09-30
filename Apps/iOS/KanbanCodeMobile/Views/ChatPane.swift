@@ -228,17 +228,26 @@ struct ChatPane: View {
                         self.notice = nil
                     }
             }
-            if card.isLive {
+            if card.isLive, card.sessionStatus?.kind != .machine {
                 composer
             } else {
+                // The same status the Mac shows in the card: a start or a
+                // move in flight, a failed start, a machine that is away.
+                let status = card.sessionStatus
                 HStack {
-                    Text("Session not running")
+                    if let status, status.kind == .starting || status.kind == .moving {
+                        ProgressView()
+                    }
+                    Text(status?.text ?? "Session not running")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(status?.kind == .failed ? AnyShapeStyle(Color.red) : AnyShapeStyle(.secondary))
+                        .accessibilityIdentifier("sessionStatus")
                     Spacer()
-                    Button("Resume", systemImage: "play.fill", action: onResume)
-                        .buttonStyle(.borderedProminent)
-                        .accessibilityIdentifier("resumeBar")
+                    if status == nil || status?.canResume == true {
+                        Button("Resume", systemImage: "play.fill", action: onResume)
+                            .buttonStyle(.borderedProminent)
+                            .accessibilityIdentifier("resumeBar")
+                    }
                 }
             }
         }

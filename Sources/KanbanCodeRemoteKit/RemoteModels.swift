@@ -211,6 +211,10 @@ public struct RemoteCard: Codable, Sendable, Equatable, Identifiable {
     public var machineId: String?
     /// Display name of `machineId`, when the serving master knows it.
     public var machineName: String?
+    /// A start of the session in flight or failed, a move to another
+    /// master, or a machine that is not connected: what the card shows in
+    /// place of its resume button. Nil when the session runs or ended.
+    public var sessionStatus: RemoteSessionStatus?
 
     public init(
         id: String, title: String, column: RemoteColumn, projectPath: String? = nil, projectName: String? = nil,
@@ -218,7 +222,8 @@ public struct RemoteCard: Codable, Sendable, Equatable, Identifiable {
         isLive: Bool = false, isBusy: Bool = false, sessionId: String? = nil, terminals: [RemoteTerminal] = [],
         prs: [RemotePR] = [], queuedPromptCount: Int = 0, queuedPrompts: [RemoteQueuedPrompt] = [],
         parentCardId: String? = nil, archived: Bool = false,
-        lastActivity: Date? = nil, updatedAt: Date, machineId: String? = nil, machineName: String? = nil
+        lastActivity: Date? = nil, updatedAt: Date, machineId: String? = nil, machineName: String? = nil,
+        sessionStatus: RemoteSessionStatus? = nil
     ) {
         self.id = id
         self.title = title
@@ -242,6 +247,33 @@ public struct RemoteCard: Codable, Sendable, Equatable, Identifiable {
         self.updatedAt = updatedAt
         self.machineId = machineId
         self.machineName = machineName
+        self.sessionStatus = sessionStatus
+    }
+}
+
+/// Where the session of a card stands when it neither simply runs nor
+/// simply ended. Every client shows `text` where the resume button goes.
+public struct RemoteSessionStatus: Codable, Sendable, Equatable {
+    public enum Kind: String, Codable, Sendable {
+        /// A launch or resume is in flight; `text` is its step.
+        case starting
+        /// The card moves to another master; `text` says where and how far.
+        case moving
+        /// The session runs on a machine that is not connected.
+        case machine
+        /// The last start failed; `text` says why.
+        case failed
+    }
+
+    public var kind: Kind
+    public var text: String
+    /// Whether a resume is the way on (a failed start, a paused machine).
+    public var canResume: Bool
+
+    public init(kind: Kind, text: String, canResume: Bool = false) {
+        self.kind = kind
+        self.text = text
+        self.canResume = canResume
     }
 }
 
@@ -253,7 +285,7 @@ extension RemoteCard {
     private enum CodingKeys: String, CodingKey {
         case id, title, column, projectPath, projectName, branch, worktreePath, assistant, runtime
         case isLive, isBusy, sessionId, terminals, prs, queuedPromptCount, queuedPrompts, parentCardId, archived
-        case lastActivity, updatedAt, machineId, machineName
+        case lastActivity, updatedAt, machineId, machineName, sessionStatus
     }
 
     public init(from decoder: Decoder) throws {
@@ -280,7 +312,9 @@ extension RemoteCard {
             lastActivity: try c.decodeIfPresent(Date.self, forKey: .lastActivity),
             updatedAt: try c.decode(Date.self, forKey: .updatedAt),
             machineId: try c.decodeIfPresent(String.self, forKey: .machineId),
-            machineName: try c.decodeIfPresent(String.self, forKey: .machineName)
+            machineName: try c.decodeIfPresent(String.self, forKey: .machineName),
+            // A kind this client does not know yet reads as no status.
+            sessionStatus: (try? c.decodeIfPresent(RemoteSessionStatus.self, forKey: .sessionStatus)) ?? nil
         )
     }
 
@@ -308,6 +342,7 @@ extension RemoteCard {
         try c.encode(updatedAt, forKey: .updatedAt)
         try c.encodeIfPresent(machineId, forKey: .machineId)
         try c.encodeIfPresent(machineName, forKey: .machineName)
+        try c.encodeIfPresent(sessionStatus, forKey: .sessionStatus)
     }
 }
 

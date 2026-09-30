@@ -90,8 +90,15 @@ public final class MasterEngine {
     ) {
         if isForeign(cardId) {
             // The master that owns the card starts it.
-            forwardToOwner(cardId, "start the card") { client in _ = try await client.resume(cardId: cardId) }
+            forwardToOwner(cardId, "start the card", isStart: true) { client in _ = try await client.resume(cardId: cardId) }
             completion?(nil)
+            return
+        }
+        if let moving = stillMovingHere(cardId) {
+            // Its project is still the releasing master's; the adoption
+            // launches it here once the card has arrived.
+            KanbanCodeLog.info("launch", "Launch of card=\(cardId.prefix(12)) deferred: \(moving)")
+            completion?(moving)
             return
         }
         if runRemotely, let name = machineChoice?.machineName, let peer = peerMachine(named: name) {
@@ -590,7 +597,13 @@ public final class MasterEngine {
         guard let card = store.state.cards.first(where: { $0.id == cardId }) else { return false }
         if isForeign(cardId) {
             // The master that owns the card resumes it.
-            forwardToOwner(cardId, "resume the card") { client in _ = try await client.resume(cardId: cardId) }
+            forwardToOwner(cardId, "resume the card", isStart: true) { client in _ = try await client.resume(cardId: cardId) }
+            return false
+        }
+        if let moving = stillMovingHere(cardId) {
+            // Its paths are still the releasing master's and its transcript
+            // is on the way; the adoption resumes it once both are here.
+            KanbanCodeLog.info("resume", "Resume of card=\(cardId.prefix(12)) deferred: \(moving)")
             return false
         }
         if runRemotely,
@@ -605,7 +618,8 @@ public final class MasterEngine {
                 do {
                     try await handover(cardId: cardId, to: peer.id)
                 } catch {
-                    store.dispatch(.setError("Could not continue on \(peer.name): \(error.localizedDescription)"))
+                    store.dispatch(.cardStartReported(
+                        cardId: cardId, report: .failed("Could not continue on \(peer.name): \(error.localizedDescription)")))
                 }
             }
             return true

@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import KanbanCodeRemoteKit
 #if DEBUG && canImport(QuartzCore)
 import QuartzCore
 #endif
@@ -40,11 +41,14 @@ public struct PeerCardState: Sendable, Equatable {
     public var isBusy: Bool
     /// Its queue, oldest first; agtop's queued messages have `agtop-` ids.
     public var queue: [QueuedPrompt]
+    /// A start in flight or failed there, or a move away from there.
+    public var status: RemoteSessionStatus?
 
-    public init(isLive: Bool, isBusy: Bool, queue: [QueuedPrompt] = []) {
+    public init(isLive: Bool, isBusy: Bool, queue: [QueuedPrompt] = [], status: RemoteSessionStatus? = nil) {
         self.isLive = isLive
         self.isBusy = isBusy
         self.queue = queue
+        self.status = status
     }
 }
 
@@ -165,11 +169,25 @@ public final class AppState: @unchecked Sendable {
 
     /// Live state of every boxd machine the app knows, by machine name.
     /// Transient: the supervisor reports it, nothing persists it.
-    public var remoteMachineStates: [String: RemoteMachineState] = [:]
+    public var remoteMachineStates: [String: RemoteMachineState] = [:] { didSet { cardInputsVersion &+= 1 } }
 
-    /// Last progress line of a launch or resume in flight, by card id.
-    /// Transient: shown under the "Starting session" spinner.
-    public var launchProgress: [String: String] = [:]
+    /// What the last start of each card (launch, resume, move between
+    /// masters) reported, by card id: its step, the transcript copy of a
+    /// move, or why it failed. Transient; read through `KanbanCodeCard.sessionStatus`.
+    public var cardStarts: [String: CardStartReport] = [:] { didSet { cardInputsVersion &+= 1 } }
+
+    /// The step of the launch or resume of a card in flight.
+    public func launchStep(_ cardId: String) -> String? {
+        if case .step(let step) = cardStarts[cardId] { return step }
+        return nil
+    }
+
+    /// Why the last launch or resume of a card failed ("Resume failed: …"),
+    /// until the next one starts.
+    public func startFailure(_ cardId: String) -> String? {
+        if case .failed(let why) = cardStarts[cardId] { return why }
+        return nil
+    }
 
     /// Cards that keep their tmux session on `machineName`.
     public func cardIds(onMachine machineName: String) -> [String] {
@@ -431,7 +449,13 @@ public final class AppState: @unchecked Sendable {
                 isBusy: busyCards.contains(link.id),
                 isRateLimited: rateLimited,
                 liveModel: link.sessionLink.flatMap { sessionModels[$0.sessionId] },
-                owner: owner
+                owner: owner,
+                sessionStatus: CardSessionStatus.of(
+                    link: link,
+                    moving: handoverLine(cardId: link.id),
+                    report: cardStarts[link.id],
+                    peer: owner != nil ? peerCards[link.id]?.status : nil,
+                    machineState: link.remote.flatMap { remoteMachineStates[$0.machineName] })
             )
         }
         let cardsChanged = newCards != cards
@@ -665,6 +689,12 @@ public enum Action: Sendable {
     /// A step of a launch or resume in flight. Keeps the launch alive for
     /// the stale-launch timers and shows the step under the spinner.
     case launchProgress(cardId: String, message: String)
+    /// How far the transcript copy of a card moving between masters got;
+    /// nil once the copy is over.
+    case handoverProgress(cardId: String, progress: HandoverProgress?)
+    /// What a start of the card reported where it runs: the owner's answer
+    /// for a card another master runs, or nil to forget the last report.
+    case cardStartReported(cardId: String, report: CardStartReport?)
 
     // Remote machines (boxd)
     /// A card got a machine, or its machine record changed (new cwd, new status).
@@ -1006,6 +1036,7 @@ public enum Reducer {
 
         case .launchCard(let cardId, _, let projectPath, let worktreeName, _, _):
             guard var link = state.links[cardId] else { return [] }
+            state.cardStarts[cardId] = nil
             let projectName = (projectPath as NSString).lastPathComponent
             let effectiveName = (worktreeName?.isEmpty == false) ? worktreeName! : nil
             let tmuxName = effectiveName != nil
@@ -1029,6 +1060,7 @@ public enum Reducer {
 
         case .resumeCard(let cardId):
             guard var link = state.links[cardId] else { return [] }
+            state.cardStarts[cardId] = nil
             let sid = link.sessionLink?.sessionId ?? link.id
             let tmuxName = "\(link.effectiveAssistant.cliCommand)-\(String(sid.prefix(8)))"
             // Preserve existing shell sessions as extras
@@ -1768,7 +1800,7 @@ public enum Reducer {
 
         case .cancelLaunch(let cardId):
             guard var link = state.links[cardId] else { return [] }
-            state.launchProgress[cardId] = nil
+            state.cardStarts[cardId] = nil
             let tmuxName = link.tmuxLink?.sessionName
             link.isLaunching = nil
             link.tmuxLink = nil
@@ -2116,16 +2148,28 @@ public enum Reducer {
 
         // MARK: Async Completions
 
+        case .handoverProgress(let cardId, let progress):
+            if let progress {
+                if state.cardStarts[cardId] != .moving(progress) { state.cardStarts[cardId] = .moving(progress) }
+            } else if case .moving = state.cardStarts[cardId] {
+                state.cardStarts[cardId] = nil
+            }
+            return []
+
+        case .cardStartReported(let cardId, let report):
+            if state.cardStarts[cardId] != report { state.cardStarts[cardId] = report }
+            return []
+
         case .launchProgress(let cardId, let message):
             guard var link = state.links[cardId], link.isLaunching == true else { return [] }
-            state.launchProgress[cardId] = message
+            state.cardStarts[cardId] = .step(message)
             link.updatedAt = .now
             state.links[cardId] = link
             return []
 
         case .launchCompleted(let cardId, let tmuxName, let sessionLink, let worktreeLink, let isRemote):
             guard var link = state.links[cardId] else { return [] }
-            state.launchProgress[cardId] = nil
+            state.cardStarts[cardId] = nil
             let existingExtras = link.tmuxLink?.extraSessions
             link.tmuxLink = TmuxLink(sessionName: tmuxName, extraSessions: existingExtras)
             if let sl = sessionLink { link.sessionLink = sl }
@@ -2142,7 +2186,7 @@ public enum Reducer {
 
         case .launchTmuxReady(let cardId):
             guard var link = state.links[cardId] else { return [] }
-            state.launchProgress[cardId] = nil
+            state.cardStarts[cardId] = nil
             // Clear isLaunching so the UI shows the terminal immediately.
             // tmuxLink was already set by launchCard — we just flip the flag.
             link.isLaunching = nil
@@ -2153,17 +2197,17 @@ public enum Reducer {
 
         case .launchFailed(let cardId, let error):
             guard var link = state.links[cardId] else { return [] }
-            state.launchProgress[cardId] = nil
             link.tmuxLink = nil
             link.isLaunching = nil
             link.updatedAt = .now
             state.links[cardId] = link
+            state.cardStarts[cardId] = .failed("Launch failed: \(error)")
             state.notice = Notice("Launch failed: \(error)")
             return [.upsertLink(link)]
 
         case .resumeCompleted(let cardId, let tmuxName, let isRemote):
             guard var link = state.links[cardId] else { return [] }
-            state.launchProgress[cardId] = nil
+            state.cardStarts[cardId] = nil
             let existingExtras = link.tmuxLink?.extraSessions
             link.tmuxLink = TmuxLink(sessionName: tmuxName, extraSessions: existingExtras)
             link.isRemote = isRemote
@@ -2175,11 +2219,11 @@ public enum Reducer {
 
         case .resumeFailed(let cardId, let error):
             guard var link = state.links[cardId] else { return [] }
-            state.launchProgress[cardId] = nil
             link.tmuxLink = nil
             link.isLaunching = nil
             link.updatedAt = .now
             state.links[cardId] = link
+            state.cardStarts[cardId] = .failed("Resume failed: \(error)")
             state.notice = Notice("Resume failed: \(error)")
             return [.upsertLink(link)]
 
@@ -2370,7 +2414,7 @@ public enum Reducer {
                         // reporting progress, and a resume whose old
                         // transcript only says the session it replaces ended.
                         let activity = result.activityMap[existing.sessionLink?.sessionId ?? ""]
-                        let stillReporting = state.launchProgress[link.id] != nil
+                        let stillReporting = state.launchStep(link.id) != nil
                         if let activity, activity != .ended, activity != .stale, existing.remote == nil, !stillReporting {
                             // Activity detected — clear isLaunching, let column recomputation run
                             var cleared = existing
@@ -2719,6 +2763,7 @@ public enum Reducer {
             guard var link = state.links[cardId], link.ownerMachine == state.localMachineId,
                   !state.localMachineId.isEmpty
             else { return [] }
+            state.cardStarts[cardId] = nil
             link.migrating = nil
             link.tmuxLink = nil
             link.remote = nil
