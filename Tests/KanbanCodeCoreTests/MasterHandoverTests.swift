@@ -725,6 +725,10 @@ struct MasterRolesTests {
         #expect(box.tmux.created.count == 1)
         #expect(box.tmux.created.first?.command?.contains("--resume \(sessionId)") == true)
         #expect(box.store.state.links["card_big"]?.projectPath == "\(box.home)/Projects/widgets")
+        // A resume that arrives right after, before any tmux scan saw the
+        // new session, does not start it over.
+        _ = try await phone.resume(cardId: "card_big")
+        #expect(box.tmux.created.count == 1)
 
         await mac.peerSync.pullAll()
         #expect(mac.store.state.links["card_big"]?.migrating == nil)

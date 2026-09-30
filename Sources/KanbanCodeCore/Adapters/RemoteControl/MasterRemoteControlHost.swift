@@ -377,11 +377,18 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
         if let owner = await ownerClient(cardId) {
             return try await forwarded { try await owner.resume(cardId: cardId) }
         }
-        let current = try await MainActor.run { () throws -> RemoteCard in
+        let (current, running) = try await MainActor.run { () throws -> (RemoteCard, Bool) in
             if let moving = engine.stillMovingHere(cardId) { throw RemoteHostError.conflict(moving) }
-            return try remoteCard(cardId)
+            // A session this master just started is not in the last tmux
+            // scan yet: a second resume would start it over.
+            let status = try card(cardId).sessionStatus
+            let running: Bool = switch status {
+            case .live, .starting: true
+            default: false
+            }
+            return (try remoteCard(cardId), running)
         }
-        if current.isLive { return current }
+        if current.isLive || running { return current }
         await MainActor.run { engine.resumeRemoteCard(cardId) }
         // The caller may be another master or a phone that shows nothing of
         // this board: a start that fails is its answer, not a line in a log
