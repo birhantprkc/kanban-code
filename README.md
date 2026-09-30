@@ -95,6 +95,7 @@ kanban capture <card>        # Capture terminal output (last 50 lines)
 kanban send <card> <message> # Send a prompt to a card's tmux session
 kanban interrupt <card>      # Send Escape to stop the assistant
 kanban transcript <card>     # Recent conversation transcript
+kanban export [card]         # Whole session as Markdown (default: this card)
 kanban projects              # List configured projects
 kanban open [path]           # Open a project in the app
 ```
