@@ -123,7 +123,14 @@ public final class AppState: @unchecked Sendable {
     /// Configured projects (refreshed from settings on each reconciliation).
     public var configuredProjects: [Project] = []
     /// Cached excluded paths for global view.
-    public var excludedPaths: [String] = [] { didSet { cardInputsVersion &+= 1 } }
+    public var excludedPaths: [String] = [] {
+        didSet {
+            cardInputsVersion &+= 1
+            if excludedPaths != oldValue { pathExclusion = PathExclusion(excludedPaths) }
+        }
+    }
+    /// `excludedPaths`, compiled.
+    public private(set) var pathExclusion: PathExclusion = .none
     /// Project paths discovered from sessions but not yet configured.
     public var discoveredProjectPaths: [String] = []
 
@@ -569,24 +576,7 @@ public final class AppState: @unchecked Sendable {
     }
 
     public func isExcludedFromGlobalView(_ card: KanbanCodeCard) -> Bool {
-        guard !excludedPaths.isEmpty else { return false }
-        let cardPath = card.link.projectPath ?? card.session?.projectPath
-        guard let cardPath else { return false }
-        let normalized = ProjectDiscovery.normalizePath(cardPath)
-        let name = (normalized as NSString).lastPathComponent
-        for excluded in excludedPaths {
-            if excluded.contains("*") || excluded.contains("?") {
-                // Glob pattern — match against full path and folder name
-                if fnmatch(excluded, normalized, 0) == 0 { return true }
-                if fnmatch(excluded, name, 0) == 0 { return true }
-            } else {
-                let normalizedExcluded = ProjectDiscovery.normalizePath(excluded)
-                if normalized == normalizedExcluded || normalized.hasPrefix(normalizedExcluded + "/") {
-                    return true
-                }
-            }
-        }
-        return false
+        pathExclusion.matches(card.link.projectPath ?? card.session?.projectPath)
     }
 
     public init() {}
@@ -2425,6 +2415,22 @@ public enum Reducer {
             // we keep the removed orphans here, the next reconcile sees them
             // again, logs the same branch-change/dedup work every few seconds,
             // and creates avoidable UI hitches.
+            // Headless cards in a globally excluded folder go: discovery no
+            // longer tracks their sessions.
+            let exclusion = state.pathExclusion
+            if !exclusion.isEmpty {
+                var dropped = 0
+                for (id, link) in mergedLinks
+                where link.isUnclaimedHeadless && link.isLaunching != true
+                    && state.isOwnedLocally(link) && exclusion.matches(link.projectPath) {
+                    mergedLinks.removeValue(forKey: id)
+                    dropped += 1
+                }
+                if dropped > 0 {
+                    KanbanCodeLog.info("store", "Dropped \(dropped) headless card(s) in excluded folders")
+                }
+            }
+
             let reconciledIds = Set(result.links.map(\.id))
             for (id, link) in mergedLinks {
                 guard !reconciledIds.contains(id),
@@ -3100,8 +3106,15 @@ public final class BoardStore: @unchecked Sendable {
             }
 
             let t1 = ContinuousClock.now
+            // Headless runs in a globally excluded folder are not tracked
+            // at all: a benchmark there can start thousands of them.
+            let exclusion = state.pathExclusion
+            discovery.setHeadlessExclusion(exclusion)
             let allSessions = try await discovery.discoverSessions()
-            var sessions = allSessions.filter { !state.deletedSessionIds.contains($0.id) }
+            var sessions = allSessions.filter {
+                !state.deletedSessionIds.contains($0.id)
+                    && !($0.isHeadless && exclusion.matches($0.projectPath))
+            }
             if !adoptsDiscoveredSessions {
                 let known = Set(state.links.values.compactMap { $0.sessionLink?.sessionId })
                 sessions = sessions.filter { known.contains($0.id) }

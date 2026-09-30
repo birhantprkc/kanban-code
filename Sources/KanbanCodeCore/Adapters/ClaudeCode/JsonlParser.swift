@@ -103,6 +103,32 @@ public enum JsonlParser {
         return metadata
     }
 
+    /// Where and how a session was started: the first `cwd` and
+    /// `entrypoint` its transcript records. Reads only the first lines that
+    /// carry them, so it costs far less than `extractMetadata`.
+    public static func extractLaunchContext(
+        from filePath: String,
+        maxLines: Int = 20
+    ) async throws -> (cwd: String?, entrypoint: String?) {
+        let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: filePath))
+        defer { try? handle.close() }
+        var cwd: String?
+        var entrypoint: String?
+        var read = 0
+        for try await line in handle.blockLines {
+            read += 1
+            if read > maxLines { break }
+            guard line.contains("\"cwd\"") || line.contains("\"entrypoint\""),
+                  let data = line.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { continue }
+            if cwd == nil { cwd = obj["cwd"] as? String }
+            if entrypoint == nil { entrypoint = obj["entrypoint"] as? String }
+            if cwd != nil, entrypoint != nil { break }
+        }
+        return (cwd, entrypoint)
+    }
+
     /// Extract text content from a message object.
     static func extractTextContent(from obj: [String: Any]) -> String? {
         guard let message = obj["message"] as? [String: Any],
