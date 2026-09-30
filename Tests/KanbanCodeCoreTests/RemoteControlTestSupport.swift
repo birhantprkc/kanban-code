@@ -71,6 +71,13 @@ final class FakeRemoteHost: RemoteControlHost {
         return RemoteTranscript(cardId: cardId, messages: Array(all[start..<end]), olderCursor: start > 0 ? String(start) : nil)
     }
 
+    func machines() async -> [RemoteMachineEntry] {
+        [
+            RemoteMachineEntry(id: "machine_box", name: "rchaves-platform", kind: .this, online: true, alwaysOn: true),
+            RemoteMachineEntry(id: "machine_mac", name: "studio", kind: .master, online: false),
+        ]
+    }
+
     func createTask(_ request: RemoteTaskRequest) async throws -> RemoteCard {
         guard request.project == "acme" || request.project == "/tmp/acme" else {
             throw RemoteHostError.badRequest("unknown project \(request.project); known: acme")

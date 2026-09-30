@@ -165,6 +165,24 @@ extension AppState {
         localMachineId.isEmpty ? nil : MachineIdentity(id: localMachineId, name: localMachineName, alwaysOn: localMachineAlwaysOn ? true : nil)
     }
 
+    /// The machines a remote task can name: this master first, then the
+    /// machines of `machineChoices`.
+    public var remoteMachines: [RemoteMachineEntry] {
+        var out: [RemoteMachineEntry] = []
+        if let local = localMachineIdentity {
+            out.append(RemoteMachineEntry(id: local.id, name: local.name, kind: .this, online: true, alwaysOn: local.alwaysOn))
+        }
+        for choice in machineChoices {
+            if let master = choice.master {
+                out.append(RemoteMachineEntry(id: master.id, name: choice.name, kind: .master,
+                                              online: choice.masterOnline, alwaysOn: master.alwaysOn))
+            } else {
+                out.append(RemoteMachineEntry(name: choice.name, kind: .ssh))
+            }
+        }
+        return out
+    }
+
     /// Names of the peer masters seen so far, by machine id.
     public var peerMachineNames: [String: String] {
         var out: [String: String] = [:]

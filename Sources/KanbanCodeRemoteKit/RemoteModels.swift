@@ -17,9 +17,12 @@ public enum RemoteAPI {
         public static let queue = "queue"
         /// The `scroll` terminal control frame.
         public static let terminalScroll = "terminalScroll"
+        /// GET /v1/machines, and `machine` on tasks naming this master by
+        /// its own name.
+        public static let machines = "machines"
     }
 
-    public static let features = [Feature.images, Feature.queue, Feature.terminalScroll]
+    public static let features = [Feature.images, Feature.queue, Feature.terminalScroll, Feature.machines]
 }
 
 /// What a device may do. `full` is a phone: everything, terminals included.
@@ -138,6 +141,43 @@ public struct RemoteMachine: Codable, Sendable, Equatable, Hashable, Identifiabl
         self.id = id
         self.name = name
     }
+}
+
+/// One machine a task can run on, as GET /v1/machines lists it.
+public struct RemoteMachineEntry: Codable, Sendable, Equatable {
+    public enum Kind: String, Codable, Sendable {
+        /// The master serving the list; a task runs here when it names no machine.
+        case this
+        /// Another master: a task sent there is handed over and owned by it.
+        case master
+        /// An ssh machine this master drives, with no master of its own.
+        case ssh
+    }
+
+    /// The master's machine id; nil for a plain ssh machine.
+    public var id: String?
+    /// The name `machine` of POST /v1/tasks accepts.
+    public var name: String
+    public var kind: Kind
+    /// Whether the master answered its last pull; nil when unknown (ssh).
+    public var online: Bool?
+    /// A master that runs all the time (`kanban-code-server`).
+    public var alwaysOn: Bool?
+
+    public init(id: String? = nil, name: String, kind: Kind, online: Bool? = nil, alwaysOn: Bool? = nil) {
+        self.id = id
+        self.name = name
+        self.kind = kind
+        self.online = online
+        self.alwaysOn = alwaysOn
+    }
+}
+
+/// GET /v1/machines
+public struct RemoteMachineList: Codable, Sendable, Equatable {
+    public var machines: [RemoteMachineEntry]
+
+    public init(machines: [RemoteMachineEntry]) { self.machines = machines }
 }
 
 public struct RemoteCard: Codable, Sendable, Equatable, Identifiable {

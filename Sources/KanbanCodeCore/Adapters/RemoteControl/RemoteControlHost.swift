@@ -10,6 +10,9 @@ public protocol RemoteControlHost: AnyObject, Sendable {
     /// `before` when given.
     func transcript(cardId: String, limit: Int, before: String?) async throws -> RemoteTranscript
 
+    /// The machines a task can run on, this master first.
+    func machines() async -> [RemoteMachineEntry]
+
     /// Creates a card and, unless `launch` is false, starts its session.
     func createTask(_ request: RemoteTaskRequest) async throws -> RemoteCard
 
@@ -69,6 +72,8 @@ public protocol RemoteControlHost: AnyObject, Sendable {
 }
 
 extension RemoteControlHost {
+    public func machines() async -> [RemoteMachineEntry] { [] }
+
     public func rawTranscript(cardId: String, offset: Int, limit: Int) async throws -> RemoteRawTranscript {
         throw RemoteHostError.notFound("this host does not serve raw transcripts")
     }

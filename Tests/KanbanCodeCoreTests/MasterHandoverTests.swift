@@ -419,6 +419,35 @@ struct MasterHandoverTests {
         for _ in 0..<50 where box.tmux.created.isEmpty { try await Task.sleep(for: .milliseconds(50)) }
         #expect(box.tmux.created.count == 1)
     }
+
+    @Test("a task for a peer in a project only the peer knows is created and run there")
+    func taskForwardedToPeer() async throws {
+        let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("peer-task-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let mac = try TestMaster(name: "studio", root: root)
+        let box = try TestMaster(name: "box", root: root, alwaysOn: true)
+        let project = "\(mac.home)/Projects/app"
+        try FileManager.default.createDirectory(atPath: project, withIntermediateDirectories: true)
+        mac.store.dispatch(.settingsLoaded(projects: [Project(path: project)], excludedPaths: [], remote: nil,
+                                           remoteMode: .ssh, boxd: nil))
+        try await mac.serve()
+        try await box.serve()
+        try await mac.start(peerURL: box.url, peerToken: box.tokenForPeer)
+        try await box.start(peerURL: mac.url, peerToken: mac.tokenForPeer)
+        defer { mac.server.stop(); box.server.stop() }
+        await mac.peerSync.pullAll()
+        await box.peerSync.pullAll()
+
+        let host = MasterRemoteControlHost(engine: box.engine)
+        #expect(await host.machines().map(\.name) == ["box", "studio"])
+        let card = try await host.createTask(RemoteTaskRequest(project: "app", prompt: "do it", machine: "STUDIO"))
+        #expect(card.machineId == mac.identity.id)
+        #expect(mac.store.state.links[card.id]?.projectPath == project)
+        #expect(box.store.state.links[card.id] == nil)
+        for _ in 0..<50 where mac.tmux.created.isEmpty { try await Task.sleep(for: .milliseconds(50)) }
+        #expect(mac.tmux.created.count == 1)
+        #expect(box.tmux.created.isEmpty)
+    }
 }
 
 // MARK: - Roles, channels and commands across masters

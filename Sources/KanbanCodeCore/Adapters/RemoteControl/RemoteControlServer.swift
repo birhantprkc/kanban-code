@@ -425,6 +425,9 @@ public final class RemoteControlServer: Sendable {
                 let before = request.query["before"].flatMap { $0.isEmpty ? nil : $0 }
                 return .response(.json(try await host.transcript(cardId: id, limit: limit, before: before)))
 
+            case ("GET", "machines"):
+                return .response(.json(RemoteMachineList(machines: await host.machines())))
+
             case ("POST", "tasks"):
                 guard let body = try? JSONDecoder.remote.decode(RemoteTaskRequest.self, from: request.body) else {
                     return .response(.error(400, "body must be a RemoteTaskRequest: {\"project\", \"prompt\", ...}"))
@@ -535,7 +538,7 @@ public final class RemoteControlServer: Sendable {
     }
 
     private static let knownShapes: Set<String> = [
-        "me", "board", "cards/*", "cards/*/transcript", "tasks", "cards/*/prompt", "cards/*/queue/*",
+        "me", "board", "machines", "cards/*", "cards/*/transcript", "tasks", "cards/*/prompt", "cards/*/queue/*",
         "cards/*/interrupt", "cards/*/resume", "events", "cards/*/terminal",
         "cards/*/move", "cards/*/handover", "cards/*/transcript/raw",
     ]

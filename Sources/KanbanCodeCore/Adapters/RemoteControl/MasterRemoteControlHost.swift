@@ -54,6 +54,10 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
         return board
     }
 
+    public func machines() async -> [RemoteMachineEntry] {
+        await MainActor.run { store.state.remoteMachines }
+    }
+
     @MainActor
     private func card(_ cardId: String) throws -> KanbanCodeCard {
         guard let card = store.state.cards.first(where: { $0.id == cardId }) else {
@@ -97,6 +101,13 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
     public func createTask(_ request: RemoteTaskRequest) async throws -> RemoteCard {
         var projectPath = await MainActor.run {
             RemoteBoardMapper.resolveProject(request.project, in: store.state.configuredProjects)?.path
+        }
+        if projectPath == nil, let peer = await peerTaskClient(request.machine) {
+            // A project this master does not know, for another master: that
+            // master creates and runs the card.
+            var task = request
+            task.machine = "here"
+            return try await forwarded { try await peer.createTask(task) }
         }
         if projectPath == nil, Self.isRepositoryURL(request.project) {
             // A peer launching here names the repository by its origin.
@@ -442,6 +453,14 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
     /// the card go there.
     private func ownerClient(_ cardId: String) async -> RemoteClient? {
         await engine.ownerClient(forCard: cardId)
+    }
+
+    /// A client of the peer master `machine` names, when it names one.
+    private func peerTaskClient(_ machine: String?) async -> RemoteClient? {
+        guard let machine = machine?.trimmingCharacters(in: .whitespacesAndNewlines), !machine.isEmpty else { return nil }
+        let peer = await MainActor.run { engine.isLocalMachine(machine) ? nil : engine.peerMachine(named: machine) }
+        guard let peer else { return nil }
+        return await engine.peerClient(machineId: peer.id)
     }
 
     /// Runs a call on the owner, turning its answer into this server's.

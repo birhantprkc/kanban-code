@@ -39,6 +39,7 @@ JSON bodies, up to 48 MiB. Dates are ISO 8601 with milliseconds, UTC (`2026-09-2
 | `GET /v1/board?all=1` | any | `RemoteBoard` |
 | `GET /v1/cards/{id}` | any | `RemoteCard` |
 | `GET /v1/cards/{id}/transcript?limit=50&before=<cursor>` | any | `RemoteTranscript`, oldest first |
+| `GET /v1/machines` | any | `RemoteMachineList`: this master (`kind` `this`), the other masters and the ssh machines |
 | `POST /v1/tasks` | any | `RemoteTaskRequest` → `RemoteCard`, 201 |
 | `POST /v1/cards/{id}/prompt` | any | `RemotePromptRequest` → 204 |
 | `POST /v1/cards/{id}/queue/{promptId}` | any | 204 |
@@ -62,7 +63,7 @@ JSON bodies, up to 48 MiB. Dates are ISO 8601 with milliseconds, UTC (`2026-09-2
 
 Behaviour:
 - `board` and `events` return the working set: no archived cards, no All Sessions cards, and only the 30 most recent Done cards (by `lastActivity`, else `updatedAt`). `?all=1` returns every card.
-- `POST /v1/tasks` resolves `project` as a project path first, then as a project name (case-insensitive). An unknown project is a 400 that lists the known names. The card launches with the app's defaults for that project: runtime (`tmux`, or `agtop` for rush), skip permissions, and the command template. `machine` picks where it runs: `mac`, or the name of an ssh machine, a boxd machine or a peer master. An ssh machine that runs a paired master is that master: the card is handed to it. Without it the card runs where the New Task dialog would start it for that project.
+- `POST /v1/tasks` resolves `project` as a project path first, then as a project name (case-insensitive). An unknown project is a 400 that lists the known names. The card launches with the app's defaults for that project: runtime (`tmux`, or `agtop` for rush), skip permissions, and the command template. `machine` picks where it runs: `mac`, `local` or `here` for the master that answers, its own name from `GET /v1/machines`, or the name of an ssh machine, a boxd machine or a peer master. An ssh machine that runs a paired master is that master: the card is handed to it. Without it the card runs where the New Task dialog would start it for that project.
 - `prompt` with `mode: queue` delivers the text when the current turn ends, or at once when the session is idle. `mode: now` interrupts the turn first. A card with no live session returns 409 until it is resumed.
 - `prompt` and `tasks` take `images`: up to 6 `RemoteImage` objects, `{"mediaType": "image/png", "data": "<base64>"}`, each at most 5 MiB decoded, PNG, JPEG, GIF or WebP (the server reads the format from the bytes). `text` may be empty when there are images. The Mac writes them to files and sends them the way its own chat does: pasted into Claude in tmux, `--image` for rush. A bad image fails the whole request with 400. An older server ignores `images` and sends the text alone, so check the `images` feature first.
 - A prompt's `text` places each image with an `[Image #N]` marker, N counting from 1 in `images` order, as in Claude Code. The server renumbers the markers in text order, reorders `images` to match and drops an image no marker names. Text with no marker keeps every image, after the text. In the transcript, a user message shows its images as those markers (images sent by file path too); a message whose images have no markers ends with `[image]` or `[N images]`.

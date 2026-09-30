@@ -24,6 +24,9 @@ enum RemoteOpenAPI {
       "parameters": [{"$ref": "#/components/parameters/All"}],
       "get": {"summary": "The working set (no archived, no All Sessions, the 30 most recent Done) and projects; all=1 for every card", "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Board"}}}}, "401": {"$ref": "#/components/responses/Error"}}}
     },
+    "/v1/machines": {
+      "get": {"summary": "The machines a task can run on: this master (kind this, where a task with no machine runs), the other masters and the ssh machines", "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MachineList"}}}}, "401": {"$ref": "#/components/responses/Error"}}}
+    },
     "/v1/cards/{id}": {
       "parameters": [{"$ref": "#/components/parameters/CardId"}],
       "get": {"summary": "One card", "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Card"}}}}, "404": {"$ref": "#/components/responses/Error"}}},
@@ -116,7 +119,7 @@ enum RemoteOpenAPI {
     "responses": {"Error": {"description": "refused", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}},
     "schemas": {
       "Error": {"type": "object", "required": ["error"], "properties": {"error": {"type": "string"}}},
-      "Health": {"type": "object", "properties": {"app": {"type": "string"}, "version": {"type": "string"}, "apiVersion": {"type": "integer"}, "hostName": {"type": "string"}, "features": {"type": "array", "items": {"type": "string", "enum": ["images", "queue", "terminalScroll"]}, "description": "what the server supports beyond apiVersion 1; missing on older servers"}}},
+      "Health": {"type": "object", "properties": {"app": {"type": "string"}, "version": {"type": "string"}, "apiVersion": {"type": "integer"}, "hostName": {"type": "string"}, "features": {"type": "array", "items": {"type": "string", "enum": ["images", "queue", "terminalScroll", "machines"]}, "description": "what the server supports beyond apiVersion 1; missing on older servers"}}},
       "Device": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string"}, "scope": {"type": "string", "enum": ["full", "agent"]}, "createdAt": {"type": "string", "format": "date-time"}, "lastSeenAt": {"type": ["string", "null"], "format": "date-time"}}},
       "PR": {"type": "object", "properties": {"number": {"type": "integer"}, "url": {"type": ["string", "null"]}, "title": {"type": ["string", "null"]}, "status": {"type": ["string", "null"], "description": "open, draft, merged or closed"}}},
       "Terminal": {"type": "object", "properties": {"sessionName": {"type": "string"}, "label": {"type": "string"}, "isPrimary": {"type": "boolean"}}},
@@ -149,6 +152,7 @@ enum RemoteOpenAPI {
           "machineName": {"type": ["string", "null"]}
         }
       },
+      "MachineList": {"type": "object", "properties": {"machines": {"type": "array", "items": {"type": "object", "required": ["name", "kind"], "properties": {"id": {"type": "string", "description": "machine id of a master"}, "name": {"type": "string", "description": "what TaskRequest.machine accepts"}, "kind": {"type": "string", "enum": ["this", "master", "ssh"]}, "online": {"type": "boolean"}, "alwaysOn": {"type": "boolean"}}}}}},
       "Machine": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string"}}},
       "Project": {"type": "object", "properties": {"path": {"type": "string"}, "name": {"type": "string"}}},
       "Board": {"type": "object", "properties": {"cards": {"type": "array", "items": {"$ref": "#/components/schemas/Card"}}, "projects": {"type": "array", "items": {"$ref": "#/components/schemas/Project"}}, "generatedAt": {"type": "string", "format": "date-time"}, "machine": {"$ref": "#/components/schemas/Machine", "description": "the master serving this board"}}},
@@ -165,7 +169,8 @@ enum RemoteOpenAPI {
           "assistant": {"type": "string", "description": "claude, codex or gemini"},
           "model": {"type": "string"},
           "launch": {"type": "boolean", "description": "false only creates the card in the backlog"},
-          "images": {"type": "array", "maxItems": 6, "items": {"$ref": "#/components/schemas/Image"}}
+          "images": {"type": "array", "maxItems": 6, "items": {"$ref": "#/components/schemas/Image"}},
+          "machine": {"type": "string", "description": "where the card runs: a name from GET /v1/machines, or mac/local/here for this master; omit for the project default"}
         }
       },
       "PromptRequest": {"type": "object", "required": ["text"], "properties": {"text": {"type": "string", "description": "may be empty when images has some"}, "mode": {"type": "string", "enum": ["queue", "now"], "default": "queue"}, "images": {"type": "array", "maxItems": 6, "items": {"$ref": "#/components/schemas/Image"}}}},
