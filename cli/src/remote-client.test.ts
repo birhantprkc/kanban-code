@@ -420,6 +420,9 @@ describe("kanban remote task / send / interrupt / resume", () => {
     assert.equal(r.code, 0, r.err);
     assert.equal((state.tasks[1] as { machine?: string }).machine, "studio");
     assert.equal(JSON.parse(r.out).machineName, "studio");
+    state.cards.push(card({ id: "card_7MAC", title: "On the Mac", machineName: "studio" }));
+    const shown = await run(["show", "card_7MAC"]);
+    assert.match(shown.out, /machine:\s+studio/);
     r = await run(["task", "--project", "langwatch", "--machine", "here", "here"]);
     assert.equal((state.tasks[2] as { machine?: string }).machine, "rchaves-platform");
   });

@@ -536,6 +536,7 @@ export function formatCardDetail(card: RemoteCard): string {
     `  project:    ${card.projectName ?? "-"}${card.projectPath ? ` (${card.projectPath})` : ""}`,
     `  assistant:  ${card.assistant} on ${card.runtime}`,
   ];
+  if (card.machineName) lines.push(`  machine:    ${card.machineName}`);
   if (card.branch) lines.push(`  branch:     ${card.branch}`);
   if (card.worktreePath) lines.push(`  worktree:   ${card.worktreePath}`);
   if (card.sessionId) lines.push(`  session:    ${card.sessionId}`);
