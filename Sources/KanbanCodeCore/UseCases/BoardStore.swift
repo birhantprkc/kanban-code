@@ -2821,6 +2821,14 @@ public final class BoardStore: @unchecked Sendable {
     public private(set) var state: AppState
     private let effectHandler: EffectHandler
 
+    /// Whether this master has read its own links.json. Until then the
+    /// board is not this machine's set: peer pages wait in
+    /// `pendingPeerPages`, and no full rewrite of links.json or
+    /// tombstones.json runs, so a peer's set can never replace the file.
+    public private(set) var localLinksLoaded = false
+    private var pendingPeerPages: [(peer: String, links: [Link])] = []
+    private var localLinksLoad: Task<Bool, Never>?
+
     // Dependencies for reconciliation
     private var isReconciling = false
     private var lastGHLookup: ContinuousClock.Instant = .now - .seconds(600)
@@ -2915,8 +2923,9 @@ public final class BoardStore: @unchecked Sendable {
     /// Dispatch an action. Reducer runs synchronously, effects run async.
     public func dispatch(_ action: Action) {
         if let foreignCardHandler, foreignCardHandler(action) { return }
+        if deferUntilLocalLinksLoad(action) { return }
         let t = DispatchTime.now().uptimeNanoseconds
-        let effects = Reducer.reduce(state: state, action: action)
+        let effects = guardedEffects(Reducer.reduce(state: state, action: action))
         let totalMs = Double(DispatchTime.now().uptimeNanoseconds - t) / 1_000_000
         if totalMs > 16 {
             // Mirror gives the case name without serializing associated values.
@@ -2934,7 +2943,8 @@ public final class BoardStore: @unchecked Sendable {
 
     /// Dispatch an action and wait for all its effects to complete.
     public func dispatchAndWait(_ action: Action) async {
-        let effects = Reducer.reduce(state: state, action: action)
+        if deferUntilLocalLinksLoad(action) { return }
+        let effects = guardedEffects(Reducer.reduce(state: state, action: action))
         await withTaskGroup(of: Void.self) { group in
             for effect in effects {
                 group.addTask { [weak self] in
@@ -2943,6 +2953,67 @@ public final class BoardStore: @unchecked Sendable {
                 }
             }
         }
+    }
+
+    /// Holds a peer page back until this master has read its own links: a
+    /// page merged into the empty board of a starting master would be
+    /// persisted as the whole of links.json.
+    private func deferUntilLocalLinksLoad(_ action: Action) -> Bool {
+        guard !localLinksLoaded, case .peerLinksMerged(let peer, let links) = action else { return false }
+        pendingPeerPages.append((peer, links))
+        return true
+    }
+
+    /// Drops the full rewrites of links.json and tombstones.json while the
+    /// local links are not loaded: the board then holds no more than what
+    /// arrived since startup, and writing it would replace the file.
+    private func guardedEffects(_ effects: [Effect]) -> [Effect] {
+        guard !localLinksLoaded else { return effects }
+        return effects.filter { effect in
+            switch effect {
+            case .persistLinks, .persistTombstones:
+                KanbanCodeLog.warn("store", "Skipped a links.json rewrite before the local links loaded")
+                return false
+            default:
+                return true
+            }
+        }
+    }
+
+    /// Reads this master's links.json and tombstones.json into the board,
+    /// once. Concurrent callers share the same read. A card already on the
+    /// board is newer than its copy on disk and is kept. Peer pages that
+    /// arrived meanwhile are merged afterwards. Returns false when the file
+    /// could not be read, so the caller does not act on a partial board.
+    @discardableResult
+    public func loadLocalLinks() async -> Bool {
+        if localLinksLoaded { return true }
+        if let localLinksLoad { return await localLinksLoad.value }
+        let task = Task { @MainActor [self] () -> Bool in
+            let t = ContinuousClock.now
+            guard let cached = try? await coordinationStore.readLinks() else {
+                KanbanCodeLog.warn("store", "Could not read links.json, the board waits for the next try")
+                return false
+            }
+            let tombstones = (try? await coordinationStore.readTombstones()) ?? []
+            for link in cached where state.links[link.id] == nil {
+                state.links[link.id] = link
+            }
+            state.loadSyncState(tombstones: tombstones)
+            state.rebuildCards()
+            localLinksLoaded = true
+            KanbanCodeLog.info("reconcile", "cached links: \(t.duration(to: .now)) (\(cached.count) links)")
+            let pending = pendingPeerPages
+            pendingPeerPages = []
+            for page in pending {
+                dispatch(.peerLinksMerged(peer: page.peer, links: page.links))
+            }
+            return true
+        }
+        localLinksLoad = task
+        let loaded = await task.value
+        if !loaded { localLinksLoad = nil }
+        return loaded
     }
 
     // MARK: - Activity Refresh (fast path)
@@ -3030,15 +3101,7 @@ public final class BoardStore: @unchecked Sendable {
             }
         }
         // Also load cached links so cards appear instantly
-        if state.links.isEmpty {
-            if let cached = try? await coordinationStore.readLinks(), !cached.isEmpty {
-                for link in cached {
-                    state.links[link.id] = link
-                }
-                state.loadSyncState(tombstones: (try? await coordinationStore.readTombstones()) ?? [])
-                state.rebuildCards()
-            }
-        }
+        await loadLocalLinks()
     }
 
     // MARK: - Reconciliation
@@ -3080,17 +3143,11 @@ public final class BoardStore: @unchecked Sendable {
                 }
             }
 
-            // Show cached data immediately while discovery runs
-            if state.links.isEmpty {
-                let t = ContinuousClock.now
-                let cached = try await coordinationStore.readLinks()
-                if !cached.isEmpty {
-                    for link in cached {
-                        state.links[link.id] = link
-                    }
-                }
-                state.loadSyncState(tombstones: (try? await coordinationStore.readTombstones()) ?? [])
-                KanbanCodeLog.info("reconcile", "cached links: \(t.duration(to: .now)) (\(cached.count) links)")
+            // Show cached data immediately while discovery runs. A board
+            // without this master's own links is never reconciled.
+            guard await loadLocalLinks() else {
+                if state.isLoading { dispatch(.setLoading(false)) }
+                return
             }
 
             // Fast tmux liveness pass. The full pass below can spend a long
