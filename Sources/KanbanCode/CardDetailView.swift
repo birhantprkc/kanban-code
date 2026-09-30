@@ -570,6 +570,12 @@ struct CardDetailView: View {
         selectedTerminalSession == nil && selectedBrowserTabId == nil
     }
 
+    /// The rush terminal is on screen and draws the card's queue itself.
+    private var rushShowsQueue: Bool {
+        guard !preferChatView, isClaudeTabSelected, let session = claudeTmuxSession else { return false }
+        return AgtopSessionName.isAgtop(session)
+    }
+
     /// The tmux session name for the live Claude terminal, if any.
     private var claudeTmuxSession: String? {
         guard let tmux = card.link.tmuxLink,
@@ -843,7 +849,7 @@ struct CardDetailView: View {
                 .padding(.bottom, 6)
 
                 // Queued prompts bar
-                if let prompts = card.link.queuedPrompts, !prompts.isEmpty {
+                if let prompts = card.link.queuedPrompts, !prompts.isEmpty, !rushShowsQueue {
                     QueuedPromptsBar(
                         prompts: prompts,
                         onSendNow: { promptId in
