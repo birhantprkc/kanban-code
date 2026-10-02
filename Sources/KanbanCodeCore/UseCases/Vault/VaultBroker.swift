@@ -303,7 +303,7 @@ public actor VaultBroker {
     private func judge(_ secrets: [VaultSecret], req: VaultReleaseRequest, caller: VaultCaller) async -> [(VaultSecret, VaultVerdict)] {
         guard !secrets.isEmpty else { return [] }
         guard let jev else { return secrets.map { ($0, VaultPolicy.afterJev(nil)) } }
-        let title: String? = if let card = caller.cardId { await cardTitle(card) } else { nil }
+        let title: String? = if let card = caller.cardId { await principalTitle(card) } else { nil }
         return await withTaskGroup(of: (Int, VaultVerdict).self) { group in
             for (i, s) in secrets.enumerated() {
                 let question = JevReleaseQuestion(
@@ -341,6 +341,12 @@ public actor VaultBroker {
             }
         }
         return VaultResponse(status: .granted, message: "released", id: requestId, values: values, card: caller.cardId)
+    }
+
+    /// A card's title, or "OpenClaw agent <id>" for an OpenClaw principal.
+    private func principalTitle(_ id: String) async -> String? {
+        if let agent = VaultCaller.openClawAgent(principal: id) { return "OpenClaw agent \(agent)" }
+        return await cardTitle(id)
     }
 
     // MARK: - Leases
@@ -467,13 +473,15 @@ public actor VaultBroker {
         var options = VaultPolicy.approvalOptions(everyUseAsks: everyUse || admin, insideCard: caller.insideCard)
         if leaseOnly { options = [AttentionRequest.vaultApprovalOptions[0], AttentionRequest.vaultApprovalOptions[2]] }
         let names = secrets.map(\.name).joined(separator: ", ")
-        let title: String? = if let card = caller.cardId { await cardTitle(card) } else { nil }
+        let title: String? = if let card = caller.cardId { await principalTitle(card) } else { nil }
         var body: [String] = []
         if let reason, !reason.isEmpty { body.append("Reason: \(reason)") }
         if let command, !command.isEmpty { body.append("Command: \(command.prefix(600))") }
         let uniqueWhys = Array(Set(whys)).sorted()
         body.append("Asking because: \(uniqueWhys.joined(separator: "; "))")
-        if caller.insideCard {
+        if let agent = caller.openClawAgent {
+            body.append("From OpenClaw agent: \(agent)")
+        } else if caller.insideCard {
             body.append("From card: \(title ?? caller.cardId ?? "?")")
         } else {
             var where_ = "NOT from a Kanban card session"
@@ -487,7 +495,7 @@ public actor VaultBroker {
         let verb = admin ? "Vault change" : (leaseOnly ? "Vault lease" : "Vault")
         let request = AttentionRequest(
             id: id,
-            cardId: caller.cardId,
+            cardId: caller.openClawAgent == nil ? caller.cardId : nil,
             kind: .vaultApproval,
             title: "\(verb): \(names)\(title.map { " for \($0)" } ?? "")",
             body: body.joined(separator: "\n"),
@@ -505,7 +513,7 @@ public actor VaultBroker {
         await approvals.raise(request)
         Task { await self.waitForHuman(id: id) }
         let waitingOn = caller.insideCard
-            ? "Waiting for Rogerio's approval on his phone or Mac (card \(title ?? caller.cardId ?? "?"))"
+            ? "Waiting for Rogerio's approval on his phone or Mac (\(caller.openClawAgent == nil ? "card " : "")\(title ?? caller.cardId ?? "?"))"
             : "Waiting for Rogerio's approval on his phone or Mac (this process is not in a Kanban card session)"
         return VaultResponse(status: .pending, message: waitingOn, id: id, card: caller.cardId)
     }

@@ -310,3 +310,73 @@ struct VaultBrokerTests {
         #expect(JevClient.parse(Data("{}".utf8)) == nil)
     }
 }
+
+@Suite("Vault callers from OpenClaw")
+struct OpenClawCallerTests {
+    private let layout = OpenClawLayout(
+        workspaces: ["main": "/root/.openclaw/workspace", "forge": "/root/.openclaw/workspace-forge"],
+        names: ["main": "Chief", "forge": "Forge"]
+    )
+    private let unitCgroup = "/user.slice/user-0.slice/user@0.service/app.slice/openclaw-gateway.service"
+
+    @Test func layoutReadsAgentsFromTheConfig() throws {
+        let json = #"{"agents":{"defaults":{"workspace":"/root/.openclaw/workspace"},"entries":{"main":{"identity":{"name":"Chief"}},"forge":{"workspace":"/root/.openclaw/workspace-forge","identity":{"name":"Forge"}},"sleep":{}}}}"#
+        let parsed = try #require(OpenClawLayout.parse(Data(json.utf8), home: "/root"))
+        #expect(parsed.workspaces == [
+            "main": "/root/.openclaw/workspace",
+            "forge": "/root/.openclaw/workspace-forge",
+            "sleep": "/root/.openclaw/workspace-sleep",
+        ])
+        #expect(parsed.names["main"] == "Chief")
+        #expect(parsed.agent(forCwd: "/root/.openclaw/workspace-forge/tmp") == "forge")
+        #expect(parsed.agent(forCwd: "/root/.openclaw/workspace") == "main")
+        #expect(parsed.agent(forCwd: "/root/.openclaw/workspace-other") == nil)
+    }
+
+    @Test func theAgentIsTheProcessTheGatewayStarted() {
+        // kv < bash < claude (forge) < gateway < systemd
+        let chain = [
+            VaultProcess(pid: 50, ppid: 40, name: "kv"),
+            VaultProcess(pid: 40, ppid: 30, name: "bash"),
+            VaultProcess(pid: 30, ppid: 20, name: "claude"),
+            VaultProcess(pid: 20, ppid: 10, name: "node"),
+            VaultProcess(pid: 10, ppid: 1, name: "systemd"),
+        ]
+        let inUnit: Set<Int> = [50, 40, 30, 20]
+        // The shell moved to the main workspace: the agent is still forge.
+        let cwds = [50: "/root/.openclaw/workspace", 40: "/root/.openclaw/workspace", 30: "/root/.openclaw/workspace-forge", 20: "/"]
+        let principal = layout.principal(chain: chain, cgroup: { inUnit.contains($0) ? unitCgroup : "/user.slice/session-1.scope" },
+                                         cwd: { cwds[$0] })
+        #expect(principal == "openclaw:forge")
+
+        let gatewayItself = layout.principal(chain: [chain[0], chain[3], chain[4]], cgroup: { inUnit.contains($0) ? unitCgroup : nil },
+                                             cwd: { _ in "/" })
+        #expect(gatewayItself == "openclaw:gateway")
+
+        // A shell outside the unit is not OpenClaw, whatever its directory.
+        #expect(layout.principal(chain: chain, cgroup: { _ in "/user.slice/session-1.scope" }, cwd: { cwds[$0] }) == nil)
+    }
+
+    @Test func anOpenClawAgentGetsCardTiersLeasesAndJev() async throws {
+        let forge = VaultCaller(cardId: VaultCaller.openClawPrincipal(agent: "forge"), pid: 50, ancestry: ["kv", "bash", "claude", "node"])
+        #expect(forge.insideCard && forge.openClawAgent == "forge")
+
+        let (broker, store, approvals) = try await makeBroker(jev: JevVerdict(choice: .allow, confidence: 0.9), answer: AttentionRequest.vaultApprovalOptions[0])
+        #expect(await broker.release(VaultReleaseRequest(mode: "run", names: ["OPEN"]), caller: forge).status == .granted)
+        #expect(await broker.release(VaultReleaseRequest(mode: "run", names: ["JUDGED"], command: "wrangler deploy"), caller: forge).status == .granted)
+
+        let asked = await broker.release(VaultReleaseRequest(mode: "run", names: ["ASK"], command: "x"), caller: forge)
+        #expect(asked.status == .pending)
+        let request = try #require(approvals.raised.last)
+        #expect(request.cardId == nil)
+        #expect(request.body.contains("From OpenClaw agent: forge"))
+        #expect(request.options.first == AttentionRequest.vaultApprovalOptions[0])
+        #expect(await waitResult(broker, try #require(asked.id)).status == .granted)
+        #expect(await store.activeLease(cardId: "openclaw:forge", secret: "ASK", now: Date()) != nil)
+
+        // The lease is the agent's own: Chief still asks.
+        let chief = VaultCaller(cardId: VaultCaller.openClawPrincipal(agent: "main"), pid: 51)
+        approvals.answer = nil
+        #expect(await broker.release(VaultReleaseRequest(mode: "run", names: ["ASK"]), caller: chief).status == .pending)
+    }
+}

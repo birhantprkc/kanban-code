@@ -37,6 +37,8 @@ Order, first match wins:
 
 "Inside a card session" is checked by the master, not claimed by the client. kv calls the local master over loopback; the master finds the calling process from the TCP connection (`lsof` on macOS, `/proc/net/tcp` on Linux), walks its parents, and matches them against the pane shells of the cards' tmux sessions and the assistant processes agtop hosts for cards. `KANBAN_CARD_ID` is only shown to the human when it could not be verified. Requests over the network are never inside a card.
 
+OpenClaw agents on a Linux master count like card sessions under the principal `openclaw:<agent>`: the master finds, in the caller's ancestry, a process whose cgroup is the gateway's systemd unit (`openclaw-gateway.service`, set by systemd, not by the process), then the topmost process below the gateway whose working directory is an agent workspace from `~/.openclaw/openclaw.json` (the agent runtime the gateway started; a child that changes directory does not change it). The gateway itself, resolving SecretRefs, is `openclaw:gateway`. Each principal holds its own leases. Commands an agent starts outside the unit (`systemd-run`, cron) are outside, so they ask.
+
 Human approvals are attention requests of kind `vaultApproval` with the options "Approve for this card (2 days)", "Approve once", "Deny". A secret with "every use asks" never offers the lease. No answer in 10 minutes denies.
 
 ## kv
@@ -53,7 +55,10 @@ kv add NAME [--tier t] [--rules "..."]      value on stdin
 kv ls | kv log | kv leases | kv status
 kv tier NAME <tier> | kv rules NAME "..."   asks Rogerio
 kv import [--apply]
+kv exec-provider                             OpenClaw exec SecretRef provider
 ```
+
+`kv exec-provider` speaks OpenClaw's exec provider protocol (`{"protocolVersion":1,"ids":[...]}` on stdin, `{"values":{...},"errors":{...}}` on stdout); each id is a vault secret name. It never waits on a human: a secret that needs approval comes back as `NEEDS_APPROVAL` and its request stays open for the next `openclaw secrets reload`.
 
 `.env.vault` holds names only: `KEY={{vault:NAME}}`. Lines with plain values pass through.
 

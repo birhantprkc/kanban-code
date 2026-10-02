@@ -276,4 +276,17 @@ public struct VaultCaller: Codable, Sendable, Equatable {
     }
 
     public var insideCard: Bool { cardId != nil && remoteDevice == nil }
+
+    /// The OpenClaw agent behind `cardId` when the caller is an OpenClaw
+    /// agent rather than a card ("openclaw:<agent>"). Those get the tiers
+    /// and leases of a card session under that id.
+    public var openClawAgent: String? { cardId.flatMap(VaultCaller.openClawAgent(principal:)) }
+
+    public static let openClawPrefix = "openclaw:"
+
+    public static func openClawPrincipal(agent: String) -> String { openClawPrefix + agent }
+
+    public static func openClawAgent(principal: String) -> String? {
+        principal.hasPrefix(openClawPrefix) ? String(principal.dropFirst(openClawPrefix.count)) : nil
+    }
 }

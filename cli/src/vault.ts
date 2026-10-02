@@ -265,6 +265,39 @@ export function hookRewrite(
   };
 }
 
+/**
+ * The answer of an OpenClaw `exec` SecretRef provider (protocol 1): every
+ * requested id is a vault secret name. Nothing waits on a human here: a
+ * secret that needs approval comes back as an error, and the approval
+ * request stays open so the next `openclaw secrets reload` can succeed.
+ */
+export async function execProviderAnswer(
+  client: VaultClient,
+  request: { protocolVersion?: number; provider?: string; ids?: unknown },
+  ctx: { cardId?: string; sessionId?: string; cwd: string }
+): Promise<{ protocolVersion: 1; values: Record<string, string>; errors?: Record<string, { code: string }> }> {
+  const ids = Array.isArray(request.ids) ? request.ids.filter((id): id is string => typeof id === "string") : [];
+  const values: Record<string, string> = {};
+  const errors: Record<string, { code: string }> = {};
+  for (const id of ids) {
+    try {
+      const { body: r } = await client.call<VaultResponse>("POST", "release", {
+        mode: "get",
+        names: [id],
+        command: `exec SecretRef ${request.provider ?? "kv"}:${id}`,
+        reason: `OpenClaw resolves its ${id} SecretRef`,
+        ...ctx,
+      });
+      if (r.status === "granted" && typeof r.values?.[id] === "string") values[id] = r.values[id];
+      else if (/^no secret named/.test(r.message ?? "")) errors[id] = { code: "NOT_FOUND" };
+      else errors[id] = { code: r.status === "pending" ? "NEEDS_APPROVAL" : "DENIED" };
+    } catch {
+      errors[id] = { code: "UNREACHABLE" };
+    }
+  }
+  return { protocolVersion: 1, values, ...(Object.keys(errors).length ? { errors } : {}) };
+}
+
 function parentCommand(): string | undefined {
   const r = spawnSync("ps", ["-o", "args=", "-p", String(process.ppid)], { encoding: "utf8" });
   return r.status === 0 ? r.stdout.trim() || undefined : undefined;
@@ -361,6 +394,7 @@ export const USAGE = `kv: secrets from the Kanban Code vault
   kv leases [--card ID]                                     active card leases
   kv tier NAME <tier> | kv rules NAME "..."                 change a secret (asks Rogerio)
   kv status                                                 is the vault unlocked here
+  kv exec-provider                                          OpenClaw exec SecretRef provider (JSON on stdin)
   kv import [--apply] [--secrets-only] [--only <dir>]..   plan (then do) the migration of plaintext secrets
 
 Exit code ${EXIT_DENIED} means the vault denied the request.`;
@@ -539,6 +573,12 @@ export async function runKv(argv: string[], io: VaultIO = defaultIO()): Promise<
     case "status": {
       const { body } = await client.call<{ unlocked: boolean; recipient?: string; secrets: number; machine: string }>("GET", "status");
       out(`${body.machine}: ${body.unlocked ? "unlocked" : "LOCKED (no vault key on this machine)"}, ${body.secrets} secrets\n`);
+      return 0;
+    }
+
+    case "exec-provider": {
+      const request = JSON.parse((await readStdin()) || "{}");
+      out(JSON.stringify(await execProviderAnswer(client, request, ctx)) + "\n");
       return 0;
     }
 

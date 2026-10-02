@@ -11,6 +11,7 @@ import {
   envFromVault,
   findEnvVault,
   hookRewrite,
+  execProviderAnswer,
   parseEnvVault,
   runKv,
   shellQuote,
@@ -176,4 +177,23 @@ test(".env.vault keeps names and plain config only", () => {
   assert.match(out, /PORT=3000/);
   assert.ok(!out.includes("sk-proj"));
   assert.ok(!out.includes("Zx9kLmQ2"));
+});
+
+test("the exec provider answers OpenClaw's protocol without waiting on a human", async () => {
+  const m = await fakeMaster((_method, _path, body) => {
+    const name = body.names[0];
+    if (name === "OPEN") return { status: 200, body: { status: "granted", message: "released", values: { OPEN: "v1" } } };
+    if (name === "ASK") return { status: 202, body: { status: "pending", id: "vault_1", message: "Waiting" } };
+    return { status: 403, body: { status: "denied", message: `no secret named ${name} in the vault` } };
+  });
+  const client = new VaultClient(m.url, io(m.url, []));
+  const answer = await execProviderAnswer(client, { protocolVersion: 1, provider: "kv", ids: ["OPEN", "ASK", "GONE"] }, { cwd: "/" });
+  m.close();
+  assert.deepEqual(answer, {
+    protocolVersion: 1,
+    values: { OPEN: "v1" },
+    errors: { ASK: { code: "NEEDS_APPROVAL" }, GONE: { code: "NOT_FOUND" } },
+  });
+  assert.equal(m.calls.length, 3);
+  assert.equal(m.calls[0].body.mode, "get");
 });

@@ -132,6 +132,81 @@ public enum VaultCallerResolver {
     }
 }
 
+/// OpenClaw on this machine, from `~/.openclaw/openclaw.json`: the systemd
+/// unit its gateway runs in and each agent's workspace.
+public struct OpenClawLayout: Sendable, Equatable {
+    public static let defaultUnit = "openclaw-gateway.service"
+
+    public var unit: String
+    /// Agent id -> workspace directory.
+    public var workspaces: [String: String]
+    /// Agent id -> display name.
+    public var names: [String: String]
+
+    public init(unit: String = OpenClawLayout.defaultUnit, workspaces: [String: String], names: [String: String] = [:]) {
+        self.unit = unit
+        self.workspaces = workspaces
+        self.names = names
+    }
+
+    public static func load(home: String = NSHomeDirectory()) -> OpenClawLayout? {
+        let path = (home as NSString).appendingPathComponent(".openclaw/openclaw.json")
+        guard let data = FileManager.default.contents(atPath: path) else { return nil }
+        return parse(data, home: home)
+    }
+
+    public static func parse(_ data: Data, home: String) -> OpenClawLayout? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let agents = root["agents"] as? [String: Any] else { return nil }
+        let defaults = agents["defaults"] as? [String: Any]
+        var workspaces: [String: String] = [:]
+        var names: [String: String] = [:]
+        for (id, value) in agents["entries"] as? [String: Any] ?? [:] {
+            guard let entry = value as? [String: Any] else { continue }
+            let workspace = entry["workspace"] as? String
+                ?? (id == "main" ? defaults?["workspace"] as? String : nil)
+                ?? "\(home)/.openclaw/workspace-\(id)"
+            workspaces[id] = (workspace as NSString).expandingTildeInPath
+            names[id] = (entry["identity"] as? [String: Any])?["name"] as? String ?? entry["name"] as? String
+        }
+        return OpenClawLayout(workspaces: workspaces, names: names)
+    }
+
+    /// The agent whose workspace holds `cwd`, the deepest workspace first.
+    public func agent(forCwd cwd: String) -> String? {
+        let sorted = workspaces.sorted { $0.value.count > $1.value.count }
+        return sorted.first { cwd == $0.value || cwd.hasPrefix($0.value + "/") }?.key
+    }
+
+    /// The principal of a caller whose process chain (the caller first)
+    /// runs under the OpenClaw gateway's systemd unit: "openclaw:<agent>"
+    /// for the agent process the gateway started (found by its working
+    /// directory, which its children cannot change), "openclaw:gateway"
+    /// for the gateway itself. Nil when no process of the chain is in the
+    /// unit. The unit's cgroup is set by systemd, not by the process.
+    public func principal(chain: [VaultProcess], cgroup: (Int) -> String?, cwd: (Int) -> String?) -> String? {
+        guard let top = chain.lastIndex(where: { cgroup($0.pid)?.hasSuffix("/" + unit) == true }) else { return nil }
+        var i = top - 1
+        while i >= 0 {
+            if let dir = cwd(chain[i].pid), let agent = agent(forCwd: dir) {
+                return VaultCaller.openClawPrincipal(agent: agent)
+            }
+            i -= 1
+        }
+        return VaultCaller.openClawPrincipal(agent: "gateway")
+    }
+
+    public static func procCgroup(_ pid: Int) -> String? {
+        guard let text = try? String(contentsOfFile: "/proc/\(pid)/cgroup", encoding: .utf8) else { return nil }
+        // cgroup v2: "0::/user.slice/.../openclaw-gateway.service"
+        return text.split(whereSeparator: \.isNewline).first { $0.hasPrefix("0::") }.map { String($0.dropFirst(3)) }
+    }
+
+    public static func procCwd(_ pid: Int) -> String? {
+        try? FileManager.default.destinationOfSymbolicLink(atPath: "/proc/\(pid)/cwd")
+    }
+}
+
 /// Resolves callers against the live board: the cards' tmux sessions and
 /// the agtop hosts of this machine.
 public struct LiveVaultCallerResolver: Sendable {
@@ -168,7 +243,12 @@ public struct LiveVaultCallerResolver: Sendable {
         }
         let table = await VaultCallerResolver.processTable()
         let chain = VaultCallerResolver.ancestry(of: pid, in: table)
-        let card = VaultCallerResolver.card(for: pid, table: table, sessionPids: await sessionPids())
+        var card = VaultCallerResolver.card(for: pid, table: table, sessionPids: await sessionPids())
+        #if os(Linux)
+        if card == nil, let openClaw = OpenClawLayout.load() {
+            card = openClaw.principal(chain: chain, cgroup: OpenClawLayout.procCgroup, cwd: OpenClawLayout.procCwd)
+        }
+        #endif
         return VaultCaller(
             cardId: card, claimedCardId: claimedCardId, sessionId: sessionId, pid: pid,
             ancestry: chain.map(\.name)
