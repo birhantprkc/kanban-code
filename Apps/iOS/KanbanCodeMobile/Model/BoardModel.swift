@@ -132,6 +132,13 @@ final class BoardModel {
         self.board = board
     }
 
+    /// Drops a deleted card right away, before the next event.
+    func remove(cardId: String) {
+        guard var board, board.cards.contains(where: { $0.id == cardId }) else { return }
+        board.cards.removeAll { $0.id == cardId }
+        self.board = board
+    }
+
     /// The device and features, once per connection until both are known:
     /// a master that was off at launch tells them when it comes back.
     private func loadDevice() async {

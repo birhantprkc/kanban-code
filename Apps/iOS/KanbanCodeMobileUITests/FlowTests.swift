@@ -41,7 +41,7 @@ final class FlowTests: KanbanUITestCase {
     }
 
     func test1cProjectFilter() throws {
-        let filter = app.buttons["projectFilter"]
+        let filter = app.buttons["boardMenu"]
         XCTAssertTrue(filter.waitForExistence(timeout: 15))
         XCTAssertTrue(waitEnabled(filter))
         filter.tap()
