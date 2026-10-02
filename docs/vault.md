@@ -35,7 +35,7 @@ Order, first match wins:
 4. The card holds a lease and the secret allows leases: allow.
 5. Open: allow. Judged: Jev (allow needs at least 60% probability; Jev unreachable asks). Ask: the human.
 
-"Inside a card session" is checked by the master, not claimed by the client. kv calls the local master over loopback; the master finds the calling process from the TCP connection (`lsof` on macOS, `/proc/net/tcp` on Linux), walks its parents, and matches them against the pane shells of the cards' tmux sessions and the assistant processes agtop hosts for cards. `KANBAN_CARD_ID` is only shown to the human when it could not be verified. Requests over the network are never inside a card.
+"Inside a card session" is checked by the master, not claimed by the client. kv calls the local master over loopback; the master finds the calling process from the TCP connection (`lsof` on macOS, `/proc/net/tcp` on Linux), walks its parents, and matches them against the pane shells of the cards' tmux sessions and the assistant processes agtop hosts for cards. An agtop or rush host belongs to the card whose terminal is `agtop-<host id>` in Kanban's links, never to the card its own `--meta kanban_card` names (a meta naming another card disowns it), and only when the master can show it started the host: it records the host pid and process start time whenever it starts or restarts one (`~/.kanban-code/agtop-hosts.json`), or the host's parents reach the master or a terminal pane of that card. A host started elsewhere (a rush view in another terminal, a script resuming a card's session id) is outside every card. The first run on a machine adopts the hosts its cards already run. `KANBAN_CARD_ID` is only shown to the human when it could not be verified. Requests over the network are never inside a card.
 
 OpenClaw agents on a Linux master count like card sessions under the principal `openclaw:<agent>`: the master finds, in the caller's ancestry, a process whose cgroup is the gateway's systemd unit (`openclaw-gateway.service`, set by systemd, not by the process), then the topmost process below the gateway whose working directory is an agent workspace from `~/.openclaw/openclaw.json` (the agent runtime the gateway started; a child that changes directory does not change it). The gateway itself, resolving SecretRefs, is `openclaw:gateway`. Each principal holds its own leases. Commands an agent starts outside the unit (`systemd-run`, cron) are outside, so they ask.
 
@@ -68,7 +68,7 @@ kv request NAME[:scope] [NAME..] --reason "..."
 kv aws <profile> [--reason "..."]
 kv add NAME [--tier t] [--rules "..."] [--label "..."] [--reason "..."]   value on stdin
 kv ls | kv log | kv leases | kv status   (status also says who the master takes you for)
-kv tier NAME <tier> | kv rules NAME "..." | kv label NAME "..."  [--reason "..."]   asks Rogerio
+kv tier NAME <tier> [--every-use-asks|--leases] | kv rules NAME "..." | kv label NAME "..."  [--reason "..."]   asks Rogerio
 kv import [--apply]
 kv exec-provider                             OpenClaw exec SecretRef provider
 ```

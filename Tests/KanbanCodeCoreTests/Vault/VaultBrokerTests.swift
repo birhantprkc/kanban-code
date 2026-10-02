@@ -391,3 +391,85 @@ struct OpenClawCallerTests {
         #expect(await broker.release(VaultReleaseRequest(mode: "run", names: ["ASK"]), caller: chief).status == .pending)
     }
 }
+
+@Suite("Vault callers from agtop and rush hosts")
+struct AgtopHostCallerTests {
+    private func host(_ id: String, hostPid: Int, claudePid: Int, meta: [String: String]? = nil) -> AgtopSessionInfo {
+        var h = AgtopSessionInfo(id: id, sessionId: id + "-0000", cwd: "/w", state: "idle", alive: true)
+        h.hostPid = hostPid
+        h.claudePid = claudePid
+        h.meta = meta
+        return h
+    }
+
+    // The master is pid 10; a daemonized host has ppid 1.
+    private let table: [Int: VaultProcess] = [
+        10: VaultProcess(pid: 10, ppid: 1, name: "KanbanCode"),
+        20: VaultProcess(pid: 20, ppid: 1, name: "rush"),
+        21: VaultProcess(pid: 21, ppid: 20, name: "claude"),
+        30: VaultProcess(pid: 30, ppid: 10, name: "rush"),
+        31: VaultProcess(pid: 31, ppid: 30, name: "claude"),
+        40: VaultProcess(pid: 40, ppid: 1, name: "tmux"),
+        41: VaultProcess(pid: 41, ppid: 40, name: "zsh"),
+        42: VaultProcess(pid: 42, ppid: 41, name: "rush"),
+        43: VaultProcess(pid: 43, ppid: 42, name: "claude"),
+    ]
+
+    @Test func metaAloneNeverMakesACard() {
+        let spoof = host("aaaaaaaa", hostPid: 20, claudePid: 21, meta: ["kanban_card": "card_x"])
+        let cards = VaultCallerResolver.agtopCards(hosts: [spoof], sessions: [:], paneCards: [:], table: table,
+                                                   masterPid: 10, started: ["aaaaaaaa"])
+        #expect(cards.isEmpty)
+        #expect(VaultCallerResolver.card(for: 21, table: table, sessionPids: cards) == nil)
+    }
+
+    @Test func aHostTheMasterCannotShowItStartedIsOutside() {
+        // Someone resumed card A's session id in a daemonized host the master never started.
+        let resumed = host("aaaaaaaa", hostPid: 20, claudePid: 21)
+        let sessions = ["agtop-aaaaaaaa": "card_a"]
+        #expect(VaultCallerResolver.agtopCards(hosts: [resumed], sessions: sessions, paneCards: [:], table: table,
+                                               masterPid: 10, started: []).isEmpty)
+        // The same host, recorded when the master started it, is card A.
+        #expect(VaultCallerResolver.agtopCards(hosts: [resumed], sessions: sessions, paneCards: [:], table: table,
+                                               masterPid: 10, started: ["aaaaaaaa"]) == [20: "card_a", 21: "card_a"])
+    }
+
+    @Test func aHostUnderTheMasterOrItsCardsPaneIsTheCard() {
+        let sessions = ["agtop-bbbbbbbb": "card_b", "agtop-cccccccc": "card_c", "card_c_tmux": "card_c"]
+        let underMaster = host("bbbbbbbb", hostPid: 30, claudePid: 31)
+        let underPane = host("cccccccc", hostPid: 42, claudePid: 43)
+        let cards = VaultCallerResolver.agtopCards(hosts: [underMaster, underPane], sessions: sessions,
+                                                   paneCards: [41: "card_c"], table: table, masterPid: 10, started: [])
+        #expect(cards == [30: "card_b", 31: "card_b", 42: "card_c", 43: "card_c"])
+        // Under another card's pane it proves nothing for this card.
+        #expect(VaultCallerResolver.agtopCards(hosts: [underPane], sessions: sessions, paneCards: [41: "card_other"],
+                                               table: table, masterPid: 10, started: []).isEmpty)
+    }
+
+    @Test func aMetaThatNamesAnotherCardDisownsTheHost() {
+        let h = host("bbbbbbbb", hostPid: 30, claudePid: 31, meta: ["kanban_card": "card_x"])
+        #expect(VaultCallerResolver.agtopCards(hosts: [h], sessions: ["agtop-bbbbbbbb": "card_b"], paneCards: [:],
+                                               table: table, masterPid: 10, started: ["bbbbbbbb"]).isEmpty)
+    }
+
+    @Test func theLedgerChecksThePidAndItsStartTime() async {
+        let path = NSTemporaryDirectory() + "agtop-hosts-\(UUID().uuidString.prefix(8)).json"
+        nonisolated(unsafe) var starts: [Int: String] = [20: "t1"]
+        let ledger = AgtopHostLedger(path: path, startTime: { starts[$0] })
+        #expect(await ledger.isNew)
+        await ledger.record(agtopId: "aaaaaaaa", pid: 20)
+        #expect(await !ledger.isNew)
+        #expect(await ledger.started(agtopId: "aaaaaaaa", pid: 20))
+        #expect(await !ledger.started(agtopId: "aaaaaaaa", pid: 99))
+        #expect(await !ledger.started(agtopId: "bbbbbbbb", pid: 20))
+        starts[20] = "t2" // the pid was reused by another process
+        #expect(await !ledger.started(agtopId: "aaaaaaaa", pid: 20))
+        let reopened = AgtopHostLedger(path: path, startTime: { _ in "t1" })
+        #expect(await reopened.started(agtopId: "aaaaaaaa", pid: 20))
+    }
+
+    @Test func processStartTimeIsKnownForThisProcess() {
+        #expect(ProcessStartTime.of(Int(getpid())) != nil)
+        #expect(ProcessStartTime.of(Int(getpid())) == ProcessStartTime.of(Int(getpid())))
+    }
+}
