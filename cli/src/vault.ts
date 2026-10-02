@@ -391,10 +391,23 @@ export async function runKv(argv: string[], io: VaultIO = defaultIO()): Promise<
       const command = b64 ? Buffer.from(b64, "base64").toString("utf8") : commandLine(after);
       let values: Record<string, string> = {};
       if (names.length > 0) {
-        const r = await client.decide("release", { mode: exportMode ? "hook" : "env", names, command, reason, ...ctx });
+        let r: VaultResponse;
+        try {
+          r = await client.decide("release", { mode: exportMode ? "hook" : "env", names, command, reason, ...ctx });
+        } catch (error) {
+          // A wrapped command still runs when the master is down: it just gets no vault env.
+          if (!exportMode) throw error;
+          io.stderr(`${(error as Error).message.split("\n")[0]} (running without the vault env)\n`);
+          return 0;
+        }
         if (r.status !== "granted") throw deniedError(r);
         values = r.values ?? {};
-        if (r.skipped?.length) io.stderr(`kv: ${r.message}\n`);
+        const skippedKeys = entries.filter((e) => e.secret && r.skipped?.includes(e.secret)).map((e) => e.key);
+        const mentioned = skippedKeys.filter((k) => command.includes(k));
+        if (!exportMode && skippedKeys.length) io.stderr(`kv: ${r.message}\n`);
+        else if (mentioned.length) {
+          io.stderr(`kv: ${mentioned.join(", ")} need approval and were left out: kv request ${mentioned.map((k) => entries.find((e) => e.key === k)!.secret).join(" ")} --reason "..."\n`);
+        }
       }
       const env = envFromVault(entries, values);
       if (exportMode) {

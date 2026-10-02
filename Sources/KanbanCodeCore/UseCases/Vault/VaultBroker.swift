@@ -217,6 +217,7 @@ public actor VaultBroker {
         var allowed: [(VaultSecret, VaultDecider, String)] = []
         var asks: [(VaultSecret, String)] = []
         var denies: [(VaultSecret, String)] = []
+        var judged: [VaultSecret] = []
         for s in secrets {
             if req.mode == "get" && (s.tier == .ask || s.leasePolicy.everyUseAsks) {
                 denies.append((s, "kv get never prints a secret that asks; use kv run"))
@@ -229,6 +230,16 @@ public actor VaultBroker {
             let verdict = await verdict(for: s, req: req, caller: caller, now: now)
             switch verdict {
             case .allow(let by, let why): allowed.append((s, by, why))
+            case .ask(let why): asks.append((s, why))
+            case .deny(let why): denies.append((s, why))
+            case .consultJev: judged.append(s)
+            }
+        }
+        for (s, answer) in await judge(judged, req: req, caller: caller) {
+            switch answer {
+            case .allow(let by, let why):
+                allowed.append((s, by, why))
+                if req.mode == "hook" { hookAllows["\(caller.cardId ?? "")|\(s.name)"] = now }
             case .ask(let why): asks.append((s, why))
             case .deny(let why): denies.append((s, why))
             case .consultJev: asks.append((s, "Jev was not consulted"))
@@ -281,15 +292,26 @@ public actor VaultBroker {
         let first = VaultPolicy.decide(input)
         guard first == .consultJev else { return first }
         if reusing { return .allow(.jev, "reused Jev's allow for this card") }
-        guard let jev else { return VaultPolicy.afterJev(nil) }
+        return .consultJev
+    }
+
+    /// Asks Jev about every judged secret at once.
+    private func judge(_ secrets: [VaultSecret], req: VaultReleaseRequest, caller: VaultCaller) async -> [(VaultSecret, VaultVerdict)] {
+        guard !secrets.isEmpty else { return [] }
+        guard let jev else { return secrets.map { ($0, VaultPolicy.afterJev(nil)) } }
         let title: String? = if let card = caller.cardId { await cardTitle(card) } else { nil }
-        let question = JevReleaseQuestion(
-            secret: s.name, rules: s.rules, command: req.command ?? "(no command given)",
-            reason: req.reason, cardTitle: title, cwd: req.cwd
-        )
-        let answer = VaultPolicy.afterJev(await jev.judge(question))
-        if case .allow = answer, req.mode == "hook" { hookAllows[reuseKey] = now }
-        return answer
+        return await withTaskGroup(of: (Int, VaultVerdict).self) { group in
+            for (i, s) in secrets.enumerated() {
+                let question = JevReleaseQuestion(
+                    secret: s.name, rules: s.rules, command: req.command ?? "(no command given)",
+                    reason: req.reason, cardTitle: title, cwd: req.cwd
+                )
+                group.addTask { (i, VaultPolicy.afterJev(await jev.judge(question))) }
+            }
+            var out = [(VaultSecret, VaultVerdict)?](repeating: nil, count: secrets.count)
+            for await (i, verdict) in group { out[i] = (secrets[i], verdict) }
+            return out.compactMap { $0 }
+        }
     }
 
     private func grant(_ allowed: [(VaultSecret, VaultDecider, String)], req: VaultReleaseRequest, caller: VaultCaller,
