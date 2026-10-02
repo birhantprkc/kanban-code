@@ -23,6 +23,13 @@ public actor EffectHandler {
         channelsHome = route
     }
 
+    /// Delivers attention requests to the Mac and the phone.
+    private var attentionDelivery: (any AttentionDelivering)?
+
+    public func setAttentionDelivery(_ delivery: (any AttentionDelivering)?) {
+        attentionDelivery = delivery
+    }
+
     /// Creates a session on a machine, and reconnects the machine once when
     /// it answers no longer: the app can hold a machine as paused while it
     /// runs again, and the shell of the user must not fail for that.
@@ -280,6 +287,15 @@ public actor EffectHandler {
             for path in paths {
                 try? FileManager.default.removeItem(atPath: path)
             }
+
+        case .deliverAttention(let request):
+            await attentionDelivery?.deliver(request)
+
+        case .updateAttention(let request):
+            await attentionDelivery?.update(request)
+
+        case .withdrawAttention(let request):
+            await attentionDelivery?.withdraw(request)
 
         case .loadChannels:
             let channels = await channelsStore.loadChannels()

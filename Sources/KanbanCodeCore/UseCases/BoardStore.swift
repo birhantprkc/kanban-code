@@ -318,6 +318,16 @@ public final class AppState: @unchecked Sendable {
     /// for new messages are suppressed — the unread badges are enough.
     public var appIsFrontmost: Bool = true
 
+    /// Decisions agents wait on (questions, plans, permissions, vault
+    /// releases), by id. Open ones plus the recently resolved, which stay a
+    /// short while so every device learns they were resolved.
+    public var attentionRequests: [String: AttentionRequest] = [:]
+
+    /// Open attention requests, oldest first.
+    public var openAttentionRequests: [AttentionRequest] {
+        attentionRequests.values.filter(\.isOpen).sorted { $0.createdAt < $1.createdAt }
+    }
+
     /// The human's handle, derived from `NSUserName()` (slugified, fallback "user").
     public var humanHandle: String = AppState.defaultHumanHandle()
 
@@ -765,6 +775,14 @@ public enum Action: Sendable {
     case channelReadStateLoaded(channels: [String: String], dms: [String: String])
     case refreshChannelReadState
     case setAppFrontmost(Bool)
+
+    // Attention (decisions an agent waits on)
+    /// A request is raised, or an open one is updated (same id).
+    case attentionRaised(AttentionRequest)
+    /// A request is resolved by `by` ("mac", "phone", "session", "timeout").
+    case attentionResolved(id: String, resolution: String?, by: String)
+    /// Resolved requests older than `before` are dropped.
+    case attentionPruned(before: Date)
     case deleteChannel(name: String)
     case renameChannel(old: String, new: String)
     /// Kick a member out of a channel (e.g. a dead agent whose card no longer
@@ -848,6 +866,14 @@ public enum Effect: Sendable {
     case sendPromptWithImagesToTmux(sessionName: String, promptBody: String, imagePaths: [String], assistant: CodingAssistant)
     case journalQueuedPrompt(cardId: String, prompt: QueuedPrompt, reason: QueuedPromptJournalReason)
     case deleteFiles([String])
+
+    // Attention
+    /// A new request: notify the Mac and the phone as presence allows.
+    case deliverAttention(AttentionRequest)
+    /// An open request changed (options, body): refresh what was delivered.
+    case updateAttention(AttentionRequest)
+    /// A request was resolved: clear it from every device.
+    case withdrawAttention(AttentionRequest)
 
     // Remote machines (boxd)
     /// Stops the machine of a card whose work is over: the tab was closed,
@@ -1526,6 +1552,31 @@ public enum Reducer {
 
         case .setAppFrontmost(let active):
             state.appIsFrontmost = active
+            return []
+
+        // MARK: Attention
+
+        case .attentionRaised(let request):
+            if let existing = state.attentionRequests[request.id], !existing.isOpen {
+                return []
+            }
+            let isNew = state.attentionRequests[request.id] == nil
+            state.attentionRequests[request.id] = request
+            return isNew ? [.deliverAttention(request)] : [.updateAttention(request)]
+
+        case .attentionResolved(let id, let resolution, let by):
+            guard var request = state.attentionRequests[id], request.isOpen else { return [] }
+            request.resolvedAt = Date()
+            request.resolution = resolution
+            request.resolvedBy = by
+            state.attentionRequests[id] = request
+            return [.withdrawAttention(request)]
+
+        case .attentionPruned(let before):
+            state.attentionRequests = state.attentionRequests.filter { _, request in
+                guard let resolvedAt = request.resolvedAt else { return true }
+                return resolvedAt >= before
+            }
             return []
 
         // MARK: DMs
