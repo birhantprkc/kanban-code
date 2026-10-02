@@ -134,8 +134,9 @@ struct CardActionsMenu: View {
         // Move / Migrate submenus
         moveAndMigrateSection
 
-        // Boxd machine of the card
-        if let remote = card.link.remote, remote.mode == .boxd {
+        // Boxd machine of the card; an ssh machine is shared and always on
+        if let remote = card.link.remote, remote.mode == .boxd,
+           AppServices.sshTargets[remote.machineName] == nil {
             Divider()
             if remote.pausedReason == nil, card.link.tmuxLink != nil {
                 Button {

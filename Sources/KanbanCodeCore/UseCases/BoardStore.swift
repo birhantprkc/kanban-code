@@ -167,6 +167,13 @@ public final class AppState: @unchecked Sendable {
     /// Settings of the boxd remote mode (from Settings.boxd).
     public var boxdSettings: BoxdSettings?
 
+    /// True when the card runs on a disposable boxd machine. An ssh machine
+    /// is also recorded with mode `.boxd`, but it is never destroyed or stopped.
+    public func runsOnDisposableMachine(_ cardId: String) -> Bool {
+        guard let remote = links[cardId]?.remote, remote.mode == .boxd else { return false }
+        return boxdSettings?.sshMachine(named: remote.machineName) == nil
+    }
+
     /// Live state of every boxd machine the app knows, by machine name.
     /// Transient: the supervisor reports it, nothing persists it.
     public var remoteMachineStates: [String: RemoteMachineState] = [:] { didSet { cardInputsVersion &+= 1 } }

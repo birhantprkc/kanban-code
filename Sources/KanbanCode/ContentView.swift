@@ -1103,7 +1103,7 @@ struct ContentView: View {
     /// Archiving a card with a boxd machine destroys the machine, so the
     /// dialog says so.
     private func presentArchiveDialog(cardId: String) {
-        if store.state.links[cardId]?.remote?.mode == .boxd {
+        if store.state.runsOnDisposableMachine(cardId) {
             presentDialog(.confirmArchiveWithMachine(cardId: cardId))
         } else {
             presentDialog(.confirmArchive(cardId: cardId))

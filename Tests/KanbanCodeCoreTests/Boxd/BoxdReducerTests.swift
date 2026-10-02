@@ -477,6 +477,20 @@ struct BoxdReducerTests {
         #expect(state.links["card_1"]?.tmuxLink?.sessionName == "repo-card_1")
     }
 
+    @Test("Only a card on a boxd machine runs on a disposable machine, not one on an ssh machine")
+    func disposableMachineSkipsSshMachines() {
+        var state = stateWith([
+            remoteCard(id: "boxd-card", machine: "kanban-repo-1"),
+            remoteCard(id: "ssh-card", machine: "box"),
+            localCard(id: "local-card"),
+        ])
+        state.boxdSettings = BoxdSettings(sshMachines: [SshMachine(name: "box", target: "root@10.0.0.1")])
+
+        #expect(state.runsOnDisposableMachine("boxd-card"))
+        #expect(!state.runsOnDisposableMachine("ssh-card"))
+        #expect(!state.runsOnDisposableMachine("local-card"))
+    }
+
     // MARK: - settingsLoaded
 
     @Test("settingsLoaded carries the remote mode and the boxd settings into the state")
