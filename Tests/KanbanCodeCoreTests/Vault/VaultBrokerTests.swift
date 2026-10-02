@@ -483,3 +483,22 @@ struct VaultDenialTests {
         #expect(r.message.contains("JUDGED: Jev denied it against the secret's rules (91%). Its rules: deploys only"))
     }
 }
+
+@Suite("Vault batched changes")
+struct VaultBatchEditTests {
+    @Test func oneApprovalChangesEverySecretAValuePrefixPicks() async throws {
+        let (broker, store, approvals) = try await makeBroker(answer: AttentionRequest.vaultApprovalOptions[1])
+        try await store.upsert(VaultSecret(name: "STRIPE_LIVE", value: "sk_live_abc", tier: .judged))
+        try await store.upsert(VaultSecret(name: "STRIPE_RESTRICTED", value: "rk_live_def", tier: .judged))
+        try await store.upsert(VaultSecret(name: "STRIPE_TEST", value: "sk_test_ghi", tier: .judged))
+        let edit = VaultEditRequest(tier: .ask, leasePolicy: .everyUse, reason: "Live Stripe keys ask on every use")
+        let r = await broker.editMany(VaultBatchEditRequest(valuePrefixes: ["sk_live_", "rk_live_"], edit: edit), caller: inside, trusted: false)
+        #expect(r.status == .pending)
+        #expect(approvals.raised.count == 1)
+        #expect(await waitResult(broker, try #require(r.id)).status == .granted)
+        #expect(try await store.secret("STRIPE_LIVE")?.leasePolicy.everyUseAsks == true)
+        #expect(try await store.secret("STRIPE_RESTRICTED")?.tier == .ask)
+        #expect(try await store.secret("STRIPE_TEST")?.tier == .judged)
+        #expect(await broker.editMany(VaultBatchEditRequest(valuePrefixes: ["nope_"], edit: edit), caller: inside, trusted: false).status == .denied)
+    }
+}

@@ -69,6 +69,7 @@ kv aws <profile> [--reason "..."]
 kv add NAME [--tier t] [--rules "..."] [--label "..."] [--reason "..."]   value on stdin
 kv ls | kv log | kv leases | kv status   (status also says who the master takes you for)
 kv tier NAME <tier> [--every-use-asks|--leases] | kv rules NAME "..." | kv label NAME "..."  [--reason "..."]   asks Rogerio
+kv tiers <tier> [NAME..] [--value-prefix P].. [--every-use-asks|--leases] --reason "..."   one approval for all
 kv import [--apply]
 kv exec-provider                             OpenClaw exec SecretRef provider
 ```

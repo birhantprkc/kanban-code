@@ -268,3 +268,19 @@ test("a vault denial says what the vault said, without the reason-writing help",
   );
   m.close();
 });
+
+test("kv tiers sends one batched change with names and value prefixes", async () => {
+  const m = await fakeMaster(() => ({ status: 200, body: { status: "granted", message: "changed A, B: tier ask" } }));
+  await runKv(
+    ["tiers", "ask", "A", "--value-prefix", "sk_live_", "--value-prefix", "rk_live_", "--every-use-asks",
+     "--reason", "Live Stripe keys must ask Rogerio on every use"],
+    io(m.url, [])
+  );
+  m.close();
+  assert.equal(m.calls.length, 1);
+  assert.equal(m.calls[0].method, "PATCH");
+  assert.equal(m.calls[0].path, "/v1/vault/secrets");
+  assert.deepEqual(m.calls[0].body.names, ["A"]);
+  assert.deepEqual(m.calls[0].body.valuePrefixes, ["sk_live_", "rk_live_"]);
+  assert.deepEqual(m.calls[0].body.edit.leasePolicy, { leaseSeconds: 172800, everyUseAsks: true });
+});

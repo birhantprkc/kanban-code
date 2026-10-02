@@ -36,6 +36,20 @@ public struct VaultReleaseRequest: Codable, Sendable, Equatable {
     }
 }
 
+/// Body of `PATCH /v1/vault/secrets`: one change to several secrets.
+public struct VaultBatchEditRequest: Codable, Sendable, Equatable {
+    public var names: [String]?
+    /// Also every secret whose value starts with one of these.
+    public var valuePrefixes: [String]?
+    public var edit: VaultEditRequest
+
+    public init(names: [String]? = nil, valuePrefixes: [String]? = nil, edit: VaultEditRequest) {
+        self.names = names
+        self.valuePrefixes = valuePrefixes
+        self.edit = edit
+    }
+}
+
 /// Body of `POST /v1/vault/request`: a lease for the card's whole task.
 public struct VaultLeaseRequest: Codable, Sendable, Equatable {
     /// `NAME` or `NAME:scope`.
@@ -200,7 +214,7 @@ public actor VaultBroker {
         case release(VaultReleaseRequest, [String])
         case lease([(name: String, scope: String?)], reason: String)
         case add(VaultAddRequest)
-        case edit(String, VaultEditRequest)
+        case edit([String], VaultEditRequest)
         case delete(String)
     }
 
@@ -450,10 +464,42 @@ public actor VaultBroker {
     public func edit(_ name: String, _ req: VaultEditRequest, caller: VaultCaller, trusted: Bool, now: Date = Date()) async -> VaultResponse {
         guard let s = (try? await store.secret(name)) ?? nil else { return .denied("no secret named \(name)") }
         if !trusted {
-            return await ask(action: .edit(name, req), secrets: [s], whys: ["changing a secret always asks"], caller: caller,
+            return await ask(action: .edit([name], req), secrets: [s], whys: ["changing a secret always asks"], caller: caller,
                              command: nil, reason: req.reason, now: now, leaseOnly: false, admin: true)
         }
-        return await apply(.edit(name, req), caller: caller, now: now)
+        return await apply(.edit([name], req), caller: caller, now: now)
+    }
+
+    /// The same change to several secrets, in one approval: the names given
+    /// plus every secret whose value starts with one of `valuePrefixes`
+    /// (matched here on the master; values never leave it).
+    public func editMany(_ request: VaultBatchEditRequest, caller: VaultCaller, trusted: Bool, now: Date = Date()) async -> VaultResponse {
+        var wanted = Set(request.names ?? [])
+        let prefixes = (request.valuePrefixes ?? []).filter { !$0.isEmpty }
+        var secrets: [VaultSecret] = []
+        do {
+            if !prefixes.isEmpty {
+                for info in try await store.list() {
+                    if let s = try await store.secret(info.name), prefixes.contains(where: { s.value.hasPrefix($0) }) {
+                        wanted.insert(s.name)
+                    }
+                }
+            }
+            for name in wanted.sorted() {
+                guard let s = try await store.secret(name) else { return .denied("no secret named \(name)") }
+                secrets.append(s)
+            }
+        } catch {
+            return .denied("the vault is locked on this machine: \(error)")
+        }
+        guard !secrets.isEmpty else { return .denied("no secret matches") }
+        let names = secrets.map(\.name)
+        if !trusted {
+            return await ask(action: .edit(names, request.edit), secrets: secrets,
+                             whys: secrets.map { _ in "changing a secret always asks" }, caller: caller,
+                             command: nil, reason: request.edit.reason, now: now, leaseOnly: false, admin: true)
+        }
+        return await apply(.edit(names, request.edit), caller: caller, now: now)
     }
 
     public func delete(_ name: String, caller: VaultCaller, trusted: Bool, reason: String? = nil, now: Date = Date()) async -> VaultResponse {
@@ -486,12 +532,14 @@ public actor VaultBroker {
                                                    secret: req.name, tier: secret.tier, outcome: .allowed, decider: by,
                                                    action: existing == nil ? "add" : "replace", requestId: requestId))
                 return VaultResponse(status: .granted, message: existing == nil ? "added \(req.name)" : "replaced \(req.name)", id: requestId)
-            case .edit(let name, let req):
-                try await store.update(name, now: now) { req.apply(to: &$0) }
-                await store.append(VaultAuditEntry(at: now, machine: machine, cardId: caller.cardId, sessionId: caller.sessionId,
-                                                   secret: name, tier: req.tier, outcome: .allowed, decider: by,
-                                                   action: "edit", detail: req.summary, requestId: requestId))
-                return VaultResponse(status: .granted, message: "changed \(name): \(req.summary)", id: requestId)
+            case .edit(let names, let req):
+                for name in names {
+                    try await store.update(name, now: now) { req.apply(to: &$0) }
+                    await store.append(VaultAuditEntry(at: now, machine: machine, cardId: caller.cardId, sessionId: caller.sessionId,
+                                                       secret: name, tier: req.tier, outcome: .allowed, decider: by,
+                                                       action: "edit", detail: req.summary, requestId: requestId))
+                }
+                return VaultResponse(status: .granted, message: "changed \(names.joined(separator: ", ")): \(req.summary)", id: requestId)
             case .delete(let name):
                 try await store.delete(name, now: now)
                 await store.append(VaultAuditEntry(at: now, machine: machine, cardId: caller.cardId, sessionId: caller.sessionId,
@@ -688,7 +736,8 @@ public actor VaultBroker {
         case .release(_, let asked): asked
         case .lease(let wanted, _): wanted.map(\.name)
         case .add(let req): [req.name]
-        case .edit(let name, _), .delete(let name): [name]
+        case .edit(let names, _): names
+        case .delete(let name): [name]
         }
     }
 

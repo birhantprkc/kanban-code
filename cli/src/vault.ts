@@ -459,6 +459,8 @@ export const USAGE = `kv: secrets from the Kanban Code vault
   kv leases [--card ID]                                     active card leases
   kv tier NAME <tier> [--every-use-asks|--leases] | kv rules NAME "..." | kv label NAME "..."  [--reason "..."]
                                                             change a secret (asks Rogerio)
+  kv tiers <tier> [NAME..] [--value-prefix P].. [--every-use-asks|--leases] --reason "..."
+                                                            one change to many secrets, one approval
   kv status                                                 is the vault unlocked here
   kv exec-provider                                          OpenClaw exec SecretRef provider (JSON on stdin)
   kv import [--apply] [--secrets-only] [--only <dir>]..   plan (then do) the migration of plaintext secrets
@@ -586,6 +588,25 @@ export async function runKv(argv: string[], io: VaultIO = defaultIO()): Promise<
         reason,
         leasePolicy,
         tags: tags.length ? tags : undefined,
+      });
+      const r = body.status === "pending" ? await waitPending(client, body) : body;
+      if (r.status !== "granted") throw deniedError(r);
+      io.stderr(`kv: ${r.message}\n`);
+      return 0;
+    }
+
+    case "tiers": {
+      const reason = checkedReason(takeOption(args, "--reason"), io.env, true);
+      const valuePrefixes = takeAll(args, "--value-prefix");
+      const leasePolicy = leasePolicyFlags(args);
+      const [tier, ...names] = args;
+      if (!tier || (names.length === 0 && valuePrefixes.length === 0)) {
+        throw new VaultCliError('kv tiers <tier> [NAME..] [--value-prefix P].. [--every-use-asks|--leases] --reason "..."');
+      }
+      const { body } = await client.call<VaultResponse>("PATCH", "secrets", {
+        names,
+        valuePrefixes,
+        edit: { tier, leasePolicy, reason },
       });
       const r = body.status === "pending" ? await waitPending(client, body) : body;
       if (r.status !== "granted") throw deniedError(r);
