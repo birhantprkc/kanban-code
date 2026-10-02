@@ -69,6 +69,8 @@ The reason is the only text the human reads before deciding, so it must be one s
 
 `kv` talks to `http://127.0.0.1:<remote control port>` (`KANBAN_VAULT_URL` overrides it). It needs no token. Exit code 77 means denied.
 
+`kanban vault ...` is the same command as `kv ...`: same arguments, output and exit code.
+
 ```
 kv run NAME [NAME..] [--reason "..."] -- <cmd> [args..]
 kv env .env.vault -- <cmd> [args..]

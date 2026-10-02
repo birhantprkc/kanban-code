@@ -34,6 +34,7 @@ import {
   formatTmuxSessions,
 } from "./format.js";
 import { agentIdentity } from "./agents/identity.js";
+import { runVaultAlias } from "./vault-alias.js";
 import { ensureAgentSession } from "./agents/launch.js";
 import { loadAgentsConfig } from "./agents/config.js";
 import { reconcileAll } from "./agents/reconcile.js";
@@ -2373,6 +2374,14 @@ program
 
 registerRemoteCommands(program);
 
+// Listed for help only: `kanban vault ...` is handed to kv before commander parses.
+program
+  .command("vault")
+  .description("Secrets from the Kanban Vault (same as kv; run `kanban vault --help`)")
+  .helpOption(false)
+  .allowUnknownOption()
+  .argument("[args...]");
+
 sortTopLevelCommands([
   "open",
   "list",
@@ -2386,12 +2395,17 @@ sortTopLevelCommands([
   "send",
 ]);
 
+// ── Vault alias ──────────────────────────────────────────────────────
+
+// kv talks to the master on this machine, so a remote card never proxies it.
+const proxyArgv = process.argv.slice(2);
+if (proxyArgv[0] === "vault") process.exit(runVaultAlias(proxyArgv.slice(1)));
+
 // ── Remote proxy gate ────────────────────────────────────────────────
 
 // A remote card runs its assistant on the machine, where there is no board and
 // no links.json. Everything except the commands that belong to the machine is
 // handed to the Mac, which runs the same CLI with the same arguments.
-const proxyArgv = process.argv.slice(2);
 if (shouldProxy(proxyArgv)) {
   const code = await runProxiedCommand(proxyArgv, {
     write: (text) => writeSyncToFd(1, text),
