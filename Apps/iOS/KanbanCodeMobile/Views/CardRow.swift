@@ -240,28 +240,43 @@ struct PRBadge: View {
     }
 }
 
-/// The newest PRs of a card, then "+N" for the rest.
+/// The newest PRs of a card, at most two, then "+N" for the rest.
+///
+/// No ForEach here: while a row's status dot pulses, SwiftUI lays the row
+/// out on its async render thread and calls ForEach content closures there.
+/// Those closures are main-actor isolated in this target, so the runtime
+/// isolation check traps (EXC_BREAKPOINT in `closure #1 in closure #2 in
+/// PRBadges.body.getter`).
 struct PRBadges: View {
     let prs: [RemotePR]
+    /// 0, 1 or 2.
     var limit = 2
     var linked = false
 
     var body: some View {
-        let shown = Array(prs.sorted { $0.number > $1.number }.prefix(limit))
+        let shown = Self.shown(prs, limit: limit)
         HStack(spacing: 4) {
-            ForEach(shown, id: \.number) { pr in
-                if linked, let url = pr.url.flatMap(URL.init(string:)) {
-                    Link(destination: url) { PRBadge(pr: pr) }
-                } else {
-                    PRBadge(pr: pr)
-                }
-            }
+            if let first = shown.first { badge(first) }
+            if shown.count > 1 { badge(shown[1]) }
             if prs.count > shown.count {
                 Text(verbatim: "+\(prs.count - shown.count)")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .fixedSize()
             }
+        }
+    }
+
+    /// The newest `limit` PRs, at most two.
+    static func shown(_ prs: [RemotePR], limit: Int) -> [RemotePR] {
+        Array(prs.sorted { $0.number > $1.number }.prefix(min(max(limit, 0), 2)))
+    }
+
+    @ViewBuilder private func badge(_ pr: RemotePR) -> some View {
+        if linked, let url = pr.url.flatMap(URL.init(string:)) {
+            Link(destination: url) { PRBadge(pr: pr) }
+        } else {
+            PRBadge(pr: pr)
         }
     }
 }

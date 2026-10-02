@@ -657,13 +657,39 @@ struct WorkingIndicator: View {
 struct MessageView: View {
     let message: RemoteMessage
     @State private var expanded = false
+    @State private var showsWhole = false
+
+    /// Characters of a message shown before "Show the whole message": a
+    /// pasted log or a dump runs to hundreds of KB, which the phone lays out
+    /// slowly and the user rarely reads in full.
+    static let shownLimit = 20_000
+
+    /// The message as shown: cut at `shownLimit` until the user asks for all of it.
+    private var text: String {
+        guard !showsWhole, message.text.utf16.count > Self.shownLimit else { return message.text }
+        return String(message.text.prefix(Self.shownLimit)) + "\n…"
+    }
+
+    private var isCut: Bool { !showsWhole && message.text.utf16.count > Self.shownLimit }
 
     var body: some View {
+        VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 6) {
+            content
+            if isCut {
+                Button("Show the whole message (\(message.text.count.formatted()) characters)") { showsWhole = true }
+                    .font(.caption.weight(.medium))
+                    .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
+                    .accessibilityIdentifier("showWholeMessage")
+            }
+        }
+    }
+
+    @ViewBuilder private var content: some View {
         switch message.role {
         case .user:
             HStack {
                 Spacer(minLength: 48)
-                SelectableText(text: SelectableTextStyle.plain(message.text, color: .white))
+                SelectableText(text: SelectableTextStyle.plain(text, color: .white))
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 9)
@@ -672,7 +698,7 @@ struct MessageView: View {
                     .foregroundStyle(.white)
             }
         case .assistant:
-            MarkdownText(text: message.text)
+            MarkdownText(text: text)
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .tool:
             Button {
@@ -681,7 +707,7 @@ struct MessageView: View {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Image(systemName: "wrench.and.screwdriver")
                         .font(.caption2)
-                    Text(message.text)
+                    Text(text)
                         .font(.caption.monospaced())
                         .lineLimit(expanded ? nil : 1)
                         .multilineTextAlignment(.leading)
@@ -694,7 +720,7 @@ struct MessageView: View {
             }
             .buttonStyle(.plain)
         case .system:
-            SelectableText(text: SelectableTextStyle.plain(message.text, font: .preferredFont(forTextStyle: .caption1),
+            SelectableText(text: SelectableTextStyle.plain(text, font: .preferredFont(forTextStyle: .caption1),
                                                            color: .secondaryLabel),
                            alignment: .center)
                 .frame(maxWidth: .infinity)
@@ -718,11 +744,20 @@ struct MarkdownText: View {
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 switch block {
                 case .code(let code):
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        SelectableText(text: SelectableTextStyle.plain(
-                            code, font: .monospacedSystemFont(ofSize: UIFont.preferredFont(forTextStyle: .footnote).pointSize, weight: .regular)
-                        ), wraps: false)
-                        .padding(10)
+                    let styled = SelectableTextStyle.plain(
+                        code, font: .monospacedSystemFont(ofSize: UIFont.preferredFont(forTextStyle: .footnote).pointSize, weight: .regular)
+                    )
+                    Group {
+                        if Self.wrapsCode(code) {
+                            SelectableText(text: styled)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(10)
+                        } else {
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                SelectableText(text: styled, wraps: false)
+                                    .padding(10)
+                            }
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
@@ -735,6 +770,13 @@ struct MarkdownText: View {
                 }
             }
         }
+    }
+
+    /// Code with a line too long to scroll sideways (minified JSON, a
+    /// base64 blob) wraps: unwrapped it would be a text view hundreds of
+    /// thousands of points wide.
+    static func wrapsCode(_ code: String) -> Bool {
+        code.split(separator: "\n", omittingEmptySubsequences: false).contains { $0.utf16.count > 2_000 }
     }
 
     private var blocks: [Block] {

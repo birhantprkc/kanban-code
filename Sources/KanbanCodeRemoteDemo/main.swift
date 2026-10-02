@@ -172,6 +172,8 @@ final class DemoHost: RemoteControlHost {
                   messages: Self.longEnding("Write the release notes")),
             .init(card: card("card_backlog", "Write the migration guide", .backlog, project: 0, runtime: .none, live: false, minutesAgo: 600),
                   messages: []),
+            .init(card: card("card_huge", "Read the crash dump", .backlog, project: 1, runtime: .tmux, live: false, minutesAgo: 900),
+                  messages: Self.hugeMessages("Read the crash dump")),
             .init(card: card("card_done", "Bump dependencies", .done, project: 1, runtime: .tmux, live: false,
                              prs: [RemotePR(number: 398, title: "chore: bump deps", status: "merged")], minutesAgo: 2000),
                   messages: Self.conversation("Bump dependencies")),
@@ -212,6 +214,20 @@ final class DemoHost: RemoteControlHost {
         out.append(RemoteMessage(id: "m\(out.count)", role: .assistant, text: long("Draft", paragraphs: 40, last: "That was the first draft."), at: t))
         out.append(RemoteMessage(id: "m\(out.count)", role: .assistant, text: long("Final", paragraphs: 60, last: "End of the release notes."), at: t.addingTimeInterval(30)))
         return out
+    }
+
+    /// A pasted log of thousands of lines and a code block with one line of
+    /// minified JSON a few hundred KB long: what made the phone's text
+    /// layout stall for seconds.
+    static func hugeMessages(_ task: String) -> [RemoteMessage] {
+        let t = Date().addingTimeInterval(-50_000)
+        let log = (1...6000).map { "2026-10-02T12:00:\(String(format: "%02d", $0 % 60))Z worker[\($0)] retry \($0) of the upload, status 503" }
+            .joined(separator: "\n")
+        let json = "{" + (1...12000).map { "\"key\($0)\":\"value \($0)\"" }.joined(separator: ",") + "}"
+        return [
+            RemoteMessage(id: "m0", role: .user, text: "\(task)\n\n\(log)", at: t),
+            RemoteMessage(id: "m1", role: .assistant, text: "The dump:\n\n```json\n\(json)\n```\n\nHuge chat end.", at: t.addingTimeInterval(30)),
+        ]
     }
 
     private func notify() {
