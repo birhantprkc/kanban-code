@@ -397,7 +397,7 @@ public actor VaultBroker {
                     reason: req.reason, cardTitle: title, cwd: req.cwd, prompts: prompts
                 )
                 let subject = "\(s.name) for \(caller.cardId ?? "outside")"
-                let evidence = prompts.map { "\($0.typed.count) prompts entered in the card, \($0.delivered.count) from other senders" }
+                let evidence = prompts.map { "\($0.typed.count + $0.earlier.count) prompts entered in the card, \($0.delivered.count) from other senders" }
                     ?? "no card transcript"
                 group.addTask {
                     let verdict = await jev.judge(question)

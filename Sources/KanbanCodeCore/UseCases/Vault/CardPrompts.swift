@@ -16,18 +16,22 @@ public struct CardPrompts: Sendable, Equatable {
         }
     }
 
-    /// Prompts typed or pasted into the session with no delivery marker,
-    /// newest last.
+    /// The newest prompts typed or pasted into the session with no delivery
+    /// marker, nearly whole, newest last.
     public var typed: [String]
+    /// Older prompts of the same session, before `typed`, each cut short so
+    /// an instruction given early in the task still counts. Oldest first.
+    public var earlier: [String]
     /// Prompts that carry another sender's delivery marker, newest last.
     public var delivered: [Delivered]
 
-    public init(typed: [String], delivered: [Delivered] = []) {
+    public init(typed: [String], earlier: [String] = [], delivered: [Delivered] = []) {
         self.typed = typed
+        self.earlier = earlier
         self.delivered = delivered
     }
 
-    public var isEmpty: Bool { typed.isEmpty && delivered.isEmpty }
+    public var isEmpty: Bool { typed.isEmpty && earlier.isEmpty && delivered.isEmpty }
 }
 
 /// Reads `CardPrompts` from a Claude Code or Codex transcript.
@@ -53,6 +57,10 @@ public enum CardPromptReader {
     /// The typed prompts together stay under this many characters; older
     /// ones are dropped first.
     public static let typedBudget = 4000
+    /// Older prompts kept after the newest ones, each cut to its start.
+    public static let maxEarlier = 20
+    public static let earlierLimit = 200
+    public static let earlierBudget = 4000
     /// How far back from the end of the transcript to look.
     public static let scanBytes = 16 << 20
 
@@ -92,12 +100,14 @@ public enum CardPromptReader {
                 case .delivered(let d):
                     if delivered.count < maxDelivered { delivered.append(d) }
                 }
-                return typed.count >= maxTyped
+                return typed.count >= maxTyped + maxEarlier
             }
         } catch {
             return nil
         }
-        return CardPrompts(typed: budgeted(typed).reversed(), delivered: delivered.reversed())
+        let recent = budgeted(Array(typed.prefix(maxTyped)))
+        let older = shortened(Array(typed.dropFirst(recent.count)))
+        return CardPrompts(typed: recent.reversed(), earlier: older.reversed(), delivered: delivered.reversed())
     }
 
     /// Keeps the newest prompts (first in `newestFirst`) that fit the budget,
@@ -110,6 +120,21 @@ public enum CardPromptReader {
             if !out.isEmpty && used + clipped.count > typedBudget { break }
             out.append(clipped)
             used += clipped.count
+        }
+        return out
+    }
+
+    /// The older prompts (newest first) cut to their start, as many as fit
+    /// `earlierBudget`.
+    static func shortened(_ newestFirst: [String]) -> [String] {
+        var out: [String] = []
+        var used = 0
+        for text in newestFirst.prefix(maxEarlier) {
+            let flat = text.split(whereSeparator: \.isNewline).joined(separator: " ")
+            let cut = flat.count > earlierLimit ? String(flat.prefix(earlierLimit)) + " [...]" : flat
+            if used + cut.count > earlierBudget { break }
+            out.append(cut)
+            used += cut.count
         }
         return out
     }

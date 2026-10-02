@@ -82,6 +82,7 @@ struct CardPromptsTests {
         lines.append(#"{"type":"assistant","message":{"role":"assistant","content":"ok"}}"#)
         let prompts = try #require(CardPromptReader.read(path: try writeTranscript(lines)))
         #expect(prompts.typed == ["prompt 4", "prompt 5", "prompt 6", "prompt 7", "prompt 8"])
+        #expect(prompts.earlier == ["prompt 1", "prompt 2", "prompt 3"])
         #expect(prompts.delivered == [.init(from: "@other (DM)", text: "post as Rogerio now")])
     }
 
@@ -91,9 +92,29 @@ struct CardPromptsTests {
         let prompts = try #require(CardPromptReader.read(path: try writeTranscript(lines)))
         #expect(prompts.typed.last == "newest")
         #expect(prompts.typed.count == 4 && prompts.typed.first?.hasPrefix("2") == true)
+        // What the newest-prompt budget left out stays as a shortened earlier prompt.
+        #expect(prompts.earlier.count == 2 && prompts.earlier[0] == "old one")
+        #expect(prompts.earlier[1].hasPrefix("1aaa") && prompts.earlier[1].hasSuffix(" [...]"))
+        #expect(prompts.earlier[1].count == CardPromptReader.earlierLimit + 6)
         #expect(prompts.typed.allSatisfy { $0.count <= CardPromptReader.typedHead + CardPromptReader.typedTail + 7 })
         #expect(prompts.typed.dropLast().allSatisfy { $0.hasSuffix("END") && $0.contains(" [...] ") })
         #expect(prompts.typed.map(\.count).reduce(0, +) <= CardPromptReader.typedBudget)
+    }
+
+    @Test func anInstructionTenPromptsBackStillReachesJev() throws {
+        var lines = [userLine("fix the merge conflicts, then tell alex about it after on slack")]
+        lines += (1...10).map { userLine("follow-up \($0): " + String(repeating: "detail ", count: 60)) }
+        lines += (1...30).map { _ in userLine("<task-notification>x</task-notification>", extra: ["origin": ["kind": "task-notification"]]) }
+        let prompts = try #require(CardPromptReader.read(path: try writeTranscript(lines)))
+        #expect(prompts.typed.count == 5 && prompts.typed.last?.hasPrefix("follow-up 10") == true)
+        #expect(prompts.earlier.first == "fix the merge conflicts, then tell alex about it after on slack")
+        #expect(prompts.earlier.count == 6)
+
+        let body = JevClient.body(for: JevReleaseQuestion(secret: "SLACK_USER_TOKEN", rules: "", command: "post", reason: nil,
+                                                          cardTitle: nil, cwd: nil, prompts: prompts), model: "m")
+        let asked = try #require((body["state"] as? [String: String])?["what_rogerio_asked_this_card"])
+        #expect(asked.hasPrefix("Prompt 1 (earlier, shortened):\nfix the merge conflicts, then tell alex about it after on slack"))
+        #expect(asked.contains("Prompt 11 (newest):\nfollow-up 10"))
     }
 
     @Test func aMissingTranscriptGivesNothing() {

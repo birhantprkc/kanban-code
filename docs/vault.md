@@ -44,7 +44,7 @@ Human approvals are attention requests of kind `vaultApproval` with the options 
 
 ### What Jev reads
 
-For a caller the master matched to a card, Jev also gets the card's recent prompts, read from its transcript on the master that runs it (its own path, the peer mirror, or the session id under `~/.claude/projects`; Claude Code and Codex). `CardPromptReader` keeps the last 5 prompts entered in the session, newest last, each cut to its first 900 and last 400 characters, 4000 characters in all, under `what_rogerio_asked_this_card`. The agent's `--reason` goes as `agent_reason_unverified`, a claim Jev trusts only as far as those prompts back it.
+For a caller the master matched to a card, Jev also gets the card's recent prompts, read from its transcript on the master that runs it (its own path, the peer mirror, or the session id under `~/.claude/projects`; Claude Code and Codex). `CardPromptReader` keeps the last 5 prompts entered in the session, each cut to its first 900 and last 400 characters, 4000 characters in all, and up to 20 older prompts before them, each cut to its first 200 characters, another 4000 in all, so an instruction given early in the task still counts. Jev gets them under `what_rogerio_asked_this_card`, oldest first, the older ones marked as shortened. The agent's `--reason` goes as `agent_reason_unverified`, a claim Jev trusts only as far as those prompts back it.
 
 Text the harness writes (task notifications, messages between Claude sessions, compact summaries, command output, tool results) is left out. Every Kanban path that pastes another sender's text marks it, and prompts that open with a marker are listed under `messages_from_other_senders` with their sender, never as Rogerio's:
 
