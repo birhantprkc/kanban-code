@@ -1126,7 +1126,7 @@ struct NotificationSettingsView: View {
                     .foregroundStyle(.tertiary)
                 if macNotifications, let macProblem {
                     VStack(alignment: .leading, spacing: 6) {
-                        Label("Requests can go unseen: \(macProblem). Set Kanban Code's notifications to Persistent with sound so an approval waits on screen until you answer.", systemImage: "exclamationmark.triangle.fill")
+                        Label("Requests can go unseen: \(macProblem). Set Kanban Code's notifications to Persistent so an approval waits on screen until you answer.", systemImage: "exclamationmark.triangle.fill")
                             .font(.caption)
                             .foregroundStyle(.orange)
                         Button("Open Notification Settings") {

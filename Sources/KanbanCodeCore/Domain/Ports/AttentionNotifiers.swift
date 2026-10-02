@@ -5,6 +5,15 @@ import KanbanCodeRemoteKit
 public protocol MacAttentionNotifier: Sendable {
     func post(_ request: AttentionRequest, cardName: String?) async
     func remove(id: String) async
+    /// Opens the request's detail sheet in the app, with no system
+    /// notification.
+    func showInApp(_ request: AttentionRequest) async
+}
+
+extension MacAttentionNotifier {
+    public func showInApp(_ request: AttentionRequest) async {
+        KanbanCodeLog.warn("attention", "\(request.id) should open in the app, but this notifier has no app to open it in")
+    }
 }
 
 public enum PhonePushLevel: String, Sendable, Equatable {

@@ -14,6 +14,7 @@ struct AttentionDeliveryTests {
         func record(_ e: String) { lock.withLock { events.append(e) } }
         func post(_ request: AttentionRequest, cardName: String?) async { record("mac+\(request.id)") }
         func remove(id: String) async { record("mac-\(id)") }
+        func showInApp(_ request: AttentionRequest) async { record("app+\(request.id)") }
         func send(_ request: AttentionRequest, cardName: String?, level: PhonePushLevel) async throws { record("phone:\(level.rawValue):\(request.id)") }
         func withdraw(_ request: AttentionRequest) async {}
     }
@@ -124,6 +125,50 @@ struct AttentionDeliveryTests {
             changes: ["tier", "lease time"])
         #expect(AttentionCopy.vaultHeadline(details)
             == "A process outside any card wants to change the tier and lease time of the Stripe API key and the Stripe secret")
+    }
+
+    @Test("a vault approval on the card on screen opens its sheet in the app, never silently dropped")
+    func vaultOnScreenOpensSheet() async {
+        let looking = MacPresence(isKanbanFrontmost: true, visibleCardId: "card_1", visibleTab: "terminal", idleSeconds: 1, reportedAt: t0)
+        let request = vaultRequest(card: "card_1")
+        let s = AttentionPolicySettings()
+        #expect(AttentionPolicy.steps(for: request, delivered: .init(), presence: looking, now: t0, settings: s) == [.showInApp])
+        #expect(AttentionPolicy.steps(for: request, delivered: .init(macPosted: true), presence: looking, now: t0, settings: s) == [.removeMac, .showInApp])
+        #expect(AttentionPolicy.steps(for: request, delivered: .init(shownInApp: true), presence: looking, now: t0, settings: s).isEmpty)
+        #expect(AttentionPolicy.steps(for: request, delivered: .init(), presence: looking, now: t0, settings: s, macAvailable: false).isEmpty)
+        var question = request
+        question.kind = .question
+        #expect(AttentionPolicy.steps(for: question, delivered: .init(), presence: looking, now: t0, settings: s).isEmpty)
+
+        let clock = Clock(t0)
+        let mac = Recorder()
+        let center = AttentionCenter(
+            mac: mac, phone: Recorder(silentCopy: false),
+            localPresence: { MacPresence(isKanbanFrontmost: true, visibleCardId: "card_1", visibleTab: "terminal", idleSeconds: 1, reportedAt: clock.now) },
+            localMachineId: { "mac-id" }, now: { clock.now })
+        await center.deliver(request)
+        await center.evaluateAll()
+        #expect(mac.events == ["app+vault_1"])
+        #expect(await center.deliveryState("vault_1")?.shownInApp == true)
+    }
+
+    @Test("delivery state written before shownInApp existed still loads")
+    func oldStateLoads() throws {
+        let old = #"{"macPosted":true,"phoneSilentSent":false,"phoneAlertSent":true}"#
+        let state = try JSONDecoder().decode(AttentionDeliveryState.self, from: Data(old.utf8))
+        #expect(state == AttentionDeliveryState(macPosted: true, phoneAlertSent: true))
+    }
+
+    @Test("sheets wait in line, one at a time, skipping requests settled meanwhile")
+    func sheetQueue() {
+        var queue = AttentionSheetQueue.adding("b", to: [], shown: "a")
+        queue = AttentionSheetQueue.adding("a", to: queue, shown: "a")
+        queue = AttentionSheetQueue.adding("b", to: queue, shown: "a")
+        queue = AttentionSheetQueue.adding("c", to: queue, shown: "a")
+        #expect(queue == ["b", "c"])
+        #expect(AttentionSheetQueue.popNext(&queue) { $0 != "b" } == "c")
+        #expect(queue.isEmpty)
+        #expect(AttentionSheetQueue.popNext(&queue) { _ in true } == nil)
     }
 
     @Test("test runs log to their own file")

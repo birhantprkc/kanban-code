@@ -80,14 +80,11 @@ public actor MacAttentionNotificationClient: MacAttentionNotifier {
         case .notDetermined: return "Kanban Code has not asked to send notifications yet"
         default: return "notifications for Kanban Code are off in System Settings"
         }
-        var problems: [String] = []
         switch settings.alertStyle {
-        case .none: problems.append("they show no banner, only in Notification Center")
-        case .banner: problems.append("they are temporary banners that close after 5 seconds")
-        default: break
+        case .none: return "they show no banner, only in Notification Center"
+        case .banner: return "they are temporary banners that close after 5 seconds"
+        default: return nil
         }
-        if settings.soundSetting != .enabled { problems.append("they play no sound") }
-        return problems.isEmpty ? nil : problems.joined(separator: " and ")
     }
 
     static func kindLine(_ kind: AttentionRequest.Kind) -> String {

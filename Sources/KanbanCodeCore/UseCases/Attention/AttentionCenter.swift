@@ -178,6 +178,9 @@ public actor AttentionCenter: AttentionDelivering {
             case .removeMac:
                 await mac?.remove(id: id)
                 state.macPosted = false
+            case .showInApp:
+                await mac?.showInApp(request)
+                state.shownInApp = true
             case .phoneSilent:
                 state.phoneSilentSent = true
                 delivered[id] = state

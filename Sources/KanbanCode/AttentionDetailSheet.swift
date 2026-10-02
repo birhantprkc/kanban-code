@@ -8,15 +8,31 @@ extension Notification.Name {
 }
 
 /// Presents the detail sheet of the attention request a notification click
-/// names, over the board.
+/// or the attention center names, over the board. Requests arriving while a
+/// sheet is up wait in line, one sheet at a time.
 struct AttentionDetailPresenter: ViewModifier {
     let store: BoardStore
     @State private var shownId: String?
+    @State private var waiting: [String] = []
 
     func body(content: Content) -> some View {
         content
             .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeShowAttention).receive(on: RunLoop.main)) { note in
-                if let id = note.userInfo?["id"] as? String, store.state.attentionRequests[id] != nil { shownId = id }
+                guard let id = note.userInfo?["id"] as? String, store.state.attentionRequests[id] != nil else { return }
+                if shownId == nil {
+                    shownId = id
+                } else {
+                    waiting = AttentionSheetQueue.adding(id, to: waiting, shown: shownId)
+                }
+            }
+            .onChange(of: shownId) {
+                guard shownId == nil, !waiting.isEmpty else { return }
+                Task { @MainActor in
+                    // Lets the closing sheet finish before the next one opens.
+                    try? await Task.sleep(for: .milliseconds(350))
+                    guard shownId == nil else { return }
+                    shownId = AttentionSheetQueue.popNext(&waiting) { store.state.attentionRequests[$0]?.isOpen == true }
+                }
             }
             .sheet(item: Binding(
                 get: { shownId.map(AttentionSheetTarget.init) },

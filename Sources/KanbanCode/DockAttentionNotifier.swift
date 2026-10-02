@@ -4,6 +4,7 @@ import KanbanCodeCore
 /// Mac attention notifications plus the Dock: the icon shows how many
 /// requests are posted and bounces until Kanban Code comes to the front
 /// when a new one arrives, so a request whose banner closed is still seen.
+/// A request shown in the app opens its detail sheet instead.
 actor DockAttentionNotifier: MacAttentionNotifier {
     private let inner: any MacAttentionNotifier
     private var posted: Set<String> = []
@@ -23,6 +24,14 @@ actor DockAttentionNotifier: MacAttentionNotifier {
             }
         }
         KanbanCodeLog.info("attention", "Dock shows \(count) open request(s)\(isNew ? ", bounced for \(request.id)" : "")")
+    }
+
+    func showInApp(_ request: AttentionRequest) async {
+        let id = request.id
+        await MainActor.run {
+            NotificationCenter.default.post(name: .kanbanCodeShowAttention, object: nil, userInfo: ["id": id])
+        }
+        KanbanCodeLog.info("attention", "Opened the detail sheet of \(id) in the app")
     }
 
     func remove(id: String) async {

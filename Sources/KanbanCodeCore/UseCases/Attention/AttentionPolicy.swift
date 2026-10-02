@@ -35,11 +35,22 @@ public struct AttentionDeliveryState: Sendable, Equatable, Codable {
     public var macPosted = false
     public var phoneSilentSent = false
     public var phoneAlertSent = false
+    /// The detail sheet was opened in the app.
+    public var shownInApp = false
 
-    public init(macPosted: Bool = false, phoneSilentSent: Bool = false, phoneAlertSent: Bool = false) {
+    public init(macPosted: Bool = false, phoneSilentSent: Bool = false, phoneAlertSent: Bool = false, shownInApp: Bool = false) {
         self.macPosted = macPosted
         self.phoneSilentSent = phoneSilentSent
         self.phoneAlertSent = phoneAlertSent
+        self.shownInApp = shownInApp
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        macPosted = try c.decodeIfPresent(Bool.self, forKey: .macPosted) ?? false
+        phoneSilentSent = try c.decodeIfPresent(Bool.self, forKey: .phoneSilentSent) ?? false
+        phoneAlertSent = try c.decodeIfPresent(Bool.self, forKey: .phoneAlertSent) ?? false
+        shownInApp = try c.decodeIfPresent(Bool.self, forKey: .shownInApp) ?? false
     }
 }
 
@@ -50,6 +61,9 @@ public enum AttentionDeliveryStep: Sendable, Equatable {
     case phoneSilent
     /// A time-sensitive push with sound.
     case phoneAlert
+    /// Opens the request's detail sheet in the app, for a vault approval
+    /// whose card is on screen: no card view draws vault approvals.
+    case showInApp
 }
 
 /// Who gets told about an open request, and when. Pure.
@@ -79,7 +93,13 @@ public enum AttentionPolicy {
             return delivered.macPosted ? [.removeMac] : []
         }
         if isLookingAt(request, presence, now: now, settings: settings) {
-            return delivered.macPosted ? [.removeMac] : []
+            var steps: [AttentionDeliveryStep] = delivered.macPosted ? [.removeMac] : []
+            // The chat and the terminal show questions, plans and permission
+            // prompts; a vault approval only exists in the sheet.
+            if request.kind == .vaultApproval, macAvailable, !delivered.shownInApp {
+                steps.append(.showInApp)
+            }
+            return steps
         }
         var steps: [AttentionDeliveryStep] = []
         if macAvailable, settings.macNotifications, !delivered.macPosted {
@@ -103,7 +123,10 @@ public enum AttentionPolicy {
     ) -> String {
         guard request.isOpen else { return "resolved" }
         if isLookingAt(request, presence, now: now, settings: settings) {
-            return "Rogerio is looking at card \(request.cardId ?? "?"), no notification"
+            if request.kind == .vaultApproval {
+                return "Rogerio is looking at card \(request.cardId ?? "?"), detail sheet in the app instead of a notification"
+            }
+            return "Rogerio is looking at card \(request.cardId ?? "?"), which shows it, no notification"
         }
         let where_: String
         if presence == nil {
@@ -130,5 +153,23 @@ public enum AttentionPolicy {
     public static func nextCheck(for request: AttentionRequest, delivered: AttentionDeliveryState, settings: AttentionPolicySettings) -> Date? {
         guard request.isOpen, settings.phoneEnabled, !delivered.phoneAlertSent else { return nil }
         return request.createdAt.addingTimeInterval(settings.phoneAlertDelay)
+    }
+}
+
+/// Attention requests waiting for the app's detail sheet, one at a time.
+public enum AttentionSheetQueue {
+    /// `queue` with `id` at the end, unless it is shown or already waits.
+    public static func adding(_ id: String, to queue: [String], shown: String?) -> [String] {
+        id == shown || queue.contains(id) ? queue : queue + [id]
+    }
+
+    /// Takes the first waiting request that is still open; drops the
+    /// settled ones before it.
+    public static func popNext(_ queue: inout [String], isOpen: (String) -> Bool) -> String? {
+        while !queue.isEmpty {
+            let id = queue.removeFirst()
+            if isOpen(id) { return id }
+        }
+        return nil
     }
 }
