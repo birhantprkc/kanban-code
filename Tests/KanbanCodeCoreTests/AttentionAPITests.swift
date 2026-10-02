@@ -121,6 +121,18 @@ struct AttentionEngineTests {
         #expect(deny.deny && deny.toolUseId == nil)
     }
 
+    @Test("a rush session blocked on a tool call is a permission; questions and plans are not")
+    func rushPermissionNeed() throws {
+        #expect(MasterEngine.rushPermissionNeed("Bash rm -rf build") == "Bash rm -rf build")
+        #expect(MasterEngine.rushPermissionNeed("asks: Tea or coffee?") == nil)
+        #expect(MasterEngine.rushPermissionNeed("ExitPlanMode ") == nil)
+        let json = #"{"id":"084cff00","sessionId":"s","cwd":"/p","state":"blocked","alive":true,"queue":[],"needs":"Bash ls"}"#
+        let info = try JSONDecoder().decode(AgtopSessionInfo.self, from: Data(json.utf8))
+        #expect(info.blockedOn == "Bash ls")
+        let idle = try JSONDecoder().decode(AgtopSessionInfo.self, from: Data(json.replacingOccurrences(of: "blocked", with: "idle").utf8))
+        #expect(idle.blockedOn == nil)
+    }
+
     @Test("Notification hook lines carry their type and text")
     func hookPayload() async throws {
         let dir = (NSTemporaryDirectory() as NSString).appendingPathComponent("hooks-\(UUID().uuidString)")

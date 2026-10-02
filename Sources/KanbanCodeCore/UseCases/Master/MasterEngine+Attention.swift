@@ -59,6 +59,7 @@ extension MasterEngine {
                 attentionScanMarks[path] = mark
             }
             reconcileAttention(cardId: candidate.cardId, sessionId: candidate.sessionId, mark: mark)
+            reconcileRushPermission(cardId: candidate.cardId, sessionId: candidate.sessionId)
         }
         attentionScanMarks = attentionScanMarks.filter { seenPaths.contains($0.key) }
         // A session that ended or a card that left the board waits on nothing.
@@ -93,6 +94,33 @@ extension MasterEngine {
             id: pending.requestId, cardId: cardId, kind: pending.kind, title: pending.title,
             body: pending.body, options: pending.options, createdAt: pending.askedAt ?? Date(),
             sessionId: sessionId, machineId: store.state.localMachineId.isEmpty ? nil : store.state.localMachineId)))
+    }
+
+    /// A rush session blocked on a tool call raises a permission request,
+    /// which ends once rush says it waits on nothing. Questions and plans
+    /// come from the transcript instead.
+    func reconcileRushPermission(cardId: String, sessionId: String) {
+        guard let session = store.state.links[cardId]?.tmuxLink?.sessionName, AgtopSessionName.isAgtop(session) else { return }
+        let need = store.state.agtopNeeds[session].flatMap(Self.rushPermissionNeed)
+        if let need {
+            raisePermissionRequest(sessionId: sessionId, message: "Claude wants to use \(need)", at: Date())
+            return
+        }
+        // The scan behind `agtopNeeds` can lag a hook that raised it just now.
+        let settled = Date().addingTimeInterval(-20)
+        for request in store.state.openAttentionRequests
+        where request.sessionId == sessionId && request.kind == .permission && request.createdAt < settled {
+            store.dispatch(.attentionResolved(id: request.id, resolution: nil, by: "session"))
+        }
+    }
+
+    /// The tool call a rush `needs` line asks permission for; nil for a
+    /// question or a plan, which the transcript raises.
+    nonisolated static func rushPermissionNeed(_ needs: String) -> String? {
+        let need = needs.trimmingCharacters(in: .whitespacesAndNewlines)
+        if need.isEmpty || need.hasPrefix("asks:") || need == "has a question"
+            || need.hasPrefix("ExitPlanMode") || need.hasPrefix("AskUserQuestion") { return nil }
+        return need
     }
 
     /// Raises a permission request for a session the hooks reported as

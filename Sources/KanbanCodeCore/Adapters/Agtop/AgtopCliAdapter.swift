@@ -17,6 +17,9 @@ public struct AgtopSessionInfo: Decodable, Sendable, Equatable {
     public var claudePid: Int?
     /// `--meta` pairs given at start, e.g. `kanban_card`.
     public var meta: [String: String]?
+    /// What a blocked session waits on, as rush words it: "asks: <question>"
+    /// for a question, "<Tool> <argument>" for a permission.
+    public var needs: String?
 
     public init(id: String, sessionId: String, cwd: String, name: String? = nil, state: String, alive: Bool,
                 queue: [String] = []) {
@@ -29,7 +32,7 @@ public struct AgtopSessionInfo: Decodable, Sendable, Equatable {
         self.queue = queue
     }
 
-    enum CodingKeys: String, CodingKey { case id, sessionId, cwd, name, state, alive, queue, hostPid, claudePid, meta }
+    enum CodingKeys: String, CodingKey { case id, sessionId, cwd, name, state, alive, queue, hostPid, claudePid, meta, needs }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -43,7 +46,11 @@ public struct AgtopSessionInfo: Decodable, Sendable, Equatable {
         hostPid = try? c.decodeIfPresent(Int.self, forKey: .hostPid)
         claudePid = try? c.decodeIfPresent(Int.self, forKey: .claudePid)
         meta = try? c.decodeIfPresent([String: String].self, forKey: .meta)
+        needs = try? c.decodeIfPresent(String.self, forKey: .needs)
     }
+
+    /// What the session waits on, while it is blocked.
+    public var blockedOn: String? { alive && state == "blocked" ? needs : nil }
 
     /// Claude is running a turn or waiting on a permission answer.
     public var isBusy: Bool { alive && (state == "working" || state == "blocked" || state == "starting") }

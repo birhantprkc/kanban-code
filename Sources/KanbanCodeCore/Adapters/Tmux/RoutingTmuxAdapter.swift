@@ -62,7 +62,7 @@ public final class RoutingTmuxAdapter: TmuxManagerPort, @unchecked Sendable {
         var result = try await local.listSessions()
         if agtop.isAvailable, let hosts = try? await agtop.list() {
             for host in hosts where host.alive {
-                result.append(TmuxSession(name: AgtopSessionName.name(agtopId: host.id), path: host.cwd, agtopQueue: host.queue))
+                result.append(TmuxSession(name: AgtopSessionName.name(agtopId: host.id), path: host.cwd, agtopQueue: host.queue, agtopNeeds: host.blockedOn))
             }
         }
         var seen = Set(result.map(\.name))
@@ -77,7 +77,7 @@ public final class RoutingTmuxAdapter: TmuxManagerPort, @unchecked Sendable {
                     for host in hosts where host.alive {
                         let name = AgtopSessionName.name(agtopId: host.id)
                         if ours.contains(name) {
-                            live.append(TmuxSession(name: name, path: host.cwd, agtopQueue: host.queue))
+                            live.append(TmuxSession(name: name, path: host.cwd, agtopQueue: host.queue, agtopNeeds: host.blockedOn))
                         }
                     }
                 }

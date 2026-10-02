@@ -111,6 +111,8 @@ public final class AppState: @unchecked Sendable {
     /// Messages queued in each live agtop host, by session name; hosts with
     /// an empty queue are left out.
     public var agtopQueues: [String: [String]] = [:]
+    /// What each blocked agtop host waits on, by session name.
+    public var agtopNeeds: [String: String] = [:]
     /// Single source of truth for which drawer is open. Only ONE thing can be
     /// selected at a time; the type system enforces that invariant. The legacy
     /// `selectedCardId` / `selectedChannelName` / `selectedDMParticipant`
@@ -697,6 +699,8 @@ public enum Action: Sendable {
     case tmuxLivenessScanned(live: Set<String>)
     /// Every live agtop host's queue, from the same scan.
     case agtopQueuesScanned([String: [String]])
+    /// What every blocked agtop host waits on, from the same scan.
+    case agtopNeedsScanned([String: String])
     /// One agtop host's queue, read after acting on it.
     case agtopQueueRead(sessionName: String, queue: [String])
     case gitHubIssuesUpdated(links: [Link])
@@ -2366,6 +2370,10 @@ public enum Reducer {
             if state.agtopQueues != nonEmpty { state.agtopQueues = nonEmpty }
             return []
 
+        case .agtopNeedsScanned(let needs):
+            if state.agtopNeeds != needs { state.agtopNeeds = needs }
+            return []
+
         case .agtopQueueRead(let sessionName, let queue):
             if state.agtopQueues[sessionName] ?? [] != queue {
                 state.agtopQueues[sessionName] = queue.isEmpty ? nil : queue
@@ -3036,6 +3044,15 @@ public final class BoardStore: @unchecked Sendable {
         return queues
     }
 
+    /// What the blocked agtop hosts in a session scan wait on, by session name.
+    nonisolated static func agtopNeeds(in sessions: [TmuxSession]) -> [String: String] {
+        var needs: [String: String] = [:]
+        for session in sessions {
+            if let need = session.agtopNeeds, !need.isEmpty { needs[session.name] = need }
+        }
+        return needs
+    }
+
     /// Dispatch an action. Reducer runs synchronously, effects run async.
     public func dispatch(_ action: Action) {
         if let foreignCardHandler, foreignCardHandler(action) { return }
@@ -3276,6 +3293,7 @@ public final class BoardStore: @unchecked Sendable {
             if let tmuxAdapter, let live = try? await tmuxAdapter.listSessions() {
                 dispatch(.tmuxLivenessScanned(live: Set(live.map(\.name))))
                 dispatch(.agtopQueuesScanned(Self.agtopQueues(in: live)))
+                dispatch(.agtopNeedsScanned(Self.agtopNeeds(in: live)))
             }
 
             let t1 = ContinuousClock.now
@@ -3454,6 +3472,7 @@ public final class BoardStore: @unchecked Sendable {
             KanbanCodeLog.info("reconcile", "tmux: \(t2.duration(to: .now)) (\(tmuxSessions.count) sessions)")
             if tmuxAdapter != nil {
                 dispatch(.agtopQueuesScanned(Self.agtopQueues(in: tmuxSessions)))
+                dispatch(.agtopNeedsScanned(Self.agtopNeeds(in: tmuxSessions)))
                 let currentNames = Set(tmuxSessions.map(\.name))
                 let home = (NSHomeDirectory() as NSString).appendingPathComponent(".kanban-code")
                 // The disk snapshot covers the first pass of a fresh app run:
