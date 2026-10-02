@@ -214,6 +214,13 @@ struct VaultBrokerTests {
         #expect(await store.log().contains { $0.secret == "ASK" && $0.outcome == .skipped })
     }
 
+    @Test func hookModeLogsJevRefusalsAsSkips() async throws {
+        let (broker, store, _) = try await makeBroker(jev: JevVerdict(choice: .deny, confidence: 0.9))
+        let r = await broker.release(VaultReleaseRequest(mode: "hook", names: ["OPEN", "JUDGED"], command: "npm test"), caller: inside)
+        #expect(r.status == .granted && r.values == ["OPEN": "open-value"] && r.skipped == ["JUDGED"])
+        #expect(await store.log().first { $0.secret == "JUDGED" }?.outcome == .skipped)
+    }
+
     @Test func hookReleasesDoNotTripTheRateLimit() async throws {
         let (broker, _, approvals) = try await makeBroker(answer: "Deny")
         for _ in 0..<30 {

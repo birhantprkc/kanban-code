@@ -246,8 +246,11 @@ public actor VaultBroker {
             }
         }
 
+        // A hook-wrapped command goes on without what it was not given:
+        // that is a skip, not a refusal of anything the agent asked for.
         for (s, why) in denies {
-            await audit(s, req: req, caller: caller, outcome: .denied, decider: why.hasPrefix("Jev") ? .jev : .rule, detail: why)
+            await audit(s, req: req, caller: caller, outcome: hook ? .skipped : .denied,
+                        decider: why.hasPrefix("Jev") ? .jev : .rule, detail: why)
         }
 
         if hook {
