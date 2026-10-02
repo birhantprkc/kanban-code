@@ -1,4 +1,4 @@
-.PHONY: build test run app app-debug run-app run-release clean cli install-cli web ios-project ios ios-run ios-test ios-device ios-autoinstall ios-autoinstall-remove
+.PHONY: build test run app app-debug run-app run-release clean cli install-cli web ios-project ios ios-run ios-test ios-device ios-autoinstall ios-autoinstall-remove rush-plugins
 
 BUNDLE_NAME = KanbanCode.app
 BUNDLE_DIR = build/$(BUNDLE_NAME)
@@ -118,6 +118,10 @@ install-cli: cli
 	@printf '#!/bin/sh\nexec node "$(CURDIR)/cli/dist/kv.js" "$$@"\n' > $(HOME)/.local/bin/kv
 	@chmod 755 $(HOME)/.local/bin/kv
 	@echo "Installed kanban CLI to ~/.local/bin/kanban"
+
+# Kanban Code's rush plugins, installed where rush loads them (Scripts/rush-plugins-install.sh).
+rush-plugins:
+	@Scripts/rush-plugins-install.sh
 
 clean:
 	swift package clean
