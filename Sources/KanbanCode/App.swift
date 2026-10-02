@@ -179,12 +179,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         # Installed by Kanban Code — TypeScript CLI wrapper.
         exec node "\(cliPath)" "$@"
         """
+        let kvScript = """
+        #!/bin/sh
+        # Installed by Kanban Code: the vault CLI.
+        exec node "\(resourceURL.appendingPathComponent("cli/dist/kv.js").path)" "$@"
+        """
         do {
             try FileManager.default.createDirectory(at: binDir, withIntermediateDirectories: true)
             try script.write(to: scriptPath, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes(
                 [.posixPermissions: 0o755], ofItemAtPath: scriptPath.path
             )
+            let kvPath = binDir.appendingPathComponent("kv")
+            try kvScript.write(to: kvPath, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: kvPath.path)
         } catch {
             print("[Kanban Code] Failed to install CLI: \(error)")
         }

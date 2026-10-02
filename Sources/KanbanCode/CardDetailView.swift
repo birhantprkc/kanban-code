@@ -144,6 +144,7 @@ struct CardDetailView: View {
     @Binding var pendingTerminalSession: String?
     @State private var showRenameSheet = false
     @State private var showPromptHistory = false
+    @State private var showVault = false
     @State private var renameText = ""
 
     // Checkpoint mode
@@ -487,6 +488,9 @@ struct CardDetailView: View {
                 onAddQueuedPrompt(prompt)
                 onSendQueuedPrompt(prompt.id)
             }
+        }
+        .sheet(isPresented: $showVault) {
+            CardVaultSheet(cardId: card.id)
         }
         .sheet(isPresented: $showRenameSheet) {
             RenameSessionDialog(
@@ -1650,7 +1654,8 @@ struct CardDetailView: View {
                     onMoveToProject: onMoveToProject,
                     onMoveToFolder: onMoveToFolder,
                     onMigrateAssistant: onMigrateAssistant,
-                    onShowPromptHistory: { showPromptHistory = true }
+                    onShowPromptHistory: { showPromptHistory = true },
+                    onShowVault: { showVault = true }
                 ),
                 showBranchInfo: true,
                 githubBaseURL: githubBaseURL,

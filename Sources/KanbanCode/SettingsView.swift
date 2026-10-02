@@ -136,6 +136,9 @@ struct SettingsView: View {
             SyncSettingsView()
                 .tabItem { Label("Sync", systemImage: "arrow.triangle.2.circlepath.circle") }
 
+            VaultSettingsView()
+                .tabItem { Label("Vault", systemImage: "key") }
+
             AmphetamineSettingsView()
                 .tabItem { Label("Amphetamine", systemImage: "bolt.fill") }
         }

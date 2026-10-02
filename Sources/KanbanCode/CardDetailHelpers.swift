@@ -23,6 +23,8 @@ struct CardActionsMenuActions {
     /// Opens the record of prompts sent to this card. Nil where there is no
     /// place to present it from.
     let onShowPromptHistory: (() -> Void)?
+    /// Opens the card's vault releases and leases.
+    let onShowVault: (() -> Void)?
     let subagentCount: Int
     let onShowSubagents: () -> Void
     let onTrimSession: () -> Void
@@ -61,7 +63,8 @@ struct CardActionsMenuActions {
         onMoveToProject: @escaping (String) -> Void,
         onMoveToFolder: @escaping () -> Void,
         onMigrateAssistant: @escaping (CodingAssistant) -> Void,
-        onShowPromptHistory: (() -> Void)? = nil
+        onShowPromptHistory: (() -> Void)? = nil,
+        onShowVault: (() -> Void)? = nil
     ) {
         self.onStart = onStart
         self.onResume = onResume
@@ -86,6 +89,7 @@ struct CardActionsMenuActions {
         self.onMoveToFolder = onMoveToFolder
         self.onMigrateAssistant = onMigrateAssistant
         self.onShowPromptHistory = onShowPromptHistory
+        self.onShowVault = onShowVault
     }
 }
 
@@ -246,6 +250,12 @@ struct CardActionsMenu: View {
         if let onShowPromptHistory = actions.onShowPromptHistory {
             Button(action: onShowPromptHistory) {
                 Label("Prompt History", systemImage: "list.bullet.rectangle.portrait")
+            }
+        }
+
+        if let onShowVault = actions.onShowVault {
+            Button(action: onShowVault) {
+                Label("Vault Releases", systemImage: "key")
             }
         }
 

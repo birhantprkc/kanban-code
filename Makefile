@@ -113,6 +113,8 @@ install-cli: cli
 	@mkdir -p $(HOME)/.local/bin
 	@printf '#!/bin/sh\nexec node "$(CURDIR)/cli/dist/kanban.js" "$$@"\n' > $(HOME)/.local/bin/kanban
 	@chmod 755 $(HOME)/.local/bin/kanban
+	@printf '#!/bin/sh\nexec node "$(CURDIR)/cli/dist/kv.js" "$$@"\n' > $(HOME)/.local/bin/kv
+	@chmod 755 $(HOME)/.local/bin/kv
 	@echo "Installed kanban CLI to ~/.local/bin/kanban"
 
 clean:

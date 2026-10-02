@@ -47,4 +47,7 @@ if [ -d ~/.kanban-code/cli ]; then mv ~/.kanban-code/cli ~/.kanban-code/cli.old;
 mv ~/.kanban-code/cli.new ~/.kanban-code/cli
 rm -rf ~/.kanban-code/cli.old
 /usr/bin/node ~/.kanban-code/cli/dist/kanban.js --version
+mkdir -p ~/.local/bin
+printf '#!/bin/sh\nexec /usr/bin/node /root/.kanban-code/cli/dist/kv.js "\$@"\n' > ~/.local/bin/kv
+chmod 755 ~/.local/bin/kv
 REMOTE
