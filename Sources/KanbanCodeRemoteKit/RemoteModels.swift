@@ -666,3 +666,37 @@ enum RemoteDates {
         return try? Date(s, strategy: .iso8601)
     }
 }
+
+// MARK: - Vault
+
+/// One entry of `GET /v1/vault/secrets`; only the name is read here.
+public struct RemoteVaultSecretName: Codable, Sendable, Equatable {
+    public var name: String
+    public init(name: String) { self.name = name }
+}
+
+/// Body of `POST /v1/vault/secrets`.
+public struct RemoteVaultAddRequest: Codable, Sendable, Equatable {
+    public var name: String
+    public var value: String
+    public var tier: String
+    public var rules: String
+    public init(name: String, value: String, tier: String, rules: String) {
+        self.name = name
+        self.value = value
+        self.tier = tier
+        self.rules = rules
+    }
+}
+
+/// The vault's answer: `granted`, `pending` (asked the human) or `denied`.
+public struct RemoteVaultResponse: Codable, Sendable, Equatable {
+    public var status: String
+    public var message: String
+    public var id: String?
+    public init(status: String, message: String, id: String? = nil) {
+        self.status = status
+        self.message = message
+        self.id = id
+    }
+}

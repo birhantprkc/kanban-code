@@ -100,6 +100,36 @@ public enum SecretDetector {
         return out
     }
 
+    /// What saving a composer's offers came to: the text to send (references
+    /// for what was saved), what is still unsaved, and why it stopped.
+    public struct SaveResult: Sendable, Equatable {
+        public var text: String
+        public var remaining: [SecretProposal]
+        public var error: String?
+    }
+
+    /// Saves each offer through `add` (which returns an error message or nil)
+    /// under the typed name, or a free one when that is taken or invalid, so a
+    /// stored secret is never replaced. Stops at the first failure.
+    public static func save(_ proposals: [SecretProposal], in text: String, existingNames: Set<String>,
+                            isolation: isolated (any Actor)? = #isolation,
+                            add: (SecretProposal) async -> String?) async -> SaveResult {
+        var taken = existingNames
+        var saved: [SecretProposal] = []
+        for (i, offered) in proposals.enumerated() {
+            var proposal = offered
+            let typed = proposal.name.trimmingCharacters(in: .whitespaces)
+            proposal.name = uniqueName(isValidName(typed) ? typed : "SECRET", existing: taken)
+            if let error = await add(proposal) {
+                return SaveResult(text: apply(text, saved: saved), remaining: Array(proposals[i...]),
+                                  error: "Could not save \(proposal.name): \(error)")
+            }
+            taken.insert(proposal.name)
+            saved.append(proposal)
+        }
+        return SaveResult(text: apply(text, saved: saved), remaining: [], error: nil)
+    }
+
     /// `text` with each saved proposal swapped for its vault reference.
     public static func apply(_ text: String, saved: [SecretProposal]) -> String {
         saved.reduce(text) { replace($0, value: $1.value, name: $1.name) }

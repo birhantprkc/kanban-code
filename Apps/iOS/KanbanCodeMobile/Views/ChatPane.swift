@@ -13,6 +13,7 @@ struct ChatPane: View {
     @State private var isSending = false
     @State private var sendError: String?
     @State private var notice: String?
+    @State private var secretOffer: PendingSecretOffer?
     @State private var sentCount = 0
     @State private var queueActions: Set<String> = []
     @State private var showPhotoPicker = false
@@ -227,6 +228,10 @@ struct ChatPane: View {
                         try? await Task.sleep(for: .seconds(4))
                         self.notice = nil
                     }
+            }
+            if secretOffer != nil {
+                VaultSecretOfferCard(offer: Binding(get: { secretOffer! }, set: { secretOffer = $0 }),
+                                     onSave: saveOfferedSecrets, onSendAsIs: sendOfferAsIs)
             }
             if card.isLive, card.sessionStatus?.kind != .machine {
                 composer
@@ -500,8 +505,53 @@ struct ChatPane: View {
         return true
     }
 
+    /// Sends the draft, or first offers to save the secrets it carries.
     private func send(_ mode: RemotePromptRequest.Mode) {
         let text = draft.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard secretOffer == nil, !isSending else { return }
+        guard !text.isEmpty, !SecretDetector.find(in: text).isEmpty, let client = board.client else {
+            deliver(text, mode)
+            return
+        }
+        isSending = true
+        Task {
+            let names = (try? await client.vaultSecretNames()) ?? []
+            let proposals = SecretDetector.proposals(in: text, existingNames: names)
+            isSending = false
+            if proposals.isEmpty {
+                deliver(text, mode)
+            } else {
+                composerFocused = false
+                withAnimation(.snappy) { secretOffer = PendingSecretOffer(text: text, mode: mode, proposals: proposals) }
+            }
+        }
+    }
+
+    private func sendOfferAsIs() {
+        guard let offer = secretOffer else { return }
+        secretOffer = nil
+        deliver(offer.text, offer.mode)
+    }
+
+    private func saveOfferedSecrets() {
+        guard var offer = secretOffer, !offer.isSaving, let client = board.client else { return }
+        offer.isSaving = true
+        offer.error = nil
+        secretOffer = offer
+        Task {
+            let result = await PhoneVault.save(offer, client: client)
+            if let error = result.error {
+                // What was saved stays referenced; the rest stays offered.
+                secretOffer = PendingSecretOffer(text: result.text, mode: offer.mode, proposals: result.remaining, error: error)
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
+                return
+            }
+            secretOffer = nil
+            deliver(result.text, offer.mode)
+        }
+    }
+
+    private func deliver(_ text: String, _ mode: RemotePromptRequest.Mode) {
         let images = draft.remoteImages
         guard !text.isEmpty || !images.isEmpty, let client = board.client, !isSending else { return }
         isSending = true

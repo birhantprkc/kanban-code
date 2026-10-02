@@ -498,4 +498,29 @@ struct PastedSecretTests {
         #expect(sent.hasPrefix("first {{vault:OPENAI_API_KEY_2}} then {{vault:OPENAI_API_KEY_3}} and {{vault:OPENAI_API_KEY_2}} again\n\n("))
         #expect(SecretDetector.proposals(in: "nothing to see", existingNames: []).isEmpty)
     }
+
+    @Test("Saving never reuses a stored name, fixes an invalid typed name, and stops at the first failure")
+    func save() async {
+        let other = "sk-proj-" + "Lb3Nw7Hc1Yp4Fd6Gs0JeZr8Kq2Vm5Tx9" + "_AuQiWo"
+        let text = "a \(Self.openai) b \(other) c \(Self.github)"
+        var offers = SecretDetector.proposals(in: text, existingNames: [])
+        offers[0].name = "MY KEY"
+        offers[1].name = "TAKEN"
+        var added: [String] = []
+        let ok = await SecretDetector.save(offers, in: text, existingNames: ["TAKEN"]) { p in
+            added.append(p.name); return nil
+        }
+        #expect(added == ["SECRET", "TAKEN_2", "GITHUB_TOKEN"])
+        #expect(ok.error == nil && ok.remaining.isEmpty)
+        #expect(ok.text.hasPrefix("a {{vault:SECRET}} b {{vault:TAKEN_2}} c {{vault:GITHUB_TOKEN}}\n\n("))
+
+        var calls = 0
+        let failed = await SecretDetector.save(offers, in: text, existingNames: []) { _ in
+            calls += 1; return calls == 2 ? "vault locked" : nil
+        }
+        #expect(failed.error == "Could not save TAKEN: vault locked")
+        #expect(failed.remaining.map(\.value) == [other, Self.github])
+        #expect(failed.text.contains("{{vault:SECRET}}") && failed.text.contains(other) && failed.text.contains(Self.github))
+    }
 }
+

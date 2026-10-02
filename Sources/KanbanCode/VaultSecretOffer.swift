@@ -52,30 +52,23 @@ final class VaultSecretOffer {
         let offered = proposals
         let text = heldText
         Task {
-            var taken = await existingNames()
-            var saved: [SecretProposal] = []
-            for var proposal in offered {
-                let typed = proposal.name.trimmingCharacters(in: .whitespaces)
-                let base = SecretDetector.isValidName(typed) ? typed : "SECRET"
-                proposal.name = SecretDetector.uniqueName(base, existing: taken)
+            let result = await SecretDetector.save(offered, in: text, existingNames: await existingNames()) { proposal in
                 let request = VaultAddRequest(name: proposal.name, value: proposal.value,
                                               tier: VaultTier(rawValue: SecretDetector.pastedTier),
                                               rules: SecretDetector.pastedRules)
                 let response = await vault.broker.add(request, caller: composerCaller, trusted: false)
-                guard response.status == .granted else {
-                    error = "Could not save \(proposal.name): \(response.message)"
-                    isSaving = false
-                    // Secrets already saved stay referenced, the rest stay offered.
-                    heldText = SecretDetector.apply(text, saved: saved)
-                    proposals = offered.filter { p in !saved.contains { $0.value == p.value } }
-                    return
-                }
-                taken.insert(proposal.name)
-                saved.append(proposal)
+                return response.status == .granted ? nil : response.message
             }
-            let final = SecretDetector.apply(text, saved: saved)
+            if let error = result.error {
+                // Secrets already saved stay referenced, the rest stay offered.
+                heldText = result.text
+                proposals = result.remaining
+                self.error = error
+                isSaving = false
+                return
+            }
             reset()
-            send(final)
+            send(result.text)
         }
     }
 

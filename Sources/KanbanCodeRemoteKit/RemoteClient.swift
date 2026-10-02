@@ -221,6 +221,27 @@ public struct RemoteClient: Sendable {
         try await sendEmpty(makeRequest("POST", "v1/attention/presence", body: presence))
     }
 
+    // MARK: Vault
+
+    /// Names of the secrets in the vault (never values).
+    public func vaultSecretNames() async throws -> Set<String> {
+        let list: [RemoteVaultSecretName] = try await send(makeRequest("GET", "v1/vault/secrets"))
+        return Set(list.map(\.name))
+    }
+
+    /// Adds a secret. A new name is stored at once (`granted`); an existing
+    /// one asks the human (`pending`); `denied` arrives as a 403.
+    public func addVaultSecret(name: String, value: String, tier: String, rules: String) async throws -> RemoteVaultResponse {
+        let request = makeRequest("POST", "v1/vault/secrets",
+                                  body: RemoteVaultAddRequest(name: name, value: value, tier: tier, rules: rules))
+        do {
+            return try await send(request)
+        } catch RemoteClientError.forbidden(let body) {
+            if let r = try? JSONDecoder.remote.decode(RemoteVaultResponse.self, from: Data(body.utf8)) { return r }
+            throw RemoteClientError.forbidden(body)
+        }
+    }
+
     // MARK: Requests
 
     /// Builds the request for `path` (relative to the base URL, no leading slash).
