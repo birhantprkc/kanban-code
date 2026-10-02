@@ -79,7 +79,7 @@ eval "$__kv_env"; unset __kv_env
 <the original command>
 ```
 
-so the shell loads the secrets first and `cd` and shell syntax behave as written. In this mode secrets that need a human are skipped (the command runs without them and kv says how to ask), and Jev's allow is reused for 10 minutes per card and secret.
+so the shell loads the secrets first and `cd` and shell syntax behave as written. In this mode secrets that need a human are skipped (the command runs without them and kv says how to ask), Jev's allow is reused for 10 minutes per card and secret, and these releases do not count toward the rate limit. If the master cannot be reached, the command runs without the vault env.
 
 ## Remote API
 

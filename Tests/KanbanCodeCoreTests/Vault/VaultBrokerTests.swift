@@ -214,6 +214,16 @@ struct VaultBrokerTests {
         #expect(await store.log().contains { $0.secret == "ASK" && $0.outcome == .skipped })
     }
 
+    @Test func hookReleasesDoNotTripTheRateLimit() async throws {
+        let (broker, _, approvals) = try await makeBroker(answer: "Deny")
+        for _ in 0..<30 {
+            let r = await broker.release(VaultReleaseRequest(mode: "hook", names: ["OPEN"], command: "ls"), caller: inside)
+            #expect(r.values == ["OPEN": "open-value"])
+        }
+        #expect(await broker.release(VaultReleaseRequest(mode: "run", names: ["OPEN"]), caller: inside).status == .granted)
+        #expect(approvals.raised.isEmpty)
+    }
+
     @Test func rateLimitAsks() async throws {
         let (broker, _, approvals) = try await makeBroker(answer: "Deny")
         for _ in 0..<20 {

@@ -257,7 +257,6 @@ public actor VaultBroker {
             var values: [String: String] = [:]
             for (s, by, why) in allowed {
                 values[s.name] = s.value
-                if by != .jev || !why.hasPrefix("reused") { await store.recordRelease(s.name, now: now) }
                 await audit(s, req: req, caller: caller, outcome: .allowed, decider: by, detail: why)
             }
             let skipped = (asks.map(\.0.name) + denies.map(\.0.name)).sorted()
@@ -287,7 +286,9 @@ public actor VaultBroker {
         let reusing = req.mode == "hook" && caller.insideCard && (hookAllows[reuseKey].map { now.timeIntervalSince($0) < hookReuse } ?? false)
         let input = VaultDecisionInput(
             tier: s.tier, everyUseAsks: s.leasePolicy.everyUseAsks, insideCard: caller.insideCard,
-            hasLease: hasLease, recentReleases: reusing ? 0 : await store.recentReleases(s.name, now: now)
+            // Hook-wrapped commands load the env on every Bash call: that
+            // volume is ambient, so it neither counts nor trips the limit.
+            hasLease: hasLease, recentReleases: req.mode == "hook" ? 0 : await store.recentReleases(s.name, now: now)
         )
         let first = VaultPolicy.decide(input)
         guard first == .consultJev else { return first }
