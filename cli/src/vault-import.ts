@@ -52,7 +52,7 @@ export function findEnvFiles(root: string, maxDepth = 7): string[] {
     for (const e of entries) {
       const path = join(dir, e.name);
       if (e.isDirectory()) {
-        if (SKIP_DIRS.has(e.name) || path.includes("/.claude/worktrees/")) continue;
+        if (SKIP_DIRS.has(e.name) || e.name.endsWith("-worktrees") || path.includes("/.claude/worktrees/")) continue;
         walk(path, depth + 1);
       } else if (e.isFile() && (e.name === ".env" || e.name.startsWith(".env.")) && !SAMPLE.test(e.name)) {
         out.push(path);
@@ -144,7 +144,8 @@ function hash(value: string): string {
 function projectOf(file: string, home: string): string {
   const rel = relative(join(home, "Projects"), file);
   if (rel.startsWith("..")) return basename(dirname(file)).replace(/^\./, "") || "home";
-  return rel.split("/")[0];
+  const parts = rel.split("/");
+  return parts[0] === "local" && parts.length > 2 ? parts[1] : parts[0];
 }
 
 /** Groups found values by value, names each group, and picks its tier. */
@@ -161,12 +162,17 @@ export function planSecrets(found: FoundValue[], home = homedir()): PlannedSecre
     const counts = new Map<string, number>();
     for (const f of group) counts.set(f.key, (counts.get(f.key) ?? 0) + 1);
     const key = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].length - b[0].length || a[0].localeCompare(b[0]))[0][0];
-    let name = key.toUpperCase().replace(/[^A-Z0-9_]/g, "_");
+    const base = key.toUpperCase().replace(/[^A-Z0-9_]/g, "_");
+    let name = base;
     if (taken.has(name)) {
-      const project = projectOf(group[0].file, home).toUpperCase().replace(/[^A-Z0-9]/g, "_");
-      name = `${name}__${project}`;
-      let n = 2;
-      while (taken.has(name)) name = `${name.replace(/_\d+$/, "")}_${n++}`;
+      const projects = new Map<string, number>();
+      for (const f of group) {
+        const p = projectOf(f.file, home).toUpperCase().replace(/[^A-Z0-9]/g, "_");
+        projects.set(p, (projects.get(p) ?? 0) + 1);
+      }
+      const ranked = [...projects.entries()].sort((a, b) => b[1] - a[1]).map(([p]) => `${base}__${p}`);
+      name = ranked.find((n) => !taken.has(n)) ?? ranked[0];
+      for (let n = 2; taken.has(name); n++) name = `${ranked[0]}_${n}`;
     }
     taken.set(name, group[0].value);
     const t = tierFor(key, group[0].value);
@@ -374,7 +380,7 @@ export async function runImport(args: string[], client: VaultClient, io: VaultIO
   const refsByFile = new Map<string, Map<string, string>>();
   for (const p of plans) {
     for (const s of p.sources) {
-      if (!s.file.endsWith("credentials") && !extra.includes(s.file)) {
+      if (!s.file.endsWith("credentials") && !extra.includes(s.file) && !/backup|\.bak|\.orig|\.old/i.test(basename(s.file))) {
         const m = refsByFile.get(s.file) ?? new Map<string, string>();
         m.set(s.key, p.name);
         refsByFile.set(s.file, m);
