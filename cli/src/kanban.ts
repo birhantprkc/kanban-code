@@ -4,6 +4,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, writeSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
+import { markCardMessage, markSelfCompactFollowUp } from "./delivery-marker.js";
 import {
   readLinks,
   readSettings,
@@ -533,6 +534,11 @@ program
       process.exit(1);
     }
 
+    // A card's message is marked with its sender, so the receiving card
+    // (and the vault reading its transcript) never takes it for Rogerio's.
+    const sender = callerCard(links);
+    message = sender ? markCardMessage(message, cardParticipant(sender).handle) : message;
+
     if (isForeignCard(card, readLocalMachine()?.id)) {
       sendToForeignCard(card, message, mode, { json: opts.json });
       return;
@@ -921,7 +927,7 @@ Examples:
       // can be pasted but the later Enter/follow-up steps never run.
       assertTmuxResult(
         "schedule self-compact",
-        scheduleTmuxSelfCompact(tmuxSession, followUp, Number.isFinite(followUpDelay) ? followUpDelay : 1)
+        scheduleTmuxSelfCompact(tmuxSession, markSelfCompactFollowUp(followUp), Number.isFinite(followUpDelay) ? followUpDelay : 1)
       );
 
       // Surface the compact in Slack — the bridge's buffer-until-next-text
@@ -1306,6 +1312,15 @@ function liveTmuxSet(): Set<string> {
   return names;
 }
 
+/// The card this command runs in: `KANBAN_CARD_ID`, else the tmux session
+/// it was started from. Undefined for a shell outside any card.
+function callerCard(links: Link[]): Link | undefined {
+  const declared = cardFromEnvironment(links);
+  if (declared) return declared;
+  const session = currentTmuxSessionName();
+  return session ? cardForTmuxSession(links, session) : undefined;
+}
+
 function cardParticipant(card: Link): { cardId: string; handle: string } {
   for (const channel of listChannels()) {
     const member = channel.members.find((candidate) => candidate.cardId === card.id);
@@ -1595,7 +1610,7 @@ subagentCmd
       const links = readLinks();
       const caller = currentCardOrThrow(links);
       const target = requireSubagentTarget(caller, query, links);
-      const body = await readMessageFromArgsOrStdin(message);
+      const body = markCardMessage(await readMessageFromArgsOrStdin(message), cardParticipant(caller).handle);
       if (mode === "queue") {
         await queuePromptForCard(target, body, { json: opts.json });
         return;

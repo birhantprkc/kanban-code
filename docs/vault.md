@@ -46,7 +46,20 @@ Human approvals are attention requests of kind `vaultApproval` with the options 
 
 For a caller the master matched to a card, Jev also gets the card's recent prompts, read from its transcript on the master that runs it (its own path, the peer mirror, or the session id under `~/.claude/projects`; Claude Code and Codex). `CardPromptReader` keeps the last 5 prompts entered in the session, newest last, each cut to its first 900 and last 400 characters, 4000 characters in all, under `what_rogerio_asked_this_card`. The agent's `--reason` goes as `agent_reason_unverified`, a claim Jev trusts only as far as those prompts back it.
 
-Text the harness writes (task notifications, messages between Claude sessions, compact summaries, command output, tool results) is left out. Prompts that open with a Kanban delivery marker are listed under `messages_from_other_senders` with their sender, never as Rogerio's: `[DM from @x]:`, `[Message from #c @x]:`, the public share link warning, `You are running as subagent card`, `From NAME (Slack):`. A plain paste into the session (`kanban send`, a self-compact follow-up) has no marker and reads as typed: accepted risk, like a local process acting as a card. When the transcript is not on the master, Jev judges without prompts.
+Text the harness writes (task notifications, messages between Claude sessions, compact summaries, command output, tool results) is left out. Every Kanban path that pastes another sender's text marks it, and prompts that open with a marker are listed under `messages_from_other_senders` with their sender, never as Rogerio's:
+
+| Marker | Sent by |
+|--------|---------|
+| `[DM from @x]:` | `kanban dm` |
+| `[Message from #c @x]:` | a channel message |
+| `[Message from @x]:` | `kanban send` or `kanban subagent send` run inside card `@x` (on this master or forwarded to another) |
+| `[Message from NAME (remote agent)]:` | `POST /v1/cards/{id}/prompt` with an agent-scope device token |
+| `[Self-compact follow-up from this card]:` | the follow-up of `kanban self-compact` |
+| `You are running as subagent card` | the goal a parent agent gives its subagent |
+| `From NAME (Slack):` | the Slack bridge |
+| the public share link warning | a message through a shared channel link |
+
+Assistant commands (text starting with `/`) are never marked. Prompts Rogerio sends from the app (chat box, queued prompts, the phone with a full-scope token) and `kanban send` from a shell outside any card stay unmarked. When the transcript is not on the master, Jev judges without prompts.
 
 ### Restarts
 

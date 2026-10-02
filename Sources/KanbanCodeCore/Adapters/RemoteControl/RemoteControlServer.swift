@@ -475,7 +475,7 @@ public final class RemoteControlServer: Sendable {
                 // Each image goes where its [Image #N] marker is in the text.
                 let (text, images) = PromptImageLayout.arranged(text: body.text, images: decoded)
                 var prompt = body
-                prompt.text = text
+                prompt.text = device.scope == .agent ? CardPromptReader.markRemoteAgentMessage(text, device: device.name) : text
                 try await host.sendPrompt(cardId: id, prompt, images: images)
                 return .response(.noContent)
 

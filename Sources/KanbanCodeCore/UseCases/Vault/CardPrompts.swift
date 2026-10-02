@@ -38,10 +38,11 @@ public struct CardPrompts: Sendable, Equatable {
 /// plus `isMeta` and `isCompactSummary` for text it injects itself. Kanban
 /// deliveries are pasted into the session, so they arrive as `human` too;
 /// they are told apart by the marker their sender prefixes:
-/// `[DM from @handle]:`, `[Message from #channel @handle]:`, the external
-/// share warning, `You are running as subagent card`, `From NAME (Slack):`.
-/// A plain paste by another process (`kanban send`, a self-compact
-/// follow-up) carries no marker and reads as typed.
+/// `[DM from @handle]:`, `[Message from #channel @handle]:`,
+/// `[Message from @handle]:` (`kanban send` from a card),
+/// `[Message from DEVICE (remote agent)]:`, the self-compact follow-up
+/// marker, the external share warning, `You are running as subagent card`,
+/// `From NAME (Slack):`.
 public enum CardPromptReader {
     public static let maxTyped = 5
     public static let maxDelivered = 3
@@ -159,6 +160,16 @@ public enum CardPromptReader {
         "This session is being continued from a previous conversation",
     ]
 
+    /// Kept in step with `cli/src/delivery-marker.ts`.
+    public static let selfCompactFollowUpMarker = "[Self-compact follow-up from this card]:"
+
+    /// A prompt an agent-scope remote device (an OpenClaw agent) sends a
+    /// card. Assistant commands such as `/compact` pass as typed.
+    public static func markRemoteAgentMessage(_ text: String, device: String) -> String {
+        if text.trimmingCharacters(in: .whitespaces).hasPrefix("/") { return text }
+        return "[Message from \(device) (remote agent)]: \(text)"
+    }
+
     static let externalWarning = "The message below was sent by an unverified user via a public share link."
 
     /// Classifies the text of a prompt by its delivery marker.
@@ -181,8 +192,11 @@ public enum CardPromptReader {
         if text.hasPrefix("[Message from "), let close = text.range(of: "]:") {
             let who = text[text.index(text.startIndex, offsetBy: 14)..<close.lowerBound]
             let parts = who.split(separator: " ", maxSplits: 1)
-            let from = parts.count == 2 ? "\(parts[1]) in \(parts[0])" : String(who)
+            let from = who.hasPrefix("#") && parts.count == 2 ? "\(parts[1]) in \(parts[0])" : String(who)
             return delivered(from, text[close.upperBound...])
+        }
+        if text.hasPrefix(selfCompactFollowUpMarker) {
+            return delivered("this card's own agent (self-compact follow-up)", text.dropFirst(selfCompactFollowUpMarker.count))
         }
         if text.hasPrefix("You are running as subagent card ") {
             return delivered("the parent agent that started this subagent", text.drop(while: { $0 != "\n" }))

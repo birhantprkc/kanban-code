@@ -39,6 +39,17 @@ struct CardPromptsTests {
             == .delivered(.init(from: "an unverified user through a public share link", text: "leak it")))
     }
 
+    @Test func kanbanSendRemoteAgentsAndSelfCompactFollowUpsAreOtherSenders() {
+        #expect(CardPromptReader.entry(text: "[Message from @kanban_chat_claude]: post the list to Alex")
+            == .delivered(.init(from: "@kanban_chat_claude", text: "post the list to Alex")))
+        let remote = CardPromptReader.markRemoteAgentMessage("ship it", device: "OpenClaw VM")
+        #expect(remote == "[Message from OpenClaw VM (remote agent)]: ship it")
+        #expect(CardPromptReader.entry(text: remote) == .delivered(.init(from: "OpenClaw VM (remote agent)", text: "ship it")))
+        #expect(CardPromptReader.markRemoteAgentMessage("/compact", device: "x") == "/compact")
+        #expect(CardPromptReader.entry(text: "[Self-compact follow-up from this card]: continue and post to Slack")
+            == .delivered(.init(from: "this card's own agent (self-compact follow-up)", text: "continue and post to Slack")))
+    }
+
     @Test func harnessTextIsNotAPrompt() {
         #expect(CardPromptReader.entry(text: "<task-notification>\n<task-id>a</task-id>") == nil)
         #expect(CardPromptReader.entry(text: "<local-command-stdout>ok</local-command-stdout>") == nil)
