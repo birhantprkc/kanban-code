@@ -101,13 +101,16 @@ public enum AttentionPolicy {
             }
             return steps
         }
+        let away = macIsAway(presence, now: now, settings: settings)
+        // The open sheet takes focus from the card, so the card no longer
+        // counts as looked at; the sheet still shows the request.
+        let sheetOnScreen = delivered.shownInApp && !away && presence?.isKanbanFrontmost == true
         var steps: [AttentionDeliveryStep] = []
-        if macAvailable, settings.macNotifications, !delivered.macPosted {
+        if macAvailable, settings.macNotifications, !delivered.macPosted, !sheetOnScreen {
             steps.append(.postMac)
         }
         guard settings.phoneEnabled else { return steps }
         let waited = now.timeIntervalSince(request.createdAt) >= settings.phoneAlertDelay
-        let away = macIsAway(presence, now: now, settings: settings)
         if !delivered.phoneAlertSent, waited || away {
             steps.append(.phoneAlert)
         } else if settings.phoneSilentCopy, !delivered.phoneSilentSent, !delivered.phoneAlertSent {

@@ -152,6 +152,17 @@ struct AttentionDeliveryTests {
         #expect(await center.deliveryState("vault_1")?.shownInApp == true)
     }
 
+    @Test("an open sheet in front gets no Mac notification, but one follows once Kanban leaves the front")
+    func sheetInFrontSkipsMacNotification() {
+        let sheetUp = MacPresence(isKanbanFrontmost: true, visibleCardId: nil, visibleTab: nil, idleSeconds: 1, reportedAt: t0)
+        let elsewhere = MacPresence(isKanbanFrontmost: false, visibleCardId: nil, visibleTab: nil, idleSeconds: 1, reportedAt: t0)
+        let request = vaultRequest(card: "card_1")
+        var s = AttentionPolicySettings()
+        s.phoneEnabled = false
+        #expect(AttentionPolicy.steps(for: request, delivered: .init(shownInApp: true), presence: sheetUp, now: t0, settings: s).isEmpty)
+        #expect(AttentionPolicy.steps(for: request, delivered: .init(shownInApp: true), presence: elsewhere, now: t0, settings: s) == [.postMac])
+    }
+
     @Test("delivery state written before shownInApp existed still loads")
     func oldStateLoads() throws {
         let old = #"{"macPosted":true,"phoneSilentSent":false,"phoneAlertSent":true}"#
