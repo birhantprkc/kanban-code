@@ -275,6 +275,29 @@ struct MasterHandoverTests {
         await #expect(throws: RemoteClientError.self) { try await agent.removeWorktree(cardId: "card_gone") }
     }
 
+    @Test("archiving on the Mac a card the box runs ends its sessions on the box")
+    func foreignArchiveEndsSessions() async throws {
+        let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("archive-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let mac = try TestMaster(name: "mac", root: root)
+        let box = try TestMaster(name: "box", root: root)
+        try await mac.serve()
+        try await box.serve()
+        try await mac.start(peerURL: box.url, peerToken: box.tokenForPeer)
+        try await box.start(peerURL: mac.url, peerToken: mac.tokenForPeer)
+        defer { mac.server.stop(); box.server.stop() }
+
+        box.store.dispatch(.createManualTask(Link(
+            id: "card_live", name: "Running on the box", projectPath: "/tmp/acme", column: .waiting,
+            sessionLink: SessionLink(sessionId: "sid-live"), tmuxLink: TmuxLink(sessionName: "agtop-0badcafe"))))
+        await mac.peerSync.pullAll()
+        mac.store.dispatch(.archiveCard(cardId: "card_live"))
+        await box.peerSync.pullAll()
+        #expect(box.store.state.links["card_live"]?.manuallyArchived == true)
+        for _ in 0..<40 where !box.tmux.killed.contains("agtop-0badcafe") { try await Task.sleep(for: .milliseconds(50)) }
+        #expect(box.tmux.killed.contains("agtop-0badcafe"))
+    }
+
     @Test("reconcile leaves a card released to this master alone until it is adopted")
     func migratingIsFrozen() async throws {
         let dir = (NSTemporaryDirectory() as NSString).appendingPathComponent("frozen-\(UUID().uuidString)")
