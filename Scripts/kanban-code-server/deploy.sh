@@ -23,8 +23,8 @@ ssh "$HOST" bash -s <<REMOTE
 set -euo pipefail
 export PATH=/opt/swift/usr/bin:\$PATH
 cd $REMOTE_DIR
-swift build -c release --product kanban-code-server --static-swift-stdlib
-swift build -c release --product kanban-code-export --static-swift-stdlib
+swift build -c release -j 4 --product kanban-code-server --static-swift-stdlib
+swift build -c release -j 4 --product kanban-code-export --static-swift-stdlib
 install -m 0755 .build/release/kanban-code-server /usr/local/bin/kanban-code-server
 install -m 0755 .build/release/kanban-code-export /usr/local/bin/kanban-code-export
 install -m 0644 Scripts/kanban-code-server/kanban-code-server.service /etc/systemd/system/kanban-code-server.service
