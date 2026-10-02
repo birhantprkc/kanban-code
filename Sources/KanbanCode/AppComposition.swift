@@ -196,6 +196,10 @@ final class AppComposition {
             machine: identity.name,
             approvals: StoreVaultApprovals(store: boardStore),
             cardTitle: { [weak boardStore] id in await MainActor.run { boardStore?.vaultCardTitle(id) } },
+            cardPrompts: { [weak boardStore] id in
+                guard let link = await MainActor.run(body: { boardStore?.vaultCardLink(id) }) else { return nil }
+                return CardPromptReader.read(link: link, kanbanHome: NSHomeDirectory() + "/.kanban-code")
+            },
             cardSessions: { [weak boardStore] in await MainActor.run { boardStore?.vaultCardSessions() ?? [:] } },
             peers: { await peerSync.configuredPeers() }
         )

@@ -24,7 +24,7 @@ Replicas sync with the configured peers every minute (`GET`/`POST /v1/vault/repl
 | Tier | Release |
 |------|---------|
 | open | Any card session, logged |
-| judged | Jev reads the command, the reason, the card title and the secret's rules: allow, ask or deny |
+| judged | Jev reads the command, the reason, the card title, the card's recent prompts and the secret's rules: allow, ask or deny |
 | ask | Rogerio approves on the Mac or the phone |
 | never | Refused |
 
@@ -41,6 +41,12 @@ Order, first match wins:
 OpenClaw agents on a Linux master count like card sessions under the principal `openclaw:<agent>`: the master finds, in the caller's ancestry, a process whose cgroup is the gateway's systemd unit (`openclaw-gateway.service`, set by systemd, not by the process), then the topmost process below the gateway whose working directory is an agent workspace from `~/.openclaw/openclaw.json` (the agent runtime the gateway started; a child that changes directory does not change it). The gateway itself, resolving SecretRefs, is `openclaw:gateway`. Each principal holds its own leases. Commands an agent starts outside the unit (`systemd-run`, cron) are outside, so they ask.
 
 Human approvals are attention requests of kind `vaultApproval` with the options "Approve for this card (2 days)", "Approve once", "Deny". A secret with "every use asks" never offers the lease. No answer in 10 minutes denies.
+
+### What Jev reads
+
+For a caller the master matched to a card, Jev also gets the card's recent prompts, read from its transcript on the master that runs it (its own path, the peer mirror, or the session id under `~/.claude/projects`; Claude Code and Codex). `CardPromptReader` keeps the last 5 prompts entered in the session, newest last, each cut to its first 900 and last 400 characters, 4000 characters in all, under `what_rogerio_asked_this_card`. The agent's `--reason` goes as `agent_reason_unverified`, a claim Jev trusts only as far as those prompts back it.
+
+Text the harness writes (task notifications, messages between Claude sessions, compact summaries, command output, tool results) is left out. Prompts that open with a Kanban delivery marker are listed under `messages_from_other_senders` with their sender, never as Rogerio's: `[DM from @x]:`, `[Message from #c @x]:`, the public share link warning, `You are running as subagent card`, `From NAME (Slack):`. A plain paste into the session (`kanban send`, a self-compact follow-up) has no marker and reads as typed: accepted risk, like a local process acting as a card. When the transcript is not on the master, Jev judges without prompts.
 
 ### Restarts
 

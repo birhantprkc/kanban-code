@@ -124,6 +124,10 @@ final class ServerMaster {
             machine: identity.name,
             approvals: StoreVaultApprovals(store: store),
             cardTitle: { [weak store] id in await MainActor.run { store?.vaultCardTitle(id) } },
+            cardPrompts: { [weak store] id in
+                guard let link = await MainActor.run(body: { store?.vaultCardLink(id) }) else { return nil }
+                return CardPromptReader.read(link: link, kanbanHome: home)
+            },
             cardSessions: { [weak store] in await MainActor.run { store?.vaultCardSessions() ?? [:] } },
             peers: { [peerSync] in await peerSync.configuredPeers() }
         )

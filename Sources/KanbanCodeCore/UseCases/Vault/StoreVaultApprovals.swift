@@ -38,4 +38,8 @@ extension BoardStore {
     @MainActor public func vaultCardTitle(_ cardId: String) -> String? {
         state.links[cardId]?.displayTitle
     }
+
+    @MainActor public func vaultCardLink(_ cardId: String) -> Link? {
+        state.links[cardId]
+    }
 }

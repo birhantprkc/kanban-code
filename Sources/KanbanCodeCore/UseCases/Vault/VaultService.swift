@@ -19,6 +19,7 @@ public final class VaultService: Sendable {
         machine: String,
         approvals: (any VaultApprovals)?,
         cardTitle: @escaping @Sendable (String) async -> String?,
+        cardPrompts: @escaping @Sendable (String) async -> CardPrompts? = { _ in nil },
         cardSessions: @escaping @Sendable () async -> [String: String],
         peers: (@Sendable () async -> [PeerConfig])?
     ) {
@@ -26,7 +27,8 @@ public final class VaultService: Sendable {
         let store = VaultStore(directory: VaultStore.defaultDirectory(kanbanHome: kanbanHome), keys: keys)
         self.store = store
         let jev = JevClient(apiKey: { await VaultService.jevKey(store: store) })
-        broker = VaultBroker(store: store, jev: jev, approvals: approvals, machine: machine, cardTitle: cardTitle)
+        broker = VaultBroker(store: store, jev: jev, approvals: approvals, machine: machine, cardTitle: cardTitle,
+                             cardPrompts: cardPrompts)
         resolver = LiveVaultCallerResolver(cardSessions: cardSessions)
         replica = peers.map { VaultReplicaSync(store: store, peers: $0) }
     }

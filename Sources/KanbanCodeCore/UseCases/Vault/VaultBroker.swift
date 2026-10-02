@@ -204,6 +204,8 @@ public actor VaultBroker {
     public let approvals: (any VaultApprovals)?
     public let machine: String
     public let cardTitle: @Sendable (String) async -> String?
+    /// A card's recent prompts for Jev, nil when its transcript is not here.
+    public let cardPrompts: @Sendable (String) async -> CardPrompts?
     public let sts: @Sendable (AwsAccessKey, VaultAwsRole, String) async throws -> AwsProcessCredentials
     /// How long a hook-wrapped command reuses Jev's allow for the same card.
     public var hookReuse: TimeInterval = 10 * 60
@@ -253,6 +255,7 @@ public actor VaultBroker {
         approvals: (any VaultApprovals)?,
         machine: String,
         cardTitle: @escaping @Sendable (String) async -> String? = { _ in nil },
+        cardPrompts: @escaping @Sendable (String) async -> CardPrompts? = { _ in nil },
         sts: @escaping @Sendable (AwsAccessKey, VaultAwsRole, String) async throws -> AwsProcessCredentials = { key, role, name in
             try await AwsSts(region: "us-east-1").credentials(key: key, role: role, sessionName: name)
         }
@@ -262,6 +265,7 @@ public actor VaultBroker {
         self.approvals = approvals
         self.machine = machine
         self.cardTitle = cardTitle
+        self.cardPrompts = cardPrompts
         self.sts = sts
     }
 
@@ -380,11 +384,17 @@ public actor VaultBroker {
         guard !secrets.isEmpty else { return [] }
         guard let jev else { return secrets.map { ($0, VaultPolicy.afterJev(nil)) } }
         let title: String? = if let card = caller.cardId { await principalTitle(card) } else { nil }
+        // Only a session the master matched to a card is read: a claimed id
+        // must not borrow another card's prompts.
+        var prompts: CardPrompts?
+        if let card = caller.cardId, caller.insideCard, VaultCaller.openClawAgent(principal: card) == nil {
+            prompts = await cardPrompts(card)
+        }
         return await withTaskGroup(of: (Int, VaultVerdict).self) { group in
             for (i, s) in secrets.enumerated() {
                 let question = JevReleaseQuestion(
                     secret: s.name, rules: s.rules, command: req.command ?? "(no command given)",
-                    reason: req.reason, cardTitle: title, cwd: req.cwd
+                    reason: req.reason, cardTitle: title, cwd: req.cwd, prompts: prompts
                 )
                 group.addTask { (i, VaultPolicy.afterJev(await jev.judge(question))) }
             }
