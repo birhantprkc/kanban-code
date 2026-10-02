@@ -55,13 +55,13 @@ public final class RoutingTmuxAdapter: TmuxManagerPort, @unchecked Sendable {
 
     // MARK: - TmuxManagerPort
 
-    /// Local sessions, live agtop hosts, plus the sessions of every
-    /// registered machine. A connected machine is listed live; the others
-    /// keep their last list.
+    /// Local sessions, open agtop hosts (running, or asleep between
+    /// turns), plus the sessions of every registered machine. A connected
+    /// machine is listed live; the others keep their last list.
     public func listSessions() async throws -> [TmuxSession] {
         var result = try await local.listSessions()
         if agtop.isAvailable, let hosts = try? await agtop.list() {
-            for host in hosts where host.alive {
+            for host in hosts where host.isOpen {
                 result.append(TmuxSession(name: AgtopSessionName.name(agtopId: host.id), path: host.cwd, agtopQueue: host.queue, agtopNeeds: host.blockedOn))
             }
         }
@@ -74,7 +74,7 @@ public final class RoutingTmuxAdapter: TmuxManagerPort, @unchecked Sendable {
                 // on the same machine runs its own.
                 if let remoteAgtop = registry.agtop(for: machine), let hosts = try? await remoteAgtop.list() {
                     let ours = registry.sessionNames(on: machine)
-                    for host in hosts where host.alive {
+                    for host in hosts where host.isOpen {
                         let name = AgtopSessionName.name(agtopId: host.id)
                         if ours.contains(name) {
                             live.append(TmuxSession(name: name, path: host.cwd, agtopQueue: host.queue, agtopNeeds: host.blockedOn))

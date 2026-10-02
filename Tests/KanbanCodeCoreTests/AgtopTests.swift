@@ -28,7 +28,7 @@ struct AgtopTests {
                 else
                   echo '{"error":"not found"}'; exit 1
                 fi ;;
-              list) echo '[{"id":"0a1b2c3d","sessionId":"s1","cwd":"/repo","state":"working","alive":true,"queue":["later","and this"]},{"id":"99999999","sessionId":"s2","cwd":"/old","state":"stopped","alive":false}]' ;;
+              list) echo '[{"id":"0a1b2c3d","sessionId":"s1","cwd":"/repo","state":"working","alive":true,"queue":["later","and this"]},{"id":"99999999","sessionId":"s2","cwd":"/old","state":"stopped","alive":false},{"id":"5133e9c0","sessionId":"s3","cwd":"/rested","state":"idle","alive":false,"sleeping":true}]' ;;
             esac
             """
             try script.write(toFile: path, atomically: true, encoding: .utf8)
@@ -163,7 +163,7 @@ struct AgtopTests {
         #expect(try await adapter.info(id: "ffffffff") == nil)
     }
 
-    @Test("The router sends agtop names to agtop and lists live hosts")
+    @Test("The router sends agtop names to agtop and lists running and sleeping hosts")
     func routing() async throws {
         let fake = try FakeAgtop()
         defer { fake.cleanup() }
@@ -182,6 +182,8 @@ struct AgtopTests {
         let names = sessions.map(\.name)
         #expect(names.contains("agtop-0a1b2c3d"))
         #expect(!names.contains("agtop-99999999"))
+        // rush rests a host seconds after its turn: the card keeps it.
+        #expect(names.contains("agtop-5133e9c0"))
         #expect(sessions.first { $0.name == "agtop-0a1b2c3d" }?.agtopQueue == ["later", "and this"])
         #expect(BoardStore.agtopQueues(in: sessions) == ["agtop-0a1b2c3d": ["later", "and this"]])
     }

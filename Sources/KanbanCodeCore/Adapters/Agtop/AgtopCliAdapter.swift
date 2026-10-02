@@ -8,6 +8,9 @@ public struct AgtopSessionInfo: Decodable, Sendable, Equatable {
     public let name: String?
     public let state: String
     public let alive: Bool
+    /// rush ended the host between turns (it rests a few seconds after a
+    /// turn ends). The session is still open: a message wakes it.
+    public var sleeping: Bool
     /// Messages waiting for the turn to end, oldest first; the host sends
     /// them when it ends.
     public let queue: [String]
@@ -29,10 +32,11 @@ public struct AgtopSessionInfo: Decodable, Sendable, Equatable {
         self.name = name
         self.state = state
         self.alive = alive
+        self.sleeping = false
         self.queue = queue
     }
 
-    enum CodingKeys: String, CodingKey { case id, sessionId, cwd, name, state, alive, queue, hostPid, claudePid, meta, needs }
+    enum CodingKeys: String, CodingKey { case id, sessionId, cwd, name, state, alive, sleeping, queue, hostPid, claudePid, meta, needs }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -42,12 +46,17 @@ public struct AgtopSessionInfo: Decodable, Sendable, Equatable {
         name = try c.decodeIfPresent(String.self, forKey: .name)
         state = try c.decodeIfPresent(String.self, forKey: .state) ?? "stopped"
         alive = try c.decodeIfPresent(Bool.self, forKey: .alive) ?? false
+        sleeping = (try? c.decodeIfPresent(Bool.self, forKey: .sleeping)) ?? false
         queue = try c.decodeIfPresent([String].self, forKey: .queue) ?? []
         hostPid = try? c.decodeIfPresent(Int.self, forKey: .hostPid)
         claudePid = try? c.decodeIfPresent(Int.self, forKey: .claudePid)
         meta = try? c.decodeIfPresent([String: String].self, forKey: .meta)
         needs = try? c.decodeIfPresent(String.self, forKey: .needs)
     }
+
+    /// The session is open on its card: its host runs, or rush put it to
+    /// sleep between turns. A stopped one is not.
+    public var isOpen: Bool { alive || sleeping && state != "stopped" }
 
     /// What the session waits on, while it is blocked.
     public var blockedOn: String? { alive && state == "blocked" ? needs : nil }
