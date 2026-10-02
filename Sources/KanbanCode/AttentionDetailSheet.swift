@@ -9,21 +9,39 @@ extension Notification.Name {
 
 /// Presents the detail sheet of the attention request a notification click
 /// or the attention center names, over the board. Requests arriving while a
-/// sheet is up wait in line, one sheet at a time.
+/// sheet is up wait in line, one sheet at a time. A request answered
+/// elsewhere, withdrawn or timed out closes its sheet and the next open one
+/// follows.
 struct AttentionDetailPresenter: ViewModifier {
     let store: BoardStore
     @State private var shownId: String?
     @State private var waiting: [String] = []
 
+    private func isOpen(_ id: String) -> Bool {
+        store.state.attentionRequests[id]?.isOpen == true
+    }
+
+    private var openIds: [String] {
+        store.state.openAttentionRequests.map(\.id)
+    }
+
     func body(content: Content) -> some View {
         content
             .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeShowAttention).receive(on: RunLoop.main)) { note in
-                guard let id = note.userInfo?["id"] as? String, store.state.attentionRequests[id] != nil else { return }
+                guard let id = note.userInfo?["id"] as? String, isOpen(id) else { return }
                 if shownId == nil {
                     shownId = id
                 } else {
                     waiting = AttentionSheetQueue.adding(id, to: waiting, shown: shownId)
                 }
+            }
+            .onChange(of: openIds) {
+                guard let shown = shownId, !isOpen(shown) else {
+                    waiting = waiting.filter(isOpen)
+                    return
+                }
+                KanbanCodeLog.info("attention", "Closed the detail sheet of \(shown): settled or gone")
+                shownId = nil
             }
             .onChange(of: shownId) {
                 guard shownId == nil, !waiting.isEmpty else { return }
@@ -31,21 +49,44 @@ struct AttentionDetailPresenter: ViewModifier {
                     // Lets the closing sheet finish before the next one opens.
                     try? await Task.sleep(for: .milliseconds(350))
                     guard shownId == nil else { return }
-                    shownId = AttentionSheetQueue.popNext(&waiting) { store.state.attentionRequests[$0]?.isOpen == true }
+                    shownId = AttentionSheetQueue.current(shown: nil, waiting: &waiting, isOpen: isOpen)
                 }
             }
             .sheet(item: Binding(
                 get: { shownId.map(AttentionSheetTarget.init) },
                 set: { shownId = $0?.id }
             )) { target in
-                if let request = store.state.attentionRequests[target.id] {
+                if let request = store.state.attentionRequests[target.id], request.isOpen {
                     AttentionDetailSheet(
                         request: request,
                         cardName: request.cardId.flatMap { id in store.state.cards.first { $0.id == id }?.displayTitle },
+                        waitingAfter: AttentionSheetQueue.waitingCount(waiting, isOpen: isOpen),
                         onClose: { shownId = nil }
                     )
+                } else {
+                    // Only for the moment before the state change closes it.
+                    SettledAttentionSheet(onClose: { shownId = nil })
                 }
             }
+    }
+}
+
+/// Stands in for a request that was settled while its sheet opened.
+private struct SettledAttentionSheet: View {
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("This request was already answered or withdrawn.")
+            HStack {
+                Spacer()
+                Button("Close", action: onClose)
+                    .keyboardShortcut(.cancelAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
+        .onAppear(perform: onClose)
     }
 }
 
@@ -59,6 +100,7 @@ private struct AttentionSheetTarget: Identifiable {
 struct AttentionDetailSheet: View {
     let request: AttentionRequest
     let cardName: String?
+    var waitingAfter: Int = 0
     let onClose: () -> Void
     @State private var busy: String?
 
@@ -92,8 +134,8 @@ struct AttentionDetailSheet: View {
             }
             .frame(maxHeight: 380)
 
-            if let resolvedBy = request.resolvedBy, !request.isOpen {
-                Label("Answered\(request.resolution.map { ": \($0)" } ?? "") (by \(resolvedBy))", systemImage: "checkmark.circle")
+            if waitingAfter > 0 {
+                Label("\(waitingAfter) more request\(waitingAfter == 1 ? "" : "s") waiting after this one", systemImage: "tray.full")
                     .foregroundStyle(.secondary)
             }
 
@@ -101,19 +143,17 @@ struct AttentionDetailSheet: View {
                 Button("Close", action: onClose)
                     .keyboardShortcut(.cancelAction)
                 Spacer()
-                if request.isOpen {
-                    ForEach(Array(request.options.reversed()), id: \.self) { option in
-                        Button {
-                            answer(option)
-                        } label: {
-                            HStack(spacing: 4) {
-                                if busy == option { ProgressView().controlSize(.small) }
-                                Text(option)
-                            }
+                ForEach(Array(request.options.reversed()), id: \.self) { option in
+                    Button {
+                        answer(option)
+                    } label: {
+                        HStack(spacing: 4) {
+                            if busy == option { ProgressView().controlSize(.small) }
+                            Text(option)
                         }
-                        .disabled(busy != nil)
-                        .tint(Self.isNegative(option) ? .red : nil)
                     }
+                    .disabled(busy != nil)
+                    .tint(Self.isNegative(option) ? .red : nil)
                 }
             }
         }

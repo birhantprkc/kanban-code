@@ -2,9 +2,10 @@ import AppKit
 import KanbanCodeCore
 
 /// Mac attention notifications plus the Dock: the icon shows how many
-/// requests are posted and bounces until Kanban Code comes to the front
-/// when a new one arrives, so a request whose banner closed is still seen.
-/// A request shown in the app opens its detail sheet instead.
+/// requests are open, notified or shown in the app, and bounces until
+/// Kanban Code comes to the front when a new notification posts, so a
+/// request whose banner closed is still seen. A request shown in the app
+/// opens its detail sheet instead.
 actor DockAttentionNotifier: MacAttentionNotifier {
     private let inner: any MacAttentionNotifier
     private var posted: Set<String> = []
@@ -16,14 +17,20 @@ actor DockAttentionNotifier: MacAttentionNotifier {
     func post(_ request: AttentionRequest, cardName: String?) async {
         await inner.post(request, cardName: cardName)
         let isNew = posted.insert(request.id).inserted
-        let count = posted.count
+        guard isNew else { return }
         await MainActor.run {
-            NSApp.dockTile.badgeLabel = String(count)
-            if isNew, !NSApp.isActive {
+            if !NSApp.isActive {
                 NSApp.requestUserAttention(.criticalRequest)
             }
         }
-        KanbanCodeLog.info("attention", "Dock shows \(count) open request(s)\(isNew ? ", bounced for \(request.id)" : "")")
+        KanbanCodeLog.info("attention", "Dock bounced for \(request.id)")
+    }
+
+    func showOpenCount(_ count: Int) async {
+        await MainActor.run {
+            NSApp.dockTile.badgeLabel = count == 0 ? nil : String(count)
+        }
+        KanbanCodeLog.info("attention", "Dock shows \(count) open request(s)")
     }
 
     func showInApp(_ request: AttentionRequest) async {
@@ -36,10 +43,6 @@ actor DockAttentionNotifier: MacAttentionNotifier {
 
     func remove(id: String) async {
         await inner.remove(id: id)
-        guard posted.remove(id) != nil else { return }
-        let count = posted.count
-        await MainActor.run {
-            NSApp.dockTile.badgeLabel = count == 0 ? nil : String(count)
-        }
+        posted.remove(id)
     }
 }

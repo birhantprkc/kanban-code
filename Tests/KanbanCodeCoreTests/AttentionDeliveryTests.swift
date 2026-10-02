@@ -15,6 +15,7 @@ struct AttentionDeliveryTests {
         func post(_ request: AttentionRequest, cardName: String?) async { record("mac+\(request.id)") }
         func remove(id: String) async { record("mac-\(id)") }
         func showInApp(_ request: AttentionRequest) async { record("app+\(request.id)") }
+        func showOpenCount(_ count: Int) async { record("count=\(count)") }
         func send(_ request: AttentionRequest, cardName: String?, level: PhonePushLevel) async throws { record("phone:\(level.rawValue):\(request.id)") }
         func withdraw(_ request: AttentionRequest) async {}
     }
@@ -50,7 +51,7 @@ struct AttentionDeliveryTests {
             },
             localMachineId: { "mac-id" }, now: { clock.now })
         await center.deliver(vaultRequest(card: card))
-        #expect(mac.events == ["mac+vault_1"])
+        #expect(mac.events == ["count=1", "mac+vault_1"])
         #expect(phone.events.isEmpty)
         clock.advance(181)
         await center.evaluateAll()
@@ -148,7 +149,7 @@ struct AttentionDeliveryTests {
             localMachineId: { "mac-id" }, now: { clock.now })
         await center.deliver(request)
         await center.evaluateAll()
-        #expect(mac.events == ["app+vault_1"])
+        #expect(mac.events == ["count=1", "app+vault_1"])
         #expect(await center.deliveryState("vault_1")?.shownInApp == true)
     }
 
@@ -180,6 +181,131 @@ struct AttentionDeliveryTests {
         #expect(AttentionSheetQueue.popNext(&queue) { $0 != "b" } == "c")
         #expect(queue.isEmpty)
         #expect(AttentionSheetQueue.popNext(&queue) { _ in true } == nil)
+    }
+
+    @Test("a sheet left open on the card on screen reaches the phone after the delay, and the Mac once Kanban leaves the front")
+    func openSheetEscalates() async {
+        func looking(_ at: Date) -> MacPresence {
+            MacPresence(isKanbanFrontmost: true, visibleCardId: "card_1", visibleTab: "terminal", idleSeconds: 1, reportedAt: at)
+        }
+        let request = vaultRequest(card: "card_1")
+        var s = AttentionPolicySettings()
+        s.phoneSilentCopy = false
+        func steps(_ delivered: AttentionDeliveryState, after: TimeInterval, _ settings: AttentionPolicySettings, macAvailable: Bool = true) -> [AttentionDeliveryStep] {
+            AttentionPolicy.steps(for: request, delivered: delivered, presence: looking(t0 + after), now: t0 + after, settings: settings, macAvailable: macAvailable)
+        }
+        #expect(steps(.init(shownInApp: true), after: 179, s).isEmpty)
+        #expect(steps(.init(shownInApp: true), after: 180, s) == [.phoneAlert])
+        #expect(steps(.init(phoneAlertSent: true, shownInApp: true), after: 400, s).isEmpty)
+        // A master with no screen (the box) phones the card it cannot show.
+        #expect(steps(.init(), after: 180, s, macAvailable: false) == [.phoneAlert])
+        var phoneOff = s
+        phoneOff.phoneEnabled = false
+        #expect(steps(.init(shownInApp: true), after: 400, phoneOff).isEmpty)
+
+        final class Presence: @unchecked Sendable {
+            let lock = NSLock()
+            var frontmost = true
+        }
+        let presence = Presence()
+        let clock = Clock(t0)
+        let mac = Recorder()
+        let phone = Recorder(silentCopy: false)
+        let center = AttentionCenter(
+            mac: mac, phone: phone,
+            localPresence: {
+                let front = presence.lock.withLock { presence.frontmost }
+                return MacPresence(isKanbanFrontmost: front, visibleCardId: "card_1", visibleTab: "terminal", idleSeconds: 1, reportedAt: clock.now)
+            },
+            localMachineId: { "mac-id" }, now: { clock.now })
+        await center.deliver(request)
+        clock.advance(60)
+        await center.evaluateAll()
+        #expect(mac.events == ["count=1", "app+vault_1"])
+        #expect(phone.events.isEmpty)
+        clock.advance(121)
+        await center.evaluateAll()
+        #expect(phone.events == ["phone:timeSensitive:vault_1"])
+        presence.lock.withLock { presence.frontmost = false }
+        await center.evaluateAll()
+        #expect(mac.events == ["count=1", "app+vault_1", "mac+vault_1"])
+        #expect(phone.events.count == 1)
+    }
+
+    @Test("the Dock count follows every open request, shown in the app or notified")
+    func dockCountsOpenRequests() async {
+        let clock = Clock(t0)
+        let mac = Recorder()
+        let center = AttentionCenter(
+            mac: mac,
+            localPresence: { MacPresence(isKanbanFrontmost: true, visibleCardId: "card_1", visibleTab: "terminal", idleSeconds: 1, reportedAt: clock.now) },
+            localMachineId: { "mac-id" }, now: { clock.now })
+        var requests: [AttentionRequest] = []
+        for i in 1...3 {
+            var r = vaultRequest(card: "card_1")
+            r.id = "vault_\(i)"
+            requests.append(r)
+            await center.deliver(r)
+        }
+        await center.update(requests[0])
+        var settled = requests[1]
+        settled.resolvedAt = t0
+        settled.resolution = "Deny"
+        settled.resolvedBy = "timeout"
+        await center.withdraw(settled)
+        await center.withdraw(settled)
+        #expect(mac.events.filter { $0.hasPrefix("count=") } == ["count=1", "count=2", "count=3", "count=2"])
+        #expect(mac.events.filter { $0.hasPrefix("app+") } == ["app+vault_1", "app+vault_2", "app+vault_3"])
+    }
+
+    @Test("a request raised again after a restart opens its sheet again")
+    func restartShowsSheetAgain() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("attention-\(UUID().uuidString)")
+        let file = dir.appendingPathComponent("state.json").path
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let looking: @Sendable () async -> MacPresence? = {
+            MacPresence(isKanbanFrontmost: true, visibleCardId: "card_1", visibleTab: "terminal", idleSeconds: 1, reportedAt: Date())
+        }
+        let first = Recorder()
+        let before = AttentionCenter(mac: first, localPresence: looking, localMachineId: { "mac-id" }, stateFile: file)
+        await before.deliver(vaultRequest(card: "card_1"))
+        #expect(first.events.contains("app+vault_1"))
+        let second = Recorder()
+        let after = AttentionCenter(mac: second, localPresence: looking, localMachineId: { "mac-id" }, stateFile: file)
+        await after.deliver(vaultRequest(card: "card_1"))
+        #expect(second.events.contains("app+vault_1"))
+    }
+
+    @Test("a sheet whose request was settled, withdrawn or pruned gives way to the next open one; none is lost")
+    func sheetNeverStaysOnASettledRequest() {
+        var open: Set<String> = ["a", "b", "c", "d"]
+        var waiting: [String] = []
+        var shown: String? = AttentionSheetQueue.current(shown: nil, waiting: &waiting, isOpen: open.contains)
+        #expect(shown == nil)
+        shown = "a"
+        for id in ["b", "c", "d"] { waiting = AttentionSheetQueue.adding(id, to: waiting, shown: shown) }
+        #expect(AttentionSheetQueue.waitingCount(waiting, isOpen: open.contains) == 3)
+        #expect(AttentionSheetQueue.current(shown: shown, waiting: &waiting, isOpen: open.contains) == "a")
+        // Answered on the phone, then pruned from the state: the sheet moves on.
+        open.remove("a")
+        shown = AttentionSheetQueue.current(shown: shown, waiting: &waiting, isOpen: open.contains)
+        #expect(shown == "b")
+        // One that waited timed out meanwhile: skipped, the rest still show.
+        open.remove("c")
+        #expect(AttentionSheetQueue.waitingCount(waiting, isOpen: open.contains) == 1)
+        open.remove("b")
+        shown = AttentionSheetQueue.current(shown: shown, waiting: &waiting, isOpen: open.contains)
+        #expect(shown == "d")
+        open.remove("d")
+        shown = AttentionSheetQueue.current(shown: shown, waiting: &waiting, isOpen: open.contains)
+        #expect(shown == nil)
+        #expect(waiting.isEmpty)
+    }
+
+    @Test("an approval waits an hour before it is denied")
+    func approvalTimeoutIsAnHour() {
+        #expect(VaultPolicy.approvalTimeout == 3600)
     }
 
     @Test("test runs log to their own file")

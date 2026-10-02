@@ -8,9 +8,13 @@ public protocol MacAttentionNotifier: Sendable {
     /// Opens the request's detail sheet in the app, with no system
     /// notification.
     func showInApp(_ request: AttentionRequest) async
+    /// How many requests are open, for the Dock badge.
+    func showOpenCount(_ count: Int) async
 }
 
 extension MacAttentionNotifier {
+    public func showOpenCount(_ count: Int) async {}
+
     public func showInApp(_ request: AttentionRequest) async {
         KanbanCodeLog.warn("attention", "\(request.id) should open in the app, but this notifier has no app to open it in")
     }

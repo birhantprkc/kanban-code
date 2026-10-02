@@ -88,12 +88,16 @@ public actor AttentionCenter: AttentionDelivering {
     // MARK: AttentionDelivering
 
     public func deliver(_ request: AttentionRequest) async {
+        let isNew = open[request.id] == nil
         open[request.id] = request
         if delivered[request.id] == nil {
-            let restoredState = restored.removeValue(forKey: request.id)
+            var restoredState = restored.removeValue(forKey: request.id)
+            // The app's sheet does not outlive a restart: show it again.
+            restoredState?.shownInApp = false
             delivered[request.id] = restoredState ?? AttentionDeliveryState()
             KanbanCodeLog.info("attention", "Raised \(request.id) kind=\(request.kind.rawValue) card=\(request.cardId ?? "none") machine=\(request.machineId ?? "local")\(restoredState.map { " (delivered before a restart: \($0))" } ?? "")")
         }
+        if isNew { await mac?.showOpenCount(open.count) }
         await evaluate(request.id, explain: true)
     }
 
@@ -103,7 +107,9 @@ public actor AttentionCenter: AttentionDelivering {
     }
 
     public func withdraw(_ request: AttentionRequest) async {
-        open.removeValue(forKey: request.id)
+        if open.removeValue(forKey: request.id) != nil {
+            await mac?.showOpenCount(open.count)
+        }
         let state = delivered.removeValue(forKey: request.id) ?? AttentionDeliveryState()
         if state.macPosted {
             await mac?.remove(id: request.id)

@@ -96,8 +96,16 @@ public enum AttentionPolicy {
             var steps: [AttentionDeliveryStep] = delivered.macPosted ? [.removeMac] : []
             // The chat and the terminal show questions, plans and permission
             // prompts; a vault approval only exists in the sheet.
-            if request.kind == .vaultApproval, macAvailable, !delivered.shownInApp {
-                steps.append(.showInApp)
+            if request.kind == .vaultApproval {
+                if macAvailable, !delivered.shownInApp {
+                    steps.append(.showInApp)
+                }
+                // A sheet left unanswered past the delay still reaches the
+                // phone: being in front of the card is no answer.
+                if settings.phoneEnabled, !delivered.phoneAlertSent,
+                   now.timeIntervalSince(request.createdAt) >= settings.phoneAlertDelay {
+                    steps.append(.phoneAlert)
+                }
             }
             return steps
         }
@@ -127,7 +135,9 @@ public enum AttentionPolicy {
         guard request.isOpen else { return "resolved" }
         if isLookingAt(request, presence, now: now, settings: settings) {
             if request.kind == .vaultApproval {
-                return "Rogerio is looking at card \(request.cardId ?? "?"), detail sheet in the app instead of a notification"
+                let alertAt = ISO8601DateFormatter().string(from: request.createdAt.addingTimeInterval(settings.phoneAlertDelay))
+                let phone = settings.phoneEnabled ? "phone alert at \(alertAt) if still open" : "phone off"
+                return "Rogerio is looking at card \(request.cardId ?? "?"), detail sheet in the app instead of a Mac notification; \(phone)"
             }
             return "Rogerio is looking at card \(request.cardId ?? "?"), which shows it, no notification"
         }
@@ -164,6 +174,19 @@ public enum AttentionSheetQueue {
     /// `queue` with `id` at the end, unless it is shown or already waits.
     public static func adding(_ id: String, to queue: [String], shown: String?) -> [String] {
         id == shown || queue.contains(id) ? queue : queue + [id]
+    }
+
+    /// The request the sheet shows now: the shown one while it is open, else
+    /// the next open one that waits. A sheet never stays on a request that
+    /// was answered elsewhere, withdrawn or dropped from the state.
+    public static func current(shown: String?, waiting: inout [String], isOpen: (String) -> Bool) -> String? {
+        if let shown, isOpen(shown) { return shown }
+        return popNext(&waiting, isOpen: isOpen)
+    }
+
+    /// How many open requests wait behind the shown one.
+    public static func waitingCount(_ queue: [String], isOpen: (String) -> Bool) -> Int {
+        queue.filter(isOpen).count
     }
 
     /// Takes the first waiting request that is still open; drops the
