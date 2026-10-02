@@ -655,17 +655,16 @@ public final class RemoteControlServer: Sendable {
                 let board = await host.board()
                 return all ? board : RemoteWorkingSet.filter(board)
             }
-            if let text = self.encodedEvent(tracker.fullBoard(await current())) {
-                try? await ws.sendText(text)
-            }
             var lastAttention = await host.attention()
-            if let text = self.encodedEvent(RemoteEvent(type: .attention, attention: lastAttention)) {
+            var first = tracker.fullBoard(await current())
+            first.attention = lastAttention
+            if let text = self.encodedEvent(first) {
                 try? await ws.sendText(text)
             }
             var lastPush = Date()
             for await next in triggers {
                 if Task.isCancelled { return }
-                let event: RemoteEvent?
+                var event: RemoteEvent?
                 switch next {
                 case .resync:
                     event = tracker.fullBoard(await current())
@@ -677,11 +676,10 @@ public final class RemoteControlServer: Sendable {
                     event = tracker.delta(await current())
                 }
                 let attention = await host.attention()
-                if attention != lastAttention {
+                if attention != lastAttention || next == .resync {
                     lastAttention = attention
-                    if let text = self.encodedEvent(RemoteEvent(type: .attention, attention: attention)) {
-                        do { try await ws.sendText(text) } catch { return }
-                    }
+                    if event == nil { event = RemoteEvent(type: .cards, upserted: [], removed: []) }
+                    event?.attention = attention
                 }
                 guard let event, let text = self.encodedEvent(event) else { continue }
                 lastPush = Date()

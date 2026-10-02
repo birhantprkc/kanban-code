@@ -70,24 +70,22 @@ struct AttentionAPITests {
         #expect(f.host.state.withLock { $0.presences }.first?.isKanbanFrontmost == true)
     }
 
-    @Test("the events stream sends the open list on connect and on change")
+    @Test("the events stream carries the open list on connect and on change")
     func events() async throws {
         let f = try await RemoteServerFixture()
         defer { f.shutdown() }
         let ws = f.webSocket("/v1/events", token: f.fullToken)
         defer { ws.cancel(with: .goingAway, reason: nil) }
-        var first: RemoteEvent?
-        for _ in 0..<4 {
-            let e = try decodeEvent(try await withTimeout(5) { try await ws.receive() })
-            if e.type == .attention { first = e; break }
-        }
-        #expect(first?.attention == [])
+        let first = try decodeEvent(try await withTimeout(5) { try await ws.receive() })
+        #expect(first.type == .board)
+        #expect(first.attention == [])
         f.host.raise(Self.question)
         var next: RemoteEvent?
         for _ in 0..<6 {
             let e = try decodeEvent(try await withTimeout(5) { try await ws.receive() })
-            if e.type == .attention { next = e; break }
+            if e.attention != nil { next = e; break }
         }
+        #expect(next?.type == .cards)
         #expect(next?.attention?.map(\.id) == ["att_toolu_1"])
     }
 }

@@ -99,3 +99,25 @@ struct AttentionDetectorTests {
         #expect(AttentionDetector.pendingDecision(inLines: tail)?.toolUseId == "toolu_7")
     }
 }
+
+@Suite("Attention detector timestamps")
+struct AttentionTimestampTests {
+    @Test("only user and assistant lines move the conversation on")
+    func lastTimestamp() {
+        let lines = [
+            #"{"type":"assistant","timestamp":"2026-10-02T10:00:00.500Z","message":{"content":[]}}"#,
+            #"{"type":"system","timestamp":"2026-10-02T10:05:00.000Z","subtype":"hook"}"#,
+            #"{"type":"attachment","timestamp":"2026-10-02T10:06:00.000Z"}"#,
+        ]
+        let date = AttentionDetector.lastTimestamp(inLines: lines)
+        #expect(date == ISO8601DateFormatter.withFractions.date(from: "2026-10-02T10:00:00.500Z"))
+    }
+}
+
+extension ISO8601DateFormatter {
+    static var withFractions: ISO8601DateFormatter {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }
+}

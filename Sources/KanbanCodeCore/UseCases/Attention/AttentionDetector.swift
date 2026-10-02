@@ -131,12 +131,15 @@ public enum AttentionDetector {
             || trimmed.hasPrefix("<system-reminder>") || trimmed.hasPrefix("<task-notification>")
     }
 
-    /// Time of the newest line that carries one.
+    /// Time of the newest user or assistant message: the conversation
+    /// moving, not the harness writing hook or progress lines.
     public static func lastTimestamp(inLines lines: [String]) -> Date? {
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         for line in lines.reversed() {
-            guard let range = line.range(of: "\"timestamp\":\"") else { continue }
+            guard line.contains("\"type\":\"user\"") || line.contains("\"type\":\"assistant\""),
+                  !line.contains("\"isSidechain\":true"),
+                  let range = line.range(of: "\"timestamp\":\"") else { continue }
             let rest = line[range.upperBound...]
             guard let end = rest.firstIndex(of: "\"") else { continue }
             if let date = iso.date(from: String(rest[..<end])) { return date }
