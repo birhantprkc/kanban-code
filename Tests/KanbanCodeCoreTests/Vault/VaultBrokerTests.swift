@@ -357,6 +357,17 @@ struct OpenClawCallerTests {
         #expect(layout.principal(chain: chain, cgroup: { _ in "/user.slice/session-1.scope" }, cwd: { cwds[$0] }) == nil)
     }
 
+    @Test func procFilesReadToTheirEnd() throws {
+        let path = NSTemporaryDirectory() + "proc-\(UUID().uuidString.prefix(8))"
+        let text = String(repeating: "0::/user.slice/openclaw-gateway.service\n", count: 4000)
+        try text.write(toFile: path, atomically: true, encoding: .utf8)
+        #expect(VaultCallerResolver.readProcFile(path) == text)
+        #expect(VaultCallerResolver.readProcFile(path + "-missing") == nil)
+        #if os(Linux)
+        #expect(VaultCallerResolver.readProcFile("/proc/self/cgroup")?.isEmpty == false)
+        #endif
+    }
+
     @Test func anOpenClawAgentGetsCardTiersLeasesAndJev() async throws {
         let forge = VaultCaller(cardId: VaultCaller.openClawPrincipal(agent: "forge"), pid: 50, ancestry: ["kv", "bash", "claude", "node"])
         #expect(forge.insideCard && forge.openClawAgent == "forge")

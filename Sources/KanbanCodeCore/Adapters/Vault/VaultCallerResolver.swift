@@ -89,7 +89,7 @@ public enum VaultCallerResolver {
     static func linuxPeerPid(clientPort: Int, serverPort: Int, exclude: Int) -> Int? {
         var inodes = Set<String>()
         for table in ["/proc/net/tcp", "/proc/net/tcp6"] {
-            guard let text = try? String(contentsOfFile: table, encoding: .utf8) else { continue }
+            guard let text = VaultCallerResolver.readProcFile(table) else { continue }
             for line in text.split(whereSeparator: \.isNewline).dropFirst() {
                 let cols = line.split(separator: " ", omittingEmptySubsequences: true)
                 guard cols.count > 9 else { continue }
@@ -114,6 +114,24 @@ public enum VaultCallerResolver {
         return nil
     }
     #endif
+
+    /// Reads a file to its end with read(2). /proc files report a size of
+    /// zero, and Foundation's file readers trust the size, so they come
+    /// back empty there.
+    public static func readProcFile(_ path: String) -> String? {
+        let fd = open(path, O_RDONLY)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 65536)
+        while true {
+            let n = buffer.withUnsafeMutableBytes { read(fd, $0.baseAddress, $0.count) }
+            if n < 0 { return nil }
+            if n == 0 { break }
+            data.append(buffer, count: n)
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
 
     public static func processTable() async -> [Int: VaultProcess] {
         let ps = ShellCommand.findExecutable("ps") ?? "/bin/ps"
@@ -197,7 +215,7 @@ public struct OpenClawLayout: Sendable, Equatable {
     }
 
     public static func procCgroup(_ pid: Int) -> String? {
-        guard let text = try? String(contentsOfFile: "/proc/\(pid)/cgroup", encoding: .utf8) else { return nil }
+        guard let text = VaultCallerResolver.readProcFile("/proc/\(pid)/cgroup") else { return nil }
         // cgroup v2: "0::/user.slice/.../openclaw-gateway.service"
         return text.split(whereSeparator: \.isNewline).first { $0.hasPrefix("0::") }.map { String($0.dropFirst(3)) }
     }

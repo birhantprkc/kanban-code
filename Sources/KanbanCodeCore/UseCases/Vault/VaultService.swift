@@ -146,4 +146,7 @@ public struct VaultStatus: Codable, Sendable {
     public var recipient: String?
     public var secrets: Int
     public var machine: String
+    /// Who the master takes the caller for: a card id, "openclaw:<agent>",
+    /// or nil when the caller is outside every card session.
+    public var caller: String?
 }

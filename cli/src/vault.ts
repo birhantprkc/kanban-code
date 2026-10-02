@@ -571,8 +571,12 @@ export async function runKv(argv: string[], io: VaultIO = defaultIO()): Promise<
     }
 
     case "status": {
-      const { body } = await client.call<{ unlocked: boolean; recipient?: string; secrets: number; machine: string }>("GET", "status");
+      const { body } = await client.call<{ unlocked: boolean; recipient?: string; secrets: number; machine: string; caller?: string }>(
+        "GET",
+        "status"
+      );
       out(`${body.machine}: ${body.unlocked ? "unlocked" : "LOCKED (no vault key on this machine)"}, ${body.secrets} secrets\n`);
+      out(`you are: ${body.caller ?? "outside every card session (every release asks Rogerio)"}\n`);
       return 0;
     }
 

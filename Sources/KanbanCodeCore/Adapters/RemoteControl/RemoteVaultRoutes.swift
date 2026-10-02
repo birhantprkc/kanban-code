@@ -118,8 +118,9 @@ enum RemoteVaultRoutes {
         case ("GET", "status", 1):
             let count = (try? await vault.store.list().count) ?? 0
             let identity = await vault.store.currentIdentity()
+            let who = await caller(claimedCard: query["card"], sessionId: nil)
             return .json(VaultStatus(unlocked: identity != nil, recipient: identity?.recipient.text, secrets: count,
-                                     machine: vault.broker.machine))
+                                     machine: vault.broker.machine, caller: who.insideCard ? who.cardId : nil))
 
         case (_, "replica", 1):
             guard let device, device.scope == .full else {

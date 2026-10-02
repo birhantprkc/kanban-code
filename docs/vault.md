@@ -52,7 +52,7 @@ kv get NAME
 kv request NAME[:scope] [NAME..] --reason "..."
 kv aws <profile>
 kv add NAME [--tier t] [--rules "..."]      value on stdin
-kv ls | kv log | kv leases | kv status
+kv ls | kv log | kv leases | kv status   (status also says who the master takes you for)
 kv tier NAME <tier> | kv rules NAME "..."   asks Rogerio
 kv import [--apply]
 kv exec-provider                             OpenClaw exec SecretRef provider
