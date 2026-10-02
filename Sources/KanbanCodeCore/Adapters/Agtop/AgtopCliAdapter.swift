@@ -11,6 +11,12 @@ public struct AgtopSessionInfo: Decodable, Sendable, Equatable {
     /// Messages waiting for the turn to end, oldest first; the host sends
     /// them when it ends.
     public let queue: [String]
+    /// The host process and the assistant it runs, for telling which
+    /// session a process belongs to.
+    public var hostPid: Int?
+    public var claudePid: Int?
+    /// `--meta` pairs given at start, e.g. `kanban_card`.
+    public var meta: [String: String]?
 
     public init(id: String, sessionId: String, cwd: String, name: String? = nil, state: String, alive: Bool,
                 queue: [String] = []) {
@@ -23,7 +29,7 @@ public struct AgtopSessionInfo: Decodable, Sendable, Equatable {
         self.queue = queue
     }
 
-    enum CodingKeys: String, CodingKey { case id, sessionId, cwd, name, state, alive, queue }
+    enum CodingKeys: String, CodingKey { case id, sessionId, cwd, name, state, alive, queue, hostPid, claudePid, meta }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -34,6 +40,9 @@ public struct AgtopSessionInfo: Decodable, Sendable, Equatable {
         state = try c.decodeIfPresent(String.self, forKey: .state) ?? "stopped"
         alive = try c.decodeIfPresent(Bool.self, forKey: .alive) ?? false
         queue = try c.decodeIfPresent([String].self, forKey: .queue) ?? []
+        hostPid = try? c.decodeIfPresent(Int.self, forKey: .hostPid)
+        claudePid = try? c.decodeIfPresent(Int.self, forKey: .claudePid)
+        meta = try? c.decodeIfPresent([String: String].self, forKey: .meta)
     }
 
     /// Claude is running a turn or waiting on a permission answer.
