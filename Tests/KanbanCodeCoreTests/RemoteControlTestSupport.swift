@@ -20,6 +20,9 @@ final class FakeRemoteHost: RemoteControlHost {
         var promptImages: [[RemotePromptImages.Decoded]] = []
         var queueSends: [String] = []
         var scrolls: [(session: String, lines: Int)] = []
+        var attention: [AttentionRequest] = []
+        var resolutions: [(id: String, resolution: String, by: String)] = []
+        var presences: [MacPresence] = []
     }
 
     let state: Mutex<State>
@@ -37,6 +40,33 @@ final class FakeRemoteHost: RemoteControlHost {
         ),
         RemoteCard(id: "card_idle", title: "Ended", column: .waiting, runtime: .none, updatedAt: Date(timeIntervalSince1970: 1_800_000_000)),
     ]
+
+    func attention() async -> [AttentionRequest] {
+        state.withLock { $0.attention }
+    }
+
+    func resolveAttention(id: String, resolution: String, by: String) async throws {
+        let conts = try state.withLock { s -> [AsyncStream<Void>.Continuation] in
+            guard s.attention.contains(where: { $0.id == id }) else { throw RemoteHostError.notFound("no attention request \(id)") }
+            s.attention.removeAll { $0.id == id }
+            s.resolutions.append((id, resolution, by))
+            return Array(s.continuations.values)
+        }
+        conts.forEach { $0.yield() }
+    }
+
+    func reportPresence(_ presence: MacPresence) async {
+        state.withLock { $0.presences.append(presence) }
+    }
+
+    /// Raises a request and wakes the event streams.
+    func raise(_ request: AttentionRequest) {
+        let conts = state.withLock { s in
+            s.attention.append(request)
+            return Array(s.continuations.values)
+        }
+        conts.forEach { $0.yield() }
+    }
 
     func setTerminalCommand(_ argv: [String]) {
         state.withLock { $0.terminalCommand = argv }
