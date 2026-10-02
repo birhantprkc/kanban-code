@@ -21,12 +21,20 @@ public enum VaultHook {
     # Installed by Kanban Code: Claude Code and Codex PreToolUse hook for Bash.
     # In a project with a .env.vault, `kv hook` rewrites the command to load
     # the vault env first; anywhere else this exits without output.
+    # A linked worktree without its own falls back to the main checkout's.
+    hook() {
+      kv="$HOME/.local/bin/kv"
+      [ -x "$kv" ] || kv="$(command -v kv)" || exit 0
+      exec "$kv" hook "$@"
+    }
     d="$PWD"
     while [ -n "$d" ]; do
-      if [ -f "$d/.env.vault" ]; then
-        kv="$HOME/.local/bin/kv"
-        [ -x "$kv" ] || kv="$(command -v kv)" || exit 0
-        exec "$kv" hook "$@"
+      [ -f "$d/.env.vault" ] && hook "$@"
+      if [ -f "$d/.git" ]; then
+        main=$(sed -n 's#^gitdir: *\\(.*\\)/\\.git/worktrees/[^/]*$#\\1#p' "$d/.git")
+        [ -n "$main" ] && [ -f "$main/.env.vault" ] && hook "$@"
+        [ -n "$main" ] && [ -f "$main${PWD#"$d"}/.env.vault" ] && hook "$@"
+        exit 0
       fi
       if [ -e "$d/.git" ] || [ "$d" = "$HOME" ] || [ "$d" = "/" ]; then exit 0; fi
       d=$(dirname "$d")

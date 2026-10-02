@@ -48,6 +48,14 @@ test("the hook wraps Bash commands only in projects with .env.vault", () => {
   assert.equal(findEnvVault(join(root, "repo/sub"), root), join(root, "repo/.env.vault"));
   assert.equal(findEnvVault(join(root, "other"), root), undefined);
 
+  // A linked worktree without its own .env.vault uses the main checkout's.
+  mkdirSync(join(root, "repo/.git/worktrees/wt"), { recursive: true });
+  mkdirSync(join(root, "wt/sub"), { recursive: true });
+  writeFileSync(join(root, "wt/.git"), `gitdir: ${join(root, "repo/.git/worktrees/wt")}\n`);
+  assert.equal(findEnvVault(join(root, "wt/sub"), root), join(root, "repo/.env.vault"));
+  writeFileSync(join(root, "wt/.env.vault"), "A={{vault:A}}\n");
+  assert.equal(findEnvVault(join(root, "wt/sub"), root), join(root, "wt/.env.vault"));
+
   const out = hookRewrite({ tool_name: "Bash", tool_input: { command: "cd x && pnpm test" }, cwd: join(root, "repo/sub") }, "/bin/kv") as {
     hookSpecificOutput: { updatedInput: { command: string } };
   };

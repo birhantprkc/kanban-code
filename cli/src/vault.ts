@@ -12,7 +12,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { kanbanHome } from "./paths.js";
 
 export const EXIT_DENIED = 77;
@@ -303,18 +303,40 @@ export function envFromVault(entries: EnvVaultEntry[], values: Record<string, st
   return env;
 }
 
-/** The nearest `.env.vault` from `dir` up to the repository root (or home). */
+/**
+ * The nearest `.env.vault` from `dir` up to the repository root (or home).
+ * In a linked git worktree without its own, the same folder of the main
+ * checkout is searched, since worktrees get `.env` copies but rarely the
+ * `.env.vault` next to them.
+ */
 export function findEnvVault(dir: string, home = homedir()): string | undefined {
-  let current = resolve(dir);
+  const start = resolve(dir);
+  let current = start;
   for (let i = 0; i < 64; i++) {
     const candidate = join(current, ".env.vault");
     if (existsSync(candidate)) return candidate;
-    if (existsSync(join(current, ".git")) || current === home) return undefined;
+    const git = join(current, ".git");
+    if (existsSync(git)) {
+      const main = mainCheckoutOf(git);
+      return main ? findEnvVault(join(main, relative(current, start)), home) : undefined;
+    }
+    if (current === home) return undefined;
     const parent = dirname(current);
     if (parent === current) return undefined;
     current = parent;
   }
   return undefined;
+}
+
+/** The main checkout of a linked worktree, from its `.git` file (`gitdir: <main>/.git/worktrees/<name>`). */
+function mainCheckoutOf(git: string): string | undefined {
+  try {
+    if (!statSync(git).isFile()) return undefined;
+    const m = /^gitdir:\s*(.+?)\/\.git\/worktrees\/[^/\n]+\s*$/m.exec(readFileSync(git, "utf8"));
+    return m ? m[1] : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function exportLines(env: Record<string, string>): string {
