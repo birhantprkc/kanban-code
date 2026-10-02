@@ -38,8 +38,8 @@ final class MacPresenceMonitor: @unchecked Sendable {
     @MainActor
     func follow(store: BoardStore) async {
         while !Task.isCancelled {
-            let window = NSApp.keyWindow
-            let front = NSApp.isActive && window != nil && window?.isMainWindow == true && window?.isMiniaturized == false
+            // A sheet or dialog takes the key window; the board stays main.
+            let front = NSApp.isActive && NSApp.mainWindow?.isMiniaturized == false
             update(frontmost: front, cardId: store.state.selectedCardId)
             try? await Task.sleep(for: .seconds(1))
         }
