@@ -13,6 +13,8 @@ struct BoardScreen: View {
     @State private var showAddMac = false
     @State private var showMachines = false
     @State private var showArchived = false
+    @State private var showAttention = false
+    @State private var attentionFocus: String?
     @State private var actions: CardActionController
     @State private var expandedSections: Set<String> = []
     /// Project name the board is narrowed to, "" for every project.
@@ -60,6 +62,25 @@ struct BoardScreen: View {
         }
         .sheet(isPresented: $showArchived) {
             ArchivedCardsSheet(fleet: fleet)
+        }
+        .sheet(isPresented: $showAttention) {
+            AttentionListView(fleet: fleet, openCard: { id in path = [id] }, focusId: attentionFocus)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openAttention)) { note in
+            attentionFocus = note.object as? String
+            showAttention = true
+        }
+    }
+
+    @ViewBuilder private var attentionSection: some View {
+        let count = fleet.attention.count
+        if count > 0 {
+            Section {
+                AttentionBanner(count: count) {
+                    attentionFocus = nil
+                    showAttention = true
+                }
+            }
         }
     }
 
@@ -112,6 +133,7 @@ struct BoardScreen: View {
                 }
             } else {
                 List {
+                    attentionSection
                     machineStatusSection
                     ForEach(sections, id: \.id) { section in
                         Section {
