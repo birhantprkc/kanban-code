@@ -499,6 +499,18 @@ struct CardDetailView: View {
                 onRename: onRename
             )
         }
+        .onReceive(NotificationCenter.default.publisher(for: .cardDetailRequest)) { note in
+            guard note.userInfo?["cardId"] as? String == card.id,
+                  let raw = note.userInfo?["request"] as? String,
+                  let request = CardDetailRequest(rawValue: raw) else { return }
+            switch request {
+            case .promptHistory: showPromptHistory = true
+            case .vault: showVault = true
+            case .checkpoint:
+                checkpointMode = true
+                selectedTab = .history
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .renameSelectedCard)) { _ in
             // Cmd+R belongs to the browser while one of its tabs is showing.
             guard selectedBrowserTabId == nil else { return }

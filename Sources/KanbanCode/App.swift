@@ -776,7 +776,15 @@ extension Notification.Name {
     static let browserFocusAddressBar = Notification.Name("browserFocusAddressBar")
     static let browserReload = Notification.Name("browserReload")
     static let renameSelectedCard = Notification.Name("renameSelectedCard")
+    /// Asks the detail view of `userInfo["cardId"]` to open one of its own
+    /// sheets or modes, named by `userInfo["request"]` (a `CardDetailRequest`).
+    static let cardDetailRequest = Notification.Name("cardDetailRequest")
     static let kanbanReopenClosedTab = Notification.Name("kanbanReopenClosedTab")
+}
+
+/// What the card detail view opens on a `.cardDetailRequest`.
+enum CardDetailRequest: String {
+    case promptHistory, vault, checkpoint
 }
 
 /// Lock-protected box so a bounded synchronous process read can hand its output

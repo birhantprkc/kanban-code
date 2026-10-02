@@ -288,35 +288,11 @@ struct ContentView: View {
             onStartCard: { cardId in startCard(cardId: cardId) },
             onResumeCard: { cardId in resumeCard(cardId: cardId) },
             onForkCard: { cardId, _ in presentForkDialog(cardId: cardId) },
-            onCopyResumeCmd: { cardId in
-                guard let card = store.state.cards.first(where: { $0.id == cardId }) else { return }
-                var cmd = ""
-                if let projectPath = card.link.projectPath {
-                    cmd += "cd \(projectPath) && "
-                }
-                if let sessionId = card.link.sessionLink?.sessionId {
-                    cmd += card.link.effectiveAssistant.resumeCommand(
-                        sessionId: sessionId,
-                        skipPermissions: false,
-                        modelOverride: card.link.modelOverride
-                    )
-                }
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(cmd, forType: .string)
-            },
+            onCopyResumeCmd: { cardId in copyResumeCommand(cardId: cardId) },
             onCopyConversationMarkdown: { cardId in copyConversationMarkdown(cardId: cardId) },
             onShowSubagents: { cardId in showSubagents(for: cardId) },
             onTrimSession: { cardId in presentDialog(.confirmTrimSession(cardId: cardId)) },
-            onDiscoverCard: { cardId in
-                Task {
-                    store.dispatch(.setBusy(cardId: cardId, busy: true))
-                    if let updatedLink = await orchestrator.discoverBranchesForCard(cardId: cardId) {
-                        store.dispatch(.createManualTask(updatedLink))
-                    }
-                    await store.reconcile()
-                    store.dispatch(.setBusy(cardId: cardId, busy: false))
-                }
-            },
+            onDiscoverCard: { cardId in discoverBranches(cardId: cardId) },
             onCleanupWorktree: { cardId in Task { await cleanupWorktree(cardId: cardId) } },
             canCleanupWorktree: { cardId in
                 guard let link = store.state.links[cardId] else { return false }
@@ -383,22 +359,7 @@ struct ContentView: View {
             onStartCard: { cardId in startCard(cardId: cardId) },
             onResumeCard: { cardId in resumeCard(cardId: cardId) },
             onForkCard: { cardId, _ in presentForkDialog(cardId: cardId) },
-            onCopyResumeCmd: { cardId in
-                guard let card = store.state.cards.first(where: { $0.id == cardId }) else { return }
-                var cmd = ""
-                if let projectPath = card.link.projectPath {
-                    cmd += "cd \(projectPath) && "
-                }
-                if let sessionId = card.link.sessionLink?.sessionId {
-                    cmd += card.link.effectiveAssistant.resumeCommand(
-                        sessionId: sessionId,
-                        skipPermissions: false,
-                        modelOverride: card.link.modelOverride
-                    )
-                }
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(cmd, forType: .string)
-            },
+            onCopyResumeCmd: { cardId in copyResumeCommand(cardId: cardId) },
             onCopyConversationMarkdown: { cardId in copyConversationMarkdown(cardId: cardId) },
             onShowSubagents: { cardId in showSubagents(for: cardId) },
             onTrimSession: { cardId in presentDialog(.confirmTrimSession(cardId: cardId)) },
@@ -408,16 +369,7 @@ struct ContentView: View {
             onSetSelfCompactContextThreshold: { cardId, threshold in
                 store.dispatch(.setSelfCompactContextThreshold(cardId: cardId, thresholdTokens: threshold))
             },
-            onDiscoverCard: { cardId in
-                Task {
-                    store.dispatch(.setBusy(cardId: cardId, busy: true))
-                    if let updatedLink = await orchestrator.discoverBranchesForCard(cardId: cardId) {
-                        store.dispatch(.createManualTask(updatedLink))
-                    }
-                    await store.reconcile()
-                    store.dispatch(.setBusy(cardId: cardId, busy: false))
-                }
-            },
+            onDiscoverCard: { cardId in discoverBranches(cardId: cardId) },
             onCleanupWorktree: { cardId in Task { await cleanupWorktree(cardId: cardId) } },
             canCleanupWorktree: { cardId in
                 guard let link = store.state.links[cardId] else { return false }
@@ -643,16 +595,7 @@ struct ContentView: View {
             onUpdateBrowserTab: { tabId, url, title in
                 store.dispatch(.updateBrowserTab(cardId: card.id, tabId: tabId, url: url, title: title))
             },
-            onDiscover: {
-                Task {
-                    store.dispatch(.setBusy(cardId: card.id, busy: true))
-                    if let updatedLink = await orchestrator.discoverBranchesForCard(cardId: card.id) {
-                        store.dispatch(.createManualTask(updatedLink))
-                    }
-                    await store.reconcile()
-                    store.dispatch(.setBusy(cardId: card.id, busy: false))
-                }
-            },
+            onDiscover: { discoverBranches(cardId: card.id) },
             onUpdatePrompt: { body, imagePaths in
                 store.dispatch(.updatePrompt(cardId: card.id, body: body, imagePaths: imagePaths))
             },
@@ -2306,20 +2249,7 @@ struct ContentView: View {
         ]
 
         // Card actions, so they only appear with a card open.
-        if let cardId = store.state.selectedCardId, store.state.links[cardId] != nil {
-            cmds.append(CommandItem(
-                "Rename Card", icon: "pencil",
-                shortcut: AppShortcut.renameCard.displayString
-            ) {
-                NotificationCenter.default.post(name: .renameSelectedCard, object: nil)
-            })
-            cmds.append(CommandItem(
-                "Archive Card", icon: "archivebox",
-                shortcut: AppShortcut.archiveCard.displayString
-            ) { [self] in
-                presentArchiveDialog(cardId: cardId)
-            })
-        }
+        cmds.append(contentsOf: selectedCardPaletteCommands)
 
         // Project switching
         let visibleProjects = store.state.configuredProjects.filter(\.visible)
@@ -2337,6 +2267,36 @@ struct ContentView: View {
             }
         }
 
+        return cmds
+    }
+
+    /// Every action the card menus offer for the open card, read from the
+    /// same catalog, plus the card shortcuts that have no menu item.
+    private var selectedCardPaletteCommands: [CommandItem] {
+        guard let card = store.state.selectedCard else { return [] }
+        let catalog = CardActionCatalog(
+            card: card,
+            actions: cardMenuActions(for: card, onArchive: { presentArchiveDialog(cardId: card.id) }),
+            showBranchInfo: true,
+            availableProjects: projectList,
+            enabledAssistants: assistantRegistry.available,
+            environment: .live(for: card)
+        )
+        var cmds = catalog.paletteEntries.map { entry in
+            CommandItem(id: entry.id, entry.title, icon: entry.icon, shortcut: entry.shortcut?.displayString, action: entry.run)
+        }
+        if !cmds.contains(where: { $0.id == "card-action:delete" }), card.link.source != .githubIssue {
+            cmds.append(CommandItem(
+                id: "card-action:delete", "Delete Card", icon: "trash",
+                shortcut: AppShortcut.deleteCard.displayString
+            ) { [self] in presentDialog(.confirmDelete(cardId: card.id)) })
+        }
+        if card.link.tmuxLink != nil {
+            cmds.append(CommandItem(
+                id: "card-action:newTerminal", "New Terminal Tab", icon: "plus.rectangle",
+                shortcut: AppShortcut.newTerminal.displayString
+            ) { [self] in createExtraTerminal(cardId: card.id) })
+        }
         return cmds
     }
 
@@ -2413,6 +2373,82 @@ struct ContentView: View {
         }
     }
 
+    // MARK: - Card Actions
+
+    /// The card actions the toolbar menu and the command palette run. The
+    /// detail view's own menu builds its set with the sheets it owns, and
+    /// this one asks it for those through `.cardDetailRequest`.
+    private func cardMenuActions(for card: KanbanCodeCard, onArchive: (() -> Void)?) -> CardActionsMenuActions {
+        let cardId = card.id
+        let requestDetail: (CardDetailRequest) -> () -> Void = { request in
+            { NotificationCenter.default.post(name: .cardDetailRequest, object: nil, userInfo: ["cardId": cardId, "request": request.rawValue]) }
+        }
+        return CardActionsMenuActions(
+            onStart: { startCard(cardId: cardId) },
+            onResume: { resumeCard(cardId: cardId) },
+            onFork: { keepWorktree in forkCard(cardId: cardId, keepWorktree: keepWorktree) },
+            onRenameRequest: { renamingCardId = cardId },
+            onSetPinned: { isPinned in
+                store.dispatch(.setCardPinned(cardId: cardId, isPinned: isPinned))
+            },
+            onSetSelfCompactContextThreshold: { threshold in
+                store.dispatch(.setSelfCompactContextThreshold(cardId: cardId, thresholdTokens: threshold))
+            },
+            onCopyResumeCmd: { copyResumeCommand(cardId: cardId) },
+            onCopyConversationMarkdown: { copyConversationMarkdown(cardId: cardId) },
+            subagentCount: subagentCount(for: cardId),
+            onShowSubagents: { showSubagents(for: cardId) },
+            onTrimSession: { presentDialog(.confirmTrimSession(cardId: cardId)) },
+            onCheckpoint: requestDetail(.checkpoint),
+            onAddLink: { showAddLinkCardId = cardId },
+            onUnlink: { linkType in store.dispatch(.unlinkFromCard(cardId: cardId, linkType: linkType)) },
+            onDiscover: { discoverBranches(cardId: cardId) },
+            onCleanupWorktree: { Task { await cleanupWorktree(cardId: cardId) } },
+            canCleanupWorktree: canCleanupWorktree(for: card),
+            onArchive: onArchive,
+            onDelete: { presentDialog(.confirmDelete(cardId: cardId)) },
+            onMoveToProject: { path in
+                let name = projectList.first(where: { $0.path == path })?.name ?? (path as NSString).lastPathComponent
+                presentDialog(.confirmMoveToProject(cardId: cardId, projectPath: path, projectName: name))
+            },
+            onMoveToFolder: { selectFolderForMove(cardId: cardId) },
+            onMigrateAssistant: { target in
+                presentDialog(.confirmMigration(cardId: cardId, targetAssistant: target, recentTurnLimit: nil))
+            },
+            onShowPromptHistory: requestDetail(.promptHistory),
+            onShowVault: requestDetail(.vault)
+        )
+    }
+
+    /// Copies the shell command that resumes the card's session in its project.
+    private func copyResumeCommand(cardId: String) {
+        guard let card = store.state.cards.first(where: { $0.id == cardId }) else { return }
+        var cmd = ""
+        if let projectPath = card.link.projectPath {
+            cmd += "cd \(projectPath) && "
+        }
+        if let sessionId = card.link.sessionLink?.sessionId {
+            cmd += card.link.effectiveAssistant.resumeCommand(
+                sessionId: sessionId,
+                skipPermissions: false,
+                modelOverride: card.link.modelOverride
+            )
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(cmd, forType: .string)
+    }
+
+    private func discoverBranches(cardId: String) {
+        Task {
+            store.dispatch(.setBusy(cardId: cardId, busy: true))
+            if let updatedLink = await orchestrator.discoverBranchesForCard(cardId: cardId) {
+                store.dispatch(.createManualTask(updatedLink))
+            }
+            await store.reconcile()
+            store.dispatch(.setBusy(cardId: cardId, busy: false))
+        }
+    }
+
     // MARK: - Expanded Actions Menu
 
     private func expandedActionsMenu(for card: KanbanCodeCard) -> some View {
@@ -2433,61 +2469,7 @@ struct ContentView: View {
             Divider()
             CardActionsMenu(
                 card: card,
-                actions: CardActionsMenuActions(
-                    onStart: { startCard(cardId: card.id) },
-                    onResume: { resumeCard(cardId: card.id) },
-                    onFork: { keepWorktree in forkCard(cardId: card.id, keepWorktree: keepWorktree) },
-                    onRenameRequest: { renamingCardId = card.id },
-                    onSetPinned: { isPinned in
-                        store.dispatch(.setCardPinned(cardId: card.id, isPinned: isPinned))
-                    },
-                    onSetSelfCompactContextThreshold: { threshold in
-                        store.dispatch(.setSelfCompactContextThreshold(cardId: card.id, thresholdTokens: threshold))
-                    },
-                    onCopyResumeCmd: {
-                        var cmd = ""
-                        if let pp = card.link.projectPath { cmd += "cd \(pp) && " }
-                        if let sid = card.link.sessionLink?.sessionId {
-                            cmd += card.link.effectiveAssistant.resumeCommand(
-                                sessionId: sid,
-                                skipPermissions: false,
-                                modelOverride: card.link.modelOverride
-                            )
-                        }
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(cmd, forType: .string)
-                    },
-                    onCopyConversationMarkdown: { copyConversationMarkdown(cardId: card.id) },
-                    subagentCount: subagentCount(for: card.id),
-                    onShowSubagents: { showSubagents(for: card.id) },
-                    onTrimSession: { presentDialog(.confirmTrimSession(cardId: card.id)) },
-                    onCheckpoint: {
-                        detailTab = .history
-                        // CardDetailView picks up checkpointMode from its own menu
-                        // but from here we just navigate to history tab
-                    },
-                    onAddLink: { showAddLinkCardId = card.id },
-                    onUnlink: { linkType in store.dispatch(.unlinkFromCard(cardId: card.id, linkType: linkType)) },
-                    onDiscover: {
-                        Task {
-                            store.dispatch(.setBusy(cardId: card.id, busy: true))
-                            if let updatedLink = await orchestrator.discoverBranchesForCard(cardId: card.id) {
-                                store.dispatch(.createManualTask(updatedLink))
-                            }
-                            await store.reconcile()
-                            store.dispatch(.setBusy(cardId: card.id, busy: false))
-                        }
-                    },
-                    onCleanupWorktree: { Task { await cleanupWorktree(cardId: card.id) } },
-                    canCleanupWorktree: canCleanupWorktree(for: card),
-                    onArchive: nil,
-                    onDelete: { presentDialog(.confirmDelete(cardId: card.id)) },
-                    onMoveToProject: { path in store.dispatch(.moveCardToProject(cardId: card.id, projectPath: path)) },
-                    onMoveToFolder: { selectFolderForMove(cardId: card.id) },
-                    onMigrateAssistant: { target in
-                        presentDialog(.confirmMigration(cardId: card.id, targetAssistant: target, recentTurnLimit: nil))
-                    }
-                ),
+                actions: cardMenuActions(for: card, onArchive: nil),
                 showBranchInfo: true,
                 availableProjects: projectList,
                 enabledAssistants: assistantRegistry.available
