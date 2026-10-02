@@ -8,11 +8,13 @@ import { test } from "node:test";
 import {
   EXIT_DENIED,
   VaultClient,
+  checkedReason,
   envFromVault,
   findEnvVault,
   hookRewrite,
   execProviderAnswer,
   parseEnvVault,
+  reasonProblem,
   runKv,
   shellQuote,
   type VaultIO,
@@ -120,11 +122,47 @@ test("a denial exits with the denied code and a hint", async () => {
 
 test("kv run passes the command line for Jev", async () => {
   const m = await fakeMaster(() => ({ status: 200, body: { status: "granted", message: "released", values: { A: "v" } } }));
-  const code = await runKv(["run", "A", "--reason", "check", "--", "sh", "-c", 'test "$A" = v'], io(m.url, []));
+  const reason = "Check that the test script sees the key it needs";
+  const code = await runKv(["run", "A", "--reason", reason, "--", "sh", "-c", 'test "$A" = v'], io(m.url, []));
   m.close();
   assert.equal(code, 0);
   assert.equal(m.calls[0].body.command, `sh -c 'test "$A" = v'`);
-  assert.equal(m.calls[0].body.reason, "check");
+  assert.equal(m.calls[0].body.reason, reason);
+});
+
+test("reasons must be one plain sentence a human reads on a phone", () => {
+  assert.equal(reasonProblem(undefined), "missing");
+  assert.equal(reasonProblem("change aws:lw-dev: rules"), "tooShort");
+  assert.equal(reasonProblem("kubectl apply -f deploy.yaml"), "looksLikeCommand");
+  assert.equal(reasonProblem("run the deploy with --force please"), "looksLikeCommand");
+  assert.equal(reasonProblem("load env && run the migration now"), "looksLikeCommand");
+  assert.equal(reasonProblem("first line\nsecond line of it"), "tooLong");
+  assert.equal(reasonProblem("Deploy the langwatch staging app to check the fix for the login bug"), undefined);
+  assert.equal(checkedReason(undefined, {}, false), undefined);
+  assert.equal(checkedReason(undefined, { KV_REASON: "Read the dev cluster nodes after the autoscaler change" }, true),
+    "Read the dev cluster nodes after the autoscaler change");
+  assert.throws(() => checkedReason(undefined, {}, true), (e: any) => e.code === 2 && /one short plain sentence/.test(e.message));
+});
+
+test("a terse or command-like reason is refused before asking the master", async () => {
+  const m = await fakeMaster(() => ({ status: 200, body: { status: "granted", message: "released", values: { A: "v" } } }));
+  for (const argv of [
+    ["request", "A", "--reason", "change aws:lw-dev: rules"],
+    ["request", "A"],
+    ["run", "A", "--reason", "aws s3 ls", "--", "true"],
+    ["rules", "A", "deploys only", "--reason", "rules"],
+  ]) {
+    await assert.rejects(runKv(argv, io(m.url, [])), (e: any) => {
+      assert.equal(e.code, 2, argv.join(" "));
+      assert.match(e.message, /Deploy the langwatch staging app/);
+      return true;
+    });
+  }
+  assert.equal(m.calls.length, 0);
+  const reason = "Let the release script post the notes on its own";
+  await runKv(["label", "A", "Release bot token", "--reason", reason], io(m.url, []));
+  m.close();
+  assert.deepEqual(m.calls[0].body, { label: "Release bot token", reason });
 });
 
 test("import finds secrets, skips config and placeholders", () => {

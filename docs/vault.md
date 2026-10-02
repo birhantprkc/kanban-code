@@ -41,6 +41,21 @@ OpenClaw agents on a Linux master count like card sessions under the principal `
 
 Human approvals are attention requests of kind `vaultApproval` with the options "Approve for this card (2 days)", "Approve once", "Deny". A secret with "every use asks" never offers the lease. No answer in 10 minutes denies.
 
+### What the human sees
+
+The notification (Mac, Pushover, the phone app) has two lines:
+
+- Title: who wants what, e.g. "Kanban Chat Claude wants AWS lw-dev access", "... wants to use the Slack user token", "... wants to change the AWS lw-dev rules", "... wants to use the Slack user token for 2 days" (a lease). Outside a card it reads "A process outside any card wants ...".
+- Body: the agent's `--reason` and nothing else. A missing reason, or one that reads like a command or has under four words, shows "No reason given." instead.
+
+Secrets are named by their label: the `label` field when set (`kv label NAME "..."`, `kv add --label`), else one derived from the name (`aws:lw-dev` is "AWS lw-dev", `aws:lw-prod:read` is "AWS lw-prod read-only", `SLACK_USER_TOKEN` is "Slack user token").
+
+Clicking the Mac notification opens the card and a sheet with every detail; on the phone the request's Details page shows the same. The details are the `vault` field of the attention request (`VaultApprovalDetails` in KanbanCodeRemoteKit): card, secrets with tier, the action, the proposed values of an edit, why the vault asks (tier, rate limit, Jev's verdict), the command, the working directory, the reason, the lease the card approval grants, and the process ancestry. `AttentionCopy` builds the title and body; questions and plan approvals use the same title style ("<card> is asking you a question", "<card> wants you to approve a plan", "<card> needs your permission").
+
+### Reasons
+
+The reason is the only text the human reads before deciding, so it must be one short plain sentence saying what the agent wants to do and why, e.g. `--reason "Deploy the langwatch staging app to check the fix for the login bug"`. kv refuses (exit 2, before asking the master) a reason that is missing where required (`kv request`), shorter than four words, longer than one sentence (200 characters or a newline), or that reads like a command (starts with a command name, has flags or shell operators). `--reason` is optional for `kv run`, `env`, `get`, `aws`, `add`, `tier`, `rules`, `label`; `KV_REASON` in the environment stands in for it, which is how `kv aws` from `credential_process` gets one. When a request reaches the human without a usable reason, the pending message tells the agent how to write one next time.
+
 ## kv
 
 `kv` talks to `http://127.0.0.1:<remote control port>` (`KANBAN_VAULT_URL` overrides it). It needs no token. Exit code 77 means denied.
@@ -48,12 +63,12 @@ Human approvals are attention requests of kind `vaultApproval` with the options 
 ```
 kv run NAME [NAME..] [--reason "..."] -- <cmd> [args..]
 kv env .env.vault -- <cmd> [args..]
-kv get NAME
+kv get NAME [--reason "..."]
 kv request NAME[:scope] [NAME..] --reason "..."
-kv aws <profile>
-kv add NAME [--tier t] [--rules "..."]      value on stdin
+kv aws <profile> [--reason "..."]
+kv add NAME [--tier t] [--rules "..."] [--label "..."] [--reason "..."]   value on stdin
 kv ls | kv log | kv leases | kv status   (status also says who the master takes you for)
-kv tier NAME <tier> | kv rules NAME "..."   asks Rogerio
+kv tier NAME <tier> | kv rules NAME "..." | kv label NAME "..."  [--reason "..."]   asks Rogerio
 kv import [--apply]
 kv exec-provider                             OpenClaw exec SecretRef provider
 ```

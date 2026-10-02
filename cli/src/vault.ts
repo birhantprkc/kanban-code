@@ -44,6 +44,7 @@ export interface VaultSecretInfo {
   sources: string[];
   updatedAt: string;
   aws?: { sourceSecret: string; roleArn?: string; policyArns: string[] } | null;
+  label?: string | null;
 }
 
 export interface VaultAuditEntry {
@@ -157,8 +158,57 @@ export function callerContext(env: NodeJS.ProcessEnv): { cardId?: string; sessio
 }
 
 export function deniedError(r: VaultResponse): VaultCliError {
-  const hint = r.message.includes("kv request") ? "" : "\nIf the work needs it, ask with a reason: kv request NAME --reason \"...\"";
+  const hint = r.message.includes("kv request")
+    ? ""
+    : `\nIf the work needs it, ask with a reason: kv request NAME --reason "<one plain sentence>"\n${REASON_GUIDANCE}`;
   return new VaultCliError(`kv: ${r.message}${hint}`, EXIT_DENIED);
+}
+
+// ── Reasons ──────────────────────────────────────────────────────────
+
+/**
+ * Rogerio reads the reason alone on his phone, under a title naming the
+ * card and the secret. Same rules as `AttentionCopy.reasonProblem` in
+ * KanbanCodeRemoteKit.
+ */
+export const REASON_GUIDANCE =
+  "Write --reason as one short plain sentence a human understands on a phone: what you want to do and why.\n" +
+  '  Good: --reason "Deploy the langwatch staging app to check the fix for the login bug"\n' +
+  '  Bad:  --reason "change aws:lw-dev: rules" (too terse), --reason "kubectl apply -f x.yaml" (a command)';
+
+export type ReasonProblem = "missing" | "tooShort" | "looksLikeCommand" | "tooLong";
+
+const COMMAND_STARTS = new Set([
+  "sudo", "kv", "aws", "curl", "wget", "npm", "pnpm", "yarn", "npx", "git", "gh", "kubectl", "helm",
+  "docker", "terraform", "python", "python3", "node", "bash", "sh", "zsh", "export", "cd", "make",
+  "swift", "cargo", "go", "ssh", "scp", "psql", "wrangler", "uv", "pip", "echo", "cat", "env",
+]);
+
+export function reasonProblem(reason: string | undefined): ReasonProblem | undefined {
+  const text = (reason ?? "").trim();
+  if (!text) return "missing";
+  if (text.includes("\n") || [...text].length > 200) return "tooLong";
+  const words = text.split(/\s+/);
+  if (COMMAND_STARTS.has(words[0].toLowerCase())) return "looksLikeCommand";
+  if (/(^|\s)--?[A-Za-z]/.test(text) || /[|;&`$<>{}]/.test(text)) return "looksLikeCommand";
+  if (words.length < 4) return "tooShort";
+  return undefined;
+}
+
+const PROBLEM_TEXT: Record<ReasonProblem, string> = {
+  missing: "this needs a reason",
+  tooShort: "the reason is too short to tell a human what you are doing",
+  looksLikeCommand: "the reason reads like a command; the command is shown separately",
+  tooLong: "the reason must be one short sentence",
+};
+
+/** The reason to send: `--reason`, else KV_REASON; refused when a human could not read it. */
+export function checkedReason(given: string | undefined, env: NodeJS.ProcessEnv, required: boolean): string | undefined {
+  const reason = given ?? (env.KV_REASON || undefined);
+  const problem = reasonProblem(reason);
+  if (!problem || (problem === "missing" && !required)) return reason?.trim() || undefined;
+  const got = reason?.trim() ? `\n  Got: ${JSON.stringify(reason.trim())}` : "";
+  throw new VaultCliError(`kv: ${PROBLEM_TEXT[problem]}.${got}\n${REASON_GUIDANCE}`, 2);
 }
 
 // ── Commands and files ───────────────────────────────────────────────
@@ -385,19 +435,26 @@ export const USAGE = `kv: secrets from the Kanban Code vault
 
   kv run NAME [NAME..] [--reason "..."] -- <cmd> [args..]   run cmd with the secrets in its env
   kv env <.env.vault> [--reason "..."] -- <cmd> [args..]    same, names from KEY={{vault:NAME}} lines
-  kv get NAME                                               print one secret (never one that asks)
+  kv get NAME [--reason "..."]                              print one secret (never one that asks)
   kv request NAME[:scope] [NAME..] --reason "..."           ask once for the card's whole task (2 days)
-  kv aws <profile>                                          AWS credential_process JSON (1 h STS credentials)
-  kv add NAME [--tier open|judged|ask|never] [--rules "..."] [--tag t]   value from stdin
+  kv aws <profile> [--reason "..."]                         AWS credential_process JSON (1 h STS credentials)
+  kv add NAME [--tier open|judged|ask|never] [--rules "..."] [--label "..."] [--tag t] [--reason "..."]
+                                                            value from stdin
   kv ls [--json]                                            names, tiers and rules
   kv log [--card ID] [--secret NAME] [--limit N] [--json]   the audit log, newest first
   kv leases [--card ID]                                     active card leases
-  kv tier NAME <tier> | kv rules NAME "..."                 change a secret (asks Rogerio)
+  kv tier NAME <tier> | kv rules NAME "..." | kv label NAME "..."  [--reason "..."]
+                                                            change a secret (asks Rogerio)
   kv status                                                 is the vault unlocked here
   kv exec-provider                                          OpenClaw exec SecretRef provider (JSON on stdin)
   kv import [--apply] [--secrets-only] [--only <dir>]..   plan (then do) the migration of plaintext secrets
 
-Exit code ${EXIT_DENIED} means the vault denied the request.`;
+When Rogerio has to approve, his phone shows "<card> wants to use <secret>"
+and under it only your reason. ${REASON_GUIDANCE}
+KV_REASON in the environment is used when --reason is not given (for kv aws
+from credential_process).
+
+Exit code ${EXIT_DENIED} means the vault denied the request; 2 means kv refused the reason.`;
 
 export async function runKv(argv: string[], io: VaultIO = defaultIO()): Promise<number> {
   const [cmd, ...rest] = argv;
@@ -416,7 +473,7 @@ export async function runKv(argv: string[], io: VaultIO = defaultIO()): Promise<
 
     case "run": {
       const { before, after } = splitAtDashes(args);
-      const reason = takeOption(before, "--reason");
+      const reason = checkedReason(takeOption(before, "--reason"), io.env, false);
       if (before.length === 0) throw new VaultCliError("kv run NAME [NAME..] -- <cmd>");
       const r = await client.decide("release", { mode: "run", names: before, command: commandLine(after), reason, ...ctx });
       if (r.status !== "granted") throw deniedError(r);
@@ -425,8 +482,10 @@ export async function runKv(argv: string[], io: VaultIO = defaultIO()): Promise<
 
     case "env": {
       const { before, after } = splitAtDashes(args);
-      const reason = takeOption(before, "--reason");
+      const givenReason = takeOption(before, "--reason");
       const exportMode = takeFlag(before, "--export");
+      // A hook-wrapped command never asks a human, so it carries no reason.
+      const reason = exportMode ? givenReason : checkedReason(givenReason, io.env, false);
       const b64 = takeOption(before, "--command-b64");
       const file = before[0];
       if (!file) throw new VaultCliError("kv env <.env.vault> -- <cmd>");
@@ -463,9 +522,10 @@ export async function runKv(argv: string[], io: VaultIO = defaultIO()): Promise<
     }
 
     case "get": {
+      const reason = checkedReason(takeOption(args, "--reason"), io.env, false);
       const name = args[0];
       if (!name) throw new VaultCliError("kv get NAME");
-      const r = await client.decide("release", { mode: "get", names: [name], command: parentCommand(), ...ctx });
+      const r = await client.decide("release", { mode: "get", names: [name], command: parentCommand(), reason, ...ctx });
       if (r.status !== "granted") throw deniedError(r);
       out((r.values ?? {})[name] ?? "");
       if (process.stdout.isTTY) out("\n");
@@ -473,8 +533,9 @@ export async function runKv(argv: string[], io: VaultIO = defaultIO()): Promise<
     }
 
     case "request": {
-      const reason = takeOption(args, "--reason");
-      if (!reason || args.length === 0) throw new VaultCliError('kv request NAME[:scope] [NAME..] --reason "one sentence"');
+      const given = takeOption(args, "--reason");
+      if (args.length === 0) throw new VaultCliError('kv request NAME[:scope] [NAME..] --reason "<one plain sentence>"');
+      const reason = checkedReason(given, io.env, true);
       const r = await client.decide("request", { names: args, reason, ...ctx });
       if (r.status !== "granted") throw deniedError(r);
       io.stderr(`kv: ${r.message}\n`);
@@ -482,9 +543,10 @@ export async function runKv(argv: string[], io: VaultIO = defaultIO()): Promise<
     }
 
     case "aws": {
+      const reason = checkedReason(takeOption(args, "--reason"), io.env, false);
       const profile = args[0];
       if (!profile) throw new VaultCliError("kv aws <profile>");
-      const r = await client.decide("aws", { mode: "aws", names: [profile], command: parentCommand(), ...ctx });
+      const r = await client.decide("aws", { mode: "aws", names: [profile], command: parentCommand(), reason, ...ctx });
       if (r.status !== "granted" || !r.credentials) throw deniedError(r);
       out(JSON.stringify(r.credentials) + "\n");
       return 0;
@@ -494,6 +556,8 @@ export async function runKv(argv: string[], io: VaultIO = defaultIO()): Promise<
       const tier = takeOption(args, "--tier");
       const rules = takeOption(args, "--rules");
       const tags = takeAll(args, "--tag");
+      const label = takeOption(args, "--label");
+      const reason = checkedReason(takeOption(args, "--reason"), io.env, false);
       const name = args[0];
       if (!name) throw new VaultCliError("kv add NAME [--tier t] [--rules '...']  (value on stdin)");
       const value = await readSecretFromStdin(name);
@@ -503,6 +567,8 @@ export async function runKv(argv: string[], io: VaultIO = defaultIO()): Promise<
         value,
         tier,
         rules,
+        label,
+        reason,
         tags: tags.length ? tags : undefined,
       });
       const r = body.status === "pending" ? await waitPending(client, body) : body;
@@ -512,10 +578,12 @@ export async function runKv(argv: string[], io: VaultIO = defaultIO()): Promise<
     }
 
     case "tier":
-    case "rules": {
+    case "rules":
+    case "label": {
+      const reason = checkedReason(takeOption(args, "--reason"), io.env, false);
       const [name, value] = args;
-      if (!name || value === undefined) throw new VaultCliError(`kv ${cmd} NAME <value>`);
-      const patch = cmd === "tier" ? { tier: value } : { rules: value };
+      if (!name || value === undefined) throw new VaultCliError(`kv ${cmd} NAME <value> [--reason "..."]`);
+      const patch = { [cmd]: value, reason };
       const { body } = await client.call<VaultResponse>("PATCH", `secrets/${encodeURIComponent(name)}`, patch);
       const r = body.status === "pending" ? await waitPending(client, body) : body;
       if (r.status !== "granted") throw deniedError(r);
