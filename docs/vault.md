@@ -154,9 +154,10 @@ AWS on the Mac: `~/.aws/credentials` holds only the `[default]` canary; every pr
 Plaintext that stays, and why:
 
 - Production services on the box read their own env files at runtime: `/opt/rchaves-platform/.env`, `/opt/save-to-memory/.env`, `/opt/inbox_narrator/.env`, `/root/.openclaw/setup/hindsight-db/.env`, `gateway.auth.token` in `/root/.openclaw/openclaw.json`.
+- Commented-out env lines and `.env.worktree-backup` copies are gone; their values are in the vault (canary tripwires such as `CANARY_LANGWATCH_API_KEY` stay as they are).
 - LangWatch dev secrets its tooling writes into `.env` when missing (`LW_GATEWAY_INTERNAL_SECRET`, `LW_GATEWAY_JWT_SECRET`, `LW_VIRTUAL_KEY_PEPPER`, `LANGY_INTERNAL_SECRET`, `LWQL_*_PASSWORD`): local random values, kept in the file.
 - Local DSNs with throwaway passwords, URLs, paths and ids.
-- Tool credential stores read by the tools themselves: `~/.ssh`, `~/.config/gh`, `~/.git-credentials`, `~/.config/gcloud`, Claude and Codex logins, local CA keys (`~/.portless`, `~/.minikube`, `~/.docker`).
+- Tool credential stores read by the tools themselves: `~/.ssh`, `~/.config/gh`, `~/.git-credentials`, `~/.config/gcloud`, `~/.config/stripe`, Claude and Codex logins, local CA keys (`~/.portless`, `~/.minikube`, `~/.docker`).
 - Keys inside code, fixtures, notebooks, logs and transcripts (`~/.claude/projects`, `file-history`, `paste-cache`): content, not config; scrubbing them is a separate step.
 
 ## Pasted secrets
