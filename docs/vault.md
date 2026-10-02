@@ -122,7 +122,7 @@ region = eu-central-1
 
 ## Bash hook
 
-Kanban Code installs a `PreToolUse` hook on Bash (`~/.kanban-code/vault-hook.sh`) for Claude Code (`~/.claude/settings.json`) and for Codex (`~/.codex/hooks.json`, run as `vault-hook.sh --codex`). Codex runs a user hook only once its definition is trusted, so the installer also writes `[hooks.state."<hooks.json>:pre_tool_use:<n>:0"] trusted_hash` into `~/.codex/config.toml` with the hash Codex computes; Codex answers carry `permissionDecision: "allow"`, which Codex needs next to `updatedInput` and which does not skip its approvals or sandbox. Under Codex's `workspace-write` sandbox kv cannot reach the master on loopback, so commands run without the vault env; card sessions run Codex without the sandbox. rush sessions run `claude -p`, which loads the same Claude Code hook. In a project with a `.env.vault` (searched from the session's directory up to the repository root), `kv hook` rewrites the command to:
+Kanban Code installs a `PreToolUse` hook on Bash (`~/.kanban-code/vault-hook.sh`) for Claude Code (`~/.claude/settings.json`) and for Codex (`~/.codex/hooks.json`, run as `vault-hook.sh --codex`). Codex runs a user hook only once its definition is trusted, so the installer also writes `[hooks.state."<hooks.json>:pre_tool_use:<n>:0"] trusted_hash` into `~/.codex/config.toml` with the hash Codex computes; Codex answers carry `permissionDecision: "allow"`, which Codex needs next to `updatedInput` and which does not skip its approvals or sandbox. Under Codex's `workspace-write` sandbox kv cannot reach the master on loopback, so commands run without the vault env; card sessions run Codex without the sandbox. rush sessions run `claude -p`, which loads the same Claude Code hook. In a project with a `.env.vault` (searched from the session's directory up to the repository root; in a linked git worktree without its own, the same folder of the main checkout), `kv hook` rewrites the command to:
 
 ```
 __kv_env="$(kv env /path/.env.vault --export --command-b64 <command>)" || exit $?
@@ -131,6 +131,33 @@ eval "$__kv_env"; unset __kv_env
 ```
 
 so the shell loads the secrets first and `cd` and shell syntax behave as written. In this mode secrets that need a human are skipped (the command runs without them and kv says how to ask), Jev's allow is reused for 10 minutes per card and secret, and these releases do not count toward the rate limit. If the master cannot be reached, the command runs without the vault env.
+
+## Where secrets live
+
+Every `.env`, `.env.local` and `.env.*` under `~/Projects` on the Mac and the box holds plain config only. Its secrets are references in a gitignored file next to it:
+
+| Plaintext file | References |
+|------|---------|
+| `.env`, `.env.local`, `.env.development`, `.env.portless` | `.env.vault` (one per folder; the later file wins on a shared key) |
+| any other `.env.X` | `.env.X.vault` |
+| `.env` that is a production file (`save-to-memory`, `pinacle`) | `.env.prod.vault`; `.env.vault` there holds the dev secrets only |
+
+Consumers:
+
+- Claude Code and Codex Bash commands: the hook above.
+- Interactive zsh outside Claude Code: `~/.zshrc` wraps `pnpm npm npx yarn bun make uv uvx node python python3 tsx deno` the same way (hook mode, in a subshell).
+- Deploys that copy a `.env` to the host (`rchaves-platform`, `save-to-memory` `scripts/deploy.sh`): the script appends the secrets with `kv env <file> -- printenv` into a temporary copy and sends that.
+- Anything else: `kv env .env.vault -- <cmd>`, or `kv env .env.X.vault -- <cmd>` for a named env file.
+
+AWS on the Mac: `~/.aws/credentials` holds only the `[default]` canary; every profile in `~/.aws/config` (`lw-dev`, `lw-staging`, `lw-artifacts`, `lw-prod`, `lw-prod-read`, `lw-root-tf`, `sf-dev`, `sf-prod`, `sf-prod-read`) uses `credential_process = kv aws <profile>`, as on the box.
+
+Plaintext that stays, and why:
+
+- Production services on the box read their own env files at runtime: `/opt/rchaves-platform/.env`, `/opt/save-to-memory/.env`, `/opt/inbox_narrator/.env`, `/root/.openclaw/setup/hindsight-db/.env`, `gateway.auth.token` in `/root/.openclaw/openclaw.json`.
+- LangWatch dev secrets its tooling writes into `.env` when missing (`LW_GATEWAY_INTERNAL_SECRET`, `LW_GATEWAY_JWT_SECRET`, `LW_VIRTUAL_KEY_PEPPER`, `LANGY_INTERNAL_SECRET`, `LWQL_*_PASSWORD`): local random values, kept in the file.
+- Local DSNs with throwaway passwords, URLs, paths and ids.
+- Tool credential stores read by the tools themselves: `~/.ssh`, `~/.config/gh`, `~/.git-credentials`, `~/.config/gcloud`, Claude and Codex logins, local CA keys (`~/.portless`, `~/.minikube`, `~/.docker`).
+- Keys inside code, fixtures, notebooks, logs and transcripts (`~/.claude/projects`, `file-history`, `paste-cache`): content, not config; scrubbing them is a separate step.
 
 ## Pasted secrets
 
