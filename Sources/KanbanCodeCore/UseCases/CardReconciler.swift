@@ -394,9 +394,9 @@ public enum CardReconciler {
                 // conversation it runs, never a tool in a folder: it goes to
                 // that card only, and only when the card has no session (a
                 // resume in flight names it in its own time).
-                if let agtopId = AgtopSessionName.agtopId(fromName: sess.name) {
+                if let rushId = RushSessionName.rushId(fromName: sess.name) {
                     guard let (cardId, link) = linksById.first(where: {
-                        $0.value.sessionLink.map { AgtopSessionName.agtopId(sessionId: $0.sessionId) } == agtopId
+                        $0.value.sessionLink.map { RushSessionName.rushId(sessionId: $0.sessionId) } == rushId
                     }), link.tmuxLink == nil else { continue }
                     var linked = link
                     linked.tmuxLink = TmuxLink(sessionName: sess.name)
@@ -565,11 +565,11 @@ public enum CardReconciler {
         }
 
         // A headless session (`claude -p` from a script) is not the one a
-        // card's terminal started. Only a card hosted on agtop, which runs
+        // card's terminal started. Only a card hosted on rush, which runs
         // Claude headless itself, may take one by the fuzzy rules below.
         let acceptsSession: (Link) -> Bool = { link in
             !session.isHeadless
-                || link.tmuxLink.map { AgtopSessionName.isAgtop($0.sessionName) } == true
+                || link.tmuxLink.map { RushSessionName.isRush($0.sessionName) } == true
         }
 
         // 2. Match by worktree branch (session has gitBranch matching a card's worktreeLink)

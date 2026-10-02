@@ -74,7 +74,7 @@ private final class TestMaster {
             store: store,
             settingsStore: SettingsStore(basePath: home),
             launcher: LaunchSession(tmux: tmux),
-            tmux: RoutingTmuxAdapter(agtop: AgtopCliAdapter(executable: "/nonexistent/agtop")),
+            tmux: RoutingTmuxAdapter(rush: RushCliAdapter(executable: "/nonexistent/rush")),
             registry: CodingAssistantRegistry(),
             platform: platform
         )
@@ -289,13 +289,13 @@ struct MasterHandoverTests {
 
         box.store.dispatch(.createManualTask(Link(
             id: "card_live", name: "Running on the box", projectPath: "/tmp/acme", column: .waiting,
-            sessionLink: SessionLink(sessionId: "sid-live"), tmuxLink: TmuxLink(sessionName: "agtop-0badcafe"))))
+            sessionLink: SessionLink(sessionId: "sid-live"), tmuxLink: TmuxLink(sessionName: "rush-0badcafe"))))
         await mac.peerSync.pullAll()
         mac.store.dispatch(.archiveCard(cardId: "card_live"))
         await box.peerSync.pullAll()
         #expect(box.store.state.links["card_live"]?.manuallyArchived == true)
-        for _ in 0..<40 where !box.tmux.killed.contains("agtop-0badcafe") { try await Task.sleep(for: .milliseconds(50)) }
-        #expect(box.tmux.killed.contains("agtop-0badcafe"))
+        for _ in 0..<40 where !box.tmux.killed.contains("rush-0badcafe") { try await Task.sleep(for: .milliseconds(50)) }
+        #expect(box.tmux.killed.contains("rush-0badcafe"))
     }
 
     @Test("reconcile leaves a card released to this master alone until it is adopted")

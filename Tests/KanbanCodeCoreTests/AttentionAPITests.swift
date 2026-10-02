@@ -129,9 +129,9 @@ struct AttentionEngineTests {
         #expect(MasterEngine.isQuestionOrPlan("Claude needs your permission to use AskUserQuestion"))
         #expect(!MasterEngine.isQuestionOrPlan("Claude needs your permission to use Bash"))
         let json = #"{"id":"084cff00","sessionId":"s","cwd":"/p","state":"blocked","alive":true,"queue":[],"needs":"Bash ls"}"#
-        let info = try JSONDecoder().decode(AgtopSessionInfo.self, from: Data(json.utf8))
+        let info = try JSONDecoder().decode(RushSessionInfo.self, from: Data(json.utf8))
         #expect(info.blockedOn == "Bash ls")
-        let idle = try JSONDecoder().decode(AgtopSessionInfo.self, from: Data(json.replacingOccurrences(of: "blocked", with: "idle").utf8))
+        let idle = try JSONDecoder().decode(RushSessionInfo.self, from: Data(json.replacingOccurrences(of: "blocked", with: "idle").utf8))
         #expect(idle.blockedOn == nil)
     }
 

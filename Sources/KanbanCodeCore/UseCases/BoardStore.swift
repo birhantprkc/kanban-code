@@ -39,7 +39,7 @@ public enum DialogState: Equatable, Sendable {
 public struct PeerCardState: Sendable, Equatable {
     public var isLive: Bool
     public var isBusy: Bool
-    /// Its queue, oldest first; agtop's queued messages have `agtop-` ids.
+    /// Its queue, oldest first; rush's queued messages have `agtop-` ids (see `RemoteBoardMapper.rushPromptId`).
     public var queue: [QueuedPrompt]
     /// A start in flight or failed there, or a move away from there.
     public var status: RemoteSessionStatus?
@@ -108,11 +108,11 @@ public final class AppState: @unchecked Sendable {
     /// `/model` switch shows up.
     public var sessionModels: [String: String] = [:] { didSet { cardInputsVersion &+= 1 } }
     public var tmuxSessions: Set<String> = []                  // live tmux names
-    /// Messages queued in each live agtop host, by session name; hosts with
+    /// Messages queued in each live rush host, by session name; hosts with
     /// an empty queue are left out.
-    public var agtopQueues: [String: [String]] = [:]
-    /// What each blocked agtop host waits on, by session name.
-    public var agtopNeeds: [String: String] = [:]
+    public var rushQueues: [String: [String]] = [:]
+    /// What each blocked rush host waits on, by session name.
+    public var rushNeeds: [String: String] = [:]
     /// Single source of truth for which drawer is open. Only ONE thing can be
     /// selected at a time; the type system enforces that invariant. The legacy
     /// `selectedCardId` / `selectedChannelName` / `selectedDMParticipant`
@@ -231,7 +231,7 @@ public final class AppState: @unchecked Sendable {
     /// session id; the cards read their chat from here.
     public var peerTranscriptPaths: [String: String] = [:] { didSet { cardInputsVersion &+= 1 } }
     /// Cards other masters own, as their owners report them: live, in a
-    /// turn, and what waits in their queue (agtop's included).
+    /// turn, and what waits in their queue (rush's included).
     public var peerCards: [String: PeerCardState] = [:] { didSet { cardInputsVersion &+= 1 } }
     /// Deleted cards, by id, kept for `LinkSync.tombstoneLifetime` so the
     /// deletion reaches every peer and wins over older edits.
@@ -697,12 +697,12 @@ public enum Action: Sendable {
     /// Fast tmux liveness pass: clears links whose tmux sessions no longer
     /// exist (e.g. after a reboot) without waiting for a full reconcile.
     case tmuxLivenessScanned(live: Set<String>)
-    /// Every live agtop host's queue, from the same scan.
-    case agtopQueuesScanned([String: [String]])
-    /// What every blocked agtop host waits on, from the same scan.
-    case agtopNeedsScanned([String: String])
-    /// One agtop host's queue, read after acting on it.
-    case agtopQueueRead(sessionName: String, queue: [String])
+    /// Every live rush host's queue, from the same scan.
+    case rushQueuesScanned([String: [String]])
+    /// What every blocked rush host waits on, from the same scan.
+    case rushNeedsScanned([String: String])
+    /// One rush host's queue, read after acting on it.
+    case rushQueueRead(sessionName: String, queue: [String])
     case gitHubIssuesUpdated(links: [Link])
     case activityChanged([String: ActivityState]) // sessionId → state
 
@@ -2365,18 +2365,18 @@ public enum Reducer {
 
         // MARK: Background Reconciliation
 
-        case .agtopQueuesScanned(let queues):
+        case .rushQueuesScanned(let queues):
             let nonEmpty = queues.filter { !$0.value.isEmpty }
-            if state.agtopQueues != nonEmpty { state.agtopQueues = nonEmpty }
+            if state.rushQueues != nonEmpty { state.rushQueues = nonEmpty }
             return []
 
-        case .agtopNeedsScanned(let needs):
-            if state.agtopNeeds != needs { state.agtopNeeds = needs }
+        case .rushNeedsScanned(let needs):
+            if state.rushNeeds != needs { state.rushNeeds = needs }
             return []
 
-        case .agtopQueueRead(let sessionName, let queue):
-            if state.agtopQueues[sessionName] ?? [] != queue {
-                state.agtopQueues[sessionName] = queue.isEmpty ? nil : queue
+        case .rushQueueRead(let sessionName, let queue):
+            if state.rushQueues[sessionName] ?? [] != queue {
+                state.rushQueues[sessionName] = queue.isEmpty ? nil : queue
             }
             return []
 
@@ -3035,20 +3035,20 @@ public final class BoardStore: @unchecked Sendable {
         self.sessionStore = sessionStore
     }
 
-    /// The queues of the agtop hosts in a session scan, by session name.
-    nonisolated static func agtopQueues(in sessions: [TmuxSession]) -> [String: [String]] {
+    /// The queues of the rush hosts in a session scan, by session name.
+    nonisolated static func rushQueues(in sessions: [TmuxSession]) -> [String: [String]] {
         var queues: [String: [String]] = [:]
         for session in sessions {
-            if let queue = session.agtopQueue, !queue.isEmpty { queues[session.name] = queue }
+            if let queue = session.rushQueue, !queue.isEmpty { queues[session.name] = queue }
         }
         return queues
     }
 
-    /// What the blocked agtop hosts in a session scan wait on, by session name.
-    nonisolated static func agtopNeeds(in sessions: [TmuxSession]) -> [String: String] {
+    /// What the blocked rush hosts in a session scan wait on, by session name.
+    nonisolated static func rushNeeds(in sessions: [TmuxSession]) -> [String: String] {
         var needs: [String: String] = [:]
         for session in sessions {
-            if let need = session.agtopNeeds, !need.isEmpty { needs[session.name] = need }
+            if let need = session.rushNeeds, !need.isEmpty { needs[session.name] = need }
         }
         return needs
     }
@@ -3292,8 +3292,8 @@ public final class BoardStore: @unchecked Sendable {
             // attach fails in the pane until the first full pass lands.
             if let tmuxAdapter, let live = try? await tmuxAdapter.listSessions() {
                 dispatch(.tmuxLivenessScanned(live: Set(live.map(\.name))))
-                dispatch(.agtopQueuesScanned(Self.agtopQueues(in: live)))
-                dispatch(.agtopNeedsScanned(Self.agtopNeeds(in: live)))
+                dispatch(.rushQueuesScanned(Self.rushQueues(in: live)))
+                dispatch(.rushNeedsScanned(Self.rushNeeds(in: live)))
             }
 
             let t1 = ContinuousClock.now
@@ -3471,8 +3471,8 @@ public final class BoardStore: @unchecked Sendable {
             let tmuxSessions = (try? await tmuxAdapter?.listSessions()) ?? []
             KanbanCodeLog.info("reconcile", "tmux: \(t2.duration(to: .now)) (\(tmuxSessions.count) sessions)")
             if tmuxAdapter != nil {
-                dispatch(.agtopQueuesScanned(Self.agtopQueues(in: tmuxSessions)))
-                dispatch(.agtopNeedsScanned(Self.agtopNeeds(in: tmuxSessions)))
+                dispatch(.rushQueuesScanned(Self.rushQueues(in: tmuxSessions)))
+                dispatch(.rushNeedsScanned(Self.rushNeeds(in: tmuxSessions)))
                 let currentNames = Set(tmuxSessions.map(\.name))
                 let home = (NSHomeDirectory() as NSString).appendingPathComponent(".kanban-code")
                 // The disk snapshot covers the first pass of a fresh app run:

@@ -207,8 +207,8 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         }
         if let bridge = machines[machineName]?.bridge {
             for name in sessionNames {
-                if let id = AgtopSessionName.agtopId(fromName: name) {
-                    try? await registry.agtop(for: machineName)?.stop(id: id)
+                if let id = RushSessionName.rushId(fromName: name) {
+                    try? await registry.rush(for: machineName)?.stop(id: id)
                 } else {
                     _ = try? await bridge.exec(["tmux", "kill-session", "-t", name], stdin: nil, cwd: nil, timeout: 20)
                 }
@@ -607,17 +607,17 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
             ? found?.stdout.split(separator: "\n").first.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
             : ""
         guard !path.isEmpty else {
-            registry.setAgtop(nil, on: machineName)
+            registry.setRush(nil, on: machineName)
             KanbanCodeLog.info(Self.subsystem, "\(machineName): no rush, cards run on tmux there")
             return
         }
-        let agtop = AgtopCliAdapter(remote: bridge, executable: path, scratchDirectory: "\(remoteHome)/.kanban-code/tmp/agtop")
-        registry.setAgtop(agtop, on: machineName)
-        let remoteVersion = await agtop.version()
-        let localVersion = await AgtopCliAdapter().version()
+        let rush = RushCliAdapter(remote: bridge, executable: path, scratchDirectory: "\(remoteHome)/.kanban-code/tmp/rush")
+        registry.setRush(rush, on: machineName)
+        let remoteVersion = await rush.version()
+        let localVersion = await RushCliAdapter().version()
         KanbanCodeLog.info(Self.subsystem, "\(machineName): rush at \(path) (\(remoteVersion ?? "?"), here \(localVersion ?? "none"))")
         if let remoteVersion, let localVersion,
-           AgtopCliAdapter.build(ofVersion: remoteVersion) != AgtopCliAdapter.build(ofVersion: localVersion) {
+           RushCliAdapter.build(ofVersion: remoteVersion) != RushCliAdapter.build(ofVersion: localVersion) {
             KanbanCodeLog.warn(Self.subsystem, "\(machineName) runs \(remoteVersion), this machine \(localVersion): Scripts/rush-to-machine.sh <ssh target> updates it")
         }
     }
@@ -721,8 +721,8 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     public func hasSession(machineName: String, sessionName: String) async -> Bool {
         guard let bridge = machines[machineName]?.bridge else { return false }
         let alive: Bool
-        if let id = AgtopSessionName.agtopId(fromName: sessionName) {
-            alive = (try? await registry.agtop(for: machineName)?.info(id: id))??.alive == true
+        if let id = RushSessionName.rushId(fromName: sessionName) {
+            alive = (try? await registry.rush(for: machineName)?.info(id: id))??.alive == true
         } else {
             let result = try? await bridge.exec(["tmux", "has-session", "-t", sessionName], stdin: nil, cwd: nil, timeout: 20)
             alive = result?.succeeded == true

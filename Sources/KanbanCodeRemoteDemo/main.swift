@@ -5,10 +5,10 @@ import Synchronization
 
 // Development server for the remote control clients (iOS app, `kanban remote`):
 // the real RemoteControlServer over a fake board that reacts to tasks and
-// prompts, with real shells (or agtop) behind the terminals.
+// prompts, with real shells (or rush) behind the terminals.
 //
 //   swift run kanban-code-remote-demo --pair iPhone
-//   swift run kanban-code-remote-demo --port 7790 --pair openclaw --scope agent --agtop <agtop id>
+//   swift run kanban-code-remote-demo --port 7790 --pair openclaw --scope agent --rush <rush id>
 //
 // Two masters, as a Mac and an always-on box:
 //
@@ -21,7 +21,7 @@ struct DemoOptions {
     var devicesPath = FileManager.default.currentDirectoryPath + "/.claude/tmp/remote-demo/devices.json"
     var pairName: String?
     var scope: RemoteScope = .full
-    var agtopId: String?
+    var rushId: String?
     var tmuxSocket: String?
     var loopbackOnly = false
     /// This master's identity, `id:name`. Without it the board names no machine, as an older server.
@@ -52,7 +52,7 @@ struct DemoOptions {
             case "--devices": o.devicesPath = value()
             case "--pair": o.pairName = value()
             case "--scope": o.scope = RemoteScope(rawValue: value()) ?? .full
-            case "--agtop": o.agtopId = value()
+            case "--rush": o.rushId = value()
             case "--tmux-socket": o.tmuxSocket = value()
             case "--loopback-only": o.loopbackOnly = true
             case "--machine": o.machine = machine(value())
@@ -71,13 +71,13 @@ struct DemoOptions {
         if let error { FileHandle.standardError.write(Data("error: \(error)\n\n".utf8)) }
         print("""
         usage: kanban-code-remote-demo [--port 7790] [--devices <path>] [--pair <name> [--scope full|agent]]
-                                       [--agtop <agtop session id>] [--tmux-socket <name>] [--loopback-only]
+                                       [--rush <rush session id>] [--tmux-socket <name>] [--loopback-only]
                                        [--machine <id:name>] [--cards default|box] [--foreign <id:name>]
                                        [--exit-when <file>]
 
           --pair      adds a device and prints its token and kanbancode://pair link
           --devices   devices file (default .claude/tmp/remote-demo/devices.json)
-          --agtop     makes the "rush" demo card open `rush open <id>`
+          --rush      makes the "rush" demo card open `rush open <id>`
           --tmux-socket  tmux cards attach to a session on this tmux server (tmux -L <name>,
                       no config file), created on first open, and scroll frames drive its copy-mode
           --machine   this master's identity; the board and its cards name it
@@ -93,7 +93,7 @@ final class DemoHost: RemoteControlHost {
     struct CardState {
         var card: RemoteCard
         var messages: [RemoteMessage]
-        var agtopId: String?
+        var rushId: String?
     }
 
     struct State {
@@ -113,7 +113,7 @@ final class DemoHost: RemoteControlHost {
     /// Prefix of the ids of this master's cards.
     let idPrefix: String
 
-    init(agtopId: String?, tmuxSocket: String? = nil, machine: RemoteMachine? = nil, cards flavor: String = "default",
+    init(rushId: String?, tmuxSocket: String? = nil, machine: RemoteMachine? = nil, cards flavor: String = "default",
          foreign: RemoteMachine? = nil) {
         self.tmuxSocket = tmuxSocket
         self.machine = machine
@@ -160,8 +160,8 @@ final class DemoHost: RemoteControlHost {
             .init(card: card("card_busy", "Fix the flaky checkout test", .inProgress, project: 0, runtime: .tmux, live: true, busy: true,
                              prs: (0..<7).map { RemotePR(number: 8320 + $0, status: $0 == 0 ? "open" : "merged") }, queued: 1, minutesAgo: 1),
                   messages: Self.conversation("Fix the flaky checkout test")),
-            .init(card: card("card_agtop", "Refactor the billing webhooks", .inProgress, project: 1, runtime: .agtop, live: true, minutesAgo: 4),
-                  messages: Self.conversation("Refactor the billing webhooks"), agtopId: agtopId),
+            .init(card: card("card_rush", "Refactor the billing webhooks", .inProgress, project: 1, runtime: .rush, live: true, minutesAgo: 4),
+                  messages: Self.conversation("Refactor the billing webhooks"), rushId: rushId),
             .init(card: card("card_wait", "Add dark mode to settings", .waiting, project: 0, runtime: .tmux, live: true, minutesAgo: 12),
                   messages: Self.conversation("Add dark mode to settings")),
             .init(card: card("card_codex", "Speed up the search index", .inReview, project: 1, runtime: .tmux, live: false,
@@ -457,8 +457,8 @@ final class DemoHost: RemoteControlHost {
     func terminalCommand(cardId: String, sessionName: String) async throws -> [String] {
         let c = try cardState(cardId)
         guard c.card.isLive else { throw RemoteHostError.conflict("card \(cardId) has no live session") }
-        if c.card.runtime == .agtop, let id = c.agtopId {
-            return AgtopCliAdapter.openCommand(id: id)
+        if c.card.runtime == .rush, let id = c.rushId {
+            return RushCliAdapter.openCommand(id: id)
         }
         if let socket = tmuxSocket {
             return ["tmux", "-L", socket, "-f", "/dev/null", "new-session", "-A", "-s", sessionName, "/bin/zsh", "-l"]
@@ -479,7 +479,7 @@ final class DemoHost: RemoteControlHost {
 
 let options = DemoOptions.parse(Array(CommandLine.arguments.dropFirst()))
 let devices = RemoteDeviceStore(path: options.devicesPath)
-let host = DemoHost(agtopId: options.agtopId, tmuxSocket: options.tmuxSocket, machine: options.machine,
+let host = DemoHost(rushId: options.rushId, tmuxSocket: options.tmuxSocket, machine: options.machine,
                     cards: options.cards, foreign: options.foreign)
 let loopbackOnly = options.loopbackOnly
 let bindAddresses: @Sendable () -> [String] = {

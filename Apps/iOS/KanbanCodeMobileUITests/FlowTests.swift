@@ -49,7 +49,7 @@ final class FlowTests: KanbanUITestCase {
         sleep(1)
         shot("01c-board-filtered")
         XCTAssertFalse(app.buttons["card-card_wait"].exists)
-        XCTAssertTrue(app.buttons["card-card_agtop"].exists)
+        XCTAssertTrue(app.buttons["card-card_rush"].exists)
         filter.tap()
         app.buttons["All projects"].firstMatch.tap()
         XCTAssertTrue(app.buttons["card-card_wait"].waitForExistence(timeout: 5))

@@ -78,7 +78,8 @@ export interface RemoteCard {
   branch?: string | null;
   worktreePath?: string | null;
   assistant: string;
-  runtime: "tmux" | "agtop" | "machine" | "none";
+  /** "agtop" is a rush host, under the name rush had before it was renamed. */
+  runtime: "tmux" | "agtop" | "rush" | "machine" | "none";
   isLive: boolean;
   isBusy: boolean;
   sessionId?: string | null;
@@ -534,7 +535,7 @@ export function formatCardDetail(card: RemoteCard): string {
     `  column:     ${COLUMN_NAMES[card.column] ?? card.column}`,
     `  state:      ${cardState(card)}${card.queuedPromptCount ? ` (${card.queuedPromptCount} queued prompts)` : ""}`,
     `  project:    ${card.projectName ?? "-"}${card.projectPath ? ` (${card.projectPath})` : ""}`,
-    `  assistant:  ${card.assistant} on ${card.runtime}`,
+    `  assistant:  ${card.assistant} on ${card.runtime === "agtop" ? "rush" : card.runtime}`,
   ];
   if (card.machineName) lines.push(`  machine:    ${card.machineName}`);
   if (card.branch) lines.push(`  branch:     ${card.branch}`);

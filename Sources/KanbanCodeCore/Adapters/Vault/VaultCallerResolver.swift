@@ -15,7 +15,7 @@ public struct VaultProcess: Sendable, Equatable {
 
 /// Finds which card session a local process runs in, from the process
 /// table and the pids the card sessions own: tmux pane shells and the
-/// assistants agtop hosts. A process whose ancestry reaches none of them
+/// assistants rush hosts. A process whose ancestry reaches none of them
 /// is outside every card, whatever it claims.
 public enum VaultCallerResolver {
     /// The chain from `pid` up to init (or a cycle), the caller first.
@@ -40,14 +40,16 @@ public enum VaultCallerResolver {
         return nil
     }
 
-    /// Pid -> card for the agtop/rush hosts of cards. The card comes from
-    /// Kanban's links (the card whose terminal is `agtop-<id>`), whoever
+    /// Pid -> card for the rush hosts of cards. The card comes from
+    /// Kanban's links (the card whose terminal is `rush-<id>`, or
+    /// `agtop-<id>` from before the rename), whoever
     /// started the host; the host's own `--meta kanban_card`, which any
     /// process can set, is never read.
-    public static func agtopCards(hosts: [AgtopSessionInfo], sessions: [String: String]) -> [Int: String] {
+    public static func rushCards(hosts: [RushSessionInfo], sessions: [String: String]) -> [Int: String] {
         var out: [Int: String] = [:]
         for host in hosts where host.alive {
-            guard let card = sessions[AgtopSessionName.name(agtopId: host.id)] else { continue }
+            guard let card = RushSessionName.names(rushId: host.id).lazy.compactMap({ sessions[$0] }).first
+            else { continue }
             if let pid = host.claudePid { out[pid] = card }
             if let pid = host.hostPid { out[pid] = card }
         }
@@ -240,15 +242,15 @@ public struct OpenClawLayout: Sendable, Equatable {
 }
 
 /// Resolves callers against the live board: the cards' tmux sessions and
-/// the agtop hosts of this machine.
+/// the rush hosts of this machine.
 public struct LiveVaultCallerResolver: Sendable {
     /// Session name -> card id, for every local card terminal.
     public let cardSessions: @Sendable () async -> [String: String]
-    public let agtop: AgtopCliAdapter?
+    public let rush: RushCliAdapter?
 
-    public init(agtop: AgtopCliAdapter? = AgtopCliAdapter(), cardSessions: @escaping @Sendable () async -> [String: String]) {
+    public init(rush: RushCliAdapter? = RushCliAdapter(), cardSessions: @escaping @Sendable () async -> [String: String]) {
         self.cardSessions = cardSessions
-        self.agtop = agtop
+        self.rush = rush
     }
 
     /// Pid -> card for every process a card session owns.
@@ -259,8 +261,8 @@ public struct LiveVaultCallerResolver: Sendable {
             if let card = sessions[pane.session] { panes[pane.pid] = card }
         }
         var out = panes
-        if let agtop, agtop.isAvailable, let hosts = try? await agtop.list() {
-            out.merge(VaultCallerResolver.agtopCards(hosts: hosts, sessions: sessions)) { pane, _ in pane }
+        if let rush, rush.isAvailable, let hosts = try? await rush.list() {
+            out.merge(VaultCallerResolver.rushCards(hosts: hosts, sessions: sessions)) { pane, _ in pane }
         }
         return out
     }

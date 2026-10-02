@@ -1615,8 +1615,8 @@ struct WorktreeRootTests {
         let snapshot = CardReconciler.DiscoverySnapshot(
             sessions: [],
             tmuxSessions: [
-                TmuxSession(name: "agtop-9262728b", path: "/project"),
-                TmuxSession(name: "agtop-abcdef01", path: "/somewhere"),
+                TmuxSession(name: "rush-9262728b", path: "/project"),
+                TmuxSession(name: "rush-abcdef01", path: "/somewhere"),
             ],
             didScanTmux: true
         )
@@ -1625,6 +1625,6 @@ struct WorktreeRootTests {
         #expect(result["card_resuming"]?.tmuxLink?.sessionName == "claude-9262728b")
         #expect(result["card_resuming"]?.tmuxLink?.extraSessions == nil)
         #expect(result["card_neighbour"]?.tmuxLink == nil)
-        #expect(result["card_orphan"]?.tmuxLink?.sessionName == "agtop-abcdef01")
+        #expect(result["card_orphan"]?.tmuxLink?.sessionName == "rush-abcdef01")
     }
 }

@@ -236,11 +236,11 @@ public actor EffectHandler {
                     KanbanCodeLog.warn("effect", "sendPromptWithImagesToTmux: the machine of \(sessionName) did not come back")
                     return
                 }
-                if let agtopId = AgtopSessionName.agtopId(fromName: sessionName),
-                   let agtop = try (tmux as? RoutingTmuxAdapter)?.agtop(forSession: sessionName) {
-                    // agtop takes the images as files and puts each right
+                if let rushId = RushSessionName.rushId(fromName: sessionName),
+                   let rush = try (tmux as? RoutingTmuxAdapter)?.rush(forSession: sessionName) {
+                    // rush takes the images as files and puts each right
                     // after its [Image #N] marker in the text.
-                    try await agtop.send(id: agtopId, text: promptBody, imagePaths: imagePaths)
+                    try await rush.send(id: rushId, text: promptBody, imagePaths: imagePaths)
                     return
                 }
                 let images = assistant.supportsImageUpload

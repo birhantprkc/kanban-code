@@ -31,12 +31,12 @@ public protocol RemoteControlHost: AnyObject, Sendable {
     func resume(cardId: String) async throws -> RemoteCard
 
     /// The command a remote terminal runs for one of the card's terminals,
-    /// as argv: `agtop open <id> --solo` for agtop, `tmux attach -t <name>`
+    /// as argv: `rush open <id>` for rush (`agtop open <id> --solo` for agtop), `tmux attach -t <name>`
     /// for tmux.
     func terminalCommand(cardId: String, sessionName: String) async throws -> [String]
 
     /// Scrolls a tmux terminal's history for a remote viewer (up when
-    /// `lines` is positive). agtop terminals scroll through mouse reporting
+    /// `lines` is positive). rush terminals scroll through mouse reporting
     /// instead and ignore this.
     func scrollTerminal(sessionName: String, lines: Int) async
 

@@ -263,7 +263,7 @@ public struct VaultAuditEntry: Codable, Sendable, Equatable {
 /// The process asking for a secret, as the master verified it.
 public struct VaultCaller: Codable, Sendable, Equatable {
     /// The card whose session the process runs in, when the master found
-    /// it in the process ancestry (a tmux pane or an agtop-hosted
+    /// it in the process ancestry (a tmux pane or a rush-hosted
     /// assistant of that card).
     public var cardId: String?
     /// The card the client claimed (KANBAN_CARD_ID), shown to the human

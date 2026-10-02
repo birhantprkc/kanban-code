@@ -144,7 +144,7 @@ public struct Settings: Codable, Sendable {
         subagents = (try? container.decodeIfPresent(SubagentSettings.self, forKey: .subagents)) ?? SubagentSettings()
         assistantCommands = (try? container.decodeIfPresent([String: AssistantCommandTemplate].self, forKey: .assistantCommands)) ?? [:]
         if let raw = try? container.decodeIfPresent([String: String].self, forKey: .assistantRuntimes) {
-            assistantRuntimes = raw.compactMapValues(SessionRuntime.init(rawValue:))
+            assistantRuntimes = raw.compactMapValues { SessionRuntime(stored: $0) }
         } else {
             assistantRuntimes = [:]
         }
@@ -187,7 +187,7 @@ public struct Settings: Codable, Sendable {
     /// not set one. A blank template and the bare placeholder both mean "run
     /// the command as it is built", so both read as nil.
     /// What runs the main session of a new or resumed card. Only Claude can
-    /// run in agtop.
+    /// run in rush.
     public func runtime(for assistant: CodingAssistant) -> SessionRuntime {
         guard assistant == .claude else { return .tmux }
         return assistantRuntimes[assistant.rawValue] ?? .tmux

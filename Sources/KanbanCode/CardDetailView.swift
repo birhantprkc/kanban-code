@@ -589,7 +589,7 @@ struct CardDetailView: View {
     /// The rush terminal is on screen and draws the card's queue itself.
     private var rushShowsQueue: Bool {
         guard !preferChatView, isClaudeTabSelected, let session = claudeTmuxSession else { return false }
-        return AgtopSessionName.isAgtop(session)
+        return RushSessionName.isRush(session)
     }
 
     /// The tmux session name for the live Claude terminal, if any.

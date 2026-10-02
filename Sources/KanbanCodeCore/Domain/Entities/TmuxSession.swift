@@ -6,16 +6,16 @@ public struct TmuxSession: Identifiable, Sendable {
     public let name: String
     public let path: String // session_path
     public let attached: Bool
-    /// An agtop host's queued messages; nil for tmux sessions.
-    public let agtopQueue: [String]?
-    /// What a blocked agtop host waits on (see `AgtopSessionInfo.needs`).
-    public let agtopNeeds: String?
+    /// A rush host's queued messages; nil for tmux sessions.
+    public let rushQueue: [String]?
+    /// What a blocked rush host waits on (see `RushSessionInfo.needs`).
+    public let rushNeeds: String?
 
-    public init(name: String, path: String, attached: Bool = false, agtopQueue: [String]? = nil, agtopNeeds: String? = nil) {
+    public init(name: String, path: String, attached: Bool = false, rushQueue: [String]? = nil, rushNeeds: String? = nil) {
         self.name = name
         self.path = path
         self.attached = attached
-        self.agtopQueue = agtopQueue
-        self.agtopNeeds = agtopNeeds
+        self.rushQueue = rushQueue
+        self.rushNeeds = rushNeeds
     }
 }

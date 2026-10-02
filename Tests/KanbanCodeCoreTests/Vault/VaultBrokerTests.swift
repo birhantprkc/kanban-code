@@ -392,10 +392,10 @@ struct OpenClawCallerTests {
     }
 }
 
-@Suite("Vault callers from agtop and rush hosts")
-struct AgtopHostCallerTests {
-    private func host(_ id: String, hostPid: Int, claudePid: Int, meta: [String: String]? = nil) -> AgtopSessionInfo {
-        var h = AgtopSessionInfo(id: id, sessionId: id + "-0000", cwd: "/w", state: "idle", alive: true)
+@Suite("Vault callers from rush hosts")
+struct RushHostCallerTests {
+    private func host(_ id: String, hostPid: Int, claudePid: Int, meta: [String: String]? = nil) -> RushSessionInfo {
+        var h = RushSessionInfo(id: id, sessionId: id + "-0000", cwd: "/w", state: "idle", alive: true)
         h.hostPid = hostPid
         h.claudePid = claudePid
         h.meta = meta
@@ -413,27 +413,32 @@ struct AgtopHostCallerTests {
 
     @Test func metaAloneNeverMakesACard() {
         let spoof = host("aaaaaaaa", hostPid: 20, claudePid: 21, meta: ["kanban_card": "card_x"])
-        let cards = VaultCallerResolver.agtopCards(hosts: [spoof], sessions: [:])
+        let cards = VaultCallerResolver.rushCards(hosts: [spoof], sessions: [:])
         #expect(cards.isEmpty)
         #expect(VaultCallerResolver.card(for: 22, table: table, sessionPids: cards) == nil)
     }
 
     @Test func aHostTheLinksMapIsTheCardWhoeverStartedIt() {
         let fromRushView = host("aaaaaaaa", hostPid: 20, claudePid: 21)
-        let cards = VaultCallerResolver.agtopCards(hosts: [fromRushView], sessions: ["agtop-aaaaaaaa": "card_a"])
+        let cards = VaultCallerResolver.rushCards(hosts: [fromRushView], sessions: ["rush-aaaaaaaa": "card_a"])
         #expect(cards == [20: "card_a", 21: "card_a"])
         #expect(VaultCallerResolver.card(for: 22, table: table, sessionPids: cards) == "card_a")
     }
 
+    @Test func aCardNamedBeforeTheRenameStillOwnsItsHost() {
+        let h = host("aaaaaaaa", hostPid: 20, claudePid: 21)
+        #expect(VaultCallerResolver.rushCards(hosts: [h], sessions: ["agtop-aaaaaaaa": "card_a"]) == [20: "card_a", 21: "card_a"])
+    }
+
     @Test func theLinksWinOverTheMeta() {
         let h = host("aaaaaaaa", hostPid: 20, claudePid: 21, meta: ["kanban_card": "card_x"])
-        #expect(VaultCallerResolver.agtopCards(hosts: [h], sessions: ["agtop-aaaaaaaa": "card_a"]) == [20: "card_a", 21: "card_a"])
+        #expect(VaultCallerResolver.rushCards(hosts: [h], sessions: ["rush-aaaaaaaa": "card_a"]) == [20: "card_a", 21: "card_a"])
     }
 
     @Test func aStoppedHostOwnsNothing() {
         var h = host("aaaaaaaa", hostPid: 20, claudePid: 21)
-        h = AgtopSessionInfo(id: h.id, sessionId: h.sessionId, cwd: h.cwd, state: "stopped", alive: false)
-        #expect(VaultCallerResolver.agtopCards(hosts: [h], sessions: ["agtop-aaaaaaaa": "card_a"]).isEmpty)
+        h = RushSessionInfo(id: h.id, sessionId: h.sessionId, cwd: h.cwd, state: "stopped", alive: false)
+        #expect(VaultCallerResolver.rushCards(hosts: [h], sessions: ["rush-aaaaaaaa": "card_a"]).isEmpty)
     }
 }
 

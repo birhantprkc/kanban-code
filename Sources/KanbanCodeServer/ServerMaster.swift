@@ -7,7 +7,7 @@ import Glibc
 
 /// The service graph and loops of a headless master: the same BoardStore and
 /// master engine the Mac app drives, over the kanban home of this machine,
-/// plus peer sync. Sessions run here on agtop or tmux, as the settings say.
+/// plus peer sync. Sessions run here on rush or tmux, as the settings say.
 @MainActor
 final class ServerMaster {
     let home: String

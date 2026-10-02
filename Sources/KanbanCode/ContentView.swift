@@ -817,11 +817,11 @@ struct ContentView: View {
                 if let card = store.state.selectedCard,
                    let sessionName = card.link.tmuxLink?.sessionName {
                     ImageDropZone(isTargeted: $isDroppingImage) { imageData in
-                        if let agtopId = AgtopSessionName.agtopId(fromName: sessionName) {
+                        if let rushId = RushSessionName.rushId(fromName: sessionName) {
                             var image = ImageAttachment(data: imageData)
                             Task {
                                 guard let path = try? image.saveToTemp() else { return }
-                                try? await self.tmuxAdapter.agtop(forSession: sessionName).send(id: agtopId, text: "", imagePaths: [path])
+                                try? await self.tmuxAdapter.rush(forSession: sessionName).send(id: rushId, text: "", imagePaths: [path])
                             }
                             return
                         }

@@ -198,7 +198,7 @@ public final class MasterEngine {
                 serviceExtraEnv.merge(platform.sessionEnvironment) { current, _ in current }
 
                 if boxdPreparation == nil,
-                   agtopChoice(settings: settings, assistant: assistant, remote: isRemote, commandOverride: commandOverride) == .agtop {
+                   rushChoice(settings: settings, assistant: assistant, remote: isRemote, commandOverride: commandOverride) == .rush {
                     var cwd = projectPath
                     var worktreeLink: WorktreeLink?
                     if let worktreeName {
@@ -209,7 +209,7 @@ public final class MasterEngine {
                         worktreeLink = worktree
                     }
                     let sessionId = UUID().uuidString.lowercased()
-                    let name = try await startOnAgtop(
+                    let name = try await startOnRush(
                         cardId: cardId,
                         cwd: cwd,
                         sessionId: sessionId,
@@ -232,11 +232,11 @@ public final class MasterEngine {
                 }
 
                 if let preparation = boxdPreparation,
-                   let machineAgtop = await machineAgtop(
+                   let machineRush = await machineRush(
                        machineName: preparation.machineName, settings: settings, assistant: assistant,
                        commandOverride: commandOverride, service: resolvedService) {
                     let sessionId = UUID().uuidString.lowercased()
-                    let name = try await startOnAgtop(
+                    let name = try await startOnRush(
                         cardId: cardId,
                         cwd: preparation.remoteCwd,
                         sessionId: sessionId,
@@ -248,7 +248,7 @@ public final class MasterEngine {
                         model: effectiveModelOverride,
                         commandTemplate: nil,
                         service: resolvedService,
-                        agtop: machineAgtop
+                        rush: machineRush
                     )
                     await boxdSupervisor?.assignSession(name, to: preparation.machineName)
                     platform.markRemoteSessionReady(name, preparation.machineName)
@@ -739,14 +739,14 @@ public final class MasterEngine {
                     // The tmux session survives a pause, so a live one is
                     // attached as it is. Otherwise the newer transcript wins
                     // before a fresh `--resume` starts on the machine.
-                    let agtopName = AgtopSessionName.name(sessionId: sessionId)
                     if existingMachine == currentMachine, card.link.isRemote,
-                       card.link.tmuxLink?.sessionName == agtopName {
-                        await boxdSupervisor.assignSession(agtopName, to: preparation.machineName)
-                        if await boxdSupervisor.hasSession(machineName: preparation.machineName, sessionName: agtopName) {
-                            KanbanCodeLog.info("resume", "Attaching to live agtop \(agtopName) on \(preparation.machineName)")
-                            platform.markRemoteSessionReady(agtopName, preparation.machineName)
-                            store.dispatch(.resumeCompleted(cardId: cardId, tmuxName: agtopName, isRemote: true))
+                       let rushName = card.link.tmuxLink?.sessionName,
+                       RushSessionName.rushId(fromName: rushName) == RushSessionName.rushId(sessionId: sessionId) {
+                        await boxdSupervisor.assignSession(rushName, to: preparation.machineName)
+                        if await boxdSupervisor.hasSession(machineName: preparation.machineName, sessionName: rushName) {
+                            KanbanCodeLog.info("resume", "Attaching to live rush \(rushName) on \(preparation.machineName)")
+                            platform.markRemoteSessionReady(rushName, preparation.machineName)
+                            store.dispatch(.resumeCompleted(cardId: cardId, tmuxName: rushName, isRemote: true))
                             return
                         }
                     }
@@ -842,9 +842,9 @@ public final class MasterEngine {
                 serviceExtraEnv.merge(platform.sessionEnvironment) { current, _ in current }
 
                 if boxdPreparation == nil,
-                   agtopChoice(settings: settings, assistant: assistant, remote: isRemote, commandOverride: commandOverride) == .agtop {
+                   rushChoice(settings: settings, assistant: assistant, remote: isRemote, commandOverride: commandOverride) == .rush {
                     await killTmuxSessions(of: sessionId)
-                    let name = try await startOnAgtop(
+                    let name = try await startOnRush(
                         cardId: cardId,
                         cwd: resumePath,
                         sessionId: sessionId,
@@ -862,13 +862,13 @@ public final class MasterEngine {
                 }
 
                 if let preparation = boxdPreparation,
-                   let machineAgtop = await machineAgtop(
+                   let machineRush = await machineRush(
                        machineName: preparation.machineName, settings: settings, assistant: assistant,
                        commandOverride: commandOverride, service: resolvedService) {
                     // The conversation runs in one place only: its tmux
                     // sessions, here or on the machine, end first.
                     await killTmuxSessions(of: sessionId)
-                    let name = try await startOnAgtop(
+                    let name = try await startOnRush(
                         cardId: cardId,
                         cwd: resumePath,
                         sessionId: sessionId,
@@ -880,7 +880,7 @@ public final class MasterEngine {
                         model: effectiveModelOverride,
                         commandTemplate: nil,
                         service: resolvedService,
-                        agtop: machineAgtop
+                        rush: machineRush
                     )
                     await boxdSupervisor?.assignSession(name, to: preparation.machineName)
                     platform.markRemoteSessionReady(name, preparation.machineName)
@@ -927,24 +927,24 @@ public final class MasterEngine {
         return true
     }
 
-    // MARK: - agtop
+    // MARK: - rush
 
     /// Where a card's Claude session runs, from the settings and the launch.
-    public func agtopChoice(
+    public func rushChoice(
         settings: Settings?,
         assistant: CodingAssistant,
         remote: Bool,
         commandOverride: String?
-    ) -> AgtopLaunchPlanner.Choice {
-        let choice = AgtopLaunchPlanner.choose(
+    ) -> RushLaunchPlanner.Choice {
+        let choice = RushLaunchPlanner.choose(
             assistant: assistant,
             runtime: settings?.runtime(for: assistant) ?? .tmux,
             remote: remote,
             commandOverride: commandOverride,
-            agtopInstalled: tmux.agtop.isAvailable
+            rushInstalled: tmux.rush.isAvailable
         )
         if case .fallback(let fallback) = choice {
-            KanbanCodeLog.info("agtop", "Running on tmux: \(fallback.reason)")
+            KanbanCodeLog.info("rush", "Running on tmux: \(fallback.reason)")
             if fallback == .notInstalled {
                 store.dispatch(.setError("rush is not installed, the session runs on tmux"))
             }
@@ -952,39 +952,39 @@ public final class MasterEngine {
         return choice
     }
 
-    /// agtop on an ssh machine, when a card launched or resumed there runs
-    /// on it: the settings pick agtop for the assistant and the machine has
+    /// rush on an ssh machine, when a card launched or resumed there runs
+    /// on it: the settings pick rush for the assistant and the machine has
     /// it. A command template or an API service launcher wraps `claude` in a
     /// script of this machine, so those cards stay on tmux there.
-    public func machineAgtop(
+    public func machineRush(
         machineName: String,
         settings: Settings?,
         assistant: CodingAssistant,
         commandOverride: String?,
         service: APIService?
-    ) async -> AgtopCliAdapter? {
-        guard settings?.runtime(for: assistant) == .agtop else { return nil }
+    ) async -> RushCliAdapter? {
+        guard settings?.runtime(for: assistant) == .rush else { return nil }
         guard let boxdSupervisor, await boxdSupervisor.isHost(machineName) else { return nil }
-        let choice = AgtopLaunchPlanner.choose(
-            assistant: assistant, runtime: .agtop, remote: false,
-            commandOverride: commandOverride, agtopInstalled: tmux.registry.agtop(for: machineName) != nil)
-        guard choice == .agtop, let agtop = tmux.registry.agtop(for: machineName) else {
+        let choice = RushLaunchPlanner.choose(
+            assistant: assistant, runtime: .rush, remote: false,
+            commandOverride: commandOverride, rushInstalled: tmux.registry.rush(for: machineName) != nil)
+        guard choice == .rush, let rush = tmux.registry.rush(for: machineName) else {
             if case .fallback(let fallback) = choice {
-                KanbanCodeLog.info("agtop", "Running on tmux on \(machineName): \(fallback.reason)")
+                KanbanCodeLog.info("rush", "Running on tmux on \(machineName): \(fallback.reason)")
             }
             return nil
         }
         let template = settings?.commandTemplate(for: assistant, remote: true)
-        guard AgtopLaunchPlanner.wrapperCommand(template: template, service: service) == nil else {
-            KanbanCodeLog.info("agtop", "Running on tmux on \(machineName): the command template or API service wraps claude")
+        guard RushLaunchPlanner.wrapperCommand(template: template, service: service) == nil else {
+            KanbanCodeLog.info("rush", "Running on tmux on \(machineName): the command template or API service wraps claude")
             return nil
         }
-        return agtop
+        return rush
     }
 
-    /// Starts, or resumes, a card's Claude session on an agtop host and
-    /// returns its session name (`agtop-<id>`).
-    public func startOnAgtop(
+    /// Starts, or resumes, a card's Claude session on a rush host and
+    /// returns its session name (`rush-<id>`).
+    public func startOnRush(
         cardId: String,
         cwd: String,
         sessionId: String,
@@ -996,22 +996,25 @@ public final class MasterEngine {
         model: String?,
         commandTemplate: String?,
         service: APIService?,
-        agtop: AgtopCliAdapter? = nil
+        rush: RushCliAdapter? = nil
     ) async throws -> String {
         let imagePaths = images.compactMap { image -> String? in
             if let tempPath = image.tempPath { return tempPath }
             var copy = image
             return try? copy.saveToTemp()
         }
-        let binary = try AgtopLaunchPlanner.wrapperCommand(template: commandTemplate, service: service)
-            .map { try Self.writeAgtopWrapper(cardId: cardId, command: $0) }
-        let request = AgtopLaunchPlanner.request(
+        let adapter = rush ?? tmux.rush
+        let wrapper = try RushLaunchPlanner.wrapperCommand(template: commandTemplate, service: service)
+            .map { try Self.writeRushWrapper(cardId: cardId, command: $0) }
+        let binary = RushLaunchPlanner.binary(
+            wrapper: wrapper, remote: adapter.isRemote, findExecutable: ShellCommand.findExecutable)
+        let request = RushLaunchPlanner.request(
             cardId: cardId,
             cwd: cwd,
             sessionId: sessionId,
             resume: resume,
             name: store.state.links[cardId]?.name,
-            // agtop puts each image right after its [Image #N] marker.
+            // rush puts each image right after its [Image #N] marker.
             prompt: prompt,
             imagePaths: imagePaths,
             extraEnv: extraEnv,
@@ -1019,18 +1022,18 @@ public final class MasterEngine {
             model: model ?? service?.modelFlag,
             binary: binary
         )
-        let info = try await (agtop ?? tmux.agtop).start(request)
-        let name = AgtopSessionName.name(agtopId: info.id)
-        KanbanCodeLog.info("agtop", "Started \(name) for card=\(cardId.prefix(12)) session=\(sessionId.prefix(8)) resume=\(resume)")
+        let info = try await adapter.start(request)
+        let name = RushSessionName.name(for: info)
+        KanbanCodeLog.info("rush", "Started \(name) for card=\(cardId.prefix(12)) session=\(sessionId.prefix(8)) resume=\(resume)")
         return name
     }
 
-    /// Stops the tmux sessions of `sessionId` so its agtop host is the only
+    /// Stops the tmux sessions of `sessionId` so its rush host is the only
     /// process writing the transcript.
     public func killTmuxSessions(of sessionId: String) async {
         let sid8 = String(sessionId.prefix(8))
         guard let sessions = try? await tmux.listSessions() else { return }
-        for session in sessions where session.name.contains(sid8) && !AgtopSessionName.isAgtop(session.name) {
+        for session in sessions where session.name.contains(sid8) && !RushSessionName.isRush(session.name) {
             try? await tmux.killSession(name: session.name)
         }
     }
@@ -1040,11 +1043,11 @@ public final class MasterEngine {
         "\(platform.claudeProjectsDirectory)/\(SessionFileMover.encodeProjectPath(cwd))/\(sessionId).jsonl"
     }
 
-    private static func writeAgtopWrapper(cardId: String, command: String) throws -> String {
-        let dir = (NSHomeDirectory() as NSString).appendingPathComponent(".kanban-code/agtop")
+    private static func writeRushWrapper(cardId: String, command: String) throws -> String {
+        let dir = (NSHomeDirectory() as NSString).appendingPathComponent(".kanban-code/rush")
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let path = "\(dir)/\(cardId)-claude.sh"
-        try AgtopLaunchPlanner.wrapperScript(command: command).write(toFile: path, atomically: true, encoding: .utf8)
+        try RushLaunchPlanner.wrapperScript(command: command).write(toFile: path, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)
         return path
     }

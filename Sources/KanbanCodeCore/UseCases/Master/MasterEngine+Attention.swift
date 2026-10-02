@@ -100,13 +100,13 @@ extension MasterEngine {
     /// which ends once rush says it waits on nothing. Questions and plans
     /// come from the transcript instead.
     func reconcileRushPermission(cardId: String, sessionId: String) {
-        guard let session = store.state.links[cardId]?.tmuxLink?.sessionName, AgtopSessionName.isAgtop(session) else { return }
-        let need = store.state.agtopNeeds[session].flatMap(Self.rushPermissionNeed)
+        guard let session = store.state.links[cardId]?.tmuxLink?.sessionName, RushSessionName.isRush(session) else { return }
+        let need = store.state.rushNeeds[session].flatMap(Self.rushPermissionNeed)
         if let need {
             raisePermissionRequest(sessionId: sessionId, message: need, at: Date())
             return
         }
-        // The scan behind `agtopNeeds` can lag a hook that raised it just now.
+        // The scan behind `rushNeeds` can lag a hook that raised it just now.
         let settled = Date().addingTimeInterval(-20)
         for request in store.state.openAttentionRequests
         where request.sessionId == sessionId && request.kind == .permission && request.createdAt < settled {
@@ -250,16 +250,16 @@ extension MasterEngine {
               let session = link.tmuxLink?.sessionName, store.state.tmuxSessions.contains(session)
         else { throw RemoteHostError.conflict("the session of \(request.id) is not running") }
         let index = request.options.firstIndex(of: resolution)
-        if let agtopId = AgtopSessionName.agtopId(fromName: session) {
-            let rush = try tmux.agtop(forSession: session)
+        if let rushId = RushSessionName.rushId(fromName: session) {
+            let rush = try tmux.rush(forSession: session)
             let answer = Self.rushAnswer(for: request, resolution: resolution, optionIndex: index)
             do {
-                if try await rush.answer(id: agtopId, text: answer.text, deny: answer.deny, request: answer.toolUseId) { return }
-            } catch let error as AgtopCommandFailed {
+                if try await rush.answer(id: rushId, text: answer.text, deny: answer.deny, request: answer.toolUseId) { return }
+            } catch let error as RushCommandFailed {
                 throw RemoteHostError.conflict(error.message)
             }
             // A build without `session answer` takes the text as a message.
-            try await rush.send(id: agtopId, text: resolution)
+            try await rush.send(id: rushId, text: resolution)
             return
         }
         let adapter = try tmux.adapter(for: session)

@@ -25,13 +25,13 @@ struct CardSessionStatusTests {
 
     @Test("a start in flight shows its last step, and a stale one stops spinning")
     func starting() {
-        let fresh = link(tmux: TmuxLink(sessionName: "agtop-0f1e2d3c"), launching: true)
+        let fresh = link(tmux: TmuxLink(sessionName: "rush-0f1e2d3c"), launching: true)
         #expect(CardSessionStatus.of(link: fresh, moving: nil, report: .step("Copying files"), machineState: nil)
             == .starting("Starting session… Copying files"))
         #expect(CardSessionStatus.of(link: fresh, moving: nil, report: nil, machineState: nil) == .starting("Starting session…"))
         #expect(CardSessionStatus.of(link: fresh, moving: nil, report: nil, machineState: nil).isWorking)
 
-        let stale = link(tmux: TmuxLink(sessionName: "agtop-0f1e2d3c"), launching: true, updatedAt: .now.addingTimeInterval(-60))
+        let stale = link(tmux: TmuxLink(sessionName: "rush-0f1e2d3c"), launching: true, updatedAt: .now.addingTimeInterval(-60))
         #expect(CardSessionStatus.of(link: stale, moving: nil, report: .step("Copying files"), machineState: nil) == .live)
     }
 
@@ -52,7 +52,7 @@ struct CardSessionStatusTests {
         #expect(status.canResume)
         #expect(status.text(for: link()) == "Resume failed: no folder")
 
-        let live = link(tmux: TmuxLink(sessionName: "agtop-0f1e2d3c"))
+        let live = link(tmux: TmuxLink(sessionName: "rush-0f1e2d3c"))
         #expect(CardSessionStatus.of(link: live, moving: nil, report: .failed("Resume failed: old"), machineState: nil) == .live)
     }
 
@@ -84,7 +84,7 @@ struct CardSessionStatusTests {
     @Test("the owner's report of a card it runs reads the same here")
     func peerReport() {
         let starting = RemoteSessionStatus(kind: .starting, text: "Starting session… Copying files")
-        let launching = link(tmux: TmuxLink(sessionName: "agtop-0f1e2d3c"), launching: true)
+        let launching = link(tmux: TmuxLink(sessionName: "rush-0f1e2d3c"), launching: true)
         #expect(CardSessionStatus.of(link: launching, moving: nil, report: nil, peer: starting, machineState: nil)
             == .starting("Starting session… Copying files"))
 

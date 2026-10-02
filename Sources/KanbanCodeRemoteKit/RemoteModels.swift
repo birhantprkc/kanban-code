@@ -96,14 +96,25 @@ public enum RemoteColumn: String, Codable, Sendable, CaseIterable {
     }
 }
 
-/// Where a card's main session runs.
+/// Where a card's main session runs. A rush host goes on the wire as
+/// "agtop", the name rush had before it was renamed, since phones and
+/// masters on older builds decode only that; "rush" is read as well.
 public enum RemoteRuntime: String, Codable, Sendable {
     case tmux
-    case agtop
+    case rush = "agtop"
     /// A boxd machine.
     case machine
     /// No session attached.
     case none
+
+    public init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer().decode(String.self)
+        guard let runtime = value == "rush" ? .rush : RemoteRuntime(rawValue: value) else {
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: decoder.codingPath, debugDescription: "Unknown runtime \(value)"))
+        }
+        self = runtime
+    }
 }
 
 public struct RemotePR: Codable, Sendable, Equatable {

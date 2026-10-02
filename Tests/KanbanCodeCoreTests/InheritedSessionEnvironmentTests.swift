@@ -11,7 +11,7 @@ struct InheritedSessionEnvironmentTests {
             "CLAUDE_CODE_SESSION_ID": "8c76706f-1c00",
             "CLAUDE_PID": "2024",
             "KANBAN_CARD_ID": "card_x",
-            "TMPDIR": "/Users/me/.config/agtop/sessions/8c76706f/tmp",
+            "TMPDIR": "/Users/me/.config/rush/sessions/8c76706f/tmp",
             "HOME": "/Users/me",
             "PATH": "/usr/bin",
             "CLAUDE_CODE_ENABLE_TELEMETRY": "1",

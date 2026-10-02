@@ -145,7 +145,7 @@ enum RemoteOpenAPI {
           "branch": {"type": ["string", "null"]},
           "worktreePath": {"type": ["string", "null"]},
           "assistant": {"type": "string", "description": "claude, codex or gemini"},
-          "runtime": {"type": "string", "enum": ["tmux", "agtop", "machine", "none"]},
+          "runtime": {"type": "string", "enum": ["tmux", "agtop", "machine", "none"], "description": "agtop: a rush host (rush was named agtop)"},
           "isLive": {"type": "boolean"},
           "isBusy": {"type": "boolean"},
           "sessionId": {"type": ["string", "null"]},
