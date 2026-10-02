@@ -425,6 +425,15 @@ function takeFlag(args: string[], name: string): boolean {
   return true;
 }
 
+/** `--every-use-asks` (no card lease, each use asks) or `--leases` (card leases up to 2 days again). */
+export function leasePolicyFlags(args: string[]): { leaseSeconds: number; everyUseAsks: boolean } | undefined {
+  const everyUse = takeFlag(args, "--every-use-asks");
+  const leases = takeFlag(args, "--leases");
+  if (everyUse && leases) throw new VaultCliError("kv: --every-use-asks and --leases contradict each other");
+  if (!everyUse && !leases) return undefined;
+  return { leaseSeconds: 2 * 24 * 3600, everyUseAsks: everyUse };
+}
+
 function takeAll(args: string[], name: string): string[] {
   const out: string[] = [];
   for (let v = takeOption(args, name); v !== undefined; v = takeOption(args, name)) out.push(v);
@@ -439,11 +448,11 @@ export const USAGE = `kv: secrets from the Kanban Code vault
   kv request NAME[:scope] [NAME..] --reason "..."           ask once for the card's whole task (2 days)
   kv aws <profile> [--reason "..."]                         AWS credential_process JSON (1 h STS credentials)
   kv add NAME [--tier open|judged|ask|never] [--rules "..."] [--label "..."] [--tag t] [--reason "..."]
-                                                            value from stdin
+         [--every-use-asks]                                 value from stdin; every-use-asks: no card lease
   kv ls [--json]                                            names, tiers and rules
   kv log [--card ID] [--secret NAME] [--limit N] [--json]   the audit log, newest first
   kv leases [--card ID]                                     active card leases
-  kv tier NAME <tier> | kv rules NAME "..." | kv label NAME "..."  [--reason "..."]
+  kv tier NAME <tier> [--every-use-asks|--leases] | kv rules NAME "..." | kv label NAME "..."  [--reason "..."]
                                                             change a secret (asks Rogerio)
   kv status                                                 is the vault unlocked here
   kv exec-provider                                          OpenClaw exec SecretRef provider (JSON on stdin)
@@ -557,9 +566,10 @@ export async function runKv(argv: string[], io: VaultIO = defaultIO()): Promise<
       const rules = takeOption(args, "--rules");
       const tags = takeAll(args, "--tag");
       const label = takeOption(args, "--label");
+      const leasePolicy = leasePolicyFlags(args);
       const reason = checkedReason(takeOption(args, "--reason"), io.env, false);
       const name = args[0];
-      if (!name) throw new VaultCliError("kv add NAME [--tier t] [--rules '...']  (value on stdin)");
+      if (!name) throw new VaultCliError("kv add NAME [--tier t] [--rules '...'] [--every-use-asks]  (value on stdin)");
       const value = await readSecretFromStdin(name);
       if (!value) throw new VaultCliError("kv: empty value, nothing added");
       const { body } = await client.call<VaultResponse>("POST", `secrets${ctx.cardId ? `?card=${ctx.cardId}` : ""}`, {
@@ -569,6 +579,7 @@ export async function runKv(argv: string[], io: VaultIO = defaultIO()): Promise<
         rules,
         label,
         reason,
+        leasePolicy,
         tags: tags.length ? tags : undefined,
       });
       const r = body.status === "pending" ? await waitPending(client, body) : body;
@@ -581,9 +592,10 @@ export async function runKv(argv: string[], io: VaultIO = defaultIO()): Promise<
     case "rules":
     case "label": {
       const reason = checkedReason(takeOption(args, "--reason"), io.env, false);
+      const leasePolicy = cmd === "tier" ? leasePolicyFlags(args) : undefined;
       const [name, value] = args;
       if (!name || value === undefined) throw new VaultCliError(`kv ${cmd} NAME <value> [--reason "..."]`);
-      const patch = { [cmd]: value, reason };
+      const patch = { [cmd]: value, reason, leasePolicy };
       const { body } = await client.call<VaultResponse>("PATCH", `secrets/${encodeURIComponent(name)}`, patch);
       const r = body.status === "pending" ? await waitPending(client, body) : body;
       if (r.status !== "granted") throw deniedError(r);

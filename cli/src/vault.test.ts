@@ -13,6 +13,7 @@ import {
   findEnvVault,
   hookRewrite,
   execProviderAnswer,
+  leasePolicyFlags,
   parseEnvVault,
   reasonProblem,
   runKv,
@@ -234,4 +235,22 @@ test("the exec provider answers OpenClaw's protocol without waiting on a human",
   });
   assert.equal(m.calls.length, 3);
   assert.equal(m.calls[0].body.mode, "get");
+});
+
+test("--every-use-asks and --leases set the lease policy, together they are refused", () => {
+  const a = ["STRIPE", "ask", "--every-use-asks"];
+  assert.deepEqual(leasePolicyFlags(a), { leaseSeconds: 172800, everyUseAsks: true });
+  assert.deepEqual(a, ["STRIPE", "ask"]);
+  assert.deepEqual(leasePolicyFlags(["X", "--leases"]), { leaseSeconds: 172800, everyUseAsks: false });
+  assert.equal(leasePolicyFlags(["X", "ask"]), undefined);
+  assert.throws(() => leasePolicyFlags(["X", "--leases", "--every-use-asks"]), /contradict/);
+});
+
+test("kv tier sends the lease policy with the tier", async () => {
+  const m = await fakeMaster(() => ({ status: 200, body: { status: "granted", message: "changed STRIPE: tier, every use asks" } }));
+  await runKv(["tier", "STRIPE_API_KEY", "ask", "--every-use-asks", "--reason", "Stripe live key must ask on every use"], io(m.url, []));
+  m.close();
+  assert.equal(m.calls[0].method, "PATCH");
+  assert.deepEqual(m.calls[0].body.leasePolicy, { leaseSeconds: 172800, everyUseAsks: true });
+  assert.equal(m.calls[0].body.tier, "ask");
 });
