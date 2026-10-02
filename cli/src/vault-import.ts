@@ -337,8 +337,11 @@ export function envVaultFor(envText: string, refs: Map<string, string>): string 
 
 export async function runImport(args: string[], client: VaultClient, io: VaultIO): Promise<number> {
   const apply = args.includes("--apply");
+  // --only <dir> (repeatable): write .env.vault files only under these folders.
+  const only: string[] = [];
+  for (let i = 0; i < args.length; i++) if (args[i] === "--only" && args[i + 1]) only.push(args[i + 1].replace(/\/+$/, ""));
   const home = homedir();
-  const root = args.find((a) => !a.startsWith("--")) ?? join(home, "Projects");
+  const root = args.find((a, i) => !a.startsWith("--") && args[i - 1] !== "--only") ?? join(home, "Projects");
   const extra = [join(home, ".agent-vault/open.env"), join(home, ".config/slack-rogerio.env")].filter(existsSync);
   const files = [...findEnvFiles(root), ...extra];
   const plans = planSecrets(collectFound(files), home);
@@ -394,6 +397,7 @@ export async function runImport(args: string[], client: VaultClient, io: VaultIO
   }
   let written = 0;
   for (const [file, refs] of refsByFile) {
+    if (only.length && !only.some((dir) => file.startsWith(dir + "/"))) continue;
     const target = join(dirname(file), basename(file) === ".env" ? ".env.vault" : `${basename(file)}.vault`);
     if (existsSync(target) && !readFileSync(target, "utf8").startsWith("# Names only")) continue;
     writeFileSync(target, envVaultFor(readFileSync(file, "utf8"), refs));

@@ -350,7 +350,7 @@ export const USAGE = `kv: secrets from the Kanban Code vault
   kv leases [--card ID]                                     active card leases
   kv tier NAME <tier> | kv rules NAME "..."                 change a secret (asks Rogerio)
   kv status                                                 is the vault unlocked here
-  kv import [--apply]                                       plan (then do) the migration of plaintext secrets
+  kv import [--apply] [--secrets-only] [--only <dir>]..   plan (then do) the migration of plaintext secrets
 
 Exit code ${EXIT_DENIED} means the vault denied the request.`;
 
