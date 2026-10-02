@@ -334,17 +334,30 @@ final class BatchedTerminalView: LocalProcessTerminalView {
     private var urlHighlightLayer: CAShapeLayer?
     private var isCommandHeld = false
     private var urlEventMonitor: Any?
+    private var linkClickGate = CommandClickGate()
+
+    /// The link under the pointer of a mouse event, if the pointer is over
+    /// this terminal and on one.
+    private func linkURL(at event: NSEvent) -> String? {
+        guard bounds.contains(convert(event.locationInWindow, from: nil)) else { return nil }
+        let pos = screenPosition(from: event)
+        return detectURL(col: pos.col, screenRow: pos.screenRow)?.url
+    }
 
     func installURLMonitor() {
         guard urlEventMonitor == nil else { return }
         urlEventMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.flagsChanged, .mouseMoved, .leftMouseUp]
+            matching: [.flagsChanged, .mouseMoved, .leftMouseDown, .leftMouseDragged, .leftMouseUp]
         ) { [weak self] event in
             guard let self,
                   !self.isHidden,
                   self.window == event.window else { return event }
+            // The drag and release of a kept cmd+press are handled wherever
+            // the pointer goes, so the program never sees half of the click.
+            let keptPress = self.linkClickGate.pressedLink != nil
+                && (event.type == .leftMouseDragged || event.type == .leftMouseUp)
             // For mouse events, check the mouse is actually over this view
-            if event.type != .flagsChanged {
+            if event.type != .flagsChanged, !keptPress {
                 let point = self.convert(event.locationInWindow, from: nil)
                 guard self.bounds.contains(point) else {
                     // Mouse left this terminal — clear any highlight
@@ -361,6 +374,7 @@ final class BatchedTerminalView: LocalProcessTerminalView {
             NSEvent.removeMonitor(monitor)
             urlEventMonitor = nil
         }
+        linkClickGate = CommandClickGate()
         clearURLHighlight()
     }
 
@@ -383,22 +397,31 @@ final class BatchedTerminalView: LocalProcessTerminalView {
             }
             return event
 
+        case .leftMouseDown:
+            let command = event.modifierFlags.contains(.command)
+            let link = command ? linkURL(at: event) : nil
+            return linkClickGate.mouseDown(command: command, link: link) == .pass ? event : nil
+
+        case .leftMouseDragged:
+            return linkClickGate.mouseDragged() == .pass ? event : nil
+
         case .leftMouseUp:
-            if event.modifierFlags.contains(.command) {
-                let pos = screenPosition(from: event)
-                if let detected = detectURL(col: pos.col, screenRow: pos.screenRow) {
-                    clearURLHighlight()
-                    let raw = detected.url
-                    // File paths: use URL(fileURLWithPath:) to handle +, spaces, etc.
-                    if raw.hasPrefix("/"), FileManager.default.fileExists(atPath: raw) {
-                        NSWorkspace.shared.open(URL(fileURLWithPath: raw))
-                    } else if let url = URL(string: raw) {
-                        NSWorkspace.shared.open(url)
-                    }
-                    return nil // consume the event
+            let link = linkClickGate.pressedLink == nil ? nil : linkURL(at: event)
+            switch linkClickGate.mouseUp(link: link) {
+            case .pass:
+                return event
+            case .consume:
+                return nil
+            case .open(let raw):
+                clearURLHighlight()
+                // File paths: use URL(fileURLWithPath:) to handle +, spaces, etc.
+                if raw.hasPrefix("/"), FileManager.default.fileExists(atPath: raw) {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: raw))
+                } else if let url = URL(string: raw) {
+                    NSWorkspace.shared.open(url)
                 }
+                return nil
             }
-            return event
 
         default:
             return event
