@@ -195,6 +195,9 @@ final class ServerMaster {
         if FileManager.default.fileExists(atPath: NSHomeDirectory() + "/.claude") {
             _ = try? VaultHook.install()
         }
+        if FileManager.default.fileExists(atPath: VaultHook.codexHome) {
+            _ = try? VaultHook.installCodex()
+        }
         if !HookManager.isStatusLineInstalled(for: .claude) {
             try? HookManager.installStatusLine(for: .claude)
         }

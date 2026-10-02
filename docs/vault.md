@@ -71,7 +71,7 @@ region = eu-central-1
 
 ## Bash hook
 
-Kanban Code installs a Claude Code `PreToolUse` hook on Bash (`~/.kanban-code/vault-hook.sh`). In a project with a `.env.vault` (searched from the session's directory up to the repository root), `kv hook` rewrites the command to:
+Kanban Code installs a `PreToolUse` hook on Bash (`~/.kanban-code/vault-hook.sh`) for Claude Code (`~/.claude/settings.json`) and for Codex (`~/.codex/hooks.json`, run as `vault-hook.sh --codex`). Codex runs a user hook only once its definition is trusted, so the installer also writes `[hooks.state."<hooks.json>:pre_tool_use:<n>:0"] trusted_hash` into `~/.codex/config.toml` with the hash Codex computes; Codex answers carry `permissionDecision: "allow"`, which Codex needs next to `updatedInput` and which does not skip its approvals or sandbox. Under Codex's `workspace-write` sandbox kv cannot reach the master on loopback, so commands run without the vault env; card sessions run Codex without the sandbox. rush sessions run `claude -p`, which loads the same Claude Code hook. In a project with a `.env.vault` (searched from the session's directory up to the repository root), `kv hook` rewrites the command to:
 
 ```
 __kv_env="$(kv env /path/.env.vault --export --command-b64 <command>)" || exit $?

@@ -60,4 +60,38 @@ struct VaultRoutesTests {
         #expect((hooks["PreToolUse"] as! [[String: Any]]).count == 1)
         #expect(hooks["Stop"] != nil && root["model"] as? String == "m")
     }
+
+    @Test func codexTrustHashMatchesCodex() {
+        // Reference: sha256 of Codex's compact, key-sorted hook identity JSON.
+        #expect(VaultHook.codexTrustHash(matcher: "Bash", command: "/h/.kanban-code/vault-hook.sh --codex", timeout: 900)
+            == "sha256:1a967e97b4d3ff8483ba90c515b21e38ae12da4f572437f00a5fe287481a86de")
+    }
+
+    @Test func codexHookInstallsAndTrustsOnce() throws {
+        let home = NSTemporaryDirectory() + "codex-home-\(UUID().uuidString.prefix(8))"
+        try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
+        try #"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"x"}]}]}}"#
+            .write(toFile: home + "/hooks.json", atomically: true, encoding: .utf8)
+        try "model = \"m\"\n\n[projects.\"/x\"]\ntrust_level = \"trusted\"\n"
+            .write(toFile: home + "/config.toml", atomically: true, encoding: .utf8)
+        let script = home + "/k/vault-hook.sh"
+        #expect(try VaultHook.installCodex(codexHome: home, scriptPath: script))
+        #expect(try !VaultHook.installCodex(codexHome: home, scriptPath: script))
+        let root = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: home + "/hooks.json"))) as! [String: Any]
+        let hooks = root["hooks"] as! [String: Any]
+        let pre = hooks["PreToolUse"] as! [[String: Any]]
+        #expect(pre.count == 1 && hooks["Stop"] != nil)
+        let config = try String(contentsOfFile: home + "/config.toml", encoding: .utf8)
+        let hash = VaultHook.codexTrustHash(matcher: "Bash", command: script + " --codex", timeout: 900)
+        #expect(config.hasPrefix("model = \"m\"\n\n[projects.\"/x\"]"))
+        #expect(config.contains("[hooks.state.\"\(home)/hooks.json:pre_tool_use:0:0\"]\ntrusted_hash = \"\(hash)\""))
+    }
+
+    @Test func codexTrustReplacesAStaleHash() {
+        let key = "/c/hooks.json:pre_tool_use:0:0"
+        let stale = "a = 1\n\n[hooks.state.\"\(key)\"]\nenabled = true\ntrusted_hash = \"sha256:old\"\n\n[b]\nc = 2\n"
+        let out = VaultHook.trustingCodexHook(config: stale, key: key, hash: "sha256:new")
+        #expect(out == stale.replacingOccurrences(of: "sha256:old", with: "sha256:new"))
+        #expect(VaultHook.trustingCodexHook(config: out, key: key, hash: "sha256:new") == out)
+    }
 }

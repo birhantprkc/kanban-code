@@ -235,7 +235,17 @@ export function exportLines(env: Record<string, string>): string {
  * has a `.env.vault`, the command first loads the vault env into its own
  * shell, so `cd` and shell syntax keep working as written.
  */
-export function hookRewrite(input: { tool_name?: string; tool_input?: { command?: string }; cwd?: string }, kvPath: string): unknown {
+/**
+ * The PreToolUse answer that makes a Bash command load the vault env first.
+ * Codex applies `updatedInput` only next to `permissionDecision: "allow"`,
+ * which there does not skip its own approval or sandbox; Claude Code takes
+ * `updatedInput` alone, where "allow" would skip the permission prompt.
+ */
+export function hookRewrite(
+  input: { tool_name?: string; tool_input?: { command?: string }; cwd?: string },
+  kvPath: string,
+  harness: "claude" | "codex" = "claude"
+): unknown {
   if (input.tool_name !== "Bash") return undefined;
   const command = input.tool_input?.command;
   if (!command || command.includes("__kv_env=")) return undefined;
@@ -249,6 +259,7 @@ export function hookRewrite(input: { tool_name?: string; tool_input?: { command?
   return {
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
+      ...(harness === "codex" ? { permissionDecision: "allow" } : {}),
       updatedInput: { ...input.tool_input, command: wrapped },
     },
   };
@@ -534,7 +545,7 @@ export async function runKv(argv: string[], io: VaultIO = defaultIO()): Promise<
     case "hook": {
       const input = JSON.parse((await readStdin()) || "{}");
       const kvPath = io.env.KV_PATH || join(homedir(), ".local/bin/kv");
-      const answer = hookRewrite(input, kvPath);
+      const answer = hookRewrite(input, kvPath, args.includes("--codex") ? "codex" : "claude");
       if (answer) out(JSON.stringify(answer) + "\n");
       return 0;
     }

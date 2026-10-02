@@ -55,6 +55,19 @@ test("the hook wraps Bash commands only in projects with .env.vault", () => {
   assert.equal(hookRewrite({ tool_name: "Bash", tool_input: { command: "ls" }, cwd: join(root, "other") }, "/bin/kv"), undefined);
 });
 
+test("the hook answers Codex with permissionDecision allow and Claude Code without it", () => {
+  const root = mkdtempSync(join(tmpdir(), "kv-hook-"));
+  mkdirSync(join(root, "repo/.git"), { recursive: true });
+  writeFileSync(join(root, "repo/.env.vault"), "A={{vault:A}}\n");
+  const input = { tool_name: "Bash", tool_input: { command: "pnpm test" }, cwd: join(root, "repo") };
+  type Out = { hookSpecificOutput: { permissionDecision?: string; updatedInput: { command: string } } };
+  const claude = hookRewrite(input, "/bin/kv") as Out;
+  const codex = hookRewrite(input, "/bin/kv", "codex") as Out;
+  assert.equal(claude.hookSpecificOutput.permissionDecision, undefined);
+  assert.equal(codex.hookSpecificOutput.permissionDecision, "allow");
+  assert.equal(codex.hookSpecificOutput.updatedInput.command, claude.hookSpecificOutput.updatedInput.command);
+});
+
 async function fakeMaster(handler: (method: string, path: string, body: any) => { status: number; body: unknown }) {
   const calls: { method: string; path: string; body: any }[] = [];
   const server = createServer((req, res) => {
