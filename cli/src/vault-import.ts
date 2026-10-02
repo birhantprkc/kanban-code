@@ -376,6 +376,11 @@ export async function runImport(args: string[], client: VaultClient, io: VaultIO
     added++;
   }
 
+  if (args.includes("--secrets-only")) {
+    io.stderr(`kv: added ${added} secrets (${kept} were already there); no .env.vault written.\n`);
+    return 0;
+  }
+
   // One .env.vault per .env that gave secrets, next to it.
   const refsByFile = new Map<string, Map<string, string>>();
   for (const p of plans) {
