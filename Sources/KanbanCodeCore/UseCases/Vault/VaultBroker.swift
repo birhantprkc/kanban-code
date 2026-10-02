@@ -1,4 +1,5 @@
 import Foundation
+import KanbanCodeRemoteKit
 
 /// Where the vault takes a decision to the human: an attention request on
 /// the master, which the Mac and the phone show until one resolves it.
@@ -61,9 +62,13 @@ public struct VaultAddRequest: Codable, Sendable, Equatable {
     public var aws: VaultAwsRole?
     public var leasePolicy: VaultLeasePolicy?
     public var sources: [String]?
+    public var label: String?
+    /// Why the caller replaces a stored value, shown to the human.
+    public var reason: String?
 
     public init(name: String, value: String, tier: VaultTier? = nil, rules: String? = nil, tags: [String]? = nil,
-                aws: VaultAwsRole? = nil, leasePolicy: VaultLeasePolicy? = nil, sources: [String]? = nil) {
+                aws: VaultAwsRole? = nil, leasePolicy: VaultLeasePolicy? = nil, sources: [String]? = nil,
+                label: String? = nil, reason: String? = nil) {
         self.name = name
         self.value = value
         self.tier = tier
@@ -72,6 +77,8 @@ public struct VaultAddRequest: Codable, Sendable, Equatable {
         self.aws = aws
         self.leasePolicy = leasePolicy
         self.sources = sources
+        self.label = label
+        self.reason = reason
     }
 }
 
@@ -82,14 +89,20 @@ public struct VaultEditRequest: Codable, Sendable, Equatable {
     public var tags: [String]?
     public var leasePolicy: VaultLeasePolicy?
     public var aws: VaultAwsRole?
+    /// An empty label clears it.
+    public var label: String?
+    /// Why the caller wants the change, shown to the human.
+    public var reason: String?
 
     public init(tier: VaultTier? = nil, rules: String? = nil, tags: [String]? = nil, leasePolicy: VaultLeasePolicy? = nil,
-                aws: VaultAwsRole? = nil) {
+                aws: VaultAwsRole? = nil, label: String? = nil, reason: String? = nil) {
         self.tier = tier
         self.rules = rules
         self.tags = tags
         self.leasePolicy = leasePolicy
         self.aws = aws
+        self.label = label
+        self.reason = reason
     }
 
     func apply(to s: inout VaultSecret) {
@@ -98,6 +111,7 @@ public struct VaultEditRequest: Codable, Sendable, Equatable {
         if let tags { s.tags = tags }
         if let leasePolicy { s.leasePolicy = leasePolicy }
         if let aws { s.aws = aws }
+        if let label { s.label = label.isEmpty ? nil : label }
     }
 
     var summary: String {
@@ -107,7 +121,34 @@ public struct VaultEditRequest: Codable, Sendable, Equatable {
         if tags != nil { parts.append("tags") }
         if let leasePolicy { parts.append(leasePolicy.everyUseAsks ? "every use asks" : "leases up to \(Int(leasePolicy.leaseSeconds / 3600))h") }
         if aws != nil { parts.append("AWS role") }
+        if label != nil { parts.append("label") }
         return parts.joined(separator: ", ")
+    }
+
+    /// What it changes, as the headline names it: "rules", "tier"...
+    var changes: [String] {
+        var parts: [String] = []
+        if tier != nil { parts.append("tier") }
+        if rules != nil { parts.append("rules") }
+        if tags != nil { parts.append("tags") }
+        if leasePolicy != nil { parts.append("lease time") }
+        if aws != nil { parts.append("AWS role") }
+        if label != nil { parts.append("label") }
+        return parts
+    }
+
+    /// The proposed values, one line each, for the detail sheet.
+    var changeLines: [String] {
+        var lines: [String] = []
+        if let tier { lines.append("Tier: \(tier.label)") }
+        if let rules { lines.append("Rules: \(rules.isEmpty ? "(none)" : rules)") }
+        if let tags { lines.append("Tags: \(tags.isEmpty ? "(none)" : tags.joined(separator: ", "))") }
+        if let leasePolicy {
+            lines.append(leasePolicy.everyUseAsks ? "Lease time: every use asks" : "Lease time: \(AttentionCopy.duration(leasePolicy.leaseSeconds))")
+        }
+        if let aws { lines.append("AWS role: \(aws.roleArn ?? "none (session token)") from \(aws.sourceSecret)") }
+        if let label { lines.append("Label: \(label.isEmpty ? "(derived from the name)" : label)") }
+        return lines
     }
 }
 
@@ -397,8 +438,8 @@ public actor VaultBroker {
         }
         let existing = (try? await store.secret(req.name)) ?? nil
         if existing != nil && !trusted {
-            return await ask(action: .add(req), secrets: [existing!], whys: ["replaces the stored value"], caller: caller,
-                             command: nil, reason: "replace the value of \(req.name)", now: now, leaseOnly: false, admin: true)
+            return await ask(action: .add(req), secrets: [existing!], whys: ["replacing a stored value always asks"], caller: caller,
+                             command: nil, reason: req.reason, now: now, leaseOnly: false, admin: true)
         }
         return await apply(.add(req), caller: caller, now: now)
     }
@@ -406,17 +447,17 @@ public actor VaultBroker {
     public func edit(_ name: String, _ req: VaultEditRequest, caller: VaultCaller, trusted: Bool, now: Date = Date()) async -> VaultResponse {
         guard let s = (try? await store.secret(name)) ?? nil else { return .denied("no secret named \(name)") }
         if !trusted {
-            return await ask(action: .edit(name, req), secrets: [s], whys: ["changes \(req.summary)"], caller: caller,
-                             command: nil, reason: "change \(name): \(req.summary)", now: now, leaseOnly: false, admin: true)
+            return await ask(action: .edit(name, req), secrets: [s], whys: ["changing a secret always asks"], caller: caller,
+                             command: nil, reason: req.reason, now: now, leaseOnly: false, admin: true)
         }
         return await apply(.edit(name, req), caller: caller, now: now)
     }
 
-    public func delete(_ name: String, caller: VaultCaller, trusted: Bool, now: Date = Date()) async -> VaultResponse {
+    public func delete(_ name: String, caller: VaultCaller, trusted: Bool, reason: String? = nil, now: Date = Date()) async -> VaultResponse {
         guard let s = (try? await store.secret(name)) ?? nil else { return .denied("no secret named \(name)") }
         if !trusted {
-            return await ask(action: .delete(name), secrets: [s], whys: ["deletes it"], caller: caller,
-                             command: nil, reason: "delete \(name)", now: now, leaseOnly: false, admin: true)
+            return await ask(action: .delete(name), secrets: [s], whys: ["deleting a secret always asks"], caller: caller,
+                             command: nil, reason: reason, now: now, leaseOnly: false, admin: true)
         }
         return await apply(.delete(name), caller: caller, now: now)
     }
@@ -434,7 +475,8 @@ public actor VaultBroker {
                     tags: req.tags ?? existing?.tags ?? [],
                     aws: req.aws ?? existing?.aws,
                     sources: Array(Set((existing?.sources ?? []) + (req.sources ?? []))).sorted(),
-                    createdAt: existing?.createdAt ?? now
+                    createdAt: existing?.createdAt ?? now,
+                    label: req.label.flatMap { $0.isEmpty ? nil : $0 } ?? existing?.label
                 )
                 try await store.upsert(secret, now: now)
                 await store.append(VaultAuditEntry(at: now, machine: machine, cardId: caller.cardId, sessionId: caller.sessionId,
@@ -472,37 +514,20 @@ public actor VaultBroker {
         let everyUse = secrets.contains { $0.leasePolicy.everyUseAsks }
         var options = VaultPolicy.approvalOptions(everyUseAsks: everyUse || admin, insideCard: caller.insideCard)
         if leaseOnly { options = [AttentionRequest.vaultApprovalOptions[0], AttentionRequest.vaultApprovalOptions[2]] }
-        let names = secrets.map(\.name).joined(separator: ", ")
         let title: String? = if let card = caller.cardId { await principalTitle(card) } else { nil }
-        var body: [String] = []
-        if let reason, !reason.isEmpty { body.append("Reason: \(reason)") }
-        if let command, !command.isEmpty { body.append("Command: \(command.prefix(600))") }
-        let uniqueWhys = Array(Set(whys)).sorted()
-        body.append("Asking because: \(uniqueWhys.joined(separator: "; "))")
-        if let agent = caller.openClawAgent {
-            body.append("From OpenClaw agent: \(agent)")
-        } else if caller.insideCard {
-            body.append("From card: \(title ?? caller.cardId ?? "?")")
-        } else {
-            var where_ = "NOT from a Kanban card session"
-            if let claimed = caller.claimedCardId { where_ += " (claims card \(claimed))" }
-            if let device = caller.remoteDevice { where_ += ", device \(device)" }
-            body.append(where_)
-        }
-        if !caller.ancestry.isEmpty {
-            body.append("Process: \(caller.ancestry.prefix(8).joined(separator: " < "))")
-        }
-        let verb = admin ? "Vault change" : (leaseOnly ? "Vault lease" : "Vault")
+        let details = approvalDetails(action: action, secrets: secrets, whys: whys, caller: caller, title: title,
+                                      command: command, reason: reason, options: options)
         let request = AttentionRequest(
             id: id,
             cardId: caller.openClawAgent == nil ? caller.cardId : nil,
             kind: .vaultApproval,
-            title: "\(verb): \(names)\(title.map { " for \($0)" } ?? "")",
-            body: body.joined(separator: "\n"),
+            title: AttentionCopy.vaultHeadline(details),
+            body: AttentionCopy.vaultBody(details),
             options: options,
             createdAt: now,
             requiresBiometry: admin || secrets.contains { $0.tier >= .ask },
-            sessionId: caller.sessionId
+            sessionId: caller.sessionId,
+            vault: details
         )
         pending[id] = Pending(action: action, caller: caller, result: nil, createdAt: now, everyUseAsks: everyUse)
         for (s, why) in zip(secrets, whys) {
@@ -512,10 +537,61 @@ public actor VaultBroker {
         }
         await approvals.raise(request)
         Task { await self.waitForHuman(id: id) }
-        let waitingOn = caller.insideCard
+        var waitingOn = caller.insideCard
             ? "Waiting for Rogerio's approval on his phone or Mac (\(caller.openClawAgent == nil ? "card " : "")\(title ?? caller.cardId ?? "?"))"
             : "Waiting for Rogerio's approval on his phone or Mac (this process is not in a Kanban card session)"
+        if AttentionCopy.usableReason(reason) == nil {
+            waitingOn += ". He sees no reason from you; next time: \(AttentionCopy.reasonGuidance)"
+        }
         return VaultResponse(status: .pending, message: waitingOn, id: id, card: caller.cardId)
+    }
+
+    /// What the detail sheet shows for a request about to be raised.
+    private func approvalDetails(action: PendingAction, secrets: [VaultSecret], whys: [String], caller: VaultCaller,
+                                 title: String?, command: String?, reason: String?, options: [String]) -> VaultApprovalDetails {
+        var kind: VaultApprovalDetails.Action
+        var mode: String?
+        var cwd: String?
+        var changes: [String] = []
+        var changeLines: [String] = []
+        switch action {
+        case .release(let req, _):
+            kind = req.mode == "aws" ? .aws : .use
+            mode = req.mode
+            cwd = req.cwd
+        case .lease:
+            kind = .lease
+        case .add:
+            kind = .replace
+        case .edit(_, let req):
+            kind = .edit
+            changes = req.changes
+            changeLines = req.changeLines
+        case .delete:
+            kind = .delete
+        }
+        let origin: VaultApprovalDetails.Origin =
+            caller.openClawAgent != nil ? .openClaw : (caller.insideCard ? .card : .outside)
+        let offersLease = options.contains(AttentionRequest.vaultApprovalOptions[0])
+        return VaultApprovalDetails(
+            action: kind,
+            origin: origin,
+            principal: caller.openClawAgent ?? (caller.insideCard ? (title ?? caller.cardId) : nil),
+            secrets: secrets.map {
+                .init(name: $0.name, label: $0.displayLabel, tier: $0.tier.label, everyUseAsks: $0.leasePolicy.everyUseAsks)
+            },
+            mode: mode,
+            changes: changes,
+            changeLines: changeLines,
+            whys: Array(Set(whys)).sorted(),
+            command: command.map { String($0.prefix(2000)) },
+            cwd: cwd,
+            reason: reason,
+            leaseSeconds: offersLease ? secrets.map(\.leasePolicy.leaseSeconds).min() : nil,
+            claimedCardId: caller.insideCard ? nil : caller.claimedCardId,
+            remoteDevice: caller.remoteDevice,
+            ancestry: caller.ancestry
+        )
     }
 
     private func actionName(_ action: PendingAction) -> String {

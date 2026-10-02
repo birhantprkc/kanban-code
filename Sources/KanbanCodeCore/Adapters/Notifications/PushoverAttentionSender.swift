@@ -27,9 +27,11 @@ public struct PushoverAttentionSender: PhonePushSender {
 
     /// Form fields of the Pushover message for a request.
     public static func fields(for request: AttentionRequest, cardName: String?, level: PhonePushLevel) -> [(String, String)] {
-        let title = String((cardName.map { "\($0): \(request.title)" } ?? request.title).prefix(250))
-        var message = request.body
-        if !request.options.isEmpty {
+        let copy = AttentionCopy.notification(for: request, cardName: cardName)
+        let title = String(copy.title.prefix(250))
+        var message = copy.body
+        // A vault approval is answered in the app, after its details.
+        if !request.options.isEmpty && request.kind != .vaultApproval {
             message += "\n\n" + request.options.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
         }
         if message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { message = request.title }

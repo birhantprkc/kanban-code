@@ -106,7 +106,7 @@ enum RemoteVaultRoutes {
 
         case ("DELETE", "secrets", 2):
             let who = await caller(claimedCard: query["card"], sessionId: nil)
-            return respond(await vault.broker.delete(path[1], caller: who, trusted: false))
+            return respond(await vault.broker.delete(path[1], caller: who, trusted: false, reason: query["reason"]))
 
         case ("GET", "log", 1):
             let limit = min(max(Int(query["limit"] ?? "") ?? 100, 1), 2000)

@@ -146,7 +146,7 @@ struct VaultBrokerTests {
         let (broker, _, approvals) = try await makeBroker(jev: nil, answer: "Approve once")
         let r = await broker.release(VaultReleaseRequest(mode: "run", names: ["JUDGED"], command: "x"), caller: inside)
         #expect(r.status == .pending)
-        #expect(approvals.raised.first?.body.contains("Jev could not be reached") == true)
+        #expect(approvals.raised.first?.vault?.whys.joined().contains("Jev could not be reached") == true)
         let done = await waitResult(broker, try #require(r.id))
         #expect(done.status == .granted && done.values == ["JUDGED": "judged-value"])
     }
@@ -158,7 +158,7 @@ struct VaultBrokerTests {
         let raised = try #require(approvals.raised.first)
         #expect(raised.kind == .vaultApproval)
         #expect(raised.options == ["Approve once", "Deny"])
-        #expect(raised.body.contains("NOT from a Kanban card session"))
+        #expect(raised.vault?.origin == .outside)
         let done = await waitResult(broker, try #require(r.id))
         #expect(done.status == .denied && done.values == nil)
     }
@@ -238,7 +238,7 @@ struct VaultBrokerTests {
         }
         let r = await broker.release(VaultReleaseRequest(mode: "run", names: ["OPEN"]), caller: inside)
         #expect(r.status == .pending)
-        #expect(approvals.raised.first?.body.contains("20 times") == true)
+        #expect(approvals.raised.first?.vault?.whys.joined().contains("20 times") == true)
     }
 
     @Test func leaseRequestNeedsACardAndTheHuman() async throws {
@@ -380,7 +380,7 @@ struct OpenClawCallerTests {
         #expect(asked.status == .pending)
         let request = try #require(approvals.raised.last)
         #expect(request.cardId == nil)
-        #expect(request.body.contains("From OpenClaw agent: forge"))
+        #expect(request.vault?.origin == .openClaw && request.title.hasPrefix("OpenClaw agent forge wants"))
         #expect(request.options.first == AttentionRequest.vaultApprovalOptions[0])
         #expect(await waitResult(broker, try #require(asked.id)).status == .granted)
         #expect(await store.activeLease(cardId: "openclaw:forge", secret: "ASK", now: Date()) != nil)

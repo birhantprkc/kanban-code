@@ -2,6 +2,8 @@
 @_exported import struct KanbanCodeRemoteKit.AttentionResolveRequest
 @_exported import struct KanbanCodeRemoteKit.AttentionListResponse
 @_exported import struct KanbanCodeRemoteKit.MacPresence
+@_exported import struct KanbanCodeRemoteKit.VaultApprovalDetails
+@_exported import enum KanbanCodeRemoteKit.AttentionCopy
 import Foundation
 
 /// The entity is defined in KanbanCodeRemoteKit so the iOS app decodes the

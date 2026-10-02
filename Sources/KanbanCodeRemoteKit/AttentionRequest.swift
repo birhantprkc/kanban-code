@@ -33,6 +33,8 @@ public struct AttentionRequest: Codable, Sendable, Equatable, Hashable, Identifi
     /// Id of the master that raised it and answers it; another master shows
     /// it and forwards the resolution there.
     public var machineId: String?
+    /// The full picture of a vault request, for the detail sheet.
+    public var vault: VaultApprovalDetails?
 
     public init(
         id: String,
@@ -47,7 +49,8 @@ public struct AttentionRequest: Codable, Sendable, Equatable, Hashable, Identifi
         resolution: String? = nil,
         resolvedBy: String? = nil,
         sessionId: String? = nil,
-        machineId: String? = nil
+        machineId: String? = nil,
+        vault: VaultApprovalDetails? = nil
     ) {
         self.id = id
         self.cardId = cardId
@@ -62,6 +65,7 @@ public struct AttentionRequest: Codable, Sendable, Equatable, Hashable, Identifi
         self.resolvedBy = resolvedBy
         self.sessionId = sessionId
         self.machineId = machineId
+        self.vault = vault
     }
 
     public var isOpen: Bool { resolvedAt == nil }

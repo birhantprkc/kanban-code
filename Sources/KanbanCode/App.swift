@@ -679,7 +679,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             completionHandler()
             return
         }
-        if let cardId = info["cardId"] as? String {
+        if let attentionId = info[MacAttentionNotificationClient.requestIdKey] as? String {
+            // Opens the card, then the request's details over it.
+            if let cardId = info["cardId"] as? String {
+                NotificationCenter.default.post(name: .kanbanCodeSelectCard, object: nil, userInfo: ["cardId": cardId])
+            }
+            NotificationCenter.default.post(name: .kanbanCodeShowAttention, object: nil, userInfo: ["id": attentionId])
+        } else if let cardId = info["cardId"] as? String {
             NotificationCenter.default.post(name: .kanbanCodeSelectCard, object: nil, userInfo: ["cardId": cardId])
         } else if let kind = info["chatKind"] as? String {
             switch kind {

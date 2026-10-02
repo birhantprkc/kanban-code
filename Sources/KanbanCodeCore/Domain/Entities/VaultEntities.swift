@@ -1,4 +1,5 @@
 import Foundation
+import KanbanCodeRemoteKit
 
 /// How a vault secret is released (see docs/vault.md).
 public enum VaultTier: String, Codable, Sendable, CaseIterable, Comparable {
@@ -82,6 +83,9 @@ public struct VaultSecret: Codable, Sendable, Equatable {
     public var updatedAt: Date
     /// Set when deleted: the tombstone wins merges until it is older.
     public var deletedAt: Date?
+    /// How approvals name it to the human, e.g. "Slack user token"; when
+    /// nil, a label derived from the name.
+    public var label: String?
 
     public init(
         name: String,
@@ -94,7 +98,8 @@ public struct VaultSecret: Codable, Sendable, Equatable {
         sources: [String] = [],
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
-        deletedAt: Date? = nil
+        deletedAt: Date? = nil,
+        label: String? = nil
     ) {
         self.name = name
         self.value = value
@@ -107,14 +112,19 @@ public struct VaultSecret: Codable, Sendable, Equatable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.deletedAt = deletedAt
+        self.label = label
     }
 
     public var info: VaultSecretInfo {
         VaultSecretInfo(
             name: name, tier: tier, rules: rules, leasePolicy: leasePolicy, tags: tags, aws: aws,
-            sources: sources, createdAt: createdAt, updatedAt: updatedAt, hasValue: !value.isEmpty
+            sources: sources, createdAt: createdAt, updatedAt: updatedAt, hasValue: !value.isEmpty,
+            label: label
         )
     }
+
+    /// The label approvals show: its own, or one derived from the name.
+    public var displayLabel: String { AttentionCopy.secretLabel(name: name, label: label) }
 
     /// Secret names: letters, digits, `_ - . / :`, at most 128 characters.
     public static func isValidName(_ name: String) -> Bool {
@@ -137,6 +147,7 @@ public struct VaultSecretInfo: Codable, Sendable, Equatable {
     public var createdAt: Date
     public var updatedAt: Date
     public var hasValue: Bool
+    public var label: String? = nil
 }
 
 /// The decrypted contents of `vault.age`.

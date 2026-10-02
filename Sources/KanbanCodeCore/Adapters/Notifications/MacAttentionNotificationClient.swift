@@ -5,7 +5,8 @@ import UserNotifications
 
 /// Attention notifications in the macOS notification center. Each request
 /// gets a category whose actions are its options, so a question can be
-/// answered from the banner; clicking it opens the card.
+/// answered from the banner; clicking it opens the card and the request's
+/// detail sheet.
 public actor MacAttentionNotificationClient: MacAttentionNotifier {
     /// userInfo keys of an attention notification.
     public static let requestIdKey = "attentionId"
@@ -35,9 +36,9 @@ public actor MacAttentionNotificationClient: MacAttentionNotifier {
         center.setNotificationCategories(Set(categories.values))
 
         let content = UNMutableNotificationContent()
-        content.title = cardName ?? request.title
-        content.subtitle = cardName == nil ? "" : request.title
-        content.body = request.body.isEmpty ? Self.kindLine(request.kind) : request.body
+        let copy = AttentionCopy.notification(for: request, cardName: cardName)
+        content.title = copy.title
+        content.body = copy.body.isEmpty ? Self.kindLine(request.kind) : copy.body
         content.sound = .default
         content.categoryIdentifier = categoryId
         content.interruptionLevel = .timeSensitive
