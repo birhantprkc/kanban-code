@@ -91,7 +91,7 @@ extension MasterEngine {
         guard let pending, store.state.attentionRequests[pending.requestId] == nil else { return }
         store.dispatch(.attentionRaised(AttentionRequest(
             id: pending.requestId, cardId: cardId, kind: pending.kind, title: pending.title,
-            body: pending.body, options: pending.options, createdAt: Date(),
+            body: pending.body, options: pending.options, createdAt: pending.askedAt ?? Date(),
             sessionId: sessionId, machineId: store.state.localMachineId.isEmpty ? nil : store.state.localMachineId)))
     }
 
@@ -172,15 +172,40 @@ extension MasterEngine {
         store.dispatch(.attentionResolved(id: id, resolution: resolution, by: device))
     }
 
-    /// Types the answer into the session the way the chat does: agtop gets
-    /// the text, a tmux Claude gets the option's number key.
+    /// Answers the question or plan the card's session waits on, as the
+    /// chat's answer buttons do: false when it waits on none, for the
+    /// caller to send `answer` as a message. A plan card's digit picks
+    /// that option.
+    public func answerOpenRequest(cardId: String, answer: String, by device: String) async throws -> Bool {
+        guard let request = store.state.openAttentionRequests
+            .filter({ $0.cardId == cardId && ($0.kind == .question || $0.kind == .planApproval) })
+            .max(by: { $0.createdAt < $1.createdAt })
+        else { return false }
+        var resolution = answer
+        if request.kind == .planApproval, let digit = Int(answer), digit >= 1 {
+            resolution = request.options[min(digit, request.options.count) - 1]
+        }
+        try await resolveAttention(id: request.id, resolution: resolution, by: device)
+        return true
+    }
+
+    /// Answers in the session: rush settles the request it waits on, a tmux
+    /// Claude gets the option's number key.
     func answerInSession(_ request: AttentionRequest, resolution: String) async throws {
         guard let cardId = request.cardId, let link = store.state.links[cardId],
               let session = link.tmuxLink?.sessionName, store.state.tmuxSessions.contains(session)
         else { throw RemoteHostError.conflict("the session of \(request.id) is not running") }
         let index = request.options.firstIndex(of: resolution)
         if let agtopId = AgtopSessionName.agtopId(fromName: session) {
-            try await tmux.agtop(forSession: session).send(id: agtopId, text: resolution)
+            let rush = try tmux.agtop(forSession: session)
+            let answer = Self.rushAnswer(for: request, resolution: resolution, optionIndex: index)
+            do {
+                if try await rush.answer(id: agtopId, text: answer.text, deny: answer.deny, request: answer.toolUseId) { return }
+            } catch let error as AgtopCommandFailed {
+                throw RemoteHostError.conflict(error.message)
+            }
+            // A build without `session answer` takes the text as a message.
+            try await rush.send(id: agtopId, text: resolution)
             return
         }
         let adapter = try tmux.adapter(for: session)
@@ -191,6 +216,21 @@ extension MasterEngine {
         }
         for key in keys {
             _ = try await adapter.run(["send-keys", "-t", session, key])
+        }
+    }
+
+    /// What `rush session answer` gets for `resolution`: a question takes
+    /// the text; a plan or a permission is allowed by its first option and
+    /// declined otherwise, with typed words passed on as the reason.
+    nonisolated static func rushAnswer(for request: AttentionRequest, resolution: String, optionIndex: Int?)
+        -> (text: String, deny: Bool, toolUseId: String?) {
+        let toolUseId = request.id.hasPrefix("att_") ? String(request.id.dropFirst(4)) : nil
+        switch request.kind {
+        case .question, .vaultApproval:
+            return (resolution, false, toolUseId)
+        case .planApproval, .permission:
+            if optionIndex == 0 { return ("", false, toolUseId) }
+            return (optionIndex == nil ? resolution : "", true, toolUseId)
         }
     }
 

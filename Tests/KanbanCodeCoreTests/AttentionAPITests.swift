@@ -104,6 +104,23 @@ struct AttentionEngineTests {
         #expect(MasterEngine.tmuxKeys(for: perm, resolution: "Deny", optionIndex: 1) == ["Escape"])
     }
 
+    @Test("rush answers: a question takes the text, a plan or permission allows by its first option and denies otherwise")
+    func rushAnswer() {
+        let q = AttentionRequest(id: "att_toolu_1", cardId: nil, kind: .question, title: "", body: "", options: ["Tea", "Coffee"])
+        let answer = MasterEngine.rushAnswer(for: q, resolution: "Coffee", optionIndex: 1)
+        #expect(answer.text == "Coffee" && !answer.deny && answer.toolUseId == "toolu_1")
+        let plan = AttentionRequest(id: "att_toolu_2", cardId: nil, kind: .planApproval, title: "", body: "", options: AttentionDetector.planOptions)
+        let approve = MasterEngine.rushAnswer(for: plan, resolution: AttentionDetector.planOptions[0], optionIndex: 0)
+        #expect(!approve.deny && approve.text.isEmpty)
+        let keep = MasterEngine.rushAnswer(for: plan, resolution: AttentionDetector.planOptions[1], optionIndex: 1)
+        #expect(keep.deny && keep.text.isEmpty)
+        let feedback = MasterEngine.rushAnswer(for: plan, resolution: "split step 2", optionIndex: nil)
+        #expect(feedback.deny && feedback.text == "split step 2")
+        let perm = AttentionRequest(id: "perm_abc_1", cardId: nil, kind: .permission, title: "", body: "", options: AttentionDetector.permissionOptions)
+        let deny = MasterEngine.rushAnswer(for: perm, resolution: "Deny", optionIndex: 1)
+        #expect(deny.deny && deny.toolUseId == nil)
+    }
+
     @Test("Notification hook lines carry their type and text")
     func hookPayload() async throws {
         let dir = (NSTemporaryDirectory() as NSString).appendingPathComponent("hooks-\(UUID().uuidString)")

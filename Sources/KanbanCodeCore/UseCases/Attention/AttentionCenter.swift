@@ -16,6 +16,15 @@ public actor AttentionCenter: AttentionDelivering {
     private let localMachineId: @Sendable () async -> String?
     private let now: @Sendable () -> Date
     private var loop: Task<Void, Never>?
+    /// Where delivery state is kept across restarts, so a request raised
+    /// again after one is neither sent twice nor left on screen.
+    private let stateFile: String?
+    /// State read from `stateFile` for requests not raised again yet.
+    private var restored: [String: AttentionDeliveryState] = [:]
+    private let startedAt: Date
+    /// How long after start a restored request may still be raised again
+    /// before its notifications are taken down.
+    private let restoreGrace: TimeInterval
 
     /// Steps taken, newest last, for the log and for tests.
     public private(set) var history: [(id: String, step: AttentionDeliveryStep)] = []
@@ -27,7 +36,9 @@ public actor AttentionCenter: AttentionDelivering {
         localPresence: (@Sendable () async -> MacPresence?)? = nil,
         cardName: @escaping @Sendable (String?) async -> String? = { _ in nil },
         localMachineId: @escaping @Sendable () async -> String? = { nil },
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        stateFile: String? = nil,
+        restoreGrace: TimeInterval = 60
     ) {
         self.settings = settings
         self.mac = mac
@@ -36,6 +47,10 @@ public actor AttentionCenter: AttentionDelivering {
         self.cardName = cardName
         self.localMachineId = localMachineId
         self.now = now
+        self.stateFile = stateFile
+        self.restoreGrace = restoreGrace
+        self.startedAt = now()
+        self.restored = stateFile.map(Self.load) ?? [:]
     }
 
     public func configure(settings: AttentionPolicySettings, phone: (any PhonePushSender)?) {
@@ -74,7 +89,9 @@ public actor AttentionCenter: AttentionDelivering {
 
     public func deliver(_ request: AttentionRequest) async {
         open[request.id] = request
-        if delivered[request.id] == nil { delivered[request.id] = AttentionDeliveryState() }
+        if delivered[request.id] == nil {
+            delivered[request.id] = restored.removeValue(forKey: request.id) ?? AttentionDeliveryState()
+        }
         await evaluate(request.id)
     }
 
@@ -93,6 +110,7 @@ public actor AttentionCenter: AttentionDelivering {
         if state.phoneSilentSent || state.phoneAlertSent {
             await phone?.withdraw(request)
         }
+        save()
         KanbanCodeLog.info("attention", "Withdrew \(request.id) (\(request.resolution ?? "no answer") by \(request.resolvedBy ?? "?"))")
     }
 
@@ -102,6 +120,20 @@ public actor AttentionCenter: AttentionDelivering {
         for id in open.keys.sorted() {
             await evaluate(id)
         }
+        await dropStaleRestored()
+    }
+
+    /// Takes down what was delivered before a restart for requests that
+    /// were not raised again: they were settled while this master was down.
+    private func dropStaleRestored() async {
+        guard !restored.isEmpty, now().timeIntervalSince(startedAt) >= restoreGrace else { return }
+        let stale = restored
+        restored = [:]
+        for (id, state) in stale where state.macPosted {
+            await mac?.remove(id: id)
+            history.append((id, .removeMac))
+        }
+        save()
     }
 
     private func evaluate(_ id: String) async {
@@ -145,6 +177,7 @@ public actor AttentionCenter: AttentionDelivering {
             history.append((id, step))
             KanbanCodeLog.info("attention", "\(id): \(step)")
         }
+        save()
     }
 
     private func sendPhone(_ request: AttentionRequest, name: String?, level: PhonePushLevel) async {
@@ -156,4 +189,22 @@ public actor AttentionCenter: AttentionDelivering {
     }
 
     public func deliveryState(_ id: String) -> AttentionDeliveryState? { delivered[id] }
+
+    // MARK: State file
+
+    private func save() {
+        guard let stateFile else { return }
+        let all = restored.merging(delivered) { _, live in live }
+        guard let data = try? JSONEncoder().encode(all) else { return }
+        try? FileManager.default.createDirectory(
+            atPath: (stateFile as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        try? data.write(to: URL(fileURLWithPath: stateFile), options: .atomic)
+    }
+
+    private static func load(_ path: String) -> [String: AttentionDeliveryState] {
+        guard let data = FileManager.default.contents(atPath: path),
+              let states = try? JSONDecoder().decode([String: AttentionDeliveryState].self, from: data)
+        else { return [:] }
+        return states
+    }
 }

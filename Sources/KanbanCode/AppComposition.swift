@@ -208,7 +208,8 @@ final class AppComposition {
             cardName: { [weak boardStore] id in
                 await MainActor.run { id.flatMap { boardStore?.state.links[$0]?.displayTitle } }
             },
-            localMachineId: { identity.id })
+            localMachineId: { identity.id },
+            stateFile: NSHomeDirectory() + "/.kanban-code/attention-deliveries.json")
         engine.attentionCenter = attentionCenter
         Task { await effectHandler.setAttentionDelivery(attentionCenter) }
         orch.onAttentionHook = { [weak engine] event in
@@ -227,6 +228,15 @@ final class AppComposition {
                 try await engine.resolveAttention(id: id, resolution: resolution, by: "mac")
             } catch {
                 KanbanCodeLog.warn("attention", "Resolving \(id) from the Mac failed: \(error)")
+            }
+        }
+        AppServices.answerCard = { [weak engine] cardId, answer in
+            guard let engine else { return false }
+            do {
+                return try await engine.answerOpenRequest(cardId: cardId, answer: answer, by: "mac")
+            } catch {
+                KanbanCodeLog.warn("attention", "Answering card \(cardId) from the chat failed: \(error)")
+                return false
             }
         }
         RemoteControlController.shared.attach(

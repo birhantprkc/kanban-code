@@ -8,6 +8,9 @@ import KanbanCodeCore
 enum AppServices {
     /// Answers an attention request from a Mac notification action.
     nonisolated(unsafe) static var resolveAttention: (@Sendable (String, String) async -> Void)?
+    /// Answers the question or plan a card waits on from the chat; false
+    /// when it waits on none.
+    nonisolated(unsafe) static var answerCard: (@Sendable (String, String) async -> Bool)?
     /// Boxd machines of the org and whether the boxd CLI answers, as the
     /// launch dialogs last read them; launches from the remote API use them.
     @MainActor static var boxdMachineNames: [String] = []

@@ -28,7 +28,7 @@ public struct AttentionPolicySettings: Sendable, Equatable {
 }
 
 /// What was already done for one request.
-public struct AttentionDeliveryState: Sendable, Equatable {
+public struct AttentionDeliveryState: Sendable, Equatable, Codable {
     public var macPosted = false
     public var phoneSilentSent = false
     public var phoneAlertSent = false

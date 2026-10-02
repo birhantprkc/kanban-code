@@ -146,6 +146,31 @@ struct AttentionCenterTests {
         #expect(recorder.events.suffix(2) == ["mac-att_x", "phone-att_x"])
     }
 
+    @Test("after a restart a request raised again is not delivered twice, and one settled meanwhile is taken down")
+    func restart() async {
+        let t0 = Date(timeIntervalSince1970: 2_000_000)
+        let clock = Clock(t0)
+        let file = (NSTemporaryDirectory() as NSString).appendingPathComponent("attention-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(atPath: file) }
+        let presence: @Sendable () async -> MacPresence? = { MacPresence(idleSeconds: 1, reportedAt: clock.now) }
+        let first = Recorder()
+        let before = AttentionCenter(mac: first, phone: first, localPresence: presence, now: { clock.now }, stateFile: file)
+        let kept = AttentionRequest(id: "att_kept", cardId: "c", kind: .question, title: "Q", body: "B", createdAt: t0)
+        let settled = AttentionRequest(id: "att_settled", cardId: "c", kind: .question, title: "Q", body: "B", createdAt: t0)
+        await before.deliver(kept)
+        await before.deliver(settled)
+        #expect(first.events.count == 4)
+
+        clock.advance(30)
+        let second = Recorder()
+        let after = AttentionCenter(mac: second, phone: second, localPresence: presence, now: { clock.now }, stateFile: file, restoreGrace: 60)
+        await after.deliver(kept)
+        #expect(second.events.isEmpty)
+        clock.advance(151)
+        await after.evaluateAll()
+        #expect(second.events == ["phone:timeSensitive:att_kept", "mac-att_settled"])
+    }
+
     @Test("a request another master owns never goes to the phone from here")
     func mirroredSkipsPhone() async {
         let recorder = Recorder()

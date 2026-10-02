@@ -130,7 +130,8 @@ final class ServerMaster {
             settings: notifications.attentionPolicy,
             phone: notifications.phoneSender,
             cardName: { id in await MainActor.run { id.flatMap { store.state.links[$0]?.displayTitle } } },
-            localMachineId: { [identity] in identity.id })
+            localMachineId: { [identity] in identity.id },
+            stateFile: (home as NSString).appendingPathComponent("attention-deliveries.json"))
         attentionCenter = center
         engine.attentionCenter = center
         let effectHandler = self.effectHandler

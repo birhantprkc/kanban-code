@@ -111,7 +111,11 @@ struct ChatView: View {
                     onCheckpoint: onCheckpoint,
                     githubBaseURL: githubBaseURL,
                     onSendAnswer: { answer in
-                        onSendPrompt(answer, [])
+                        let cardId = cardId
+                        Task { @MainActor in
+                            if let answerCard = AppServices.answerCard, await answerCard(cardId, answer) { return }
+                            onSendPrompt(answer, [])
+                        }
                     }
                 )
 

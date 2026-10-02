@@ -224,6 +224,23 @@ public final class AgtopCliAdapter: @unchecked Sendable {
         }
     }
 
+    /// Settles what the session waits on: `text` answers its question, a
+    /// tool call waiting for permission is allowed, and `deny` declines
+    /// either (`text` then goes to the agent as the reason). `request` is
+    /// the tool call id the answer is meant for. Returns false when the
+    /// binary has no `session answer` command (agtop, older rush).
+    @discardableResult
+    public func answer(id: String, text: String, deny: Bool = false, request: String? = nil) async throws -> Bool {
+        var args = ["session", "answer", id]
+        if deny { args.append("--deny") }
+        if let request, !request.isEmpty { args += ["--request", request] }
+        let result = try await exec(args, stdin: text, timeout: 30)
+        if result.succeeded { return true }
+        let message = Self.errorMessage(result)
+        if message.contains("unknown session command") { return false }
+        throw AgtopCommandFailed(arguments: args, message: message)
+    }
+
     /// Sends the queued message at `index` now. `was` is its text as last
     /// read, so the host still finds it if the queue moved.
     public func sendQueued(id: String, index: Int, was: String) async throws {
