@@ -239,14 +239,19 @@ public struct LiveVaultCallerResolver: Sendable {
 
     public func resolve(clientPort: Int, serverPort: Int, claimedCardId: String?, sessionId: String?) async -> VaultCaller {
         guard let pid = await VaultCallerResolver.peerPid(clientPort: clientPort, serverPort: serverPort) else {
+            KanbanCodeLog.warn("vault", "no local process found for the connection from port \(clientPort) to \(serverPort)")
             return VaultCaller(claimedCardId: claimedCardId, sessionId: sessionId)
         }
         let table = await VaultCallerResolver.processTable()
         let chain = VaultCallerResolver.ancestry(of: pid, in: table)
+        if chain.isEmpty {
+            KanbanCodeLog.warn("vault", "caller pid \(pid) is not in the process table (\(table.count) processes)")
+        }
         var card = VaultCallerResolver.card(for: pid, table: table, sessionPids: await sessionPids())
         #if os(Linux)
         if card == nil, let openClaw = OpenClawLayout.load() {
             card = openClaw.principal(chain: chain, cgroup: OpenClawLayout.procCgroup, cwd: OpenClawLayout.procCwd)
+            if let card { KanbanCodeLog.info("vault", "caller pid \(pid) is \(card)") }
         }
         #endif
         return VaultCaller(
