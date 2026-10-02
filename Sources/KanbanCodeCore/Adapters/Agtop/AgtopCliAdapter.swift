@@ -215,9 +215,7 @@ public final class AgtopCliAdapter: @unchecked Sendable {
         guard result.succeeded else {
             throw AgtopCommandFailed(arguments: Array(args.dropFirst()), message: Self.errorMessage(result))
         }
-        let info = try JSONDecoder().decode(AgtopSessionInfo.self, from: Data(result.stdout.utf8))
-        if remote == nil { await AgtopHostLedger.shared.record(agtopId: info.id, pid: info.hostPid) }
-        return info
+        return try JSONDecoder().decode(AgtopSessionInfo.self, from: Data(result.stdout.utf8))
     }
 
     /// Sends a message. A busy session queues it; `now` delivers it mid-turn,
@@ -227,15 +225,9 @@ public final class AgtopCliAdapter: @unchecked Sendable {
         var args = ["session", "send", id]
         if now { args.append("--now") }
         for path in try await machinePaths(of: imagePaths) { args += ["--image", path] }
-        var wasRunning = true
-        if remote == nil, let before = try? await info(id: id) { wasRunning = before.alive }
         let result = try await exec(args, stdin: text, timeout: 60)
         guard result.succeeded else {
             throw AgtopCommandFailed(arguments: args, message: Self.errorMessage(result))
-        }
-        // A stopped host comes back with a new pid: this send started it.
-        if !wasRunning, let host = try? await info(id: id) {
-            await AgtopHostLedger.shared.record(agtopId: host.id, pid: host.hostPid)
         }
     }
 

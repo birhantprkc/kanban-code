@@ -41,27 +41,13 @@ public enum VaultCallerResolver {
     }
 
     /// Pid -> card for the agtop/rush hosts of cards. The card comes from
-    /// Kanban's links (the card whose terminal is `agtop-<id>`), never from
-    /// the host's own `--meta kanban_card`, which any process can set; a
-    /// meta that names another card disowns the host. The master must also
-    /// show it started the host: recorded when it started it (`started`),
-    /// or the host's parent chain reaches the master itself or a terminal
-    /// pane of that same card. Anything else is outside every card.
-    public static func agtopCards(
-        hosts: [AgtopSessionInfo], sessions: [String: String], paneCards: [Int: String],
-        table: [Int: VaultProcess], masterPid: Int, started: Set<String>
-    ) -> [Int: String] {
+    /// Kanban's links (the card whose terminal is `agtop-<id>`), whoever
+    /// started the host; the host's own `--meta kanban_card`, which any
+    /// process can set, is never read.
+    public static func agtopCards(hosts: [AgtopSessionInfo], sessions: [String: String]) -> [Int: String] {
         var out: [Int: String] = [:]
         for host in hosts where host.alive {
             guard let card = sessions[AgtopSessionName.name(agtopId: host.id)] else { continue }
-            if let claimed = host.meta?["kanban_card"], claimed != card { continue }
-            var proven = started.contains(host.id)
-            if !proven, let hostPid = host.hostPid {
-                proven = ancestry(of: hostPid, in: table).dropFirst().contains { p in
-                    p.pid == masterPid || paneCards[p.pid] == card
-                }
-            }
-            guard proven else { continue }
             if let pid = host.claudePid { out[pid] = card }
             if let pid = host.hostPid { out[pid] = card }
         }
@@ -260,17 +246,13 @@ public struct LiveVaultCallerResolver: Sendable {
     public let cardSessions: @Sendable () async -> [String: String]
     public let agtop: AgtopCliAdapter?
 
-    public let ledger: AgtopHostLedger
-
-    public init(agtop: AgtopCliAdapter? = AgtopCliAdapter(), ledger: AgtopHostLedger = .shared,
-                cardSessions: @escaping @Sendable () async -> [String: String]) {
+    public init(agtop: AgtopCliAdapter? = AgtopCliAdapter(), cardSessions: @escaping @Sendable () async -> [String: String]) {
         self.cardSessions = cardSessions
         self.agtop = agtop
-        self.ledger = ledger
     }
 
     /// Pid -> card for every process a card session owns.
-    public func sessionPids(table: [Int: VaultProcess]? = nil) async -> [Int: String] {
+    public func sessionPids() async -> [Int: String] {
         let sessions = await cardSessions()
         var panes: [Int: String] = [:]
         for pane in await VaultCallerResolver.tmuxPanes() {
@@ -278,21 +260,7 @@ public struct LiveVaultCallerResolver: Sendable {
         }
         var out = panes
         if let agtop, agtop.isAvailable, let hosts = try? await agtop.list() {
-            let alive = hosts.filter(\.alive)
-            if await ledger.isNew {
-                // The first run on this machine adopts the hosts its cards already run.
-                await ledger.seed(alive.compactMap { h in
-                    sessions[AgtopSessionName.name(agtopId: h.id)] != nil ? h.hostPid.map { (h.id, $0) } : nil
-                })
-            }
-            var started = Set<String>()
-            for h in alive where await ledger.started(agtopId: h.id, pid: h.hostPid) { started.insert(h.id) }
-            let processes: [Int: VaultProcess] = if let table { table } else { await VaultCallerResolver.processTable() }
-            let cards = VaultCallerResolver.agtopCards(
-                hosts: alive, sessions: sessions, paneCards: panes, table: processes,
-                masterPid: Int(getpid()), started: started
-            )
-            out.merge(cards) { pane, _ in pane }
+            out.merge(VaultCallerResolver.agtopCards(hosts: hosts, sessions: sessions)) { pane, _ in pane }
         }
         return out
     }
@@ -307,7 +275,7 @@ public struct LiveVaultCallerResolver: Sendable {
         if chain.isEmpty {
             KanbanCodeLog.warn("vault", "caller pid \(pid) is not in the process table (\(table.count) processes)")
         }
-        var card = VaultCallerResolver.card(for: pid, table: table, sessionPids: await sessionPids(table: table))
+        var card = VaultCallerResolver.card(for: pid, table: table, sessionPids: await sessionPids())
         #if os(Linux)
         if card == nil, let openClaw = OpenClawLayout.load() {
             card = openClaw.principal(chain: chain, cgroup: OpenClawLayout.procCgroup, cwd: OpenClawLayout.procCwd)
