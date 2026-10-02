@@ -114,6 +114,13 @@ extension MasterEngine {
         }
     }
 
+    /// A permission prompt for AskUserQuestion or ExitPlanMode (rush asks
+    /// them through permissions): the transcript raises those as a question
+    /// or a plan already.
+    nonisolated static func isQuestionOrPlan(_ text: String) -> Bool {
+        text.contains("AskUserQuestion") || text.contains("ExitPlanMode")
+    }
+
     /// The tool call a rush `needs` line asks permission for; nil for a
     /// question or a plan, which the transcript raises.
     nonisolated static func rushPermissionNeed(_ needs: String) -> String? {
@@ -130,9 +137,11 @@ extension MasterEngine {
               store.state.isOwnedLocally(link), link.parentCardId == nil, !link.manuallyArchived
         else { return }
         if store.state.openAttentionRequests.contains(where: { $0.sessionId == sessionId && $0.kind == .permission }) { return }
+        if let message, Self.isQuestionOrPlan(message) { return }
         var body = message ?? "Waiting for your permission"
         if let path = link.sessionLink?.sessionPath,
            let tool = AttentionDetector.pendingToolCall(inLines: AttentionDetector.tailLines(path: path, bytes: 256 * 1024)) {
+            if Self.isQuestionOrPlan(tool) { return }
             body += "\n\n" + tool
         }
         let id = "perm_\(sessionId.prefix(8))_\(Int(time.timeIntervalSince1970))"
