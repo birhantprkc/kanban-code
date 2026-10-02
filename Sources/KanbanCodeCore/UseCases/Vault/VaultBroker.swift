@@ -396,7 +396,15 @@ public actor VaultBroker {
                     secret: s.name, rules: s.rules, command: req.command ?? "(no command given)",
                     reason: req.reason, cardTitle: title, cwd: req.cwd, prompts: prompts
                 )
-                group.addTask { (i, VaultPolicy.afterJev(await jev.judge(question))) }
+                let subject = "\(s.name) for \(caller.cardId ?? "outside")"
+                let evidence = prompts.map { "\($0.typed.count) prompts entered in the card, \($0.delivered.count) from other senders" }
+                    ?? "no card transcript"
+                group.addTask {
+                    let verdict = await jev.judge(question)
+                    let answer = verdict.map { "\($0.choice.rawValue) \(Int(($0.confidence * 100).rounded()))%" } ?? "no answer"
+                    KanbanCodeLog.info("vault", "Jev on \(subject): \(answer) (\(evidence))")
+                    return (i, VaultPolicy.afterJev(verdict))
+                }
             }
             var out = [(VaultSecret, VaultVerdict)?](repeating: nil, count: secrets.count)
             for await (i, verdict) in group { out[i] = (secrets[i], verdict) }
