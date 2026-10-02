@@ -147,10 +147,47 @@ public enum AttentionDetector {
         return nil
     }
 
-    /// The newest tool call with no result yet, as "Bash: <command>", for
-    /// the body of a permission request.
-    public static func pendingToolCall(inLines lines: [String]) -> String? {
-        var calls: [(id: String, text: String)] = []
+    /// A tool call waiting on a permission prompt.
+    public struct ToolCall: Sendable, Equatable {
+        public var name: String
+        /// The command, file, URL or pattern it acts on.
+        public var detail: String?
+        /// The one-line description Claude gives a Bash call.
+        public var description: String?
+
+        public init(name: String, detail: String? = nil, description: String? = nil) {
+            self.name = name
+            self.detail = detail
+            self.description = description
+        }
+
+        /// "Bash: <command>", for the detail sheet.
+        public var text: String { detail.map { "\(name): \($0)" } ?? name }
+
+        /// One plain line for a notification, never the command itself:
+        /// "Claude wants to run a command: Convert the recording to mp4".
+        public var summary: String {
+            let said = description?.trimmingCharacters(in: .whitespacesAndNewlines)
+                .split(whereSeparator: \.isNewline).first.map(String.init)
+            switch name {
+            case "Bash":
+                if let said, !said.isEmpty { return "Claude wants to run a command: \(AttentionDetector.clipped(said, 120))" }
+                return "Claude wants to run a Bash command"
+            case "Edit", "MultiEdit", "Write", "NotebookEdit":
+                let file = detail.map { ($0 as NSString).lastPathComponent } ?? ""
+                return file.isEmpty ? "Claude wants to edit a file" : "Claude wants to edit \(file)"
+            case "WebFetch":
+                if let host = detail.flatMap({ URL(string: $0)?.host }) { return "Claude wants to fetch a page from \(host)" }
+                return "Claude wants to fetch a web page"
+            default:
+                return "Claude wants to use \(name)"
+            }
+        }
+    }
+
+    /// The newest tool call with no result yet, for a permission request.
+    public static func pendingToolCall(inLines lines: [String]) -> ToolCall? {
+        var calls: [(id: String, call: ToolCall)] = []
         var answered = Set<String>()
         for line in lines {
             guard line.contains("tool_"), let data = line.data(using: .utf8),
@@ -163,13 +200,13 @@ public enum AttentionDetector {
                     let input = block["input"] as? [String: Any] ?? [:]
                     let detail = (input["command"] as? String) ?? (input["file_path"] as? String)
                         ?? (input["url"] as? String) ?? (input["pattern"] as? String)
-                    calls.append((id, detail.map { "\(name): \($0)" } ?? name))
+                    calls.append((id, ToolCall(name: name, detail: detail, description: input["description"] as? String)))
                 } else if block["type"] as? String == "tool_result", let id = block["tool_use_id"] as? String {
                     answered.insert(id)
                 }
             }
         }
-        return calls.last(where: { !answered.contains($0.id) })?.text
+        return calls.last(where: { !answered.contains($0.id) })?.call
     }
 
     static func clipped(_ text: String, _ limit: Int) -> String {

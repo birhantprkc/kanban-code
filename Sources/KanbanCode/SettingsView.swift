@@ -1102,6 +1102,7 @@ struct NotificationSettingsView: View {
     @State private var testResult: String?
     @State private var saveTask: Task<Void, Never>?
     @State private var loaded = false
+    @State private var macProblem: String?
 
     private let settingsStore = SettingsStore()
 
@@ -1120,9 +1121,28 @@ struct NotificationSettingsView: View {
             Section("Mac") {
                 Toggle("Notify on this Mac", isOn: $macNotifications)
                     .onChange(of: macNotifications) { scheduleSave() }
-                Text("Answer from the notification's options, or click it to open the card at the question.")
+                Text("Answer from the notification's options, or click it to open the card at the question. While a request is open the Dock icon shows how many wait for you.")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
+                if macNotifications, let macProblem {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("Requests can go unseen: \(macProblem). Set Kanban Code's notifications to Persistent with sound so an approval waits on screen until you answer.", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                        Button("Open Notification Settings") {
+                            if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(Bundle.main.bundleIdentifier ?? "")") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }
+                        .controlSize(.small)
+                    }
+                }
+            }
+            .task {
+                while !Task.isCancelled {
+                    macProblem = await MacAttentionNotificationClient.deliveryProblem()
+                    try? await Task.sleep(for: .seconds(3))
+                }
             }
 
             Section("Phone") {
@@ -1153,7 +1173,7 @@ struct NotificationSettingsView: View {
                 .disabled(pushoverMode == .disabled)
                 .onChange(of: awayMinutes) { scheduleSave() }
 
-                Text("The phone gets a silent copy at once. It alerts when the request is still open after the delay, or right away when the Mac is idle, locked, closed, asleep or on the screensaver.")
+                Text("The phone alerts when a request is still open after the delay, or right away when the Mac is idle, locked, closed, asleep or on the screensaver. One message per request, since Pushover cannot take a message back.")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
 

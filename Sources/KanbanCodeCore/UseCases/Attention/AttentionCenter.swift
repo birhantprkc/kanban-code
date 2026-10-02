@@ -90,9 +90,11 @@ public actor AttentionCenter: AttentionDelivering {
     public func deliver(_ request: AttentionRequest) async {
         open[request.id] = request
         if delivered[request.id] == nil {
-            delivered[request.id] = restored.removeValue(forKey: request.id) ?? AttentionDeliveryState()
+            let restoredState = restored.removeValue(forKey: request.id)
+            delivered[request.id] = restoredState ?? AttentionDeliveryState()
+            KanbanCodeLog.info("attention", "Raised \(request.id) kind=\(request.kind.rawValue) card=\(request.cardId ?? "none") machine=\(request.machineId ?? "local")\(restoredState.map { " (delivered before a restart: \($0))" } ?? "")")
         }
-        await evaluate(request.id)
+        await evaluate(request.id, explain: true)
     }
 
     public func update(_ request: AttentionRequest) async {
@@ -136,7 +138,7 @@ public actor AttentionCenter: AttentionDelivering {
         save()
     }
 
-    private func evaluate(_ id: String) async {
+    private func evaluate(_ id: String, explain: Bool = false) async {
         guard let request = open[id] else { return }
         let presence = await currentPresence()
         let ownsPhone: Bool
@@ -146,11 +148,23 @@ public actor AttentionCenter: AttentionDelivering {
             ownsPhone = true
         }
         var policy = settings
-        if !ownsPhone || phone == nil { policy.phoneEnabled = false }
+        var phoneNote = ""
+        if !ownsPhone {
+            policy.phoneEnabled = false
+            phoneNote = " (the master that raised it sends to the phone)"
+        } else if phone == nil {
+            policy.phoneEnabled = false
+            if settings.phoneEnabled { phoneNote = " (no phone channel configured)" }
+        }
+        if let phone, !phone.sendsSilentCopy { policy.phoneSilentCopy = false }
         let at = now()
         let steps = AttentionPolicy.steps(
             for: request, delivered: delivered[id] ?? .init(), presence: presence,
             now: at, settings: policy, macAvailable: mac != nil)
+        if explain {
+            let why = AttentionPolicy.explain(request, presence: presence, now: at, settings: policy, macAvailable: mac != nil)
+            KanbanCodeLog.info("attention", "\(id): steps=\(steps.map { "\($0)" }) because \(why)\(phoneNote)")
+        }
         guard !steps.isEmpty else { return }
         let name = await cardName(request.cardId)
         for step in steps {
@@ -181,8 +195,12 @@ public actor AttentionCenter: AttentionDelivering {
     }
 
     private func sendPhone(_ request: AttentionRequest, name: String?, level: PhonePushLevel) async {
+        guard let phone else {
+            KanbanCodeLog.warn("attention", "Phone \(level.rawValue) for \(request.id) not sent: no phone channel")
+            return
+        }
         do {
-            try await phone?.send(request, cardName: name, level: level)
+            try await phone.send(request, cardName: name, level: level)
         } catch {
             KanbanCodeLog.warn("attention", "Phone push of \(request.id) failed: \(error)")
         }

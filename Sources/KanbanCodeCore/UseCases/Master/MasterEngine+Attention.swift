@@ -103,7 +103,7 @@ extension MasterEngine {
         guard let session = store.state.links[cardId]?.tmuxLink?.sessionName, AgtopSessionName.isAgtop(session) else { return }
         let need = store.state.agtopNeeds[session].flatMap(Self.rushPermissionNeed)
         if let need {
-            raisePermissionRequest(sessionId: sessionId, message: "Claude wants to use \(need)", at: Date())
+            raisePermissionRequest(sessionId: sessionId, message: need, at: Date())
             return
         }
         // The scan behind `agtopNeeds` can lag a hook that raised it just now.
@@ -131,25 +131,42 @@ extension MasterEngine {
     }
 
     /// Raises a permission request for a session the hooks reported as
-    /// waiting on a permission prompt.
+    /// waiting on a permission prompt. The body opens with one plain line
+    /// (what notifications show); the tool call follows for the detail sheet.
     public func raisePermissionRequest(sessionId: String, message: String?, at time: Date) {
         guard let link = store.state.links.values.first(where: { $0.sessionLink?.sessionId == sessionId }),
               store.state.isOwnedLocally(link), link.parentCardId == nil, !link.manuallyArchived
         else { return }
         if store.state.openAttentionRequests.contains(where: { $0.sessionId == sessionId && $0.kind == .permission }) { return }
         if let message, Self.isQuestionOrPlan(message) { return }
-        var body = message ?? "Waiting for your permission"
-        if let path = link.sessionLink?.sessionPath,
-           let tool = AttentionDetector.pendingToolCall(inLines: AttentionDetector.tailLines(path: path, bytes: 256 * 1024)) {
-            if Self.isQuestionOrPlan(tool) { return }
-            body += "\n\n" + tool
+        let tool = link.sessionLink?.sessionPath.flatMap {
+            AttentionDetector.pendingToolCall(inLines: AttentionDetector.tailLines(path: $0, bytes: 256 * 1024))
         }
+        if let tool, Self.isQuestionOrPlan(tool.name) { return }
+        let body = Self.permissionBody(message: message, tool: tool)
         let id = "perm_\(sessionId.prefix(8))_\(Int(time.timeIntervalSince1970))"
         store.dispatch(.attentionRaised(AttentionRequest(
             id: id, cardId: link.id, kind: .permission, title: "Permission needed",
             body: AttentionDetector.clipped(body, 1500), options: AttentionDetector.permissionOptions,
             createdAt: time, sessionId: sessionId,
             machineId: store.state.localMachineId.isEmpty ? nil : store.state.localMachineId)))
+    }
+
+    /// A plain first line, then what exactly the tool runs. `message` is the
+    /// hook's text or a rush need ("Bash <command>"); its first word names
+    /// the tool when the transcript shows no pending call.
+    nonisolated static func permissionBody(message: String?, tool: AttentionDetector.ToolCall?) -> String {
+        if let tool {
+            return tool.summary + "\n\n" + tool.text
+        }
+        let text = (message ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if let need = text.split(separator: " ", maxSplits: 1).first.map(String.init),
+           need.first?.isUppercase == true, need.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" }),
+           text.count > need.count, !text.hasPrefix("Claude ") {
+            let call = AttentionDetector.ToolCall(name: need, detail: String(text.dropFirst(need.count)).trimmingCharacters(in: .whitespaces))
+            return call.summary + "\n\n" + call.text
+        }
+        return text.isEmpty ? "Waiting for your permission" : text
     }
 
     /// Follows the hook events of attention: a permission prompt raises a

@@ -22,8 +22,11 @@ public actor MacAttentionNotificationClient: MacAttentionNotifier {
         let center = UNUserNotificationCenter.current()
         let settings = await center.notificationSettings()
         guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else {
-            KanbanCodeLog.info("attention", "Mac notification skipped: authorization=\(settings.authorizationStatus.rawValue)")
+            KanbanCodeLog.warn("attention", "Mac notification for \(request.id) not posted: Kanban Code may not notify (authorization=\(settings.authorizationStatus.rawValue))")
             return
+        }
+        if let problem = Self.deliveryProblem(settings) {
+            KanbanCodeLog.warn("attention", "Mac notification for \(request.id) may go unseen: \(problem)")
         }
         let categoryId = Self.categoryPrefix + request.id
         let actions = request.options.prefix(10).enumerated().map { index, option in
@@ -62,6 +65,29 @@ public actor MacAttentionNotificationClient: MacAttentionNotifier {
         if categories.removeValue(forKey: Self.categoryPrefix + id) != nil {
             center.setNotificationCategories(Set(categories.values))
         }
+    }
+
+    /// What in this Mac's notification settings can make an attention
+    /// notification go unseen, or nil when it stays on screen.
+    public static func deliveryProblem() async -> String? {
+        guard Bundle.main.bundleIdentifier != nil else { return nil }
+        return deliveryProblem(await UNUserNotificationCenter.current().notificationSettings())
+    }
+
+    static func deliveryProblem(_ settings: UNNotificationSettings) -> String? {
+        switch settings.authorizationStatus {
+        case .authorized, .provisional: break
+        case .notDetermined: return "Kanban Code has not asked to send notifications yet"
+        default: return "notifications for Kanban Code are off in System Settings"
+        }
+        var problems: [String] = []
+        switch settings.alertStyle {
+        case .none: problems.append("they show no banner, only in Notification Center")
+        case .banner: problems.append("they are temporary banners that close after 5 seconds")
+        default: break
+        }
+        if settings.soundSetting != .enabled { problems.append("they play no sound") }
+        return problems.isEmpty ? nil : problems.joined(separator: " and ")
     }
 
     static func kindLine(_ kind: AttentionRequest.Kind) -> String {

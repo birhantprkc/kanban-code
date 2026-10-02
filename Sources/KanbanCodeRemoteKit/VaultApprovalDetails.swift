@@ -153,7 +153,8 @@ public enum AttentionCopy {
     // MARK: Notifications
 
     /// Title and body of a notification for `request`.
-    public static func notification(for request: AttentionRequest, cardName: String?) -> (title: String, body: String) {
+    public static func notification(for request: AttentionRequest, cardName rawCardName: String?) -> (title: String, body: String) {
+        let cardName = rawCardName.map { shortName($0) }
         switch request.kind {
         case .vaultApproval:
             return (request.title, request.body)
@@ -166,9 +167,33 @@ public enum AttentionCopy {
             guard let cardName else { return (request.title, request.body) }
             return ("\(cardName) wants you to approve a plan", request.body)
         case .permission:
-            guard let cardName else { return (request.title, request.body) }
-            return ("\(cardName) needs your permission", request.body)
+            // The body opens with one plain line; the command after it is
+            // for the detail sheet.
+            let summary = firstParagraph(request.body)
+            guard let cardName else { return (request.title, summary) }
+            return ("\(cardName) needs your permission", summary)
         }
+    }
+
+    /// Longest card name a notification title carries.
+    public static let cardNameLimit = 40
+
+    /// `name` cut to `limit` characters at a word boundary, with "...": a
+    /// card named after its whole first prompt still makes a short title.
+    public static func shortName(_ name: String, limit: Int = cardNameLimit) -> String {
+        let flat = name.split(whereSeparator: \.isNewline).joined(separator: " ")
+            .trimmingCharacters(in: .whitespaces)
+        guard flat.count > limit else { return flat }
+        let head = flat.prefix(limit)
+        let cut = head.lastIndex(of: " ").map { head[..<$0] } ?? head
+        return cut.trimmingCharacters(in: .whitespaces.union(.punctuationCharacters)) + "..."
+    }
+
+    /// Text up to the first blank line.
+    public static func firstParagraph(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let range = trimmed.range(of: "\n\n") else { return trimmed }
+        return String(trimmed[..<range.lowerBound])
     }
 
     /// "Kanban Chat Claude wants AWS lw-dev access".
@@ -186,8 +211,8 @@ public enum AttentionCopy {
 
     static func subject(_ details: VaultApprovalDetails) -> String {
         switch details.origin {
-        case .card: details.principal ?? "A card"
-        case .openClaw: details.principal.map { "OpenClaw agent \($0)" } ?? "An OpenClaw agent"
+        case .card: details.principal.map { shortName($0) } ?? "A card"
+        case .openClaw: details.principal.map { "OpenClaw agent \(shortName($0))" } ?? "An OpenClaw agent"
         case .outside: "A process outside any card"
         }
     }
@@ -210,6 +235,7 @@ public enum AttentionCopy {
             return "wants to delete \(things)"
         case .edit:
             let what = details.changes.isEmpty ? "settings" : list(details.changes)
+            if labels.count > 1 { return "wants to change the \(what) of \(things)" }
             return "wants to change \(things) \(what)"
         }
     }

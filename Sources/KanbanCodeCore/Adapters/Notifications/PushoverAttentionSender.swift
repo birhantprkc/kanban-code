@@ -4,14 +4,16 @@ import KanbanCodeRemoteKit
 import FoundationNetworking
 #endif
 
-/// Sends attention requests to the phone through Pushover. The silent copy
-/// goes at the lowest priority (listed in the app, no notification); the
-/// alert at high priority, which iOS shows as time sensitive. Pushover
-/// cannot delete a delivered message, so a resolved request stays there.
+/// Sends attention requests to the phone through Pushover, as one alert at
+/// high priority, which iOS shows as time sensitive. Pushover cannot delete
+/// or replace a delivered message, so it takes no silent copy first (that
+/// would list every request twice) and a resolved request stays there.
 public struct PushoverAttentionSender: PhonePushSender {
     public let token: String
     public let userKey: String
     private let apiURL = URL(string: "https://api.pushover.net/1/messages.json")!
+
+    public var sendsSilentCopy: Bool { false }
 
     public init(token: String, userKey: String) {
         self.token = token
@@ -58,12 +60,18 @@ public struct PushoverAttentionSender: PhonePushSender {
         let encoded = (body.percentEncodedQuery ?? "").replacingOccurrences(of: "+", with: "%2B")
         urlRequest.httpBody = Data(encoded.utf8)
         let (data, response) = try await URLSession.shared.data(for: urlRequest)
-        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+        guard (200...299).contains(status) else {
             let detail = String(data: data, encoding: .utf8) ?? ""
-            KanbanCodeLog.warn("attention", "Pushover refused \(request.id): \(detail.prefix(300))")
+            KanbanCodeLog.warn("attention", "Pushover refused \(request.id): HTTP \(status) \(detail.prefix(300))")
             throw NotificationError.pushoverFailed
         }
-        KanbanCodeLog.info("attention", "Pushover \(level.rawValue) sent for \(request.id)")
+        KanbanCodeLog.info("attention", "Pushover \(level.rawValue) sent for \(request.id): HTTP \(status) request=\(Self.requestId(data) ?? "?")")
+    }
+
+    /// The `request` id Pushover answers with, to look a message up later.
+    static func requestId(_ data: Data) -> String? {
+        (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["request"] as? String
     }
 
     public func withdraw(_ request: AttentionRequest) async {}

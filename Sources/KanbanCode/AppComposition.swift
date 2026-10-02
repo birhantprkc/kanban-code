@@ -211,7 +211,7 @@ final class AppComposition {
         }
         let attentionCenter = AttentionCenter(
             settings: notifications.attentionPolicy,
-            mac: MacAttentionNotificationClient(),
+            mac: DockAttentionNotifier(MacAttentionNotificationClient()),
             phone: notifications.phoneSender,
             localPresence: { presence.snapshot() },
             cardName: { [weak boardStore] id in

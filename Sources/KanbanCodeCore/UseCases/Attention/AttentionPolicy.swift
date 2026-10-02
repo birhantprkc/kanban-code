@@ -13,17 +13,20 @@ public struct AttentionPolicySettings: Sendable, Equatable {
     public var idleThreshold: TimeInterval
     /// A presence report older than this is not trusted: the Mac counts as away.
     public var presenceMaxAge: TimeInterval
+    /// Send a silent phone copy before the alert.
+    public var phoneSilentCopy: Bool
 
     public init(
         macNotifications: Bool = true, phoneEnabled: Bool = true,
         phoneAlertDelay: TimeInterval = 180, idleThreshold: TimeInterval = 120,
-        presenceMaxAge: TimeInterval = 90
+        presenceMaxAge: TimeInterval = 90, phoneSilentCopy: Bool = true
     ) {
         self.macNotifications = macNotifications
         self.phoneEnabled = phoneEnabled
         self.phoneAlertDelay = phoneAlertDelay
         self.idleThreshold = idleThreshold
         self.presenceMaxAge = presenceMaxAge
+        self.phoneSilentCopy = phoneSilentCopy
     }
 }
 
@@ -87,10 +90,39 @@ public enum AttentionPolicy {
         let away = macIsAway(presence, now: now, settings: settings)
         if !delivered.phoneAlertSent, waited || away {
             steps.append(.phoneAlert)
-        } else if !delivered.phoneSilentSent, !delivered.phoneAlertSent {
+        } else if settings.phoneSilentCopy, !delivered.phoneSilentSent, !delivered.phoneAlertSent {
             steps.append(.phoneSilent)
         }
         return steps
+    }
+
+    /// Why `steps` chose what it did, in a few words, for the log.
+    public static func explain(
+        _ request: AttentionRequest, presence: MacPresence?, now: Date,
+        settings: AttentionPolicySettings, macAvailable: Bool
+    ) -> String {
+        guard request.isOpen else { return "resolved" }
+        if isLookingAt(request, presence, now: now, settings: settings) {
+            return "Rogerio is looking at card \(request.cardId ?? "?"), no notification"
+        }
+        let where_: String
+        if presence == nil {
+            where_ = "no presence report (counts as away)"
+        } else if macIsAway(presence, now: now, settings: settings) {
+            where_ = "Mac away"
+        } else {
+            where_ = "Mac in use"
+        }
+        let mac = !macAvailable ? "no Mac notifier" : settings.macNotifications ? "Mac on" : "Mac notifications off in Settings"
+        let phone: String
+        if !settings.phoneEnabled {
+            phone = "phone off"
+        } else {
+            let alertAt = request.createdAt.addingTimeInterval(settings.phoneAlertDelay)
+            let silent = settings.phoneSilentCopy ? "silent copy first" : "no silent copy"
+            phone = "phone on (\(silent), alert at \(ISO8601DateFormatter().string(from: alertAt)) or when away)"
+        }
+        return "\(where_); \(mac); \(phone)"
     }
 
     /// When the request next needs a look, for a timer: the phone alert

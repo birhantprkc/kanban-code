@@ -153,7 +153,7 @@ struct AttentionEngineTests {
     @Test("the pending tool call names a permission request")
     func pendingTool() {
         let use = #"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"rm -rf build"}}]}}"#
-        #expect(AttentionDetector.pendingToolCall(inLines: [use]) == "Bash: rm -rf build")
+        #expect(AttentionDetector.pendingToolCall(inLines: [use])?.text == "Bash: rm -rf build")
         let result = #"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1"}]}}"#
         #expect(AttentionDetector.pendingToolCall(inLines: [use, result]) == nil)
     }
