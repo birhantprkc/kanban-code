@@ -9,6 +9,7 @@ struct KanbanCodeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     init() {
+        InheritedSessionEnvironment.scrub()
         MainThreadWatchdog.shared.start()
         MemoryDiagnostics.shared.start()
         ChatBootstrap.run()
