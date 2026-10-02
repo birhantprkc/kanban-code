@@ -6,6 +6,8 @@ import KanbanCodeCore
 /// embedded terminal, the app delegate, chat views) reach tmux and the boxd
 /// supervisor through here instead of building their own adapters.
 enum AppServices {
+    /// Answers an attention request from a Mac notification action.
+    nonisolated(unsafe) static var resolveAttention: (@Sendable (String, String) async -> Void)?
     /// Boxd machines of the org and whether the boxd CLI answers, as the
     /// launch dialogs last read them; launches from the remote API use them.
     @MainActor static var boxdMachineNames: [String] = []

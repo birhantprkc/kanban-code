@@ -39,6 +39,12 @@ public final class MasterEngine {
     /// Card sync with the other masters; nil when there are none.
     public var peerSync: PeerSync?
 
+    /// Delivers attention requests to the Mac and the phone; nil until the
+    /// app or the server sets it up.
+    public var attentionCenter: AttentionCenter?
+    /// What the attention scan last saw of each transcript, by path.
+    var attentionScanMarks: [String: AttentionScanMark] = [:]
+
     /// Wakes the channels mirror after a channel write.
     let channelsPoke = AsyncSignal()
     /// Display name of the channels home while it is another master.

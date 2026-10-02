@@ -359,6 +359,18 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
         await runTmux(RemoteTerminalScroll.tmuxCommands(session: sessionName, lines: lines), sessionName)
     }
 
+    public func attention() async -> [AttentionRequest] {
+        await MainActor.run { store.state.openAttentionRequests }
+    }
+
+    public func resolveAttention(id: String, resolution: String, by: String) async throws {
+        try await engine.resolveAttention(id: id, resolution: resolution, by: by)
+    }
+
+    public func reportPresence(_ presence: MacPresence) async {
+        await engine.attentionCenter?.reportPresence(presence)
+    }
+
     public func interrupt(cardId: String) async throws {
         if let owner = await ownerClient(cardId) {
             return try await forwarded { try await owner.interrupt(cardId: cardId) }
@@ -581,6 +593,7 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
             _ = store.state.agtopQueues
             _ = store.state.configuredProjects
             _ = store.state.peerStatuses
+            _ = store.state.attentionRequests
         } onChange: {
             continuation.yield()
             Task { @MainActor in observe(store: store, continuation: continuation, alive: alive) }

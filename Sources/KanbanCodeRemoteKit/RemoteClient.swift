@@ -201,6 +201,26 @@ public struct RemoteClient: Sendable {
         try await send(makeRequest("POST", "v1/cards/\(Self.escape(cardId))/resume"))
     }
 
+    // MARK: Attention
+
+    /// Open decisions agents wait on, oldest first.
+    public func attention() async throws -> [AttentionRequest] {
+        let list: AttentionListResponse = try await send(makeRequest("GET", "v1/attention"))
+        return list.requests
+    }
+
+    /// Answers a decision: `resolution` is one of its options or free text.
+    public func resolveAttention(id: String, resolution: String, by: String? = nil) async throws {
+        try await sendEmpty(makeRequest("POST", "v1/attention/\(Self.escape(id))/resolve",
+                                        body: AttentionResolveRequest(resolution: resolution, by: by)))
+    }
+
+    /// Reports where the Mac user is, so a master without a screen knows
+    /// when to alert the phone.
+    public func reportPresence(_ presence: MacPresence) async throws {
+        try await sendEmpty(makeRequest("POST", "v1/attention/presence", body: presence))
+    }
+
     // MARK: Requests
 
     /// Builds the request for `path` (relative to the base URL, no leading slash).

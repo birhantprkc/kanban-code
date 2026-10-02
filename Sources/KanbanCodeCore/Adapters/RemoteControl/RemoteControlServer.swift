@@ -375,6 +375,9 @@ public final class RemoteControlServer: Sendable {
                 }
                 return .response(.json(try await host.runCLI(body)))
             }
+            if rest.first == "attention" {
+                return .response(try await routeAttention(method: method, rest: rest, body: request.body, device: device))
+            }
             if rest.count >= 2, rest[0] == "channels", rest[1] == "files" {
                 let path = rest.dropFirst(2).joined(separator: "/")
                 switch (method, path.isEmpty) {
@@ -535,6 +538,33 @@ public final class RemoteControlServer: Sendable {
         }
     }
 
+    private func routeAttention(method: String, rest: [String], body: Data, device: RemoteDevice) async throws -> RemoteHTTPResponse {
+        switch (method, rest.count) {
+        case ("GET", 1):
+            return .json(AttentionListResponse(requests: await host.attention()))
+        case ("POST", 2) where rest[1] == "presence":
+            guard device.scope == .full else { return .error(403, "the \(device.scope.rawValue) scope cannot report presence") }
+            guard let presence = try? JSONDecoder.remote.decode(MacPresence.self, from: body) else {
+                return .error(400, "body must be a MacPresence")
+            }
+            await host.reportPresence(presence)
+            return .noContent
+        case ("POST", 3) where rest[2] == "resolve":
+            // An agent must never answer what it is waiting on.
+            guard device.scope == .full else { return .error(403, "the \(device.scope.rawValue) scope cannot resolve attention requests") }
+            guard let resolve = try? JSONDecoder.remote.decode(AttentionResolveRequest.self, from: body),
+                  !resolve.resolution.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return .error(400, "body must be {\"resolution\": \"...\"}")
+            }
+            try await host.resolveAttention(id: rest[1], resolution: resolve.resolution, by: resolve.by ?? device.name)
+            return .noContent
+        case (_, 1), (_, 2), (_, 3):
+            return .error(405, "method \(method) not allowed on /v1/\(rest.joined(separator: "/"))")
+        default:
+            return .error(404, "no route for \(method) /v1/\(rest.joined(separator: "/"))")
+        }
+    }
+
     /// `?all=1` asks for every card instead of the working set.
     static func wantsAll(_ request: RemoteHTTPRequest) -> Bool {
         guard let value = request.query["all"]?.lowercased() else { return false }
@@ -612,6 +642,10 @@ public final class RemoteControlServer: Sendable {
             if let text = self.encodedEvent(tracker.fullBoard(await current())) {
                 try? await ws.sendText(text)
             }
+            var lastAttention = await host.attention()
+            if let text = self.encodedEvent(RemoteEvent(type: .attention, attention: lastAttention)) {
+                try? await ws.sendText(text)
+            }
             var lastPush = Date()
             for await next in triggers {
                 if Task.isCancelled { return }
@@ -625,6 +659,13 @@ public final class RemoteControlServer: Sendable {
                     if Task.isCancelled { return }
                     // The app signals many changes that leave the wire board as it was.
                     event = tracker.delta(await current())
+                }
+                let attention = await host.attention()
+                if attention != lastAttention {
+                    lastAttention = attention
+                    if let text = self.encodedEvent(RemoteEvent(type: .attention, attention: attention)) {
+                        do { try await ws.sendText(text) } catch { return }
+                    }
                 }
                 guard let event, let text = self.encodedEvent(event) else { continue }
                 lastPush = Date()

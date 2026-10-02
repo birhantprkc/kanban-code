@@ -19,6 +19,8 @@ final class ServerMaster {
     let peerSync: PeerSync
     let agentSync: AgentSyncEngine
     let reconciles: Bool
+    let effectHandler: EffectHandler
+    var attentionCenter: AttentionCenter?
 
     init(home: String, reconciles: Bool) {
         self.home = home
@@ -46,9 +48,9 @@ final class ServerMaster {
         let tmux = RoutingTmuxAdapter()
         let effectHandler = EffectHandler(
             coordinationStore: coordination,
-            tmuxAdapter: tmux,
-            notifier: Self.notifier(settings)
+            tmuxAdapter: tmux
         )
+        self.effectHandler = effectHandler
         let store = BoardStore(
             effectHandler: effectHandler,
             discovery: discovery,
@@ -75,11 +77,8 @@ final class ServerMaster {
             activityDetector: activityDetector,
             tmux: tmux,
             prTracker: GhCliAdapter(),
-            notifier: Self.notifier(settings),
             registry: registry
         )
-        orchestrator.localMachineId = identity.id
-        orchestrator.notifiesUnlinkedSessions = false
         orchestrator.setDispatch { [weak store] action in store?.dispatch(action) }
         self.orchestrator = orchestrator
 
@@ -112,15 +111,27 @@ final class ServerMaster {
         }
     }
 
-    /// Pushover when configured, nothing otherwise: a headless host has no
-    /// notification center.
-    nonisolated static func notifier(_ settings: Settings?) -> NotifierPort? {
-        guard let notifications = settings?.notifications,
-              notifications.pushoverMode != .disabled,
-              let token = notifications.pushoverToken, let user = notifications.pushoverUserKey,
-              !token.isEmpty, !user.isEmpty
-        else { return nil }
-        return PushoverClient(token: token, userKey: user)
+    /// Attention requests from this host go to the phone only: there is no
+    /// screen here. The Mac's reported presence decides when it alerts.
+    private func startAttention(settings: Settings?) {
+        let notifications = settings?.notifications ?? NotificationSettings()
+        let store = self.store
+        let center = AttentionCenter(
+            settings: notifications.attentionPolicy,
+            phone: notifications.phoneSender,
+            cardName: { id in await MainActor.run { id.flatMap { store.state.links[$0]?.displayTitle } } },
+            localMachineId: { [identity] in identity.id })
+        attentionCenter = center
+        engine.attentionCenter = center
+        let effectHandler = self.effectHandler
+        Task { await effectHandler.setAttentionDelivery(center) }
+        let engine = self.engine
+        orchestrator.onAttentionHook = { event in
+            await MainActor.run { engine.handleAttentionHook(event) }
+        }
+        Task { await center.start() }
+        Task { await engine.runAttentionMonitor() }
+        Task { await engine.runAttentionPeerSync() }
     }
 
     /// Loads the board, then runs the loops until the task is cancelled.
@@ -134,6 +145,7 @@ final class ServerMaster {
         Task.detached { await peerSync.run() }
         let agentSync = self.agentSync
         Task.detached { await agentSync.run() }
+        startAttention(settings: Self.readSettings(home: home).settings)
         Task { await self.settingsLoop() }
         orchestrator.start()
         let orchestrator = self.orchestrator
@@ -181,7 +193,7 @@ final class ServerMaster {
             let current = Self.readSettings(home: home)
             guard current.raw != last.raw, let settings = current.settings else { continue }
             if settings.peers != last.settings?.peers { await peerSync.setPeers(settings.peers) }
-            orchestrator.updateNotifier(Self.notifier(settings))
+            await attentionCenter?.configure(settings: settings.notifications.attentionPolicy, phone: settings.notifications.phoneSender)
             last = current
             await store.loadSettingsAndCache()
         }

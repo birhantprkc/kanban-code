@@ -72,6 +72,16 @@ public protocol RemoteControlHost: AnyObject, Sendable {
     func channelFile(path: String, offset: Int) async throws -> Data
     /// Creates a file of `channels/` that does not exist yet; false when it does.
     func seedChannelFile(path: String, data: Data) async throws -> Bool
+
+    /// Open attention requests, oldest first.
+    func attention() async -> [AttentionRequest]
+
+    /// Answers an attention request in its session (or for the vault) and
+    /// clears it on every device. `by` names the device acting.
+    func resolveAttention(id: String, resolution: String, by: String) async throws
+
+    /// Presence the Mac reported, for the escalation of the requests here.
+    func reportPresence(_ presence: MacPresence) async
 }
 
 extension RemoteControlHost {
@@ -116,6 +126,14 @@ extension RemoteControlHost {
     public func seedChannelFile(path: String, data: Data) async throws -> Bool {
         throw RemoteHostError.notFound("this host does not serve channels")
     }
+
+    public func attention() async -> [AttentionRequest] { [] }
+
+    public func resolveAttention(id: String, resolution: String, by: String) async throws {
+        throw RemoteHostError.notFound("this host has no attention requests")
+    }
+
+    public func reportPresence(_ presence: MacPresence) async {}
 }
 
 /// A host call that failed for a reason the client should see, with the

@@ -33,6 +33,7 @@ public enum AttentionDetector {
     public static let tailBytes = 768 * 1024
 
     public static let planOptions = ["Yes, approve the plan", "No, keep planning"]
+    public static let permissionOptions = ["Allow", "Deny"]
 
     /// The newest question or plan approval in `lines` (JSONL, oldest first)
     /// that has no tool result and no later prompt from the user.
@@ -128,6 +129,44 @@ public enum AttentionDetector {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.hasPrefix("<command-") || trimmed.hasPrefix("<local-command")
             || trimmed.hasPrefix("<system-reminder>") || trimmed.hasPrefix("<task-notification>")
+    }
+
+    /// Time of the newest line that carries one.
+    public static func lastTimestamp(inLines lines: [String]) -> Date? {
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        for line in lines.reversed() {
+            guard let range = line.range(of: "\"timestamp\":\"") else { continue }
+            let rest = line[range.upperBound...]
+            guard let end = rest.firstIndex(of: "\"") else { continue }
+            if let date = iso.date(from: String(rest[..<end])) { return date }
+        }
+        return nil
+    }
+
+    /// The newest tool call with no result yet, as "Bash: <command>", for
+    /// the body of a permission request.
+    public static func pendingToolCall(inLines lines: [String]) -> String? {
+        var calls: [(id: String, text: String)] = []
+        var answered = Set<String>()
+        for line in lines {
+            guard line.contains("tool_"), let data = line.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  obj["isSidechain"] as? Bool != true,
+                  let message = obj["message"] as? [String: Any],
+                  let blocks = message["content"] as? [[String: Any]] else { continue }
+            for block in blocks {
+                if block["type"] as? String == "tool_use", let id = block["id"] as? String, let name = block["name"] as? String {
+                    let input = block["input"] as? [String: Any] ?? [:]
+                    let detail = (input["command"] as? String) ?? (input["file_path"] as? String)
+                        ?? (input["url"] as? String) ?? (input["pattern"] as? String)
+                    calls.append((id, detail.map { "\(name): \($0)" } ?? name))
+                } else if block["type"] as? String == "tool_result", let id = block["tool_use_id"] as? String {
+                    answered.insert(id)
+                }
+            }
+        }
+        return calls.last(where: { !answered.contains($0.id) })?.text
     }
 
     static func clipped(_ text: String, _ limit: Int) -> String {

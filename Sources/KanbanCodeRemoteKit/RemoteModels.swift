@@ -541,6 +541,9 @@ public struct RemoteEvent: Codable, Sendable, Equatable {
         case cards
         /// Sent every 20 s so idle connections stay up.
         case ping
+        /// `attention` holds every open attention request; sent on connect
+        /// and whenever the list changes.
+        case attention
     }
 
     public var type: Kind
@@ -548,16 +551,19 @@ public struct RemoteEvent: Codable, Sendable, Equatable {
     public var upserted: [RemoteCard]?
     public var removed: [String]?
     public var projects: [RemoteProject]?
+    public var attention: [AttentionRequest]?
 
     public init(
         type: Kind, board: RemoteBoard? = nil, upserted: [RemoteCard]? = nil,
-        removed: [String]? = nil, projects: [RemoteProject]? = nil
+        removed: [String]? = nil, projects: [RemoteProject]? = nil,
+        attention: [AttentionRequest]? = nil
     ) {
         self.type = type
         self.board = board
         self.upserted = upserted
         self.removed = removed
         self.projects = projects
+        self.attention = attention
     }
 
     /// Applies a `board` or `cards` event to a board the client holds.
@@ -578,7 +584,7 @@ public struct RemoteEvent: Codable, Sendable, Equatable {
             }
             if let projects { current.projects = projects }
             board = current
-        case .ping:
+        case .ping, .attention:
             break
         }
     }

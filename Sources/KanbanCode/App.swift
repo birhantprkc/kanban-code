@@ -1,4 +1,5 @@
 import SwiftUI
+import LocalAuthentication
 import AppKit
 import UserNotifications
 import KanbanCodeCore
@@ -654,6 +655,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let info = response.notification.request.content.userInfo
+        if let attentionId = info[MacAttentionNotificationClient.requestIdKey] as? String,
+           response.actionIdentifier.hasPrefix(MacAttentionNotificationClient.optionPrefix),
+           let index = Int(response.actionIdentifier.dropFirst(MacAttentionNotificationClient.optionPrefix.count)) {
+            // An option picked on the banner answers without opening the app.
+            let request = MainActor.assumeIsolated { AppComposition.shared.store.state.attentionRequests[attentionId] }
+            if let request, request.options.indices.contains(index) {
+                let resolution = request.options[index]
+                let biometry = request.requiresBiometry
+                Task {
+                    if biometry, !(await Self.confirmWithBiometry(reason: "Approve: \(request.title)")) { return }
+                    await AppServices.resolveAttention?(attentionId, resolution)
+                }
+            }
+            completionHandler()
+            return
+        }
         if let cardId = info["cardId"] as? String {
             NotificationCenter.default.post(name: .kanbanCodeSelectCard, object: nil, userInfo: ["cardId": cardId])
         } else if let kind = info["chatKind"] as? String {
@@ -680,6 +697,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             NSApp.activate(ignoringOtherApps: true)
         }
         completionHandler()
+    }
+}
+
+extension AppDelegate {
+    /// Touch ID (or the password) before an approval that asks for it.
+    static func confirmWithBiometry(reason: String) async -> Bool {
+        let context = LAContext()
+        var error: NSError?
+        guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else { return false }
+        return (try? await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)) ?? false
     }
 }
 

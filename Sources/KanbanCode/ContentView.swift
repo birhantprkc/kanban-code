@@ -240,22 +240,15 @@ struct ContentView: View {
         return settings.enabledAssistants
     }
 
-    static func loadPushoverConfig() -> (client: PushoverClient?, mode: PushoverMode) {
-        let settingsPath = (NSHomeDirectory() as NSString)
-            .appendingPathComponent(".kanban-code/settings.json")
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: settingsPath)),
-              let settings = try? JSONDecoder().decode(Settings.self, from: data) else {
-            return (nil, .disabled)
+    /// Tells the attention policy which tab of the open card is on screen.
+    private func reportPresenceTab() {
+        let tab: String
+        switch detailTab {
+        case .terminal: tab = "terminal"
+        case .history: tab = "chat"
+        default: tab = detailTab.rawValue
         }
-
-        let mode = settings.notifications.pushoverMode
-        guard mode != .disabled,
-              let token = settings.notifications.pushoverToken,
-              let user = settings.notifications.pushoverUserKey,
-              !token.isEmpty, !user.isEmpty else {
-            return (nil, .disabled)
-        }
-        return (PushoverClient(token: token, userKey: user), mode)
+        MacPresenceMonitor.shared.setTab(tab)
     }
 
     private func updateRegisteredAssistants(_ enabled: [CodingAssistant]) {
@@ -997,9 +990,7 @@ struct ContentView: View {
                     settingsStore: settingsStore,
                     onComplete: {
                         showOnboarding = false
-                        let (pushover, mode) = Self.loadPushoverConfig()
-                        let newNotifier = CompositeNotifier(primary: pushover, fallback: MacOSNotificationClient(), pushoverMode: mode)
-                        orchestrator.updateNotifier(newNotifier)
+                        NotificationCenter.default.post(name: .kanbanCodeSettingsChanged, object: nil)
                     }
                 )
             }
@@ -1395,8 +1386,13 @@ struct ContentView: View {
             }
     }
 
-    private var boardWithHandlers: some View {
+    private var boardWithPresence: some View {
         boardWithAlerts
+            .onChange(of: detailTab, initial: true) { reportPresenceTab() }
+    }
+
+    private var boardWithHandlers: some View {
+        boardWithPresence
             .task {
                 (NSApp.delegate as? AppDelegate)?.register(channelShareController: shareController)
                 // Show onboarding wizard on first launch
@@ -1574,10 +1570,6 @@ struct ContentView: View {
                     await store.loadSettingsAndCache()
                     await store.reconcile()
                     applyAppearance()
-                    // Refresh notifier so Pushover credentials changes take effect immediately
-                    let (pushover, mode) = Self.loadPushoverConfig()
-                    let newNotifier = CompositeNotifier(primary: pushover, fallback: MacOSNotificationClient(), pushoverMode: mode)
-                    orchestrator.updateNotifier(newNotifier)
                     // Update registry for enabled/disabled assistants
                     if let settings = try? await settingsStore.read() {
                         updateRegisteredAssistants(settings.enabledAssistants)
