@@ -15,17 +15,23 @@ public struct RemoteMoveRequest: Codable, Sendable, Equatable {
 }
 
 /// PATCH /v1/cards/{id}: edits of the card any master may make. Each field
-/// is optional; the ones given apply in the order name, column, archive.
+/// is optional; the ones given apply in the order name, column, archived,
+/// pinned.
 public struct RemoteCardUpdate: Codable, Sendable, Equatable {
     public var name: String?
     public var column: RemoteColumn?
-    /// true archives the card.
+    /// true archives the card, false brings an archived card back to the
+    /// board (servers listing `RemoteAPI.Feature.cardActions`).
     public var archived: Bool?
+    /// Pins or unpins the card (servers listing `RemoteAPI.Feature.cardActions`).
+    /// Pinning an archived card brings it back, as on the Mac.
+    public var pinned: Bool?
 
-    public init(name: String? = nil, column: RemoteColumn? = nil, archived: Bool? = nil) {
+    public init(name: String? = nil, column: RemoteColumn? = nil, archived: Bool? = nil, pinned: Bool? = nil) {
         self.name = name
         self.column = column
         self.archived = archived
+        self.pinned = pinned
     }
 }
 
@@ -105,6 +111,14 @@ extension RemoteClient {
         let (data, status) = try await rawData(for: request)
         guard (200..<300).contains(status) else { throw RemoteClientError.from(status: status, body: data) }
         return try JSONDecoder.remote.decode(RemoteCard.self, from: data)
+    }
+
+    /// DELETE /v1/cards/{id}: deletes an archived card, its subagents and
+    /// its conversation file.
+    public func deleteCard(cardId: String) async throws {
+        let request = makeRequest("DELETE", "v1/cards/\(Self.escape(cardId))")
+        let (data, status) = try await rawData(for: request)
+        guard (200..<300).contains(status) else { throw RemoteClientError.from(status: status, body: data) }
     }
 
     /// GET /v1/cards/{id}/handover

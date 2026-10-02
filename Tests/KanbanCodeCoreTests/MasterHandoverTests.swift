@@ -316,6 +316,55 @@ struct MasterHandoverTests {
         #expect(box.store.state.links["card_c"]?.ownerMachine == nil)
     }
 
+    @Test("pin, archive, unarchive and delete from the phone apply on either master and converge on both")
+    func cardActionsConverge() async throws {
+        let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("card-actions-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let mac = try TestMaster(name: "mac", root: root)
+        let box = try TestMaster(name: "box", root: root)
+        try await mac.serve()
+        try await box.serve()
+        try await mac.start(peerURL: box.url, peerToken: box.tokenForPeer)
+        try await box.start(peerURL: mac.url, peerToken: mac.tokenForPeer)
+        defer { mac.server.stop(); box.server.stop() }
+        box.store.dispatch(.createManualTask(Link(id: "card_p", name: "Throwaway", projectPath: "/tmp/acme", column: .waiting)))
+        await mac.peerSync.pullAll()
+        await box.peerSync.pullAll()
+
+        let macClient = RemoteClient(baseURL: URL(string: mac.url)!, token: try mac.devices.add(name: "phone", scope: .full).token)
+        let boxClient = RemoteClient(baseURL: URL(string: box.url)!, token: try box.devices.add(name: "phone", scope: .full).token)
+        #expect(try await macClient.health().supports(RemoteAPI.Feature.cardActions))
+
+        // Pinned on the Mac, the box's own card shows pinned on both.
+        let pinned = try await macClient.updateCard(cardId: "card_p", RemoteCardUpdate(pinned: true))
+        #expect(pinned.pinned)
+        await box.peerSync.pullAll()
+        #expect(box.store.state.links["card_p"]?.isPinned == true)
+        #expect(try await boxClient.card(id: "card_p").pinned)
+
+        // A card on the board is not deleted: archive first, as on the Mac.
+        await #expect(throws: RemoteClientError.self) { try await boxClient.deleteCard(cardId: "card_p") }
+        #expect(box.store.state.links["card_p"] != nil)
+
+        let archived = try await boxClient.updateCard(cardId: "card_p", RemoteCardUpdate(archived: true))
+        #expect(archived.archived && !archived.pinned && archived.column == .allSessions)
+        await mac.peerSync.pullAll()
+        #expect(mac.store.state.links["card_p"]?.manuallyArchived == true)
+
+        let back = try await macClient.updateCard(cardId: "card_p", RemoteCardUpdate(archived: false))
+        #expect(!back.archived && back.column == .backlog)
+        await box.peerSync.pullAll()
+        #expect(box.store.state.links["card_p"]?.manuallyArchived == false)
+
+        _ = try await macClient.updateCard(cardId: "card_p", RemoteCardUpdate(archived: true))
+        await box.peerSync.pullAll()
+        try await boxClient.deleteCard(cardId: "card_p")
+        #expect(box.store.state.links["card_p"] == nil)
+        await mac.peerSync.pullAll()
+        #expect(mac.store.state.links["card_p"] == nil)
+        await #expect(throws: RemoteClientError.self) { _ = try await macClient.card(id: "card_p") }
+    }
+
     @Test("a card that ran over ssh on the peer's machine continues there in the same folder, with its transcript")
     func sshCardMovesToTheMasterOnItsMachine() async throws {
         let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("ssh-handover-\(UUID().uuidString)")

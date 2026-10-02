@@ -624,6 +624,8 @@ public enum Action: Sendable {
     case sessionModelsScanned([String: String])
     case setCardModel(cardId: String, model: String?)
     case archiveCard(cardId: String)
+    /// Brings an archived card back to the board.
+    case unarchiveCard(cardId: String)
     case deleteCard(cardId: String)
     case selectCard(cardId: String?)
     case setPaletteOpen(Bool)
@@ -961,6 +963,17 @@ public enum Reducer {
             : [.stopRemoteMachine(machineName: remote.machineName, reason: .sessionStopped)]
     }
 
+    /// Takes a card out of the archive. A card in All Sessions goes to the
+    /// backlog, and reconciliation promotes it by real activity from there.
+    static func unarchive(_ link: inout Link) {
+        guard link.manuallyArchived else { return }
+        link.manuallyArchived = false
+        if link.column == .allSessions {
+            link.column = .backlog
+            link.manualOverrides.column = false
+        }
+    }
+
     public static func reduce(state: inout AppState, action: Action) -> [Effect] {
         reduce(state: state, action: action)
     }
@@ -1148,14 +1161,7 @@ public enum Reducer {
                 link.pinnedSortOrder = firstOrder - 1
                 // Pinning an archived card brings it back: leaving it archived
                 // pins something that stays hidden in All Sessions.
-                if link.manuallyArchived {
-                    link.manuallyArchived = false
-                    if link.column == .allSessions {
-                        link.column = .backlog
-                        // Let reconciliation promote it by real activity.
-                        link.manualOverrides.column = false
-                    }
-                }
+                Self.unarchive(&link)
             } else {
                 if link.pinnedAt == nil { return [] }
                 link.pinnedAt = nil
@@ -1270,6 +1276,13 @@ public enum Reducer {
             state.links[cardId] = link
             effects.insert(.upsertLink(link), at: 0)
             return effects
+
+        case .unarchiveCard(let cardId):
+            guard var link = state.links[cardId], link.manuallyArchived else { return [] }
+            Self.unarchive(&link)
+            link.updatedAt = .now
+            state.links[cardId] = link
+            return [.upsertLink(link)]
 
         case .deleteCard(let cardId):
             guard state.links[cardId] != nil else { return [] }

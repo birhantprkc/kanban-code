@@ -67,6 +67,7 @@ public enum RemoteBoardMapper {
             queuedPrompts: queued,
             parentCardId: link.parentCardId,
             archived: link.manuallyArchived,
+            pinned: link.isPinned,
             lastActivity: link.lastActivity,
             updatedAt: link.updatedAt,
             machineId: owner,

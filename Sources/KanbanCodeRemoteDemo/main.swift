@@ -398,6 +398,46 @@ final class DemoHost: RemoteControlHost {
         return try cardState(cardId).card
     }
 
+    func updateCard(cardId: String, _ request: RemoteCardUpdate) async throws -> RemoteCard {
+        _ = try cardState(cardId)
+        update(cardId) { c in
+            if let name = request.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty { c.card.title = name }
+            if let column = request.column {
+                c.card.column = column
+                c.card.archived = column == .allSessions
+            }
+            switch request.archived {
+            case true?:
+                c.card.archived = true
+                c.card.column = .allSessions
+                c.card.pinned = false
+                c.card.isLive = false
+                c.card.isBusy = false
+                c.card.terminals = []
+            case false? where c.card.archived:
+                c.card.archived = false
+                c.card.column = .backlog
+            default: break
+            }
+            if let pinned = request.pinned {
+                c.card.pinned = pinned
+                if pinned, c.card.archived {
+                    c.card.archived = false
+                    c.card.column = .backlog
+                }
+            }
+        }
+        return try cardState(cardId).card
+    }
+
+    func deleteCard(cardId: String) async throws {
+        guard try cardState(cardId).card.archived else {
+            throw RemoteHostError.conflict("card \(cardId) is on the board; archive it before deleting it")
+        }
+        state.withLock { $0.cards.removeAll { $0.card.id == cardId } }
+        notify()
+    }
+
     func terminalCommand(cardId: String, sessionName: String) async throws -> [String] {
         let c = try cardState(cardId)
         guard c.card.isLive else { throw RemoteHostError.conflict("card \(cardId) has no live session") }

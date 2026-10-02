@@ -30,7 +30,7 @@ struct RemoteModelsTests {
         let at = Date(timeIntervalSince1970: 1_790_000_000)
         let plain = RemoteCard(id: "c1", title: "t", column: .done, updatedAt: at)
         let json = String(decoding: try JSONEncoder.remote.encode(plain), as: UTF8.self)
-        for key in ["isLive", "isBusy", "archived", "queuedPromptCount", "terminals", "prs", "sessionId"] {
+        for key in ["isLive", "isBusy", "archived", "pinned", "queuedPromptCount", "terminals", "prs", "sessionId"] {
             #expect(!json.contains("\"\(key)\""), "\(key) should be left out")
         }
         #expect(try JSONDecoder.remote.decode(RemoteCard.self, from: Data(json.utf8)) == plain)
@@ -38,7 +38,7 @@ struct RemoteModelsTests {
         let full = RemoteCard(
             id: "c2", title: "t", column: .inProgress, projectPath: "/p", assistant: "codex", runtime: .agtop,
             isLive: true, isBusy: true, sessionId: "s", terminals: [RemoteTerminal(sessionName: "a", label: "A", isPrimary: true)],
-            prs: [RemotePR(number: 1)], queuedPromptCount: 2, parentCardId: "p", archived: true, lastActivity: at, updatedAt: at
+            prs: [RemotePR(number: 1)], queuedPromptCount: 2, parentCardId: "p", archived: true, pinned: true, lastActivity: at, updatedAt: at
         )
         #expect(try JSONDecoder.remote.decode(RemoteCard.self, from: JSONEncoder.remote.encode(full)) == full)
 
@@ -46,6 +46,6 @@ struct RemoteModelsTests {
         let card = try JSONDecoder.remote.decode(RemoteCard.self, from: Data(minimal.utf8))
         #expect(card.assistant == "claude")
         #expect(card.runtime == RemoteRuntime.none)
-        #expect(card.terminals.isEmpty && card.prs.isEmpty && !card.isLive)
+        #expect(card.terminals.isEmpty && card.prs.isEmpty && !card.isLive && !card.pinned)
     }
 }

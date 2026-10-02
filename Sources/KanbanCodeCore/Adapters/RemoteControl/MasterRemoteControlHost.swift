@@ -445,17 +445,40 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
 
     public func updateCard(cardId: String, _ update: RemoteCardUpdate) async throws -> RemoteCard {
         try await MainActor.run { () throws -> RemoteCard in
-            _ = try card(cardId)
+            if update.pinned != nil, try card(cardId).link.parentCardId != nil {
+                throw RemoteHostError.conflict("card \(cardId) is a subagent; pin its parent")
+            }
             if let name = update.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
                 store.dispatch(.renameCard(cardId: cardId, name: name))
             }
             if let column = update.column, let target = KanbanCodeColumn(rawValue: column.rawValue) {
                 store.dispatch(.moveCard(cardId: cardId, to: target))
             }
-            if update.archived == true {
-                store.dispatch(.archiveCard(cardId: cardId))
+            switch update.archived {
+            case true?: store.dispatch(.archiveCard(cardId: cardId))
+            case false?: store.dispatch(.unarchiveCard(cardId: cardId))
+            case nil: break
+            }
+            if let pinned = update.pinned {
+                store.dispatch(.setCardPinned(cardId: cardId, isPinned: pinned))
             }
             return try remoteCard(cardId)
+        }
+    }
+
+    /// Deletes an archived card the way the Mac's Delete Card does: with its
+    /// subagents, its sessions and its conversation file. A card on the
+    /// board is archived first, as on the Mac.
+    public func deleteCard(cardId: String) async throws {
+        try await MainActor.run { () throws -> Void in
+            let link = try card(cardId).link
+            guard link.manuallyArchived else {
+                throw RemoteHostError.conflict("card \(cardId) is on the board; archive it before deleting it")
+            }
+            guard link.source != .githubIssue else {
+                throw RemoteHostError.conflict("card \(cardId) is a GitHub issue; it stays archived")
+            }
+            store.dispatch(.deleteCard(cardId: cardId))
         }
     }
 

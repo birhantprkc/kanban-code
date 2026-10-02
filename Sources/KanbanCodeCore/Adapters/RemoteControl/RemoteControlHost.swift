@@ -54,6 +54,9 @@ public protocol RemoteControlHost: AnyObject, Sendable {
     /// apply here whichever master owns the card, and sync to the others.
     func updateCard(cardId: String, _ update: RemoteCardUpdate) async throws -> RemoteCard
 
+    /// Deletes an archived card; a card still on the board is refused (409).
+    func deleteCard(cardId: String) async throws
+
     /// Continues the card elsewhere: another master (ownership moves there),
     /// a machine this master drives, or back here.
     func moveCard(cardId: String, to target: String) async throws -> RemoteCard
@@ -88,6 +91,10 @@ extension RemoteControlHost {
 
     public func updateCard(cardId: String, _ update: RemoteCardUpdate) async throws -> RemoteCard {
         throw RemoteHostError.notFound("this host does not edit cards")
+    }
+
+    public func deleteCard(cardId: String) async throws {
+        throw RemoteHostError.notFound("this host does not delete cards")
     }
 
     public func editQueuedPrompt(cardId: String, promptId: String, text: String) async throws {

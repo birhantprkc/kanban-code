@@ -20,9 +20,12 @@ public enum RemoteAPI {
         /// GET /v1/machines, and `machine` on tasks naming this master by
         /// its own name.
         public static let machines = "machines"
+        /// `pinned` on cards and on `PATCH /v1/cards/{id}`, `archived: false`
+        /// to unarchive, and `DELETE /v1/cards/{id}`.
+        public static let cardActions = "cardActions"
     }
 
-    public static let features = [Feature.images, Feature.queue, Feature.terminalScroll, Feature.machines]
+    public static let features = [Feature.images, Feature.queue, Feature.terminalScroll, Feature.machines, Feature.cardActions]
 }
 
 /// What a device may do. `full` is a phone: everything, terminals included.
@@ -203,6 +206,8 @@ public struct RemoteCard: Codable, Sendable, Equatable, Identifiable {
     public var queuedPrompts: [RemoteQueuedPrompt]
     public var parentCardId: String?
     public var archived: Bool
+    /// Pinned to the top of the board.
+    public var pinned: Bool
     public var lastActivity: Date?
     public var updatedAt: Date
     /// The master that owns the card and runs its session. Prompts, the
@@ -221,7 +226,7 @@ public struct RemoteCard: Codable, Sendable, Equatable, Identifiable {
         branch: String? = nil, worktreePath: String? = nil, assistant: String = "claude", runtime: RemoteRuntime = .none,
         isLive: Bool = false, isBusy: Bool = false, sessionId: String? = nil, terminals: [RemoteTerminal] = [],
         prs: [RemotePR] = [], queuedPromptCount: Int = 0, queuedPrompts: [RemoteQueuedPrompt] = [],
-        parentCardId: String? = nil, archived: Bool = false,
+        parentCardId: String? = nil, archived: Bool = false, pinned: Bool = false,
         lastActivity: Date? = nil, updatedAt: Date, machineId: String? = nil, machineName: String? = nil,
         sessionStatus: RemoteSessionStatus? = nil
     ) {
@@ -243,6 +248,7 @@ public struct RemoteCard: Codable, Sendable, Equatable, Identifiable {
         self.queuedPrompts = queuedPrompts
         self.parentCardId = parentCardId
         self.archived = archived
+        self.pinned = pinned
         self.lastActivity = lastActivity
         self.updatedAt = updatedAt
         self.machineId = machineId
@@ -284,7 +290,7 @@ public struct RemoteSessionStatus: Codable, Sendable, Equatable {
 extension RemoteCard {
     private enum CodingKeys: String, CodingKey {
         case id, title, column, projectPath, projectName, branch, worktreePath, assistant, runtime
-        case isLive, isBusy, sessionId, terminals, prs, queuedPromptCount, queuedPrompts, parentCardId, archived
+        case isLive, isBusy, sessionId, terminals, prs, queuedPromptCount, queuedPrompts, parentCardId, archived, pinned
         case lastActivity, updatedAt, machineId, machineName, sessionStatus
     }
 
@@ -309,6 +315,7 @@ extension RemoteCard {
             queuedPrompts: try c.decodeIfPresent([RemoteQueuedPrompt].self, forKey: .queuedPrompts) ?? [],
             parentCardId: try c.decodeIfPresent(String.self, forKey: .parentCardId),
             archived: try c.decodeIfPresent(Bool.self, forKey: .archived) ?? false,
+            pinned: try c.decodeIfPresent(Bool.self, forKey: .pinned) ?? false,
             lastActivity: try c.decodeIfPresent(Date.self, forKey: .lastActivity),
             updatedAt: try c.decode(Date.self, forKey: .updatedAt),
             machineId: try c.decodeIfPresent(String.self, forKey: .machineId),
@@ -338,6 +345,7 @@ extension RemoteCard {
         if !queuedPrompts.isEmpty { try c.encode(queuedPrompts, forKey: .queuedPrompts) }
         try c.encodeIfPresent(parentCardId, forKey: .parentCardId)
         if archived { try c.encode(true, forKey: .archived) }
+        if pinned { try c.encode(true, forKey: .pinned) }
         try c.encodeIfPresent(lastActivity, forKey: .lastActivity)
         try c.encode(updatedAt, forKey: .updatedAt)
         try c.encodeIfPresent(machineId, forKey: .machineId)

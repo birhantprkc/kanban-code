@@ -410,9 +410,13 @@ public final class RemoteControlServer: Sendable {
 
             case ("PATCH", "cards/*"):
                 guard let body = try? JSONDecoder.remote.decode(RemoteCardUpdate.self, from: request.body) else {
-                    return .response(.error(400, "body must be {\"name\", \"column\", \"archived\"}, each optional"))
+                    return .response(.error(400, "body must be {\"name\", \"column\", \"archived\", \"pinned\"}, each optional"))
                 }
                 return .response(.json(try await host.updateCard(cardId: id, body)))
+
+            case ("DELETE", "cards/*"):
+                try await host.deleteCard(cardId: id)
+                return .response(.noContent)
 
             case ("GET", "cards/*"):
                 guard let card = await host.board().cards.first(where: { $0.id == id }) else {
