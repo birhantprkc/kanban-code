@@ -29,7 +29,7 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
     public var localMachineId: String?
     /// Whether a session no card knows still notifies. A headless master
     /// turns it off: those are sessions another master runs on this host.
-    public var notifiesUnlinkedSessions = true
+    public var notifiesUnlinkedSessions = false
 
     /// Prompt IDs currently being edited in the UI — skip auto-send for these.
     private var editingQueuedPromptIds: Set<String> = []
@@ -276,8 +276,7 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
                 let eventName = HookManager.normalizeEventName(event.eventName)
                 switch eventName {
                 case "Stop":
-                    // claude-pushover: sleep 0.5s, check if user prompted, send if not.
-                    // NO 62s dedup — Stop always sends (dedup only applies to Notification events).
+                    // A stop never notifies; it only drives the queued prompt auto-send.
                     KanbanCodeLog.info("notify", "Stop event for session \(event.sessionId.prefix(8)) at \(event.timestamp)")
                     let stopTime = event.timestamp
                     let sessionId = event.sessionId
@@ -295,8 +294,6 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
                             KanbanCodeLog.info("notify", "Stop skipped: user prompted within 0.5s after stop")
                             return
                         }
-                        // Send directly — no dedup for Stop events (matches claude-pushover)
-                        await self.doNotify(sessionId: sessionId)
 
                         // Auto-send queued prompt: wait 0.5 more seconds (1s total from Stop),
                         // re-check that user hasn't prompted, then send first auto prompt.
@@ -314,6 +311,8 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
                 case "Notification":
                     // claude-pushover: send if not within 62s dedup window
                     KanbanCodeLog.info("notify", "Notification event for session \(event.sessionId.prefix(8)) at \(event.timestamp)")
+                    // Only a prompt that needs a decision notifies, not the idle reminder.
+                    guard Self.needsDecision(notificationType: event.notificationType) else { break }
                     let sessionId = event.sessionId
                     let eventTime = event.timestamp
                     Task { [weak self] in
@@ -339,6 +338,11 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
         } catch {
             KanbanCodeLog.info("notify", "processHookEvents error: \(error)")
         }
+    }
+
+    static func needsDecision(notificationType: String?) -> Bool {
+        guard let notificationType else { return false }
+        return ["permission_prompt", "elicitation_dialog"].contains(notificationType)
     }
 
     // MARK: - Private
