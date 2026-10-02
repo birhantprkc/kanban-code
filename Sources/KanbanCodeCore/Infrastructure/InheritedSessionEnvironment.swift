@@ -29,6 +29,21 @@ public enum InheritedSessionEnvironment {
         path.contains("/.config/agtop/sessions/") || path.contains("/.config/rush/sessions/")
     }
 
+    /// One tmux invocation that removes the inherited variables from the
+    /// server's global environment. A tmux server keeps the environment of
+    /// the process that started it, so a server first started from an agent's
+    /// shell would give every later pane that agent's card and session.
+    public static func tmuxUnsetArguments(serverTMPDIR: String?) -> [String] {
+        var names = names.sorted()
+        if let tmp = serverTMPDIR, isSessionFolder(tmp) { names.append("TMPDIR") }
+        var args: [String] = []
+        for name in names {
+            if !args.isEmpty { args.append(";") }
+            args += ["set-environment", "-g", "-u", name]
+        }
+        return args
+    }
+
     /// Takes the inherited variables out of this process's environment, so
     /// nothing it starts gets them. TMPDIR goes back to the user's own.
     public static func scrub() {
