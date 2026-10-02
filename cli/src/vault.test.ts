@@ -254,3 +254,17 @@ test("kv tier sends the lease policy with the tier", async () => {
   assert.deepEqual(m.calls[0].body.leasePolicy, { leaseSeconds: 172800, everyUseAsks: true });
   assert.equal(m.calls[0].body.tier, "ask");
 });
+
+test("a vault denial says what the vault said, without the reason-writing help", async () => {
+  const message = "denied:\n  AWS: Jev denied it against the secret's rules (91%). Its rules: dev work only";
+  const m = await fakeMaster(() => ({ status: 403, body: { status: "denied", message } }));
+  await assert.rejects(
+    runKv(["run", "AWS", "--reason", "Deploy the staging app to check the login fix", "--", "true"], io(m.url, [])),
+    (e: any) => {
+      assert.match(e.message, /Jev denied it against the secret's rules \(91%\)\. Its rules: dev work only/);
+      assert.doesNotMatch(e.message, /Good:|Bad:/);
+      return true;
+    }
+  );
+  m.close();
+});

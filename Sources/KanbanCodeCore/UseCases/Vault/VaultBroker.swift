@@ -309,8 +309,11 @@ public actor VaultBroker {
         }
 
         if !denies.isEmpty {
-            let lines = denies.map { "\($0.0.name): \($0.1)" }.joined(separator: "; ")
-            return .denied("denied: \(lines)")
+            // Jev's verdict carries no explanation: the rules it read are the why.
+            let lines = denies.map { s, why in
+                why.hasPrefix("Jev") && !s.rules.isEmpty ? "\(s.name): \(why). Its rules: \(s.rules)" : "\(s.name): \(why)"
+            }.joined(separator: "\n  ")
+            return .denied("denied:\n  \(lines)")
         }
         if asks.isEmpty {
             return await grant(allowed.map { ($0.0, $0.1, $0.2) }, req: req, caller: caller, now: now)

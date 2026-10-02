@@ -157,10 +157,15 @@ export function callerContext(env: NodeJS.ProcessEnv): { cardId?: string; sessio
   };
 }
 
+/**
+ * The vault's own refusal, as it gave it (Jev's verdict with the secret's
+ * rules, a human's no, a tier rule). The reason-writing help is only for
+ * reasons kv itself refuses (`checkedReason`), not for these.
+ */
 export function deniedError(r: VaultResponse): VaultCliError {
   const hint = r.message.includes("kv request")
     ? ""
-    : `\nIf the work needs it, ask with a reason: kv request NAME --reason "<one plain sentence>"\n${REASON_GUIDANCE}`;
+    : `\nIf the work needs it anyway, ask Rogerio: kv request NAME --reason "<one plain sentence>"`;
   return new VaultCliError(`kv: ${r.message}${hint}`, EXIT_DENIED);
 }
 

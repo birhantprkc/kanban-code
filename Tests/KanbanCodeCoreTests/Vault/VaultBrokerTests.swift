@@ -473,3 +473,13 @@ struct AgtopHostCallerTests {
         #expect(ProcessStartTime.of(Int(getpid())) == ProcessStartTime.of(Int(getpid())))
     }
 }
+
+@Suite("Vault denials")
+struct VaultDenialTests {
+    @Test func aJevDenialNamesTheRulesItReadAgainst() async throws {
+        let (broker, _, _) = try await makeBroker(jev: JevVerdict(choice: .deny, confidence: 0.91))
+        let r = await broker.release(VaultReleaseRequest(mode: "run", names: ["JUDGED"], command: "echo $JUDGED"), caller: inside)
+        #expect(r.status == .denied)
+        #expect(r.message.contains("JUDGED: Jev denied it against the secret's rules (91%). Its rules: deploys only"))
+    }
+}
