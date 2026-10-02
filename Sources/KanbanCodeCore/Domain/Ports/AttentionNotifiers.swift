@@ -1,0 +1,23 @@
+import Foundation
+import KanbanCodeRemoteKit
+
+/// Posts and removes attention notifications on this Mac.
+public protocol MacAttentionNotifier: Sendable {
+    func post(_ request: AttentionRequest, cardName: String?) async
+    func remove(id: String) async
+}
+
+public enum PhonePushLevel: String, Sendable, Equatable {
+    /// Lands on the phone without sound or vibration.
+    case passive
+    /// Alerts with sound, through Focus where allowed.
+    case timeSensitive
+}
+
+/// Sends attention requests to the phone. Pushover today; APNs takes the
+/// same shape once the app has a push certificate.
+public protocol PhonePushSender: Sendable {
+    func send(_ request: AttentionRequest, cardName: String?, level: PhonePushLevel) async throws
+    /// Clears what was sent for a resolved request, where the channel can.
+    func withdraw(_ request: AttentionRequest) async
+}

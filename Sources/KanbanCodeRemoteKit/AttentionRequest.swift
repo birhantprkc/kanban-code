@@ -30,6 +30,9 @@ public struct AttentionRequest: Codable, Sendable, Equatable, Hashable, Identifi
     public var resolvedBy: String?
     /// Session the request came from, when an agent session raised it.
     public var sessionId: String?
+    /// Id of the master that raised it and answers it; another master shows
+    /// it and forwards the resolution there.
+    public var machineId: String?
 
     public init(
         id: String,
@@ -43,7 +46,8 @@ public struct AttentionRequest: Codable, Sendable, Equatable, Hashable, Identifi
         resolvedAt: Date? = nil,
         resolution: String? = nil,
         resolvedBy: String? = nil,
-        sessionId: String? = nil
+        sessionId: String? = nil,
+        machineId: String? = nil
     ) {
         self.id = id
         self.cardId = cardId
@@ -57,6 +61,7 @@ public struct AttentionRequest: Codable, Sendable, Equatable, Hashable, Identifi
         self.resolution = resolution
         self.resolvedBy = resolvedBy
         self.sessionId = sessionId
+        self.machineId = machineId
     }
 
     public var isOpen: Bool { resolvedAt == nil }

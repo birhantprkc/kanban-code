@@ -1,0 +1,68 @@
+import Foundation
+import KanbanCodeRemoteKit
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
+
+/// Sends attention requests to the phone through Pushover. The silent copy
+/// goes at the lowest priority (listed in the app, no notification); the
+/// alert at high priority, which iOS shows as time sensitive. Pushover
+/// cannot delete a delivered message, so a resolved request stays there.
+public struct PushoverAttentionSender: PhonePushSender {
+    public let token: String
+    public let userKey: String
+    private let apiURL = URL(string: "https://api.pushover.net/1/messages.json")!
+
+    public init(token: String, userKey: String) {
+        self.token = token
+        self.userKey = userKey
+    }
+
+    public static func priority(for level: PhonePushLevel) -> Int {
+        switch level {
+        case .passive: -2
+        case .timeSensitive: 1
+        }
+    }
+
+    /// Form fields of the Pushover message for a request.
+    public static func fields(for request: AttentionRequest, cardName: String?, level: PhonePushLevel) -> [(String, String)] {
+        let title = String((cardName.map { "\($0): \(request.title)" } ?? request.title).prefix(250))
+        var message = request.body
+        if !request.options.isEmpty {
+            message += "\n\n" + request.options.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
+        }
+        if message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { message = request.title }
+        if message.count > 1000 { message = String(message.prefix(1000)) + "..." }
+        var fields: [(String, String)] = [
+            ("title", title),
+            ("message", message),
+            ("priority", String(priority(for: level))),
+            ("url", "kanbancode://attention/\(request.id)"),
+            ("url_title", "Answer in Kanban Code"),
+            ("timestamp", String(Int(request.createdAt.timeIntervalSince1970))),
+        ]
+        if level == .passive { fields.append(("sound", "none")) }
+        return fields
+    }
+
+    public func send(_ request: AttentionRequest, cardName: String?, level: PhonePushLevel) async throws {
+        var body = URLComponents()
+        body.queryItems = ([("token", token), ("user", userKey)] + Self.fields(for: request, cardName: cardName, level: level))
+            .map { URLQueryItem(name: $0.0, value: $0.1) }
+        var urlRequest = URLRequest(url: apiURL)
+        urlRequest.httpMethod = "POST"
+        urlRequest.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        let encoded = (body.percentEncodedQuery ?? "").replacingOccurrences(of: "+", with: "%2B")
+        urlRequest.httpBody = Data(encoded.utf8)
+        let (data, response) = try await URLSession.shared.data(for: urlRequest)
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            let detail = String(data: data, encoding: .utf8) ?? ""
+            KanbanCodeLog.warn("attention", "Pushover refused \(request.id): \(detail.prefix(300))")
+            throw NotificationError.pushoverFailed
+        }
+        KanbanCodeLog.info("attention", "Pushover \(level.rawValue) sent for \(request.id)")
+    }
+
+    public func withdraw(_ request: AttentionRequest) async {}
+}
