@@ -58,7 +58,7 @@ public enum VaultPolicy {
     /// Jev must be at least this sure to allow on its own.
     public static let jevAllowConfidence = 0.6
     /// How long the human has to answer before the request is denied.
-    public static let approvalTimeout: TimeInterval = 10 * 60
+    public static let approvalTimeout: TimeInterval = 60 * 60
 
     public static func decide(_ input: VaultDecisionInput, rateLimit: Int = VaultPolicy.rateLimit) -> VaultVerdict {
         if input.tier == .never {

@@ -628,6 +628,7 @@ public actor VaultBroker {
         var waitingOn = caller.insideCard
             ? "Waiting for Rogerio's approval on his phone or Mac (\(caller.openClawAgent == nil ? "card " : "")\(title ?? caller.cardId ?? "?"))"
             : "Waiting for Rogerio's approval on his phone or Mac (this process is not in a Kanban card session)"
+        waitingOn += ", up to \(Int(approvalTimeout / 60)) minutes"
         if AttentionCopy.usableReason(reason) == nil {
             waitingOn += ". He sees no reason from you; next time: \(AttentionCopy.reasonGuidance)"
         }
