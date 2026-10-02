@@ -23,9 +23,11 @@ public enum RemoteAPI {
         /// `pinned` on cards and on `PATCH /v1/cards/{id}`, `archived: false`
         /// to unarchive, and `DELETE /v1/cards/{id}`.
         public static let cardActions = "cardActions"
+        /// `POST /v1/cards/{id}/worktree/remove` and `POST /v1/cards/{id}/discover`.
+        public static let worktrees = "worktrees"
     }
 
-    public static let features = [Feature.images, Feature.queue, Feature.terminalScroll, Feature.machines, Feature.cardActions]
+    public static let features = [Feature.images, Feature.queue, Feature.terminalScroll, Feature.machines, Feature.cardActions, Feature.worktrees]
 }
 
 /// What a device may do. `full` is a phone: everything, terminals included.

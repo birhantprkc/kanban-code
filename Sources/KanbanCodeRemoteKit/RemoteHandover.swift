@@ -96,7 +96,39 @@ public struct RemoteRawTranscript: Sendable, Equatable {
     public static let sizeHeader = "X-Transcript-Size"
 }
 
+/// Answer of `POST /v1/cards/{id}/worktree/remove`.
+public struct RemoteWorktreeRemoval: Codable, Sendable, Equatable {
+    /// The machine the worktree was removed on.
+    public var machine: String
+    /// True when the card had no session and went with its worktree.
+    public var cardDeleted: Bool
+
+    public init(machine: String, cardDeleted: Bool) {
+        self.machine = machine
+        self.cardDeleted = cardDeleted
+    }
+}
+
 extension RemoteClient {
+    /// POST /v1/cards/{id}/worktree/remove: the master that owns the card
+    /// removes its worktree where it lives.
+    public func removeWorktree(cardId: String) async throws -> RemoteWorktreeRemoval {
+        var request = makeRequest("POST", "v1/cards/\(Self.escape(cardId))/worktree/remove")
+        request.timeoutInterval = 150
+        let (data, status) = try await rawData(for: request)
+        guard (200..<300).contains(status) else { throw RemoteClientError.from(status: status, body: data) }
+        return try JSONDecoder.remote.decode(RemoteWorktreeRemoval.self, from: data)
+    }
+
+    /// POST /v1/cards/{id}/discover: the owner re-scans the card for pushed
+    /// branches and pull requests.
+    public func discoverBranches(cardId: String) async throws {
+        var request = makeRequest("POST", "v1/cards/\(Self.escape(cardId))/discover")
+        request.timeoutInterval = 120
+        let (data, status) = try await rawData(for: request)
+        guard (200..<300).contains(status) else { throw RemoteClientError.from(status: status, body: data) }
+    }
+
     /// POST /v1/cards/{id}/move
     public func move(cardId: String, to target: String) async throws -> RemoteCard {
         let request = makeRequest("POST", "v1/cards/\(Self.escape(cardId))/move", body: RemoteMoveRequest(to: target))

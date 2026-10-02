@@ -159,6 +159,15 @@ final class AppComposition {
             registry: registry,
             platform: Self.platform()
         )
+        engine.platform.discoverBranches = { [weak boardStore] cardId in
+            guard let boardStore else { return }
+            boardStore.dispatch(.setBusy(cardId: cardId, busy: true))
+            if let updatedLink = await orch.discoverBranchesForCard(cardId: cardId) {
+                boardStore.dispatch(.createManualTask(updatedLink))
+            }
+            await boardStore.reconcile()
+            boardStore.dispatch(.setBusy(cardId: cardId, busy: false))
+        }
         // The machine identity is on the board before the first reconcile,
         // so every card this Mac stamps carries it.
         let identity = MachineIdentityStore().loadOrCreate(defaultName: RemoteControlServer.defaultHostName)

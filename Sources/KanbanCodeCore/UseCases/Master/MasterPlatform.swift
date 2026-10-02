@@ -76,6 +76,9 @@ public struct MasterPlatform: Sendable {
     /// The command that shows a terminal of a card another master owns
     /// (owner machine id, card id, session name); nil when there is none.
     public var peerTerminalCommand: @MainActor @Sendable (String, String, String) -> [String]? = { _, _, _ in nil }
+    /// Re-scans a card this master owns for pushed branches and pull
+    /// requests, and puts what it found on the card.
+    public var discoverBranches: @MainActor @Sendable (String) async -> Void = { _ in }
 
     /// Where repositories are cloned when a card from a peer needs one this
     /// master does not have yet.

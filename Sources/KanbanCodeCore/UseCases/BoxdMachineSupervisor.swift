@@ -861,6 +861,11 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         return "\(bytes) bytes"
     }
 
+    /// Runs a shell command on a machine (over ssh for an ssh machine).
+    public func exec(machineName: String, command: String, timeout: TimeInterval) async throws -> ShellCommand.Result {
+        try await boxd.exec(name: machineName, command: command, timeout: timeout)
+    }
+
     // MARK: - RemoteMachineControl
 
     /// Stops a machine: nothing of it has to stay in memory. It costs its

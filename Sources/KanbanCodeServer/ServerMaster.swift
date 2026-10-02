@@ -102,6 +102,14 @@ final class ServerMaster {
             platform: platform
         )
 
+        engine.platform.discoverBranches = { [weak store] cardId in
+            guard let store else { return }
+            if let updatedLink = await orchestrator.discoverBranchesForCard(cardId: cardId) {
+                store.dispatch(.createManualTask(updatedLink))
+            }
+            await store.reconcile()
+        }
+
         peerSync = PeerSync(identity: identity, peers: settings?.peers ?? []) { [weak store] action in
             await MainActor.run { store?.dispatch(action) }
         }

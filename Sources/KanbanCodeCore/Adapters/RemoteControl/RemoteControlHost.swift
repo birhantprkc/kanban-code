@@ -61,6 +61,13 @@ public protocol RemoteControlHost: AnyObject, Sendable {
     /// a machine this master drives, or back here.
     func moveCard(cardId: String, to target: String) async throws -> RemoteCard
 
+    /// Removes the card's worktree on the machine that holds it and drops
+    /// the worktree from the card (the card itself when it has no session).
+    func removeWorktree(cardId: String) async throws -> RemoteWorktreeRemoval
+
+    /// Re-scans the card for pushed branches and pull requests.
+    func discoverBranches(cardId: String) async throws
+
     /// Replaces the text of a queued prompt.
     func editQueuedPrompt(cardId: String, promptId: String, text: String) async throws
 
@@ -105,6 +112,14 @@ extension RemoteControlHost {
 
     public func deleteCard(cardId: String) async throws {
         throw RemoteHostError.notFound("this host does not delete cards")
+    }
+
+    public func removeWorktree(cardId: String) async throws -> RemoteWorktreeRemoval {
+        throw RemoteHostError.notFound("this host does not remove worktrees")
+    }
+
+    public func discoverBranches(cardId: String) async throws {
+        throw RemoteHostError.notFound("this host does not discover branches")
     }
 
     public func editQueuedPrompt(cardId: String, promptId: String, text: String) async throws {

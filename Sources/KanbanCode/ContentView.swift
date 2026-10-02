@@ -297,6 +297,7 @@ struct ContentView: View {
             canCleanupWorktree: { cardId in
                 guard let link = store.state.links[cardId] else { return false }
                 return canCleanupWorktree(
+                    cardId: cardId,
                     branch: link.worktreeLink?.branch,
                     manuallyArchived: link.manuallyArchived,
                     activeBranchCounts: cleanupBranchCounts
@@ -374,6 +375,7 @@ struct ContentView: View {
             canCleanupWorktree: { cardId in
                 guard let link = store.state.links[cardId] else { return false }
                 return canCleanupWorktree(
+                    cardId: cardId,
                     branch: link.worktreeLink?.branch,
                     manuallyArchived: link.manuallyArchived,
                     activeBranchCounts: cleanupBranchCounts
@@ -1197,7 +1199,12 @@ struct ContentView: View {
                 Text("This creates a duplicate session you can resume independently.")
             }
         case .confirmCheckpoint: Text("Everything after this point will be removed. A .bkp backup will be created.")
-        case .confirmWorktreeCleanup: Text("This card has a worktree. Do you want to remove it?")
+        case .confirmWorktreeCleanup(let cardId):
+            if let machine = worktreeMachineName(cardId: cardId) {
+                Text("This card has a worktree on \(machine). Do you want to remove it there?")
+            } else {
+                Text("This card has a worktree. Do you want to remove it?")
+            }
         case .confirmMoveToProject(_, _, let name): Text("Move this card to \(name)?")
         case .confirmMoveToFolder(_, let folderPath, let parentProjectPath, let displayName):
             let relative = folderPath.hasPrefix(parentProjectPath + "/")
@@ -1238,7 +1245,7 @@ struct ContentView: View {
     private func offerWorktreeCleanupIfNeeded(card: KanbanCodeCard?) {
         guard let card, let wt = card.link.worktreeLink,
               !wt.path.isEmpty, wt.path.contains("/.claude/worktrees/"),
-              canCleanupWorktree(branch: wt.branch, manuallyArchived: true) else { return }
+              canCleanupWorktree(cardId: card.id, branch: wt.branch, manuallyArchived: true) else { return }
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(300))
             presentDialog(.confirmWorktreeCleanup(cardId: card.id))
@@ -2439,14 +2446,7 @@ struct ContentView: View {
     }
 
     private func discoverBranches(cardId: String) {
-        Task {
-            store.dispatch(.setBusy(cardId: cardId, busy: true))
-            if let updatedLink = await orchestrator.discoverBranchesForCard(cardId: cardId) {
-                store.dispatch(.createManualTask(updatedLink))
-            }
-            await store.reconcile()
-            store.dispatch(.setBusy(cardId: cardId, busy: false))
-        }
+        Task { await engine.discoverBranches(cardId: cardId) }
     }
 
     // MARK: - Expanded Actions Menu

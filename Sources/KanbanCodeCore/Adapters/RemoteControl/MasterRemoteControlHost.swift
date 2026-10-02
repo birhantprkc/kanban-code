@@ -494,6 +494,23 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
         }
     }
 
+    public func removeWorktree(cardId: String) async throws -> RemoteWorktreeRemoval {
+        _ = try await MainActor.run { try card(cardId) }
+        do {
+            return try await engine.removeCardWorktree(cardId: cardId)
+        } catch let error as WorktreeRemovalError {
+            throw RemoteHostError.conflict(error.message)
+        }
+    }
+
+    public func discoverBranches(cardId: String) async throws {
+        if let owner = await ownerClient(cardId) {
+            return try await forwarded { try await owner.discoverBranches(cardId: cardId) }
+        }
+        _ = try await MainActor.run { try card(cardId) }
+        await engine.discoverBranches(cardId: cardId)
+    }
+
     public func moveCard(cardId: String, to target: String) async throws -> RemoteCard {
         do {
             try await engine.moveCard(cardId, to: target)

@@ -216,6 +216,65 @@ struct MasterHandoverTests {
         #expect(mac.engine.isForeign("card_move"))
     }
 
+    @Test("a worktree of a card another master owns is removed by that master, not here")
+    func foreignWorktreeRemoval() async throws {
+        let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("wt-remove-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let repo = "\(root)/box/widgets"
+        try FileManager.default.createDirectory(atPath: repo, withIntermediateDirectories: true)
+        try await sh(["git", "init", "-q"], in: repo)
+        try await sh(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"], in: repo)
+        let onlyWorktree = "\(repo)/.claude/worktrees/only-worktree"
+        let withSession = "\(repo)/.claude/worktrees/with-session"
+        try await sh(["git", "worktree", "add", "-q", "-b", "only-worktree", onlyWorktree], in: repo)
+        try await sh(["git", "worktree", "add", "-q", "-b", "with-session", withSession], in: repo)
+
+        let mac = try TestMaster(name: "mac", root: root)
+        let box = try TestMaster(name: "box", root: root)
+        try await mac.serve()
+        try await box.serve()
+        try await mac.start(peerURL: box.url, peerToken: box.tokenForPeer)
+        try await box.start(peerURL: mac.url, peerToken: mac.tokenForPeer)
+        defer { mac.server.stop(); box.server.stop() }
+
+        box.store.dispatch(.createManualTask(Link(
+            id: "card_wt", name: "Only a worktree", projectPath: repo, column: .done,
+            worktreeLink: WorktreeLink(path: onlyWorktree, branch: "only-worktree"))))
+        box.store.dispatch(.createManualTask(Link(
+            id: "card_wt_session", name: "With a session", projectPath: repo, column: .done,
+            sessionLink: SessionLink(sessionId: "sid-wt"),
+            worktreeLink: WorktreeLink(path: withSession, branch: "with-session"))))
+        await mac.peerSync.pullAll()
+        #expect(mac.store.state.worktreePlacement("card_wt") == .ownerMaster(machineId: box.identity.id))
+
+        let first = try await mac.engine.removeCardWorktree(cardId: "card_wt")
+        #expect(first == RemoteWorktreeRemoval(machine: "box", cardDeleted: true))
+        #expect(!FileManager.default.fileExists(atPath: onlyWorktree))
+        #expect(box.store.state.links["card_wt"] == nil)
+
+        let second = try await mac.engine.removeCardWorktree(cardId: "card_wt_session")
+        #expect(second.cardDeleted == false)
+        #expect(!FileManager.default.fileExists(atPath: withSession))
+        #expect(box.store.state.links["card_wt_session"]?.worktreeLink == nil)
+
+        // A failure names the machine it ran on.
+        box.store.dispatch(.createManualTask(Link(
+            id: "card_gone", name: "Gone", projectPath: repo, column: .done,
+            worktreeLink: WorktreeLink(path: "\(repo)/.claude/worktrees/never-made", branch: "never-made"))))
+        await mac.peerSync.pullAll()
+        do {
+            try await mac.engine.removeCardWorktree(cardId: "card_gone")
+            Issue.record("removing a missing worktree should fail")
+        } catch let error as WorktreeRemovalError {
+            #expect(error.message.hasPrefix("Worktree cleanup on box failed:"))
+            #expect(error.message.contains("not a working tree"))
+        }
+
+        // Removing files takes a full token.
+        let agent = RemoteClient(baseURL: URL(string: box.url)!, token: try box.devices.add(name: "agent", scope: .agent).token)
+        await #expect(throws: RemoteClientError.self) { try await agent.removeWorktree(cardId: "card_gone") }
+    }
+
     @Test("reconcile leaves a card released to this master alone until it is adopted")
     func migratingIsFrozen() async throws {
         let dir = (NSTemporaryDirectory() as NSString).appendingPathComponent("frozen-\(UUID().uuidString)")

@@ -33,6 +33,7 @@ JSON bodies, up to 48 MiB. Dates are ISO 8601 with milliseconds, UTC (`2026-09-2
 - `terminalScroll`: the `scroll` terminal control frame.
 - `machines`: `GET /v1/machines`, and `machine` on tasks.
 - `cardActions`: `pinned` on cards, `pinned` and `archived: false` on `PATCH /v1/cards/{id}`, and `DELETE /v1/cards/{id}`.
+- `worktrees`: `POST /v1/cards/{id}/worktree/remove` and `POST /v1/cards/{id}/discover`.
 
 | Method and path | Scope | Returns |
 |---|---|---|
@@ -52,6 +53,8 @@ JSON bodies, up to 48 MiB. Dates are ISO 8601 with milliseconds, UTC (`2026-09-2
 | `PATCH /v1/cards/{id}` | any | `RemoteCardUpdate` (`name`, `column`, `archived`, `pinned`) → `RemoteCard` |
 | `DELETE /v1/cards/{id}` | any | 204; 409 for a card that is not archived |
 | `POST /v1/cards/{id}/move` | any | `RemoteMoveRequest` → `RemoteCard` |
+| `POST /v1/cards/{id}/worktree/remove` | full | `RemoteWorktreeRemoval` (`machine`, `cardDeleted`) |
+| `POST /v1/cards/{id}/discover` | any | 204 |
 | `GET /v1/cards/{id}/handover` | any | `RemoteHandoverInfo` |
 | `GET /v1/cards/{id}/transcript/raw?offset=0&limit=4194304` | any | transcript bytes, `X-Transcript-Size` header |
 | `GET /v1/links?since=&epoch=`, `POST /v1/links/changed`, `GET /v1/peers` | any | peer sync |
@@ -75,6 +78,7 @@ Behaviour:
 - `transcript` pages back with `before=<olderCursor>` of the previous page; `olderCursor` is null at the start of the conversation.
 - `resume` on a card that never ran launches it.
 - `PATCH /v1/cards/{id}` does what the Mac's card menu does. `archived: true` archives the card and ends its sessions; `archived: false` puts an archived card back in the backlog, from where activity moves it. `pinned: true` pins it on top of the board and brings an archived card back; a subagent card cannot be pinned (409). `DELETE` removes an archived card with its subagents, sessions and conversation file, as Delete Card on the Mac; a card still on the board, or an archived GitHub issue, is refused with 409.
+- `worktree/remove` runs where the worktree is: on this master's disk, over ssh on the ssh machine that runs the card, or on the master that owns the card (the request is forwarded there). Then the card loses its worktree, or is deleted when it has no session. A card on a disposable boxd machine is left alone: the worktree goes with the machine. A failure is a 409 that names the machine: `Worktree cleanup on <machine> failed: <git's answer>`. `discover` re-scans the card for pushed branches and pull requests on the owning master.
 - `/v1/events` (also `?all=1`) sends a `board` event with the whole board on connect, then `cards` events at most once per second: `upserted` holds the cards whose value changed or that joined the set, `removed` the ids that left it (archived, moved out of the recent Done, deleted), and `projects` the project list when it changed. A client applies them by id (`RemoteEvent.apply(to:)` in RemoteKit). A text frame `{"type":"resync"}` from the client gets a whole `board` again; so does every new connection. A `ping` event arrives every 20 seconds.
 - `terminal` without `session` opens the card's primary terminal. A terminal that is not running returns 409.
 

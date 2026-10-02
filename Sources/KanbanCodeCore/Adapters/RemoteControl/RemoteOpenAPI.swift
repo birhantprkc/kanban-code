@@ -85,6 +85,14 @@ enum RemoteOpenAPI {
       "parameters": [{"$ref": "#/components/parameters/CardId"}],
       "post": {"summary": "Continue the card on another master (a handover) or machine; {\"to\": \"<machine id or name>\"|\"mac\"}", "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Card"}}}}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}}
     },
+    "/v1/cards/{id}/worktree/remove": {
+      "parameters": [{"$ref": "#/components/parameters/CardId"}],
+      "post": {"summary": "Remove the card's worktree on the machine that holds it (the owning master runs it), then drop the worktree from the card, or the card when it has no session. Full scope", "responses": {"200": {"description": "{\"machine\", \"cardDeleted\"}"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/v1/cards/{id}/discover": {
+      "parameters": [{"$ref": "#/components/parameters/CardId"}],
+      "post": {"summary": "Re-scan the card's conversation for pushed branches and its pull requests, on the owning master", "responses": {"204": {"description": "done"}, "404": {"$ref": "#/components/responses/Error"}}}
+    },
     "/v1/cards/{id}/handover": {
       "parameters": [{"$ref": "#/components/parameters/CardId"}],
       "get": {"summary": "What a master adopting the card needs: repository origin, branch, uncommitted changes, transcript size", "responses": {"200": {"description": "RemoteHandoverInfo"}, "404": {"$ref": "#/components/responses/Error"}}}
@@ -120,7 +128,7 @@ enum RemoteOpenAPI {
     "responses": {"Error": {"description": "refused", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}},
     "schemas": {
       "Error": {"type": "object", "required": ["error"], "properties": {"error": {"type": "string"}}},
-      "Health": {"type": "object", "properties": {"app": {"type": "string"}, "version": {"type": "string"}, "apiVersion": {"type": "integer"}, "hostName": {"type": "string"}, "features": {"type": "array", "items": {"type": "string", "enum": ["images", "queue", "terminalScroll", "machines", "cardActions"]}, "description": "what the server supports beyond apiVersion 1; missing on older servers"}}},
+      "Health": {"type": "object", "properties": {"app": {"type": "string"}, "version": {"type": "string"}, "apiVersion": {"type": "integer"}, "hostName": {"type": "string"}, "features": {"type": "array", "items": {"type": "string", "enum": ["images", "queue", "terminalScroll", "machines", "cardActions", "worktrees"]}, "description": "what the server supports beyond apiVersion 1; missing on older servers"}}},
       "Device": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string"}, "scope": {"type": "string", "enum": ["full", "agent"]}, "createdAt": {"type": "string", "format": "date-time"}, "lastSeenAt": {"type": ["string", "null"], "format": "date-time"}}},
       "PR": {"type": "object", "properties": {"number": {"type": "integer"}, "url": {"type": ["string", "null"]}, "title": {"type": ["string", "null"]}, "status": {"type": ["string", "null"], "description": "open, draft, merged or closed"}}},
       "Terminal": {"type": "object", "properties": {"sessionName": {"type": "string"}, "label": {"type": "string"}, "isPrimary": {"type": "boolean"}}},

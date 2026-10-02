@@ -509,6 +509,17 @@ public final class RemoteControlServer: Sendable {
                 }
                 return .response(.json(try await host.moveCard(cardId: id, to: body.to.trimmingCharacters(in: .whitespaces))))
 
+            case ("POST", "cards/*/worktree/remove"):
+                // It deletes files on the machine, uncommitted work included.
+                guard device.scope == .full else {
+                    return .response(.error(403, "the \(device.scope.rawValue) scope cannot remove worktrees"))
+                }
+                return .response(.json(try await host.removeWorktree(cardId: id)))
+
+            case ("POST", "cards/*/discover"):
+                try await host.discoverBranches(cardId: id)
+                return .response(.noContent)
+
             case ("GET", "cards/*/handover"):
                 return .response(.json(try await host.handoverInfo(cardId: id)))
 
@@ -591,6 +602,7 @@ public final class RemoteControlServer: Sendable {
         "me", "board", "machines", "cards/*", "cards/*/transcript", "tasks", "cards/*/prompt", "cards/*/queue/*",
         "cards/*/interrupt", "cards/*/resume", "events", "cards/*/terminal",
         "cards/*/move", "cards/*/handover", "cards/*/transcript/raw",
+        "cards/*/worktree/remove", "cards/*/discover",
     ]
 
     static func response(for error: Error) -> RemoteHTTPResponse {
