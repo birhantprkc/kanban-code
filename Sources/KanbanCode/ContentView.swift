@@ -1431,6 +1431,7 @@ struct ContentView: View {
                 if HookManager.refreshHookScript() {
                     KanbanCodeLog.info("hooks", "hook script refreshed to current release")
                 }
+                VaultHook.installWhereHooked()
                 systemTray.setup(store: store)
                 await store.loadSettingsAndCache()
                 // Remote cards route their tmux names to their machines before

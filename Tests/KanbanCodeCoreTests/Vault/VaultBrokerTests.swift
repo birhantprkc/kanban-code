@@ -91,6 +91,17 @@ struct VaultBrokerTests {
         #expect(!again.changedHere && !again.otherIsBehind)
     }
 
+    @Test func aForgedReplicaIsRefused() async throws {
+        let identity = Age.Identity.generate()
+        let box = VaultStore(directory: tempVaultDir(), keys: MemoryVaultKeyProvider(identity))
+        try await box.upsert(VaultSecret(name: "PROD", value: "p", tier: .ask))
+        // Encrypted to the public key, but without the identity's auth.
+        let forged = VaultDocument(secrets: ["PROD": VaultSecret(name: "PROD", value: "p", tier: .open, updatedAt: .distantFuture)])
+        let blob = try Age.encrypt(try JSONEncoder.vault.encode(forged), to: [identity.recipient])
+        await #expect(throws: (any Error).self) { try await box.mergeReplica(blob) }
+        #expect(try await box.secret("PROD")?.tier == .ask)
+    }
+
     @Test func aMachineWithoutTheKeyKeepsTheBlob() async throws {
         let box = VaultStore(directory: tempVaultDir(), keys: MemoryVaultKeyProvider(Age.Identity.generate()))
         try await box.upsert(VaultSecret(name: "A", value: "a", tier: .open))

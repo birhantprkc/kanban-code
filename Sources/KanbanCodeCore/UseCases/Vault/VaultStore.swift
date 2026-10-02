@@ -1,3 +1,8 @@
+#if canImport(CryptoKit)
+import CryptoKit
+#else
+import Crypto
+#endif
 import Foundation
 
 /// Where the vault's age identity lives: the Keychain on the Mac, a 0600
@@ -43,6 +48,35 @@ public final class MemoryVaultKeyProvider: VaultKeyProvider, @unchecked Sendable
 
     public func saveIdentity(_ identity: Age.Identity) throws {
         lock.withLock { self.identity = identity }
+    }
+}
+
+/// `vault.age` holds the document plus an HMAC keyed from the identity.
+/// Anyone with the public key can write an age file; only a holder of the
+/// identity can write one a replica merges.
+enum VaultSeal {
+    private struct Sealed: Codable {
+        var doc: String
+        var auth: String
+    }
+
+    static func authKey(_ identity: Age.Identity) -> SymmetricKey {
+        Age.hkdf(ikm: identity.rawKey, salt: Data("kanban-code-vault".utf8), info: "document-auth")
+    }
+
+    static func seal(_ docJSON: Data, identity: Age.Identity) throws -> Data {
+        let mac = HMAC<SHA256>.authenticationCode(for: docJSON, using: authKey(identity))
+        let wrapper = Sealed(doc: docJSON.base64EncodedString(), auth: Data(mac).base64EncodedString())
+        return try Age.encrypt(try JSONEncoder().encode(wrapper), to: [identity.recipient])
+    }
+
+    static func open(_ file: Data, identity: Age.Identity) throws -> VaultDocument {
+        let plain = try Age.decrypt(file, with: identity)
+        let wrapper = try JSONDecoder().decode(Sealed.self, from: plain)
+        guard let doc = Data(base64Encoded: wrapper.doc), let auth = Data(base64Encoded: wrapper.auth),
+              HMAC<SHA256>.isValidAuthenticationCode(auth, authenticating: doc, using: authKey(identity))
+        else { throw VaultError.invalid("the vault file was not written by a holder of the vault key") }
+        return try JSONDecoder.vault.decode(VaultDocument.self, from: doc)
     }
 }
 
@@ -153,8 +187,7 @@ public actor VaultStore {
         guard let identity = currentIdentity() else {
             throw VaultError.locked("this machine has no vault key")
         }
-        let plain = try Age.decrypt(data, with: identity)
-        let decoded = try JSONDecoder.vault.decode(VaultDocument.self, from: plain)
+        let decoded = try VaultSeal.open(data, identity: identity)
         document = decoded
         return decoded
     }
@@ -162,7 +195,7 @@ public actor VaultStore {
     private func save(_ doc: VaultDocument) throws {
         let identity = try ensureIdentity()
         let plain = try JSONEncoder.vault.encode(doc)
-        let sealed = try Age.encrypt(plain, to: [identity.recipient])
+        let sealed = try VaultSeal.seal(plain, identity: identity)
         try VaultFiles.writeAtomically(sealed, to: vaultPath, mode: 0o600)
         // What is on disk, dates at the file's millisecond precision.
         document = try JSONDecoder.vault.decode(VaultDocument.self, from: plain)
@@ -230,7 +263,7 @@ public actor VaultStore {
             }
             return (false, false)
         }
-        let theirs = try JSONDecoder.vault.decode(VaultDocument.self, from: try Age.decrypt(blob, with: identity))
+        let theirs = try VaultSeal.open(blob, identity: identity)
         let mine = try load()
         let merged = mine.merged(with: theirs)
         let changed = merged != mine

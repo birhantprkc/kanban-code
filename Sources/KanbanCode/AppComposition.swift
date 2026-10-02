@@ -25,6 +25,7 @@ final class AppComposition {
     let engine: MasterEngine
     let peerSync: PeerSync
     let agentSync: AgentSyncEngine
+    let vault: VaultService
     let transcriptMirror: PeerTranscriptMirror
     let attentionCenter: AttentionCenter
 
@@ -180,6 +181,16 @@ final class AppComposition {
         }
         let agentSync = AgentSyncEngine(identity: identity) { [peerSync] in await peerSync.syncPeers() }
         Task.detached { await agentSync.run() }
+        let vault = VaultService(
+            kanbanHome: NSHomeDirectory() + "/.kanban-code",
+            keys: KeychainVaultKeyProvider(),
+            machine: identity.name,
+            approvals: StoreVaultApprovals(store: boardStore),
+            cardTitle: { [weak boardStore] id in await MainActor.run { boardStore?.vaultCardTitle(id) } },
+            cardSessions: { [weak boardStore] in await MainActor.run { boardStore?.vaultCardSessions() ?? [:] } },
+            peers: { await peerSync.configuredPeers() }
+        )
+        Task { await vault.start() }
 
         // Decisions agents wait on: Mac notification, then the phone.
         let notifications = Self.readNotificationSettings()
@@ -222,6 +233,7 @@ final class AppComposition {
             engine: engine,
             peerServer: BoardPeerLinksServer(store: boardStore, peerSync: peerSync),
             syncEngine: agentSync,
+            vault: vault,
             settingsStore: settings
         )
 
@@ -235,6 +247,7 @@ final class AppComposition {
         self.engine = engine
         self.peerSync = peerSync
         self.agentSync = agentSync
+        self.vault = vault
         self.transcriptMirror = mirror
         self.attentionCenter = attentionCenter
         KanbanCodeLog.info("app", "services composed machine=\(identity.name) (\(identity.id))")

@@ -84,6 +84,8 @@ public final class RemoteControlServer: Sendable {
     public let peerServer: (any PeerLinksServing)?
     /// Serves the agent sync routes (`/v1/sync/*`, `/v1/optmem/run`) when set.
     public let syncEngine: AgentSyncEngine?
+    /// Serves the vault routes (`/v1/vault/*`) when set.
+    public let vault: VaultService?
     private let bindAddresses: @Sendable () -> [String]
     private let options: Options
     private let requestedPort: Int
@@ -97,9 +99,11 @@ public final class RemoteControlServer: Sendable {
         bindAddresses: @escaping @Sendable () -> [String] = RemoteNetworkAddresses.bindable,
         options: Options = Options(),
         peerServer: (any PeerLinksServing)? = nil,
-        syncEngine: AgentSyncEngine? = nil
+        syncEngine: AgentSyncEngine? = nil,
+        vault: VaultService? = nil
     ) {
         self.host = host
+        self.vault = vault
         self.devices = devices
         self.peerServer = peerServer
         self.syncEngine = syncEngine
@@ -289,7 +293,7 @@ public final class RemoteControlServer: Sendable {
                 return
             }
 
-            switch await route(request) {
+            switch await route(request, peer: conn.stream.peer) {
             case .response(var response):
                 if response.body.count >= RemoteGzip.minimumBytes, RemoteGzip.accepts(request),
                    let gzipped = RemoteGzip.compress(response.body) {
@@ -333,7 +337,7 @@ public final class RemoteControlServer: Sendable {
         return nil
     }
 
-    private func route(_ request: RemoteHTTPRequest) async -> Outcome {
+    private func route(_ request: RemoteHTTPRequest, peer: RemotePeerAddress?) async -> Outcome {
         let seg = request.segments
         let method = request.method
 
@@ -347,11 +351,23 @@ public final class RemoteControlServer: Sendable {
         }
         guard seg.first == "v1" else { return .response(.error(404, "no route for \(request.rawPath)")) }
 
-        guard let token = token(from: request) else {
+        let bearer = token(from: request)
+        if bearer == nil, let vault, seg.count >= 2, seg[1] == "vault", peer?.isLoopback == true,
+           let response = await RemoteVaultRoutes.handle(
+               method: method, rest: Array(seg.dropFirst()), query: request.query, body: request.body,
+               device: nil, peer: peer, serverPort: port, vault: vault) {
+            return .response(response)
+        }
+        guard let token = bearer else {
             return .response(.error(401, "missing token: send Authorization: Bearer <token>"))
         }
         guard let device = devices.authenticate(token: token) else {
             return .response(.error(401, "unknown or revoked token"))
+        }
+        if let vault, let response = await RemoteVaultRoutes.handle(
+            method: method, rest: Array(seg.dropFirst()), query: request.query, body: request.body,
+            device: device, peer: peer, serverPort: port, vault: vault) {
+            return .response(response)
         }
 
         do {

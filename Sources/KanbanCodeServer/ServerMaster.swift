@@ -18,6 +18,7 @@ final class ServerMaster {
     let identity: MachineIdentity
     let peerSync: PeerSync
     let agentSync: AgentSyncEngine
+    let vault: VaultService
     let reconciles: Bool
     let effectHandler: EffectHandler
     var attentionCenter: AttentionCenter?
@@ -109,6 +110,15 @@ final class ServerMaster {
         agentSync = AgentSyncEngine(kanbanHome: home, identity: identity) { [peerSync] in
             await peerSync.syncPeers()
         }
+        vault = VaultService(
+            kanbanHome: home,
+            keys: FileVaultKeyProvider(path: VaultStore.defaultDirectory(kanbanHome: home) + "/identity.txt"),
+            machine: identity.name,
+            approvals: StoreVaultApprovals(store: store),
+            cardTitle: { [weak store] id in await MainActor.run { store?.vaultCardTitle(id) } },
+            cardSessions: { [weak store] in await MainActor.run { store?.vaultCardSessions() ?? [:] } },
+            peers: { [peerSync] in await peerSync.configuredPeers() }
+        )
     }
 
     /// Attention requests from this host go to the phone only: there is no
@@ -145,6 +155,7 @@ final class ServerMaster {
         Task.detached { await peerSync.run() }
         let agentSync = self.agentSync
         Task.detached { await agentSync.run() }
+        await vault.start()
         startAttention(settings: Self.readSettings(home: home).settings)
         Task { await self.settingsLoop() }
         orchestrator.start()
@@ -180,6 +191,9 @@ final class ServerMaster {
             }
         }
         _ = HookManager.refreshHookScript()
+        if FileManager.default.fileExists(atPath: NSHomeDirectory() + "/.claude") {
+            _ = try? VaultHook.install()
+        }
         if !HookManager.isStatusLineInstalled(for: .claude) {
             try? HookManager.installStatusLine(for: .claude)
         }
