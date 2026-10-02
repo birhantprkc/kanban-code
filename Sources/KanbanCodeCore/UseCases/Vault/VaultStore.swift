@@ -135,6 +135,7 @@ public actor VaultStore {
     var vaultPath: String { directory + "/vault.age" }
     var leasesPath: String { directory + "/leases.json" }
     var auditPath: String { directory + "/audit.jsonl" }
+    var pendingPath: String { directory + "/pending.age" }
 
     // MARK: - Identity
 
@@ -306,6 +307,24 @@ public actor VaultStore {
 
     public func revokeLease(id: String) throws {
         try saveLeases(loadLeases().filter { $0.id != id })
+    }
+
+    // MARK: - Open requests
+
+    /// Stores the broker's open requests, age-encrypted to the vault
+    /// identity (an add carries the new value); nil removes the file.
+    public func savePending(_ json: Data?) throws {
+        guard let json else {
+            unlink(pendingPath)
+            return
+        }
+        let identity = try ensureIdentity()
+        try VaultFiles.writeAtomically(try Age.encrypt(json, to: [identity.recipient]), to: pendingPath, mode: 0o600)
+    }
+
+    public func loadPending() -> Data? {
+        guard let data = FileManager.default.contents(atPath: pendingPath), let identity = currentIdentity() else { return nil }
+        return try? Age.decrypt(data, with: identity)
     }
 
     // MARK: - Rate

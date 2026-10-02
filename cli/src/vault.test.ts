@@ -284,3 +284,79 @@ test("kv tiers sends one batched change with names and value prefixes", async ()
   assert.deepEqual(m.calls[0].body.valuePrefixes, ["sk_live_", "rk_live_"]);
   assert.deepEqual(m.calls[0].body.edit.leasePolicy, { leaseSeconds: 172800, everyUseAsks: true });
 });
+
+function refused(code = "ECONNREFUSED"): Error {
+  return new TypeError("fetch failed", { cause: { code } });
+}
+
+function scriptedIO(steps: (() => Response)[], notes: string[], slept: number[]): { io: VaultIO; calls: string[] } {
+  const calls: string[] = [];
+  const fakeFetch = (async (url: string, init?: RequestInit) => {
+    calls.push(`${init?.method} ${url}`);
+    const step = steps.shift() ?? (() => { throw refused(); });
+    return step();
+  }) as unknown as typeof fetch;
+  return { io: { env: {}, fetch: fakeFetch, stderr: (t) => notes.push(t), sleep: async (ms) => { slept.push(ms); } }, calls };
+}
+
+const json = (status: number, body: unknown) => () => new Response(JSON.stringify(body), { status });
+
+test("a pending approval outlives a master restart: kv waits for the master to come back", async () => {
+  const notes: string[] = [];
+  const slept: number[] = [];
+  const { io: sio } = scriptedIO(
+    [
+      json(202, { status: "pending", id: "vault_1", message: "Waiting for Rogerio" }),
+      () => { throw refused(); },
+      () => { throw refused(); },
+      json(503, { error: "starting" }),
+      json(200, { status: "granted", message: "released", values: { A: "1" } }),
+    ],
+    notes,
+    slept
+  );
+  const r = await new VaultClient("http://127.0.0.1:1", sio).decide("release", { mode: "run", names: ["A"] });
+  assert.equal(r.status, "granted");
+  assert.equal(notes.filter((n) => /probably restarting; waiting up to 2 min/.test(n)).length, 1);
+  assert.ok(notes.some((n) => /the master is back/.test(n)));
+  assert.deepEqual(slept, [1500, 1000, 2000, 4000]);
+});
+
+test("kv gives up after two minutes of a master that does not answer", async () => {
+  const notes: string[] = [];
+  const slept: number[] = [];
+  const { io: sio } = scriptedIO([], notes, slept);
+  await assert.rejects(new VaultClient("http://127.0.0.1:1", sio).call("GET", "status"), /cannot reach the Kanban Code master/);
+  assert.equal(slept.reduce((a, b) => a + b, 0), 120_000);
+});
+
+test("a request that may have reached the master is not sent twice", async () => {
+  const notes: string[] = [];
+  const slept: number[] = [];
+  const { io: sio, calls } = scriptedIO([() => { throw refused("ECONNRESET"); }], notes, slept);
+  await assert.rejects(new VaultClient("http://127.0.0.1:1", sio).call("POST", "release", { names: ["A"] }), /cannot reach/);
+  assert.equal(calls.length, 1);
+});
+
+test("a POST nothing accepted is retried", async () => {
+  const notes: string[] = [];
+  const slept: number[] = [];
+  const { io: sio, calls } = scriptedIO(
+    [() => { throw refused(); }, json(200, { status: "granted", message: "ok" })],
+    notes,
+    slept
+  );
+  const r = await new VaultClient("http://127.0.0.1:1", sio).call<{ status: string }>("POST", "release", { names: ["A"] });
+  assert.equal(r.body.status, "granted");
+  assert.equal(calls.length, 2);
+});
+
+test("exec-provider does not wait for an unreachable master", async () => {
+  const slept: number[] = [];
+  const { io: sio } = scriptedIO([], [], slept);
+  const client = new VaultClient("http://127.0.0.1:1", sio);
+  client.retryForMs = 0;
+  const answer = await execProviderAnswer(client, { ids: ["A"] }, { cwd: "/" });
+  assert.deepEqual(answer.errors, { A: { code: "UNREACHABLE" } });
+  assert.deepEqual(slept, []);
+});

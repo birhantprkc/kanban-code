@@ -210,9 +210,14 @@ public actor VaultBroker {
     public var approvalTimeout: TimeInterval = VaultPolicy.approvalTimeout
     public var pollInterval: TimeInterval = 1
 
-    private enum PendingAction: Sendable {
+    struct LeaseWant: Codable, Sendable {
+        var name: String
+        var scope: String?
+    }
+
+    enum PendingAction: Codable, Sendable {
         case release(VaultReleaseRequest, [String])
-        case lease([(name: String, scope: String?)], reason: String)
+        case lease([LeaseWant], reason: String)
         case add(VaultAddRequest)
         case edit([String], VaultEditRequest)
         case delete(String)
@@ -224,10 +229,23 @@ public actor VaultBroker {
         var result: VaultResponse?
         var createdAt: Date
         var everyUseAsks: Bool
+        var request: AttentionRequest
+    }
+
+    /// An open request as `pending.age` keeps it, so a restart of the
+    /// master asks again and the caller's poll still finds it.
+    struct SavedPending: Codable, Sendable {
+        var id: String
+        var action: PendingAction
+        var caller: VaultCaller
+        var createdAt: Date
+        var everyUseAsks: Bool
+        var request: AttentionRequest
     }
 
     private var pending: [String: Pending] = [:]
     private var hookAllows: [String: Date] = [:]
+    private var restoring: Task<Void, Never>?
 
     public init(
         store: VaultStore,
@@ -413,7 +431,7 @@ public actor VaultBroker {
         guard let card = caller.cardId, caller.insideCard else {
             return .denied("leases are for card sessions: run kv request from inside a Kanban card")
         }
-        var wanted: [(name: String, scope: String?)] = []
+        var wanted: [LeaseWant] = []
         var secrets: [VaultSecret] = []
         for raw in req.names {
             let (name, scope) = Self.splitScope(raw)
@@ -423,7 +441,7 @@ public actor VaultBroker {
             if s.tier == .never { return .denied("\(name) is never released") }
             if s.leasePolicy.everyUseAsks { return .denied("every use of \(name) asks; no lease is possible, use kv run") }
             if await store.activeLease(cardId: card, secret: name, now: now) == nil {
-                wanted.append((name, scope))
+                wanted.append(LeaseWant(name: name, scope: scope))
                 secrets.append(s)
             }
         }
@@ -580,7 +598,8 @@ public actor VaultBroker {
             sessionId: caller.sessionId,
             vault: details
         )
-        pending[id] = Pending(action: action, caller: caller, result: nil, createdAt: now, everyUseAsks: everyUse)
+        pending[id] = Pending(action: action, caller: caller, result: nil, createdAt: now, everyUseAsks: everyUse, request: request)
+        await persist()
         for (s, why) in zip(secrets, whys) {
             await store.append(VaultAuditEntry(at: now, machine: machine, cardId: caller.cardId, sessionId: caller.sessionId,
                                                secret: s.name, tier: s.tier, outcome: .asked, decider: .rule,
@@ -706,7 +725,8 @@ public actor VaultBroker {
                 result = .denied("no card to lease to")
                 break
             }
-            for (name, scope) in wanted {
+            for want in wanted {
+                let (name, scope) = (want.name, want.scope)
                 let policy = ((try? await store.secret(name)) ?? nil)?.leasePolicy ?? .standard
                 try? await store.grantLease(VaultLease(cardId: card, secret: name, scope: scope, reason: reason, grantedAt: now,
                                                        expiresAt: now.addingTimeInterval(policy.leaseSeconds), grantedBy: "human:\(by)"))
@@ -720,11 +740,58 @@ public actor VaultBroker {
             result = await apply(action, caller: p.caller, now: now, by: .human, requestId: id)
         }
         pending[id]?.result = result
+        await persist()
         // Unclaimed results go after a while; values do not linger.
         Task {
             try? await Task.sleep(for: .seconds(120))
             self.forget(id)
         }
+    }
+
+    /// Writes the open requests to `pending.age`. Settled ones are left
+    /// out: a result can carry secret values, and its caller polls it
+    /// within a second or two.
+    private func persist() async {
+        let open = pending.filter { $0.value.result == nil }.map { id, p in
+            SavedPending(id: id, action: p.action, caller: p.caller, createdAt: p.createdAt,
+                         everyUseAsks: p.everyUseAsks, request: p.request)
+        }.sorted { $0.createdAt < $1.createdAt }
+        do {
+            try await store.savePending(open.isEmpty ? nil : try JSONEncoder.vault.encode(open))
+        } catch {
+            KanbanCodeLog.warn("vault", "could not save the open vault requests: \(error)")
+        }
+    }
+
+    /// Picks up the requests that were open when the master stopped: raises
+    /// their attention requests again and waits for the answer, from the
+    /// original creation time, so the timeout is the same as without the
+    /// restart. Runs once; a poll waits for it, so a caller polling right
+    /// after the master came back still finds its request.
+    public func restore() async {
+        if restoring == nil { restoring = Task { await self.restoreSaved() } }
+        await restoring?.value
+    }
+
+    private func restoreSaved() async {
+        guard let approvals, let data = await store.loadPending() else { return }
+        let saved: [SavedPending]
+        do {
+            saved = try JSONDecoder.vault.decode([SavedPending].self, from: data)
+        } catch {
+            KanbanCodeLog.warn("vault", "could not read the open vault requests: \(error)")
+            return
+        }
+        var restored = 0
+        for s in saved where pending[s.id] == nil {
+            pending[s.id] = Pending(action: s.action, caller: s.caller, result: nil, createdAt: s.createdAt,
+                                    everyUseAsks: s.everyUseAsks, request: s.request)
+            await approvals.raise(s.request)
+            let id = s.id
+            Task { await self.waitForHuman(id: id) }
+            restored += 1
+        }
+        if restored > 0 { KanbanCodeLog.info("vault", "restored \(restored) open vault request(s)") }
     }
 
     private func forget(_ id: String) {
@@ -743,7 +810,8 @@ public actor VaultBroker {
 
     /// The result of a pending request: still pending, or its outcome
     /// (handed out once, then forgotten).
-    public func poll(id: String) -> VaultResponse {
+    public func poll(id: String) async -> VaultResponse {
+        await restore()
         guard let p = pending[id] else {
             return VaultResponse(status: .denied, message: "no pending vault request \(id) (it expired or was already answered)", id: id)
         }

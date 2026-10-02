@@ -465,3 +465,68 @@ struct VaultBatchEditTests {
         #expect(await broker.editMany(VaultBatchEditRequest(valuePrefixes: ["nope_"], edit: edit), caller: inside, trusted: false).status == .denied)
     }
 }
+
+@Suite("Vault requests across a master restart")
+struct VaultRestartTests {
+    /// The master after a restart: a new store and broker over the same
+    /// vault directory and key.
+    private func restarted(_ store: VaultStore, answer: String?) async throws -> (VaultBroker, VaultStore, FakeApprovals) {
+        let again = VaultStore(directory: await store.directory, keys: await store.keys)
+        let approvals = FakeApprovals(answer: answer)
+        let broker = VaultBroker(store: again, jev: nil, approvals: approvals, machine: "test") { _ in "Card one" }
+        await broker.configure(approvalTimeout: 2, pollInterval: 0.02)
+        await broker.restore()
+        return (broker, again, approvals)
+    }
+
+    @Test func anOpenApprovalIsAskedAgainAndAnsweredAfterARestart() async throws {
+        let (broker, store, before) = try await makeBroker(answer: nil)
+        await broker.configure(approvalTimeout: 60)
+        let edit = VaultEditRequest(tier: .ask, leasePolicy: .everyUse, reason: "Live keys ask on every use")
+        let asked = await broker.editMany(VaultBatchEditRequest(names: ["JUDGED", "OPEN"], edit: edit), caller: inside, trusted: false)
+        let id = try #require(asked.id)
+        #expect(before.raised.count == 1)
+        let dir = await store.directory
+        #expect(FileManager.default.fileExists(atPath: dir + "/pending.age"))
+
+        let (after, afterStore, approvals) = try await restarted(store, answer: AttentionRequest.vaultApprovalOptions[1])
+        #expect(approvals.raised.map(\.id) == before.raised.map(\.id))
+        #expect(approvals.raised.map(\.title) == before.raised.map(\.title))
+        #expect(await waitResult(after, id).status == .granted)
+        #expect(try await afterStore.secret("JUDGED")?.leasePolicy.everyUseAsks == true)
+        #expect(try await afterStore.secret("OPEN")?.tier == .ask)
+        #expect(!FileManager.default.fileExists(atPath: dir + "/pending.age"))
+    }
+
+    @Test func aRestoredReleaseHandsOutItsValues() async throws {
+        let (broker, store, _) = try await makeBroker(answer: nil)
+        await broker.configure(approvalTimeout: 60)
+        let asked = await broker.release(VaultReleaseRequest(mode: "run", names: ["ASK"], reason: "deploy"), caller: inside)
+        #expect(asked.status == .pending)
+        let (after, _, _) = try await restarted(store, answer: AttentionRequest.vaultApprovalOptions[1])
+        let r = await waitResult(after, try #require(asked.id))
+        #expect(r.status == .granted)
+        #expect(r.values?["ASK"] == "ask-value")
+    }
+
+    @Test func theSavedRequestsAreEncrypted() async throws {
+        let (broker, store, _) = try await makeBroker(answer: nil)
+        await broker.configure(approvalTimeout: 60)
+        let r = await broker.add(VaultAddRequest(name: "ASK", value: "replacement-value-xyz"), caller: inside, trusted: false)
+        #expect(r.status == .pending)
+        let dir = await store.directory
+        let file = try #require(FileManager.default.contents(atPath: dir + "/pending.age"))
+        #expect(!String(decoding: file, as: UTF8.self).contains("replacement-value-xyz"))
+    }
+
+    @Test func aRequestPastItsTimeoutIsDeniedOnRestore() async throws {
+        let (broker, store, _) = try await makeBroker(answer: nil)
+        await broker.configure(approvalTimeout: 60)
+        let asked = await broker.release(VaultReleaseRequest(mode: "run", names: ["ASK"], reason: "deploy"), caller: inside)
+        let (after, _, approvals) = try await restarted(store, answer: nil)
+        await after.configure(approvalTimeout: 0)
+        let r = await waitResult(after, try #require(asked.id))
+        #expect(r.status == .denied)
+        #expect(approvals.expired == [asked.id])
+    }
+}

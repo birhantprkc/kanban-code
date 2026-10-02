@@ -11,6 +11,7 @@ The vault keeps secrets out of plaintext files. Every master (the Mac app and `k
 | `vault.age` | All secrets, age-encrypted to the vault key, with an HMAC keyed from the same key so only key holders can write a replica |
 | `leases.json` | Card leases: card, secret, expiry. No values |
 | `audit.jsonl` | Append-only log of this machine: time, card, secret, tier, outcome, decider, command |
+| `pending.age` | Approval requests still waiting for the human, age-encrypted to the vault key (an add carries the new value). Removed when none are open |
 
 The key is an age X25519 identity. On the box it is `vault/identity.txt` (0600, root). On the Mac it is the login keychain item `io.kanbancode.vault` / `age-identity`, readable without a prompt only by the signed app. To give a machine the key, write it to `~/.kanban-code/vault/identity.import`; the master imports it at start and deletes the file.
 
@@ -40,6 +41,12 @@ Order, first match wins:
 OpenClaw agents on a Linux master count like card sessions under the principal `openclaw:<agent>`: the master finds, in the caller's ancestry, a process whose cgroup is the gateway's systemd unit (`openclaw-gateway.service`, set by systemd, not by the process), then the topmost process below the gateway whose working directory is an agent workspace from `~/.openclaw/openclaw.json` (the agent runtime the gateway started; a child that changes directory does not change it). The gateway itself, resolving SecretRefs, is `openclaw:gateway`. Each principal holds its own leases. Commands an agent starts outside the unit (`systemd-run`, cron) are outside, so they ask.
 
 Human approvals are attention requests of kind `vaultApproval` with the options "Approve for this card (2 days)", "Approve once", "Deny". A secret with "every use asks" never offers the lease. No answer in 10 minutes denies.
+
+### Restarts
+
+An open approval survives a restart of its master. The broker keeps open requests and their attention requests in `pending.age`; at start it raises them again and keeps waiting from the original creation time, so the timeout is unchanged. A poll that arrives before that finishes waits for it. Answered results are not saved, since a result can carry values; its caller fetches it within a couple of seconds.
+
+kv waits out a master that does not answer: on a refused connection, or HTTP 502/503, it prints `the master ... is not answering (...), probably restarting; waiting up to 2 min...` and retries with backoff (1, 2, 4, 8, then 10 seconds) for up to 2 minutes. A GET is always retried; a POST only when the connection was refused, so a request that may have reached the master is never sent twice. `kv exec-provider` does not wait: OpenClaw gets `UNREACHABLE` at once.
 
 ### What the human sees
 

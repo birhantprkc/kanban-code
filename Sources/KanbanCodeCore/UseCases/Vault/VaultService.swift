@@ -51,6 +51,7 @@ public final class VaultService: Sendable {
             }
             unlink(importPath)
         }
+        await broker.restore()
         if let replica {
             Task.detached { await replica.run() }
         }

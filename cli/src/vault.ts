@@ -97,26 +97,64 @@ export function vaultBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
   return `http://127.0.0.1:${port}`;
 }
 
+/** True when the request never reached the master (nothing listened). */
+function neverArrived(error: unknown): boolean {
+  const code = (error as { cause?: { code?: string } })?.cause?.code;
+  return code === "ECONNREFUSED" || code === "ENOENT";
+}
+
 export class VaultClient {
+  /**
+   * How long a call waits out a master that does not answer (a deploy
+   * restarts it), with backoff. 0 fails at once.
+   */
+  retryForMs = 120_000;
+
   constructor(
     readonly baseUrl: string,
     readonly io: VaultIO
   ) {}
 
   async call<T>(method: string, path: string, body?: unknown): Promise<{ status: number; body: T }> {
-    let res: Response;
-    try {
-      res = await this.io.fetch(`${this.baseUrl}/v1/vault/${path}`, {
-        method,
-        headers: body === undefined ? {} : { "Content-Type": "application/json" },
-        body: body === undefined ? undefined : JSON.stringify(body),
-      });
-    } catch (error) {
-      throw new VaultCliError(
-        `kv: cannot reach the Kanban Code master at ${this.baseUrl} (${(error as Error).message}).\n` +
-          "On the Mac the app must run with Settings > Remote Control on; on a server, kanban-code-server."
-      );
+    let res: Response | undefined;
+    let waited = 0;
+    let delay = 1000;
+    let noted = false;
+    for (;;) {
+      let failure: string | undefined;
+      try {
+        res = await this.io.fetch(`${this.baseUrl}/v1/vault/${path}`, {
+          method,
+          headers: body === undefined ? {} : { "Content-Type": "application/json" },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        });
+        if (res.status === 502 || res.status === 503) failure = `HTTP ${res.status}`;
+      } catch (error) {
+        failure = (error as Error).message;
+        // A request that may have reached the master is not sent twice:
+        // only a GET, or a connection nothing accepted, is retried.
+        if (method !== "GET" && !neverArrived(error)) waited = Infinity;
+      }
+      if (failure === undefined && res) break;
+      if (waited >= this.retryForMs) {
+        throw new VaultCliError(
+          `kv: cannot reach the Kanban Code master at ${this.baseUrl} (${failure}).\n` +
+            "On the Mac the app must run with Settings > Remote Control on; on a server, kanban-code-server."
+        );
+      }
+      if (!noted) {
+        noted = true;
+        this.io.stderr(
+          `kv: the master at ${this.baseUrl} is not answering (${failure}), probably restarting; waiting up to ${Math.round(this.retryForMs / 60_000)} min...\n`
+        );
+      }
+      const step = Math.min(delay, this.retryForMs - waited);
+      await this.io.sleep(step);
+      waited += step;
+      delay = Math.min(delay * 2, 10_000);
     }
+    if (noted) this.io.stderr("kv: the master is back.\n");
+    if (!res) throw new VaultCliError(`kv: no answer from ${this.baseUrl}`);
     const text = await res.text();
     let parsed: unknown;
     try {
@@ -688,6 +726,9 @@ export async function runKv(argv: string[], io: VaultIO = defaultIO()): Promise<
 
     case "exec-provider": {
       const request = JSON.parse((await readStdin()) || "{}");
+      // OpenClaw waits on the provider; an unreachable master is an error
+      // code at once, not a two-minute wait.
+      client.retryForMs = 0;
       out(JSON.stringify(await execProviderAnswer(client, request, ctx)) + "\n");
       return 0;
     }
