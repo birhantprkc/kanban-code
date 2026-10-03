@@ -265,13 +265,6 @@ struct ChatPane: View {
     /// left and send on the right. Touch and hold send to send now.
     private var composer: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if card.isBusy && !draft.isEmpty {
-                Text("Sends when this turn ends. Touch and hold send to send now or stash.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 6)
-                    .accessibilityIdentifier("queueHint")
-            }
             VStack(alignment: .leading, spacing: 6) {
                 if !draft.images.isEmpty {
                     attachments
