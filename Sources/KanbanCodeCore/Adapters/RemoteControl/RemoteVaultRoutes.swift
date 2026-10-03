@@ -4,14 +4,17 @@ import KanbanCodeRemoteKit
 /// The vault routes of the Remote Control server (docs/vault.md):
 ///
 ///   POST   /v1/vault/release           secrets for a command: granted, pending or denied
+///   POST   /v1/vault/resolve           the same body: which secret each name or variable gets, no values
 ///   GET    /v1/vault/pending/{id}      the outcome of a pending request
 ///   POST   /v1/vault/request           a card lease, with a reason
 ///   POST   /v1/vault/aws               short-lived AWS credentials for a profile
-///   GET    /v1/vault/secrets           names, tiers and rules, never values
+///   GET    /v1/vault/secrets           names, tiers and rules, never values (?project=X for one project)
 ///   POST   /v1/vault/secrets           add a secret (replacing one asks the human)
 ///   PATCH  /v1/vault/secrets           one change to several secrets, in one approval
 ///   PATCH  /v1/vault/secrets/{name}    tier, rules, tags (asks the human)
 ///   DELETE /v1/vault/secrets/{name}    (asks the human)
+///   POST   /v1/vault/rename            new names for several secrets, in one approval (dryRun: what it would do)
+///   GET    /v1/vault/project           the vault projects of ?dir=, the most specific first
 ///   GET    /v1/vault/log               the audit log, newest first
 ///   GET    /v1/vault/leases            active leases
 ///   GET    /v1/vault/status
@@ -63,6 +66,24 @@ enum RemoteVaultRoutes {
             let who = await caller(claimedCard: req.cardId, sessionId: req.sessionId)
             return respond(await vault.broker.release(req, caller: who))
 
+        case ("POST", "resolve", 1):
+            guard let req = decode(VaultReleaseRequest.self) else {
+                return .error(400, "body must be {\"names\": [...], \"keys\": [...], \"group\", \"dir\", \"environment\"}")
+            }
+            return respond(await vault.broker.resolve(req))
+
+        case ("POST", "rename", 1):
+            guard let req = decode(VaultRenameRequest.self) else {
+                return .error(400, "body must be {\"renames\": [{\"from\", \"to\"}], \"reason\", \"dryRun\"}")
+            }
+            let who = await caller(claimedCard: query["card"], sessionId: nil)
+            let r = await vault.broker.rename(req, caller: who, trusted: false)
+            await vault.replica?.poke()
+            return respond(r)
+
+        case ("GET", "project", 1):
+            return .json(["projects": await vault.broker.projectsOf(query["dir"])])
+
         case ("GET", "pending", 2):
             return respond(await vault.broker.poll(id: path[1]))
 
@@ -84,14 +105,14 @@ enum RemoteVaultRoutes {
 
         case ("GET", "secrets", 1):
             do {
-                return .json(try await vault.store.list())
+                return .json(try await vault.store.list(project: query["project"].flatMap { $0.isEmpty ? nil : $0 }))
             } catch {
                 return .error(423, "\(error)")
             }
 
         case ("POST", "secrets", 1):
             guard let req = decode(VaultAddRequest.self) else {
-                return .error(400, "body must be {\"name\", \"value\", \"tier\", \"rules\", \"tags\"}")
+                return .error(400, "body must be {\"name\", \"value\", \"tier\", \"rules\", \"tags\", \"project\", \"environment\"}")
             }
             let who = await caller(claimedCard: query["card"], sessionId: nil)
             let r = await vault.broker.add(req, caller: who, trusted: false)

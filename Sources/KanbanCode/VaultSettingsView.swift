@@ -1,3 +1,4 @@
+import KanbanCodeRemoteKit
 import KanbanCodeCore
 import SwiftUI
 
@@ -32,7 +33,12 @@ struct VaultSettingsView: View {
                             Section("\(tier.label) (\(inTier.count))") {
                                 ForEach(inTier, id: \.name) { s in
                                     HStack {
-                                        Text(s.name).font(.system(.body, design: .monospaced))
+                                        VStack(alignment: .leading, spacing: 1) {
+                                            Text(s.key ?? s.name).font(.system(.body, design: .monospaced))
+                                            if let project = s.project, let environment = s.environment {
+                                                Text("\(project) · \(environment)").font(.caption).foregroundStyle(.secondary)
+                                            }
+                                        }
                                         if s.leasePolicy.everyUseAsks {
                                             Image(systemName: "hand.raised").foregroundStyle(.orange).help("Every use asks")
                                         }
@@ -127,6 +133,15 @@ private struct VaultSecretEditor: View {
     var body: some View {
         Form {
             Section(secret.name) {
+                if let project = secret.project, let environment = secret.environment {
+                    LabeledContent("Project", value: project)
+                    LabeledContent("Environment", value: environment)
+                }
+                if let aliases = secret.aliases, !aliases.isEmpty {
+                    LabeledContent("Earlier names") {
+                        Text(aliases.joined(separator: "\n")).font(.caption).textSelection(.enabled)
+                    }
+                }
                 Picker("Tier", selection: $tier) {
                     ForEach(VaultTier.allCases, id: \.self) { Text($0.label).tag($0) }
                 }
@@ -212,7 +227,10 @@ struct VaultLogList: View {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack {
                         Image(systemName: icon(e.outcome)).foregroundStyle(color(e.outcome))
-                        Text(e.secret).font(.system(.body, design: .monospaced))
+                        Text(VaultSecretName(e.secret).key).font(.system(.body, design: .monospaced))
+                        if !VaultSecretName(e.secret).scopeParts.isEmpty {
+                            Text(VaultSecretName(e.secret).scopeParts.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
+                        }
                         Text(e.action).font(.caption).foregroundStyle(.secondary)
                         Spacer()
                         Text(e.at.formatted(date: .omitted, time: .shortened)).font(.caption).foregroundStyle(.secondary)

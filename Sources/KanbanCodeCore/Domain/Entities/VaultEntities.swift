@@ -68,6 +68,8 @@ public struct VaultAwsRole: Codable, Sendable, Equatable, Hashable {
 /// One secret in the vault. The value never leaves the master except in a
 /// release; every listing uses `VaultSecretInfo`.
 public struct VaultSecret: Codable, Sendable, Equatable {
+    /// The id: `KEY` for a shared secret, `project/environment/KEY` for a
+    /// project's (see `VaultSecretName`).
     public var name: String
     public var value: String
     public var tier: VaultTier
@@ -86,6 +88,8 @@ public struct VaultSecret: Codable, Sendable, Equatable {
     /// How approvals name it to the human, e.g. "Slack user token"; when
     /// nil, a label derived from the name.
     public var label: String?
+    /// Earlier names that still resolve to this secret.
+    public var aliases: [String]?
 
     public init(
         name: String,
@@ -99,7 +103,8 @@ public struct VaultSecret: Codable, Sendable, Equatable {
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
         deletedAt: Date? = nil,
-        label: String? = nil
+        label: String? = nil,
+        aliases: [String]? = nil
     ) {
         self.name = name
         self.value = value
@@ -113,15 +118,27 @@ public struct VaultSecret: Codable, Sendable, Equatable {
         self.updatedAt = updatedAt
         self.deletedAt = deletedAt
         self.label = label
+        self.aliases = aliases
     }
 
     public var info: VaultSecretInfo {
         VaultSecretInfo(
             name: name, tier: tier, rules: rules, leasePolicy: leasePolicy, tags: tags, aws: aws,
             sources: sources, createdAt: createdAt, updatedAt: updatedAt, hasValue: !value.isEmpty,
-            label: label
+            label: label, key: key, project: project, environment: environment, aliases: aliases,
+            displayLabel: displayLabel
         )
     }
+
+    public var parsedName: VaultSecretName { VaultSecretName(name) }
+    /// The environment variable it fills.
+    public var key: String { parsedName.key }
+    /// Nil for a shared secret.
+    public var project: String? { parsedName.project }
+    /// Nil for a shared secret.
+    public var environment: String? { parsedName.environment }
+    /// The name and every earlier name: leases and reuse are looked up under all.
+    public var allNames: [String] { [name] + (aliases ?? []) }
 
     /// The label approvals show: its own, or one derived from the name.
     public var displayLabel: String { AttentionCopy.secretLabel(name: name, label: label) }
@@ -148,6 +165,15 @@ public struct VaultSecretInfo: Codable, Sendable, Equatable {
     public var updatedAt: Date
     public var hasValue: Bool
     public var label: String? = nil
+    public var key: String? = nil
+    public var project: String? = nil
+    public var environment: String? = nil
+    public var aliases: [String]? = nil
+    /// "label · project · environment", as approvals name it.
+    public var displayLabel: String? = nil
+    /// The same for two secrets holding the same value, keyed by the vault
+    /// key so it says nothing about the value to anyone else.
+    public var fingerprint: String? = nil
 }
 
 /// The decrypted contents of `vault.age`.

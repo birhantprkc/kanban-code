@@ -12,7 +12,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { kanbanHome } from "./paths.js";
 
 export const EXIT_DENIED = 77;
@@ -25,6 +25,10 @@ export interface VaultResponse {
   skipped?: string[];
   credentials?: AwsProcessCredentials;
   card?: string;
+  /** Values by environment variable: the manifest's KEY lines and the project's group. */
+  env?: Record<string, string>;
+  /** What was asked for -> the secret it resolved to (a dry-run rename: old name -> outcome). */
+  resolved?: Record<string, string>;
 }
 
 export interface AwsProcessCredentials {
@@ -45,6 +49,30 @@ export interface VaultSecretInfo {
   updatedAt: string;
   aws?: { sourceSecret: string; roleArn?: string; policyArns: string[] } | null;
   label?: string | null;
+  key?: string | null;
+  project?: string | null;
+  environment?: string | null;
+  aliases?: string[] | null;
+  displayLabel?: string | null;
+  fingerprint?: string | null;
+}
+
+export const DEFAULT_ENVIRONMENT = "dev";
+
+/**
+ * A secret name taken apart: `KEY` is shared, `project/environment/KEY`
+ * belongs to a project (which may hold slashes for a subfolder).
+ */
+export function parseSecretName(name: string): { key: string; project?: string; environment?: string } {
+  const parts = name.split("/");
+  if (parts.length < 3 || parts.some((p) => !p)) return { key: name };
+  return { key: parts[parts.length - 1], environment: parts[parts.length - 2], project: parts.slice(0, -2).join("/") };
+}
+
+/** "KEY · project · environment", or the name itself for a shared secret. */
+export function secretDisplay(name: string): string {
+  const { key, project, environment } = parseSecretName(name);
+  return project ? `${key} · ${project} · ${environment}` : name;
 }
 
 export interface VaultAuditEntry {
@@ -271,14 +299,25 @@ export interface EnvVaultEntry {
   /** Vault secret name for `KEY={{vault:NAME}}`; undefined for a plain value. */
   secret?: string;
   value?: string;
+  /** A bare `KEY` line: the project's value for the environment, else the shared one. */
+  bare?: boolean;
 }
 
-/** Reads `.env.vault`: `KEY={{vault:NAME}}` lines name secrets, other `KEY=value` lines pass through. */
+/**
+ * Reads a `.env.vault` manifest: a bare `KEY` line takes the project's
+ * secret for the environment (else the shared one), `KEY={{vault:NAME}}`
+ * names a secret, other `KEY=value` lines pass through.
+ */
 export function parseEnvVault(text: string): EnvVaultEntry[] {
   const out: EnvVaultEntry[] = [];
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
     if (!line || line.startsWith("#")) continue;
+    const bare = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)$/.exec(line);
+    if (bare) {
+      out.push({ key: bare[1], bare: true });
+      continue;
+    }
     const m = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(line);
     if (!m) continue;
     let value = m[2].trim();
@@ -291,9 +330,18 @@ export function parseEnvVault(text: string): EnvVaultEntry[] {
   return out;
 }
 
-export function envFromVault(entries: EnvVaultEntry[], values: Record<string, string>): Record<string, string> {
-  const env: Record<string, string> = {};
+/**
+ * The environment a manifest gives: the project's group and bare keys
+ * (`projectEnv`), then the manifest's own lines, which win.
+ */
+export function envFromVault(
+  entries: EnvVaultEntry[],
+  values: Record<string, string>,
+  projectEnv: Record<string, string> = {}
+): Record<string, string> {
+  const env: Record<string, string> = { ...projectEnv };
   for (const e of entries) {
+    if (e.bare) continue;
     if (e.secret) {
       if (values[e.secret] !== undefined) env[e.key] = values[e.secret];
     } else if (e.value !== undefined) {
@@ -309,16 +357,16 @@ export function envFromVault(entries: EnvVaultEntry[], values: Record<string, st
  * checkout is searched, since worktrees get `.env` copies but rarely the
  * `.env.vault` next to them.
  */
-export function findEnvVault(dir: string, home = homedir()): string | undefined {
+export function findEnvVault(dir: string, home = homedir(), name = ".env.vault"): string | undefined {
   const start = resolve(dir);
   let current = start;
   for (let i = 0; i < 64; i++) {
-    const candidate = join(current, ".env.vault");
+    const candidate = join(current, name);
     if (existsSync(candidate)) return candidate;
     const git = join(current, ".git");
     if (existsSync(git)) {
       const main = mainCheckoutOf(git);
-      return main ? findEnvVault(join(main, relative(current, start)), home) : undefined;
+      return main ? findEnvVault(join(main, relative(current, start)), home, name) : undefined;
     }
     if (current === home) return undefined;
     const parent = dirname(current);
@@ -326,6 +374,40 @@ export function findEnvVault(dir: string, home = homedir()): string | undefined 
     current = parent;
   }
   return undefined;
+}
+
+/** The manifest file name of an environment: `.env.vault` for dev, `.env.<environment>.vault` otherwise. */
+export function manifestName(environment: string): string {
+  return environment === DEFAULT_ENVIRONMENT ? ".env.vault" : `.env.${environment}.vault`;
+}
+
+/** The environment a manifest file is for: `.env.vault` is dev, `.env.prod.vault` is prod. */
+export function environmentOf(file: string): string {
+  const m = /^\.env\.(.+)\.vault$/.exec(basename(file));
+  return m ? m[1] : DEFAULT_ENVIRONMENT;
+}
+
+/**
+ * The body of a release for a manifest (or for a folder without one): its
+ * named secrets, its bare keys, and the group of the folder's project.
+ */
+export function manifestRequest(
+  file: string | undefined,
+  options: { cwd: string; environment?: string; project?: string }
+): { entries: EnvVaultEntry[]; body: Record<string, unknown> } {
+  const entries = file ? parseEnvVault(readFileSync(file, "utf8")) : [];
+  return {
+    entries,
+    body: {
+      names: [...new Set(entries.filter((e) => e.secret).map((e) => e.secret!))],
+      keys: [...new Set(entries.filter((e) => e.bare).map((e) => e.key))],
+      defined: [...new Set(entries.filter((e) => !e.bare).map((e) => e.key))],
+      group: true,
+      dir: file ? dirname(resolve(file)) : options.cwd,
+      project: options.project,
+      environment: options.environment ?? (file ? environmentOf(file) : DEFAULT_ENVIRONMENT),
+    },
+  };
 }
 
 /** The main checkout of a linked worktree, from its `.git` file (`gitdir: <main>/.git/worktrees/<name>`). */
@@ -508,13 +590,19 @@ function takeAll(args: string[], name: string): string[] {
 export const USAGE = `kv: secrets from the Kanban Code vault
 
   kv run NAME [NAME..] [--reason "..."] -- <cmd> [args..]   run cmd with the secrets in its env
-  kv env <.env.vault> [--reason "..."] -- <cmd> [args..]    same, names from KEY={{vault:NAME}} lines
+  kv env [<.env.vault>] [--env dev|prod|..] [--project P] [--reason "..."] -- <cmd> [args..]
+                                                            run cmd with the project's secrets for the environment
+                                                            plus the manifest's lines; --names lists them instead
   kv get NAME [--reason "..."]                              print one secret (never one that asks)
   kv request NAME[:scope] [NAME..] --reason "..."           ask once for the card's whole task (2 days)
   kv aws <profile> [--reason "..."]                         AWS credential_process JSON (1 h STS credentials)
-  kv add NAME [--tier open|judged|ask|never] [--rules "..."] [--label "..."] [--tag t] [--reason "..."]
-         [--every-use-asks]                                 value from stdin; every-use-asks: no card lease
-  kv ls [--json]                                            names, tiers and rules
+  kv set KEY [--project P|.] [--env E] [--tier open|judged|ask|never] [--rules "..."] [--label "..."] [--tag t]
+         [--reason "..."] [--every-use-asks]                value from stdin; with --project the secret is the
+                                                            project's own (. is this folder's), else shared.
+                                                            kv add is the same command
+  kv ls [--project P] [--json]                              names, tiers and rules
+  kv mv OLD NEW [--reason "..."]                            rename; the old name keeps resolving (asks Rogerio)
+  kv mv --plan <file.json> [--dry-run] --reason "..."       many renames ([{"from","to"}]), one approval
   kv log [--card ID] [--secret NAME] [--limit N] [--json]   the audit log, newest first
   kv leases [--card ID]                                     active card leases
   kv tier NAME <tier> [--every-use-asks|--leases] | kv rules NAME "..." | kv label NAME "..."  [--reason "..."]
@@ -524,6 +612,12 @@ export const USAGE = `kv: secrets from the Kanban Code vault
   kv status                                                 is the vault unlocked here
   kv exec-provider                                          OpenClaw exec SecretRef provider (JSON on stdin)
   kv import [--apply] [--secrets-only] [--only <dir>]..   plan (then do) the migration of plaintext secrets
+
+Names: KEY is a shared secret, project/environment/KEY is a project's own (the
+project is the repository folder name, plus the subfolder; dev unless said).
+A .env.vault manifest lists what the project's own secrets do not cover: a bare
+KEY line (the project's value, else the shared one), KEY={{vault:NAME}} for
+another name, KEY=value for plain config. .env.prod.vault is the prod manifest.
 
 When Rogerio has to approve, his phone shows "<card> wants to use <secret>"
 and under it only your reason. ${REASON_GUIDANCE}
@@ -560,36 +654,51 @@ export async function runKv(argv: string[], io: VaultIO = defaultIO()): Promise<
       const { before, after } = splitAtDashes(args);
       const givenReason = takeOption(before, "--reason");
       const exportMode = takeFlag(before, "--export");
+      const namesOnly = takeFlag(before, "--names");
+      const environment = takeOption(before, "--env");
+      const project = takeOption(before, "--project");
       // A hook-wrapped command never asks a human, so it carries no reason.
       const reason = exportMode ? givenReason : checkedReason(givenReason, io.env, false);
       const b64 = takeOption(before, "--command-b64");
-      const file = before[0];
-      if (!file) throw new VaultCliError("kv env <.env.vault> -- <cmd>");
-      if (!existsSync(file)) throw new VaultCliError(`kv: no file ${file}`);
-      const entries = parseEnvVault(readFileSync(file, "utf8"));
-      const names = [...new Set(entries.filter((e) => e.secret).map((e) => e.secret!))];
-      const command = b64 ? Buffer.from(b64, "base64").toString("utf8") : commandLine(after);
-      let values: Record<string, string> = {};
-      if (names.length > 0) {
-        let r: VaultResponse;
-        try {
-          r = await client.decide("release", { mode: exportMode ? "hook" : "env", names, command, reason, ...ctx });
-        } catch (error) {
-          // A wrapped command still runs when the master is down: it just gets no vault env.
-          if (!exportMode) throw error;
-          io.stderr(`${(error as Error).message.split("\n")[0]} (running without the vault env)\n`);
-          return 0;
-        }
+      if (before[0] && !existsSync(before[0])) throw new VaultCliError(`kv: no file ${before[0]}`);
+      // Without a file: the manifest of the environment up from here, else the project's group alone.
+      const file = before[0] ?? findEnvVault(ctx.cwd, homedir(), manifestName(environment ?? DEFAULT_ENVIRONMENT));
+      const { entries, body } = manifestRequest(file, { cwd: ctx.cwd, environment, project });
+      if (namesOnly) {
+        const { body: r } = await client.call<VaultResponse>("POST", "resolve", body);
         if (r.status !== "granted") throw deniedError(r);
-        values = r.values ?? {};
-        const skippedKeys = entries.filter((e) => e.secret && r.skipped?.includes(e.secret)).map((e) => e.key);
-        const mentioned = skippedKeys.filter((k) => command.includes(k));
-        if (!exportMode && skippedKeys.length) io.stderr(`kv: ${r.message}\n`);
-        else if (mentioned.length) {
-          io.stderr(`kv: ${mentioned.join(", ")} need approval and were left out: kv request ${mentioned.map((k) => entries.find((e) => e.key === k)!.secret).join(" ")} --reason "..."\n`);
+        const resolved = r.resolved ?? {};
+        const lines = new Map<string, string>();
+        for (const [asked, name] of Object.entries(resolved)) {
+          if (!entries.some((e) => e.secret === asked && !e.bare)) lines.set(asked, name);
         }
+        for (const e of entries) {
+          if (e.secret) lines.set(e.key, resolved[e.secret] ?? e.secret);
+          else if (!e.bare) lines.set(e.key, "(plain value)");
+        }
+        for (const key of [...lines.keys()].sort()) out(`${key}\t${lines.get(key)}\n`);
+        return 0;
       }
-      const env = envFromVault(entries, values);
+      const command = b64 ? Buffer.from(b64, "base64").toString("utf8") : commandLine(after);
+      let r: VaultResponse;
+      try {
+        r = await client.decide("release", { mode: exportMode ? "hook" : "env", ...body, command, reason, ...ctx });
+      } catch (error) {
+        // A wrapped command still runs when the master is down: it just gets no vault env.
+        if (!exportMode) throw error;
+        io.stderr(`${(error as Error).message.split("\n")[0]} (running without the vault env)\n`);
+        return 0;
+      }
+      if (r.status !== "granted") throw deniedError(r);
+      const skipped = r.skipped ?? [];
+      const keyOf = (asked: string) => entries.find((e) => e.secret === asked)?.key ?? asked;
+      const mentioned = skipped.filter((asked) => command.includes(keyOf(asked)));
+      if (!exportMode && skipped.length) io.stderr(`kv: ${r.message}\n`);
+      else if (mentioned.length) {
+        const names = mentioned.map((asked) => r.resolved?.[asked] ?? asked);
+        io.stderr(`kv: ${mentioned.map(keyOf).join(", ")} need approval and were left out: kv request ${names.join(" ")} --reason "..."\n`);
+      }
+      const env = envFromVault(entries, r.values ?? {}, r.env ?? {});
       if (exportMode) {
         out(exportLines(env) + "\n");
         return 0;
@@ -628,7 +737,11 @@ export async function runKv(argv: string[], io: VaultIO = defaultIO()): Promise<
       return 0;
     }
 
-    case "add": {
+    case "add":
+    case "set": {
+      const project = takeOption(args, "--project");
+      const environment = takeOption(args, "--env");
+      if (environment && !project) throw new VaultCliError("kv: --env needs --project (a shared secret has no environment)");
       const tier = takeOption(args, "--tier");
       const rules = takeOption(args, "--rules");
       const tags = takeAll(args, "--tag");
@@ -636,7 +749,7 @@ export async function runKv(argv: string[], io: VaultIO = defaultIO()): Promise<
       const leasePolicy = leasePolicyFlags(args);
       const reason = checkedReason(takeOption(args, "--reason"), io.env, false);
       const name = args[0];
-      if (!name) throw new VaultCliError("kv add NAME [--tier t] [--rules '...'] [--every-use-asks]  (value on stdin)");
+      if (!name) throw new VaultCliError("kv set KEY [--project P|.] [--env E] [--tier t] [--rules '...'] [--every-use-asks]  (value on stdin)");
       const value = await readSecretFromStdin(name);
       if (!value) throw new VaultCliError("kv: empty value, nothing added");
       const { body } = await client.call<VaultResponse>("POST", `secrets${ctx.cardId ? `?card=${ctx.cardId}` : ""}`, {
@@ -648,6 +761,9 @@ export async function runKv(argv: string[], io: VaultIO = defaultIO()): Promise<
         reason,
         leasePolicy,
         tags: tags.length ? tags : undefined,
+        project,
+        environment,
+        dir: ctx.cwd,
       });
       const r = body.status === "pending" ? await waitPending(client, body) : body;
       if (r.status !== "granted") throw deniedError(r);
@@ -689,9 +805,36 @@ export async function runKv(argv: string[], io: VaultIO = defaultIO()): Promise<
       return 0;
     }
 
+    case "mv": {
+      const reason = checkedReason(takeOption(args, "--reason"), io.env, false);
+      const dryRun = takeFlag(args, "--dry-run");
+      const plan = takeOption(args, "--plan");
+      let renames: Array<{ from: string; to: string }>;
+      if (plan) {
+        renames = JSON.parse(readFileSync(plan, "utf8"));
+      } else {
+        if (args.length !== 2) throw new VaultCliError('kv mv OLD NEW [--reason "..."]  |  kv mv --plan <file.json> [--dry-run]');
+        renames = [{ from: args[0], to: args[1] }];
+      }
+      const { body } = await client.call<VaultResponse>("POST", `rename${ctx.cardId ? `?card=${ctx.cardId}` : ""}`, {
+        renames,
+        reason,
+        dryRun,
+      });
+      const r = body.status === "pending" ? await waitPending(client, body) : body;
+      if (r.status !== "granted") throw deniedError(r);
+      if (dryRun || plan) out(JSON.stringify(r.resolved ?? {}, null, 2) + "\n");
+      io.stderr(`kv: ${r.message}\n`);
+      return 0;
+    }
+
     case "ls": {
       const json = takeFlag(args, "--json");
-      const { body } = await client.call<VaultSecretInfo[]>("GET", "secrets");
+      const project = takeOption(args, "--project");
+      const { body } = await client.call<VaultSecretInfo[]>(
+        "GET",
+        `secrets${project ? `?project=${encodeURIComponent(project)}` : ""}`
+      );
       if (json) {
         out(JSON.stringify(body, null, 2) + "\n");
         return 0;
@@ -699,7 +842,8 @@ export async function runKv(argv: string[], io: VaultIO = defaultIO()): Promise<
       const width = Math.max(4, ...body.map((s) => s.name.length));
       for (const s of body) {
         const lease = s.leasePolicy.everyUseAsks ? " every use asks" : "";
-        out(`${s.name.padEnd(width)}  ${s.tier.padEnd(6)}${lease}${s.rules ? `  ${s.rules.slice(0, 80)}` : ""}\n`);
+        const label = s.project ? `  ${s.displayLabel ?? secretDisplay(s.name)}` : "";
+        out(`${s.name.padEnd(width)}  ${s.tier.padEnd(6)}${lease}${label}${s.rules ? `  ${s.rules.slice(0, 80)}` : ""}\n`);
       }
       return 0;
     }
@@ -719,7 +863,7 @@ export async function runKv(argv: string[], io: VaultIO = defaultIO()): Promise<
       }
       for (const e of body) {
         out(
-          `${e.at.slice(0, 19)}  ${e.outcome.padEnd(7)} ${e.decider.padEnd(7)} ${e.action.padEnd(6)} ${e.secret}` +
+          `${e.at.slice(0, 19)}  ${e.outcome.padEnd(7)} ${e.decider.padEnd(7)} ${e.action.padEnd(6)} ${secretDisplay(e.secret)}` +
             `${e.cardId ? `  card ${e.cardId}` : ""}${e.detail ? `  (${e.detail})` : ""}\n`
         );
       }
@@ -732,7 +876,7 @@ export async function runKv(argv: string[], io: VaultIO = defaultIO()): Promise<
         "GET",
         `leases${card ? `?card=${card}` : ""}`
       );
-      for (const l of body) out(`${l.secret}  card ${l.cardId}  until ${l.expiresAt.slice(0, 16)}${l.reason ? `  ${l.reason}` : ""}\n`);
+      for (const l of body) out(`${secretDisplay(l.secret)}  card ${l.cardId}  until ${l.expiresAt.slice(0, 16)}${l.reason ? `  ${l.reason}` : ""}\n`);
       return 0;
     }
 

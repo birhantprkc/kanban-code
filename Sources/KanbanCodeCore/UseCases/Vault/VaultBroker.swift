@@ -23,9 +23,23 @@ public struct VaultReleaseRequest: Codable, Sendable, Equatable {
     /// What the client says its card is (KANBAN_CARD_ID); only a hint.
     public var cardId: String?
     public var sessionId: String?
+    /// Environment variables to fill for the project: each gets the
+    /// project's own value for the environment, else the shared one.
+    public var keys: [String]?
+    /// Also every secret the project owns for the environment.
+    public var group: Bool?
+    /// Variables the caller sets some other way; the group leaves them out.
+    public var defined: [String]?
+    /// The folder whose project is meant (a manifest's folder); `cwd` when nil.
+    public var dir: String?
+    /// The project by name, instead of the one of `dir`.
+    public var project: String?
+    /// "dev" when nil.
+    public var environment: String?
 
     public init(mode: String, names: [String], command: String? = nil, reason: String? = nil, cwd: String? = nil,
-                cardId: String? = nil, sessionId: String? = nil) {
+                cardId: String? = nil, sessionId: String? = nil, keys: [String]? = nil, group: Bool? = nil,
+                defined: [String]? = nil, dir: String? = nil, project: String? = nil, environment: String? = nil) {
         self.mode = mode
         self.names = names
         self.command = command
@@ -33,6 +47,38 @@ public struct VaultReleaseRequest: Codable, Sendable, Equatable {
         self.cwd = cwd
         self.cardId = cardId
         self.sessionId = sessionId
+        self.keys = keys
+        self.group = group
+        self.defined = defined
+        self.dir = dir
+        self.project = project
+        self.environment = environment
+    }
+}
+
+/// One rename of `POST /v1/vault/rename`.
+public struct VaultRename: Codable, Sendable, Equatable {
+    public var from: String
+    public var to: String
+
+    public init(from: String, to: String) {
+        self.from = from
+        self.to = to
+    }
+}
+
+/// Body of `POST /v1/vault/rename`: new names for several secrets, in one
+/// approval. The old names stay as aliases.
+public struct VaultRenameRequest: Codable, Sendable, Equatable {
+    public var renames: [VaultRename]
+    public var reason: String?
+    /// Only say what each rename would do.
+    public var dryRun: Bool?
+
+    public init(renames: [VaultRename], reason: String? = nil, dryRun: Bool? = nil) {
+        self.renames = renames
+        self.reason = reason
+        self.dryRun = dryRun
     }
 }
 
@@ -79,10 +125,18 @@ public struct VaultAddRequest: Codable, Sendable, Equatable {
     public var label: String?
     /// Why the caller replaces a stored value, shown to the human.
     public var reason: String?
+    /// The project that owns it; `name` is then the environment variable.
+    /// "." means the project of `dir`. Nil stores a shared secret.
+    public var project: String?
+    /// "dev" when nil; only with a project.
+    public var environment: String?
+    /// The caller's folder, for project ".".
+    public var dir: String?
 
     public init(name: String, value: String, tier: VaultTier? = nil, rules: String? = nil, tags: [String]? = nil,
                 aws: VaultAwsRole? = nil, leasePolicy: VaultLeasePolicy? = nil, sources: [String]? = nil,
-                label: String? = nil, reason: String? = nil) {
+                label: String? = nil, reason: String? = nil, project: String? = nil, environment: String? = nil,
+                dir: String? = nil) {
         self.name = name
         self.value = value
         self.tier = tier
@@ -93,6 +147,9 @@ public struct VaultAddRequest: Codable, Sendable, Equatable {
         self.sources = sources
         self.label = label
         self.reason = reason
+        self.project = project
+        self.environment = environment
+        self.dir = dir
     }
 }
 
@@ -181,9 +238,15 @@ public struct VaultResponse: Codable, Sendable, Equatable {
     public var skipped: [String]?
     public var credentials: AwsProcessCredentials?
     public var card: String?
+    /// Values by environment variable, for the `keys` and the group of a release.
+    public var env: [String: String]?
+    /// What was asked for (a name or an environment variable) -> the
+    /// secret it resolved to; a dry-run rename: old name -> its outcome.
+    public var resolved: [String: String]?
 
     public init(status: Status, message: String, id: String? = nil, values: [String: String]? = nil,
-                skipped: [String]? = nil, credentials: AwsProcessCredentials? = nil, card: String? = nil) {
+                skipped: [String]? = nil, credentials: AwsProcessCredentials? = nil, card: String? = nil,
+                env: [String: String]? = nil, resolved: [String: String]? = nil) {
         self.status = status
         self.message = message
         self.id = id
@@ -191,6 +254,8 @@ public struct VaultResponse: Codable, Sendable, Equatable {
         self.skipped = skipped
         self.credentials = credentials
         self.card = card
+        self.env = env
+        self.resolved = resolved
     }
 
     static func denied(_ message: String) -> VaultResponse { .init(status: .denied, message: message) }
@@ -211,6 +276,17 @@ public actor VaultBroker {
     public var hookReuse: TimeInterval = 10 * 60
     public var approvalTimeout: TimeInterval = VaultPolicy.approvalTimeout
     public var pollInterval: TimeInterval = 1
+    /// The vault projects of a folder, the most specific first.
+    public var projectsOf: @Sendable (String?) -> [String] = { VaultProjects.candidates(forPath: $0) }
+
+    /// One secret a release hands out, and what the caller asked for.
+    struct Wanted: Sendable {
+        var secret: VaultSecret
+        /// A secret name (or an earlier name of it), or an environment variable.
+        var requested: String
+        /// Asked for as an environment variable: answered in `env`.
+        var asEnv: Bool
+    }
 
     struct LeaseWant: Codable, Sendable {
         var name: String
@@ -223,6 +299,7 @@ public actor VaultBroker {
         case add(VaultAddRequest)
         case edit([String], VaultEditRequest)
         case delete(String)
+        case rename([VaultRename])
     }
 
     private struct Pending: Sendable {
@@ -334,14 +411,15 @@ public actor VaultBroker {
             for (s, why) in asks {
                 await audit(s, req: req, caller: caller, outcome: .skipped, decider: .rule, detail: why)
             }
-            var values: [String: String] = [:]
             for (s, by, why) in allowed {
-                values[s.name] = s.value
                 await audit(s, req: req, caller: caller, outcome: .allowed, decider: by, detail: why)
             }
-            let skipped = (asks.map(\.0.name) + denies.map(\.0.name)).sorted()
-            let message = skipped.isEmpty ? "released" : "went on without \(skipped.joined(separator: ", ")) (kv request \(skipped.joined(separator: " ")) --reason \"...\" to ask for them)"
-            return VaultResponse(status: .granted, message: message, values: values, skipped: skipped, card: caller.cardId)
+            let given = answer(wanted, allowed: Set(allowed.map(\.0.name)))
+            let left = (asks.map(\.0.name) + denies.map(\.0.name)).sorted()
+            let skipped = wanted.filter { left.contains($0.secret.name) }.map(\.requested).sorted()
+            let message = left.isEmpty ? "released" : "went on without \(left.joined(separator: ", ")) (kv request \(left.joined(separator: " ")) --reason \"...\" to ask for them)"
+            return VaultResponse(status: .granted, message: message, values: given.values, skipped: skipped, card: caller.cardId,
+                                 env: given.env, resolved: Dictionary(wanted.map { ($0.requested, $0.secret.name) }) { first, _ in first })
         }
 
         if !denies.isEmpty {
@@ -352,7 +430,7 @@ public actor VaultBroker {
             return .denied("denied:\n  \(lines)")
         }
         if asks.isEmpty {
-            return await grant(allowed.map { ($0.0, $0.1, $0.2) }, req: req, caller: caller, now: now)
+            return await grant(allowed.map { ($0.0, $0.1, $0.2) }, wanted: wanted, req: req, caller: caller, now: now)
         }
         return await ask(
             action: .release(req, asks.map(\.0.name)),
@@ -434,7 +512,8 @@ public actor VaultBroker {
                 return .denied("STS failed: \(error)")
             }
         }
-        return VaultResponse(status: .granted, message: "released", id: requestId, values: values, card: caller.cardId)
+        return VaultResponse(status: .granted, message: "released", id: requestId, values: given.values, card: caller.cardId,
+                             env: given.env, resolved: Dictionary(wanted.map { ($0.requested, $0.secret.name) }) { first, _ in first })
     }
 
     /// A card's title, or "OpenClaw agent <id>" for an OpenClaw principal.
@@ -458,8 +537,8 @@ public actor VaultBroker {
             }
             if s.tier == .never { return .denied("\(name) is never released") }
             if s.leasePolicy.everyUseAsks { return .denied("every use of \(name) asks; no lease is possible, use kv run") }
-            if await store.activeLease(cardId: card, secret: name, now: now) == nil {
-                wanted.append(LeaseWant(name: name, scope: scope))
+            if await store.activeLease(cardId: card, secret: s.name, now: now) == nil {
+                wanted.append(LeaseWant(name: s.name, scope: scope))
                 secrets.append(s)
             }
         }
@@ -486,15 +565,59 @@ public actor VaultBroker {
     /// Adds a secret. A new name is added at once; replacing a value
     /// someone else stored needs the human unless `trusted`.
     public func add(_ req: VaultAddRequest, caller: VaultCaller, trusted: Bool, now: Date = Date()) async -> VaultResponse {
-        guard VaultSecret.isValidName(req.name) else {
+        guard let name = storedName(for: req) else {
+            return .denied("no project for this folder: give --project <name>, or leave the project out for a shared secret")
+        }
+        guard VaultSecret.isValidName(name) else {
             return .denied("secret names use letters, digits and _ - . / : only")
         }
-        let existing = (try? await store.secret(req.name)) ?? nil
+        let existing = (try? await store.secret(name)) ?? nil
         if existing != nil && !trusted {
             return await ask(action: .add(req), secrets: [existing!], whys: ["replacing a stored value always asks"], caller: caller,
                              command: nil, reason: req.reason, now: now, leaseOnly: false, admin: true)
         }
         return await apply(.add(req), caller: caller, now: now)
+    }
+
+    /// The name an add stores under: `project/environment/KEY` when it
+    /// names a project ("." is the project of the caller's folder), else
+    /// the name as given.
+    func storedName(for req: VaultAddRequest) -> String? {
+        guard let given = req.project, !given.isEmpty else { return req.name }
+        let project = given == "." ? projectsOf(req.dir).first : given
+        guard let project else { return nil }
+        return VaultSecretName(key: req.name, project: project, environment: req.environment).canonical
+    }
+
+    /// New names for several secrets, in one approval; the old names stay
+    /// as aliases. A dry run answers what each rename would do.
+    public func rename(_ req: VaultRenameRequest, caller: VaultCaller, trusted: Bool, now: Date = Date()) async -> VaultResponse {
+        guard !req.renames.isEmpty else { return .denied("name at least one rename") }
+        var outcomes: [String: String] = [:]
+        var secrets: [VaultSecret] = []
+        var todo: [VaultRename] = []
+        do {
+            for r in req.renames {
+                guard VaultSecret.isValidName(r.to) else { return .denied("secret names use letters, digits and _ - . / : (got \(r.to))") }
+                let outcome = try await store.renameOutcome(from: r.from, to: r.to)
+                outcomes[r.from] = outcome.rawValue
+                if outcome == .rename || outcome == .merge, let s = try await store.secret(r.from) {
+                    secrets.append(s)
+                    todo.append(r)
+                }
+            }
+        } catch {
+            return .denied("the vault is locked on this machine: \(error)")
+        }
+        if req.dryRun == true {
+            return VaultResponse(status: .granted, message: "dry run", resolved: outcomes)
+        }
+        guard !todo.isEmpty else { return VaultResponse(status: .granted, message: "nothing to rename", resolved: outcomes) }
+        if !trusted {
+            return await ask(action: .rename(todo), secrets: secrets, whys: secrets.map { _ in "renaming a secret always asks" },
+                             caller: caller, command: nil, reason: req.reason, now: now, leaseOnly: false, admin: true)
+        }
+        return await apply(.rename(todo), caller: caller, now: now)
     }
 
     public func edit(_ name: String, _ req: VaultEditRequest, caller: VaultCaller, trusted: Bool, now: Date = Date()) async -> VaultResponse {
@@ -551,9 +674,11 @@ public actor VaultBroker {
         do {
             switch action {
             case .add(let req):
-                let existing = try await store.secret(req.name)
+                guard let wantedName = storedName(for: req) else { return .denied("no project for this folder") }
+                let existing = try await store.secret(wantedName)
+                let name = existing?.name ?? wantedName
                 let secret = VaultSecret(
-                    name: req.name, value: req.value,
+                    name: name, value: req.value,
                     tier: req.tier ?? existing?.tier ?? .judged,
                     rules: req.rules ?? existing?.rules ?? "",
                     leasePolicy: req.leasePolicy ?? existing?.leasePolicy ?? .standard,
@@ -561,13 +686,14 @@ public actor VaultBroker {
                     aws: req.aws ?? existing?.aws,
                     sources: Array(Set((existing?.sources ?? []) + (req.sources ?? []))).sorted(),
                     createdAt: existing?.createdAt ?? now,
-                    label: req.label.flatMap { $0.isEmpty ? nil : $0 } ?? existing?.label
+                    label: req.label.flatMap { $0.isEmpty ? nil : $0 } ?? existing?.label,
+                    aliases: existing?.aliases
                 )
                 try await store.upsert(secret, now: now)
                 await store.append(VaultAuditEntry(at: now, machine: machine, cardId: caller.cardId, sessionId: caller.sessionId,
-                                                   secret: req.name, tier: secret.tier, outcome: .allowed, decider: by,
+                                                   secret: name, tier: secret.tier, outcome: .allowed, decider: by,
                                                    action: existing == nil ? "add" : "replace", requestId: requestId))
-                return VaultResponse(status: .granted, message: existing == nil ? "added \(req.name)" : "replaced \(req.name)", id: requestId)
+                return VaultResponse(status: .granted, message: existing == nil ? "added \(name)" : "replaced \(name)", id: requestId)
             case .edit(let names, let req):
                 for name in names {
                     try await store.update(name, now: now) { req.apply(to: &$0) }
@@ -582,6 +708,21 @@ public actor VaultBroker {
                                                    secret: name, tier: nil, outcome: .allowed, decider: by,
                                                    action: "delete", requestId: requestId))
                 return VaultResponse(status: .granted, message: "deleted \(name)", id: requestId)
+            case .rename(let renames):
+                var outcomes: [String: String] = [:]
+                var done = 0
+                for r in renames {
+                    let outcome = try await store.rename(from: r.from, to: r.to, now: now)
+                    outcomes[r.from] = outcome.rawValue
+                    guard outcome == .rename || outcome == .merge else { continue }
+                    done += 1
+                    await store.append(VaultAuditEntry(at: now, machine: machine, cardId: caller.cardId, sessionId: caller.sessionId,
+                                                       secret: r.to, tier: nil, outcome: .allowed, decider: by, action: "rename",
+                                                       detail: outcome == .merge ? "merged \(r.from) into it" : "was \(r.from)",
+                                                       requestId: requestId))
+                }
+                return VaultResponse(status: .granted, message: "renamed \(done) of \(renames.count) secrets", id: requestId,
+                                     resolved: outcomes)
             case .release, .lease:
                 return .denied("not an admin action")
             }
@@ -658,6 +799,10 @@ public actor VaultBroker {
             changeLines = req.changeLines
         case .delete:
             kind = .delete
+        case .rename(let renames):
+            kind = .edit
+            changes = ["name"]
+            changeLines = renames.prefix(400).map { "\($0.from) -> \($0.to)" }
         }
         let origin: VaultApprovalDetails.Origin =
             caller.openClawAgent != nil ? .openClaw : (caller.insideCard ? .card : .outside)
@@ -690,6 +835,7 @@ public actor VaultBroker {
         case .add: "replace"
         case .edit: "edit"
         case .delete: "delete"
+        case .rename: "rename"
         }
     }
 
@@ -731,13 +877,14 @@ public actor VaultBroker {
                                                            expiresAt: now.addingTimeInterval(policy.leaseSeconds), grantedBy: "human:\(by)"))
                 }
             }
+            let wanted = (try? await self.wanted(for: req)) ?? []
             var allowed: [(VaultSecret, VaultDecider, String)] = []
-            for name in req.names {
-                guard let s = (try? await store.secret(name)) ?? nil else { continue }
-                let decider: VaultDecider = asked.contains(name) ? .human : .tier
-                allowed.append((s, decider, asked.contains(name) ? "approved by \(by)" : "allowed with the request"))
+            var known = Set<String>()
+            for s in wanted.map(\.secret) where known.insert(s.name).inserted {
+                let decider: VaultDecider = asked.contains(s.name) ? .human : .tier
+                allowed.append((s, decider, asked.contains(s.name) ? "approved by \(by)" : "allowed with the request"))
             }
-            result = await grant(allowed, req: req, caller: p.caller, now: now, requestId: id)
+            result = await grant(allowed, wanted: wanted, req: req, caller: p.caller, now: now, requestId: id)
 
         case (_, .lease(let wanted, let reason)):
             guard let card = p.caller.cardId else {
@@ -824,6 +971,7 @@ public actor VaultBroker {
         case .add(let req): [req.name]
         case .edit(let names, _): names
         case .delete(let name): [name]
+        case .rename(let renames): renames.map(\.from)
         }
     }
 

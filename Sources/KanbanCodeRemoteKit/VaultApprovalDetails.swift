@@ -274,8 +274,14 @@ public enum AttentionCopy {
 
     /// A human label for a secret: its own label when set, else one
     /// derived from the name (`aws:lw-dev` is "AWS lw-dev",
-    /// `SLACK_USER_TOKEN` is "Slack user token").
+    /// `SLACK_USER_TOKEN` is "Slack user token"). A project's secret adds
+    /// its project and environment: `shop/dev/OPENAI_API_KEY` is
+    /// "OpenAI API key · shop · dev".
     public static func secretLabel(name: String, label: String? = nil) -> String {
+        let parsed = VaultSecretName(name)
+        if parsed.project != nil {
+            return ([secretLabel(name: parsed.key, label: label)] + parsed.scopeParts).joined(separator: " · ")
+        }
         if let label = label?.trimmingCharacters(in: .whitespacesAndNewlines), !label.isEmpty { return label }
         if name.hasPrefix("aws:") {
             var parts = name.dropFirst(4).split(separator: ":").map(String.init)
