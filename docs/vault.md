@@ -12,12 +12,33 @@ The vault keeps secrets out of plaintext files. Every master (the Mac app and `k
 | `leases.json` | Card leases: card, secret, expiry. No values |
 | `audit.jsonl` | Append-only log of this machine: time, card, secret, tier, outcome, decider, command |
 | `pending.age` | Approval requests still waiting for the human, age-encrypted to the vault key (an add carries the new value). Removed when none are open |
+| `card-tokens.json` | SHA-256 of each card session token and its card. No tokens |
 
 The key is an age X25519 identity. On the box it is `vault/identity.txt` (0600, root). On the Mac it is the login keychain item `io.kanbancode.vault` / `age-identity`, readable without a prompt only by the signed app. To give a machine the key, write it to `~/.kanban-code/vault/identity.import`; the master imports it at start and deletes the file.
 
 Recovery without Kanban Code: `age -d -i identity.txt vault.age` gives `{"doc": <base64 JSON>, "auth": ...}`; the `doc` field is the secrets.
 
 Replicas sync with the configured peers every minute (`GET`/`POST /v1/vault/replica`, full-scope peer token). Each secret's newest edit wins; a delete is an edit.
+
+## Names, projects and environments
+
+A secret has a key (the environment variable it fills), a project and an environment. Its name is its id:
+
+| Name | Meaning |
+|------|---------|
+| `OPENAI_API_KEY` | Shared: no project, no environment |
+| `shop/dev/OPENAI_API_KEY` | The `shop` project's own value for `dev` |
+| `shop/api/prod/DATABASE_URL` | Project `shop/api` (a subfolder of the repository), environment `prod` |
+
+The last part is the key, the one before it the environment, the rest the project. Listings carry `key`, `project` and `environment` as fields, and approvals, the audit log and `kv ls` show a project's secret as "label · project · environment".
+
+The project of a folder is the name of its repository's main checkout folder, plus the path below it for a subfolder (`VaultProjects`). A linked worktree counts as its main checkout. Outside a repository the root is the nearest folder with a `.env.vault` manifest, else the folder itself. A `.vault-project` file in the root holding one line replaces the folder name, for two repositories with the same folder name. Characters a secret name does not allow become `-`.
+
+The environment is `dev` unless said: `.env.prod.vault` or `--env prod` selects `prod`, `.env.X.vault` selects `X`.
+
+A renamed secret keeps its earlier names as aliases (`aliases` in the listing): every lookup by an old name resolves to it, and the answer comes back under the name that was asked. The old entry becomes a tombstone, so the rename reaches the other replica like any edit. `kv mv OLD NEW` renames; onto a name that already holds the same value it merges the two (stricter tier, both sources and aliases), onto a different value it refuses.
+
+Listings also carry a `fingerprint`: an HMAC of the value under the vault key, cut to 8 bytes. Two secrets with the same value have the same fingerprint; it says nothing else about the value.
 
 ## Tiers and decisions
 
@@ -34,9 +55,15 @@ Order, first match wins:
 2. The caller is not inside a card session: ask, whatever the tier.
 3. More than 20 releases of the secret in 5 minutes: ask.
 4. The card holds a lease and the secret allows leases: allow.
-5. Open: allow. Judged: Jev (allow needs at least 60% probability; Jev unreachable asks). Ask: the human.
+5. Open: allow. Judged: the project's own development secret is allowed, anything else goes to Jev (allow needs at least 60% probability; Jev unreachable asks). Ask: the human.
+
+"The project's own development secret" is a judged secret with environment `dev` and no rules, asked for by a process inside a card whose working directory is in that secret's project folder (or a worktree of it, or a subfolder). The master reads the working directory from the process itself (`lsof` on macOS, `/proc` on Linux), not from the request. It is allowed with no Jev call and logged with decider `rule`. Shared secrets, other environments, secrets with rules, with "every use asks", of tier ask or never, AWS profiles, and callers that are OpenClaw agents or outside a card keep the path above.
+
+Jev gets one question per distinct rules text in a request, naming every secret under those rules (`secret_names`); its answer is the verdict of each. Every secret still gets its own audit line.
 
 "Inside a card session" is checked by the master, not claimed by the client. kv calls the local master over loopback; the master finds the calling process from the TCP connection (`lsof` on macOS, `/proc/net/tcp` on Linux), walks its parents, and matches them against the pane shells of the cards' tmux sessions and the assistant processes rush hosts for cards. A rush host belongs to the card whose terminal is `rush-<host id>` (or `agtop-<host id>` for a host started before rush was renamed from agtop) in Kanban's links, whoever started it (the master, a rush view, `rush session start`); its own `--meta kanban_card` is never read. Accepted risk: a local process can start a host for a card's session id and act as that card; such a process already runs as the user. `KANBAN_CARD_ID` is only shown to the human when it could not be verified. Requests over the network are never inside a card.
+
+A process that left its session's tree (`setsid nohup ... &` reparents it to launchd or init) is placed by its session token. When the master starts or resumes a card session on its own machine it makes a random token (`VaultCardTokens`), keeps only its SHA-256 in `vault/card-tokens.json`, and gives the session `KANBAN_CARD_ID` and `KANBAN_CARD_TOKEN` in its environment: `tmux new-session -e` for a tmux card and `rush session start --env` for a rush card, never typed into the pane or logged. kv sends the token in `X-Kanban-Card-Token`. The ancestry is checked first; when it finds no card, a token whose hash is on file and whose card still has a session makes the caller that card, and the audit line says "by session token". A wrong or missing token changes nothing. A card has one token: a new session replaces it, and a token whose card has had no session for 15 minutes is removed. Sessions started before the token existed have none. `KANBAN_CARD_TOKEN` is in `InheritedSessionEnvironment`, so an app or tmux server started from a card's shell does not hand it to other cards. On Linux, rush hosts are also subreapers, so the ancestry usually still finds such a process.
 
 OpenClaw agents on a Linux master count like card sessions under the principal `openclaw:<agent>`: the master finds, in the caller's ancestry, a process whose cgroup is the gateway's systemd unit (`openclaw-gateway.service`, set by systemd, not by the process), then the topmost process below the gateway whose working directory is an agent workspace from `~/.openclaw/openclaw.json` (the agent runtime the gateway started; a child that changes directory does not change it). The gateway itself, resolving SecretRefs, is `openclaw:gateway`. Each principal holds its own leases. Commands an agent starts outside the unit (`systemd-run`, cron) are outside, so they ask.
 
@@ -92,12 +119,13 @@ The reason is the only text the human reads before deciding, so it must be one s
 
 ```
 kv run NAME [NAME..] [--reason "..."] -- <cmd> [args..]
-kv env .env.vault -- <cmd> [args..]
+kv env [.env.vault] [--env E] [--project P] [--names] -- <cmd> [args..]
 kv get NAME [--reason "..."]
 kv request NAME[:scope] [NAME..] --reason "..."
 kv aws <profile> [--reason "..."]
-kv add NAME [--tier t] [--rules "..."] [--label "..."] [--reason "..."]   value on stdin
-kv ls | kv log | kv leases | kv status   (status also says who the master takes you for)
+kv set KEY [--project P|.] [--env E] [--tier t] [--rules "..."] [--label "..."] [--reason "..."]   value on stdin (kv add is the same)
+kv ls [--project P] | kv log | kv leases | kv status   (status also says who the master takes you for)
+kv mv OLD NEW [--reason "..."] | kv mv --plan renames.json [--dry-run] --reason "..."   asks Rogerio, one approval
 kv tier NAME <tier> [--every-use-asks|--leases] | kv rules NAME "..." | kv label NAME "..."  [--reason "..."]   asks Rogerio
 kv tiers <tier> [NAME..] [--value-prefix P].. [--every-use-asks|--leases] --reason "..."   one approval for all
 kv import [--apply]
@@ -106,7 +134,21 @@ kv exec-provider                             OpenClaw exec SecretRef provider
 
 `kv exec-provider` speaks OpenClaw's exec provider protocol (`{"protocolVersion":1,"ids":[...]}` on stdin, `{"values":{...},"errors":{...}}` on stdout); each id is a vault secret name. It never waits on a human: a secret that needs approval comes back as `NEEDS_APPROVAL` and its request stays open for the next `openclaw secrets reload`.
 
-`.env.vault` holds names only: `KEY={{vault:NAME}}`. Lines with plain values pass through.
+### kv env and the manifest
+
+`kv env -- <cmd>` loads the project's own secrets for the environment as a group: every secret named `project/environment/*`, each under its key. The project is the one of the manifest's folder (the current folder without a manifest), or `--project`. In a subfolder, the group is that of the nearest project up to the repository root that has any secrets, so `shop/api` gets its own group when it has one and `shop`'s otherwise. A project with only its own secrets needs no manifest.
+
+`.env.vault` is the manifest for what the group does not cover. `.env.prod.vault` is the manifest for `prod`.
+
+| Line | Meaning |
+|------|---------|
+| `KEY` | The project's value for the environment, else the shared secret `KEY` |
+| `KEY={{vault:NAME}}` | The secret `NAME` (any name or alias), under the variable `KEY` |
+| `KEY=value` | A plain value, passed through |
+
+The manifest's own lines win over the group. Without a file argument kv uses the manifest of the environment found from the current folder up to the repository root (in a worktree without one, the main checkout's). `kv env --names` prints which secret each variable would get, without values (`POST /v1/vault/resolve`).
+
+`kv set KEY --project . --env prod` stores the current folder's project's own value; without `--project` the secret is shared. `kv import` names a second value of a key after the project and environment of the files it came from.
 
 ### AWS
 
@@ -122,7 +164,7 @@ region = eu-central-1
 
 ## Bash hook
 
-Kanban Code installs a `PreToolUse` hook on Bash (`~/.kanban-code/vault-hook.sh`) for Claude Code (`~/.claude/settings.json`) and for Codex (`~/.codex/hooks.json`, run as `vault-hook.sh --codex`). Codex runs a user hook only once its definition is trusted, so the installer also writes `[hooks.state."<hooks.json>:pre_tool_use:<n>:0"] trusted_hash` into `~/.codex/config.toml` with the hash Codex computes; Codex answers carry `permissionDecision: "allow"`, which Codex needs next to `updatedInput` and which does not skip its approvals or sandbox. Under Codex's `workspace-write` sandbox kv cannot reach the master on loopback, so commands run without the vault env; card sessions run Codex without the sandbox. rush sessions run `claude -p`, which loads the same Claude Code hook. In a project with a `.env.vault` (searched from the session's directory up to the repository root; in a linked git worktree without its own, the same folder of the main checkout), `kv hook` rewrites the command to:
+Kanban Code installs a `PreToolUse` hook on Bash (`~/.kanban-code/vault-hook.sh`) for Claude Code (`~/.claude/settings.json`) and for Codex (`~/.codex/hooks.json`, run as `vault-hook.sh --codex`). Codex runs a user hook only once its definition is trusted, so the installer also writes `[hooks.state."<hooks.json>:pre_tool_use:<n>:0"] trusted_hash` into `~/.codex/config.toml` with the hash Codex computes; Codex answers carry `permissionDecision: "allow"`, which Codex needs next to `updatedInput` and which does not skip its approvals or sandbox. Under Codex's `workspace-write` sandbox kv cannot reach the master on loopback, so commands run without the vault env; card sessions run Codex without the sandbox. rush sessions run `claude -p`, which loads the same Claude Code hook. In a project with a `.env.vault` manifest (searched from the session's directory up to the repository root; in a linked git worktree without its own, the same folder of the main checkout), `kv hook` rewrites the command to:
 
 ```
 __kv_env="$(kv env /path/.env.vault --export --command-b64 <command>)" || exit $?
@@ -138,9 +180,11 @@ Every `.env`, `.env.local` and `.env.*` under `~/Projects` on the Mac and the bo
 
 | Plaintext file | References |
 |------|---------|
-| `.env`, `.env.local`, `.env.development`, `.env.portless` | `.env.vault` (one per folder; the later file wins on a shared key) |
-| any other `.env.X` | `.env.X.vault` |
-| `.env` that is a production file (`save-to-memory`, `pinacle`) | `.env.prod.vault`; `.env.vault` there holds the dev secrets only |
+| `.env`, `.env.local`, `.env.development`, `.env.portless` | `.env.vault`, environment `dev` (one per folder) |
+| any other `.env.X` | `.env.X.vault`, environment `X` |
+| `.env` that is a production file (`save-to-memory`, `pinacle`) | `.env.prod.vault`, environment `prod`; `.env.vault` there is for `dev` only |
+
+The manifests are short: the project's own secrets come with the group, so a manifest lists the shared keys it uses, the variables that take another secret, and nothing else. A folder whose secrets are all its own keeps a manifest with only a comment, which is what makes the Bash hook load the group there.
 
 Consumers:
 
