@@ -24,6 +24,16 @@ Every item ends with a link that shows the time of the message it comes from. A 
 
 The first line, "Since you sent", quotes your last message and links to it.
 
+### Reopening
+
+The master that owns the card keeps the card's last finished catch-up in `~/.kanban-code/side-chat/<cardId>.json`: the answer, the messages it cites, the session id, the transcript offset of the last message it covers, and the follow-ups asked in its side chat.
+
+`/catchup` on a card whose session has no message after that one returns the kept catch-up at once, with no model run. It shows "From 14:02, nothing new since" and its follow-ups. This holds after the panel was closed, after an app restart, and from the other device: a catch-up made on the Mac reopens on the phone.
+
+A new message in the session (from the agent, from you, or delivered by another agent), or a card that moved to another session, makes the next `/catchup` a new run, which replaces the kept one.
+
+**Refresh**, under the summary, runs a new catch-up whatever the session holds.
+
 ## How a run works
 
 The master that owns the card runs:

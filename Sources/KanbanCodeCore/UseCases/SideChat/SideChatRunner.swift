@@ -281,14 +281,15 @@ public actor SideChatService {
         self.runner = runner
     }
 
-    /// Starts the run and returns it at once, still running. `prepare`
-    /// builds the job (it reads the transcript, off the caller's thread).
+    /// Starts the run and returns it at once, still running. `onDone`
+    /// gets the run once it ended with an answer.
     public func start(
         cardId: String,
         kind: RemoteSideChatKind,
         since: RemoteSideChatSince? = nil,
         refs: [RemoteSideChatRef]? = nil,
-        job: SideChatJob
+        job: SideChatJob,
+        onDone: (@Sendable (RemoteSideChatRun) -> Void)? = nil
     ) -> RemoteSideChatRun {
         prune()
         let id = "side_" + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "").prefix(16)
@@ -300,7 +301,7 @@ public actor SideChatService {
                 let answer = try await runner.run(id: id, job) { text in
                     Task { await service.progress(id, text) }
                 }
-                await service.finish(id, answer: answer, error: nil)
+                if let done = await service.finish(id, answer: answer, error: nil) { onDone?(done) }
             } catch is CancellationError {
                 await service.finish(id, answer: nil, error: "Cancelled.")
             } catch {
@@ -326,8 +327,11 @@ public actor SideChatService {
         runs[id] = run
     }
 
-    private func finish(_ id: String, answer: String?, error: String?) {
-        guard var run = runs[id] else { return }
+    /// Ends the run and returns it when it ended with an answer.
+    @discardableResult
+    private func finish(_ id: String, answer: String?, error: String?) -> RemoteSideChatRun? {
+        guard var run = runs[id] else { return nil }
+        run.finishedAt = .now
         if let answer {
             run.text = answer
             run.state = .done
@@ -338,6 +342,7 @@ public actor SideChatService {
         runs[id] = run
         tasks[id] = nil
         endedAt[id] = .now
+        return run.state == .done ? run : nil
     }
 
     private func prune() {

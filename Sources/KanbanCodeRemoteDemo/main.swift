@@ -101,6 +101,8 @@ final class DemoHost: RemoteControlHost {
         var continuations: [UUID: AsyncStream<Void>.Continuation] = [:]
         var counter = 0
         var sideChats: [String: SideChat] = [:]
+        /// Each card's last catch-up and the message count it covered.
+        var keptCatchUps: [String: (run: String, covered: Int)] = [:]
     }
 
     /// A side chat answer written ahead and shown a bit more on every read,
@@ -329,6 +331,17 @@ final class DemoHost: RemoteControlHost {
 
     func startSideChat(cardId: String, _ request: RemoteSideChatRequest) async throws -> RemoteSideChatRun {
         let messages = try cardState(cardId).messages
+        // Nothing new since the card's last catch-up: that one comes back, finished.
+        if request.kind == .catchup, request.fresh != true,
+           let kept = state.withLock({ $0.keptCatchUps[cardId] }), kept.covered == messages.count,
+           let chat = state.withLock({ $0.sideChats[kept.run] }) {
+            var run = chat.run
+            run.text = chat.answer
+            run.state = .done
+            run.finishedAt = chat.startedAt
+            run.reopened = true
+            return run
+        }
         let id = "side_\(UUID().uuidString.prefix(8).lowercased())"
         var run = RemoteSideChatRun(id: id, cardId: cardId, kind: request.kind)
         var answer: String
@@ -365,7 +378,10 @@ final class DemoHost: RemoteControlHost {
                 line("other", "The nightly export failed once and passed on retry.", ref { $0.text.contains("nightly export") }),
             ].compactMap { $0 }.joined(separator: "\n")
         }
-        state.withLock { $0.sideChats[id] = SideChat(run: run, answer: answer) }
+        state.withLock {
+            $0.sideChats[id] = SideChat(run: run, answer: answer)
+            if request.kind == .catchup { $0.keptCatchUps[cardId] = (id, messages.count) }
+        }
         return run
     }
 
@@ -381,7 +397,9 @@ final class DemoHost: RemoteControlHost {
     }
 
     func cancelSideChat(cardId: String, runId: String) async throws {
-        state.withLock { $0.sideChats[runId] = nil }
+        state.withLock { s in
+            if !s.keptCatchUps.values.contains(where: { $0.run == runId }) { s.sideChats[runId] = nil }
+        }
     }
 
     func createTask(_ request: RemoteTaskRequest) async throws -> RemoteCard {

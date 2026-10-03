@@ -28,11 +28,20 @@ public struct RemoteSideChatRequest: Codable, Sendable, Equatable {
     public var question: String?
     /// Earlier exchanges of the same side chat, oldest first.
     public var history: [RemoteSideChatExchange]?
+    /// true runs a new catch-up even when the card's last one still covers
+    /// the whole session.
+    public var fresh: Bool?
+    /// For a `btw` run that follows up on a catch-up: that catch-up's run
+    /// id, so the exchange is kept with it.
+    public var catchUpId: String?
 
-    public init(kind: RemoteSideChatKind, question: String? = nil, history: [RemoteSideChatExchange]? = nil) {
+    public init(kind: RemoteSideChatKind, question: String? = nil, history: [RemoteSideChatExchange]? = nil,
+                fresh: Bool? = nil, catchUpId: String? = nil) {
         self.kind = kind
         self.question = question
         self.history = history
+        self.fresh = fresh
+        self.catchUpId = catchUpId
     }
 }
 
@@ -122,9 +131,17 @@ public struct RemoteSideChatRun: Codable, Sendable, Equatable, Identifiable {
     /// For a catch-up: the message it starts from and the messages it can cite.
     public var since: RemoteSideChatSince?
     public var refs: [RemoteSideChatRef]?
+    /// When the answer ended.
+    public var finishedAt: Date?
+    /// true for a catch-up made earlier and returned again because the
+    /// session has no message after the last one it covers.
+    public var reopened: Bool?
+    /// The follow-ups asked in the side chat of a reopened catch-up.
+    public var followUps: [RemoteSideChatExchange]?
 
     public init(id: String, cardId: String, kind: RemoteSideChatKind, state: State = .running, text: String = "",
-                error: String? = nil, since: RemoteSideChatSince? = nil, refs: [RemoteSideChatRef]? = nil) {
+                error: String? = nil, since: RemoteSideChatSince? = nil, refs: [RemoteSideChatRef]? = nil,
+                finishedAt: Date? = nil, reopened: Bool? = nil, followUps: [RemoteSideChatExchange]? = nil) {
         self.id = id
         self.cardId = cardId
         self.kind = kind
@@ -133,6 +150,9 @@ public struct RemoteSideChatRun: Codable, Sendable, Equatable, Identifiable {
         self.error = error
         self.since = since
         self.refs = refs
+        self.finishedAt = finishedAt
+        self.reopened = reopened
+        self.followUps = followUps
     }
 }
 
@@ -374,9 +394,13 @@ public struct SideChatState: Equatable, Sendable {
         public var error: String?
         public var since: RemoteSideChatSince?
         public var refs: [RemoteSideChatRef]
+        /// A catch-up made earlier, shown again.
+        public var reopened: Bool
+        public var finishedAt: Date?
 
         public init(id: String, kind: RemoteSideChatKind, question: String, answer: String = "", isRunning: Bool = true,
-                    error: String? = nil, since: RemoteSideChatSince? = nil, refs: [RemoteSideChatRef] = []) {
+                    error: String? = nil, since: RemoteSideChatSince? = nil, refs: [RemoteSideChatRef] = [],
+                    reopened: Bool = false, finishedAt: Date? = nil) {
             self.id = id
             self.kind = kind
             self.question = question
@@ -385,6 +409,8 @@ public struct SideChatState: Equatable, Sendable {
             self.error = error
             self.since = since
             self.refs = refs
+            self.reopened = reopened
+            self.finishedAt = finishedAt
         }
 
         /// The catch-up of this entry, when its answer parses as one.
@@ -399,6 +425,20 @@ public struct SideChatState: Equatable, Sendable {
 
         public func ref(_ citation: String) -> RemoteSideChatRef? {
             refs.first { $0.ref == citation }
+        }
+
+        /// What a reopened catch-up says about its age: "From 14:02, nothing
+        /// new since", with the day when it is not today's.
+        public func reopenedNote(now: Date = .now, timeZone: TimeZone = .current) -> String? {
+            guard reopened else { return nil }
+            guard let finishedAt else { return "Nothing new since this catch-up" }
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = timeZone
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = timeZone
+            formatter.dateFormat = calendar.isDate(finishedAt, inSameDayAs: now) ? "HH:mm" : "MMM d, HH:mm"
+            return "From \(formatter.string(from: finishedAt)), nothing new since"
         }
     }
 
@@ -425,6 +465,12 @@ public struct SideChatState: Equatable, Sendable {
 
     public var isRunning: Bool { entries.contains(where: \.isRunning) }
 
+    /// The run id of the catch-up this side chat holds: what a follow-up
+    /// is kept with.
+    public var catchUpId: String? {
+        entries.last { $0.kind == .catchup && !$0.isRunning && $0.error == nil && !$0.id.hasPrefix("local-") }?.id
+    }
+
     /// The run to poll, when one is under way and has started.
     public var runningId: String? { entries.last(where: \.isRunning)?.id }
 
@@ -445,9 +491,17 @@ public struct SideChatState: Equatable, Sendable {
             entries.append(Entry(id: localId, kind: kind, question: question))
             isOpen = true
         case .started(let localId, let run):
+            // A reopened catch-up that already shows takes the place of
+            // its earlier copy, follow-ups included.
+            entries.removeAll { $0.id == run.id || $0.id.hasPrefix(run.id + "/") }
             guard let index = entries.firstIndex(where: { $0.id == localId }) else { return }
             entries[index].id = run.id
             merge(run, at: index)
+            let followUps = (run.followUps ?? []).enumerated().map { number, exchange in
+                Entry(id: "\(run.id)/\(number)", kind: .btw, question: exchange.question, answer: exchange.answer,
+                      isRunning: false)
+            }
+            entries.insert(contentsOf: followUps, at: index + 1)
         case .progress(let run):
             guard let index = entries.firstIndex(where: { $0.id == run.id }) else { return }
             merge(run, at: index)
@@ -469,6 +523,8 @@ public struct SideChatState: Equatable, Sendable {
         entries[index].error = run.state == .failed ? (run.error ?? "The side chat failed.") : nil
         if let since = run.since { entries[index].since = since }
         if let refs = run.refs { entries[index].refs = refs }
+        entries[index].reopened = run.reopened == true
+        entries[index].finishedAt = run.finishedAt
     }
 }
 

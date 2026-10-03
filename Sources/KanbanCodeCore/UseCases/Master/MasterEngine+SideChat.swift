@@ -8,6 +8,11 @@ extension MasterEngine {
     /// (`btw`) or the catch-up since the human's last message (`catchup`).
     /// The run reads the session and never writes into it. A card another
     /// master owns runs it there.
+    ///
+    /// A catch-up is kept per card. Asked again while the session has no
+    /// message after the last one it covers, the kept one comes back at
+    /// once, finished, with the follow-ups of its side chat; `fresh` in
+    /// the request runs a new one anyway.
     public func startSideChat(cardId: String, _ request: RemoteSideChatRequest) async throws -> RemoteSideChatRun {
         if let owner = await ownerClient(forCard: cardId) {
             return try await Self.forwardedSideChat { try await owner.startSideChat(cardId: cardId, request) }
@@ -61,8 +66,26 @@ extension MasterEngine {
             return SideChatPrepared(job: job, since: scope.since, refs: scope.refs)
         }.value
 
-        KanbanCodeLog.info("sidechat", "Starting \(kind.rawValue) for card=\(cardId.prefix(12)) session=\(sessionId.prefix(8)) refs=\(prepared.refs?.count ?? 0)")
-        return await sideChat.start(cardId: cardId, kind: kind, since: prepared.since, refs: prepared.refs, job: prepared.job)
+        let keep = catchUps
+        guard kind == .catchup else {
+            KanbanCodeLog.info("sidechat", "Starting btw for card=\(cardId.prefix(12)) session=\(sessionId.prefix(8))")
+            let followsUp = request.catchUpId
+            return await sideChat.start(cardId: cardId, kind: kind, job: prepared.job) { run in
+                guard let followsUp else { return }
+                keep.addFollowUp(cardId: cardId, catchUpId: followsUp,
+                                 RemoteSideChatExchange(question: question, answer: run.text))
+            }
+        }
+        let covered = KeptCatchUp.covered(since: prepared.since, refs: prepared.refs ?? [])
+        if request.fresh != true, let kept = keep.read(cardId: cardId),
+           kept.isCurrent(sessionId: sessionId, covered: covered) {
+            KanbanCodeLog.info("sidechat", "Reopening catchup \(kept.run.id) for card=\(cardId.prefix(12)): nothing after offset \(covered)")
+            return kept.reopenedRun
+        }
+        KanbanCodeLog.info("sidechat", "Starting catchup for card=\(cardId.prefix(12)) session=\(sessionId.prefix(8)) refs=\(prepared.refs?.count ?? 0)")
+        return await sideChat.start(cardId: cardId, kind: kind, since: prepared.since, refs: prepared.refs, job: prepared.job) { run in
+            keep.keep(cardId: cardId, KeptCatchUp(sessionId: sessionId, covered: covered, run: run))
+        }
     }
 
     /// The run and its answer so far.
@@ -71,6 +94,8 @@ extension MasterEngine {
         if let owner = await ownerClient(forCard: cardId) {
             return try await Self.forwardedSideChat { try await owner.sideChatRun(cardId: cardId, runId: runId) }
         }
+        // A kept catch-up outlives the runs in memory.
+        if let kept = catchUps.read(cardId: cardId), kept.run.id == runId { return kept.reopenedRun }
         throw RemoteHostError.notFound("no side chat run \(runId)")
     }
 

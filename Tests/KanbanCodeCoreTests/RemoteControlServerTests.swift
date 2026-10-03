@@ -253,6 +253,14 @@ struct RemoteControlServerTests {
         let (bad, _) = try await f.request("POST", "/v1/cards/card_live/side-chat", token: f.fullToken, body: Data("{}".utf8))
         #expect(bad == 400)
 
+        // A catch-up may ask for a new run; a follow-up names its catch-up.
+        let fresh = try JSONEncoder.remote.encode(RemoteSideChatRequest(kind: .catchup, fresh: true))
+        _ = try await f.request("POST", "/v1/cards/card_live/side-chat", token: f.fullToken, body: fresh)
+        #expect(f.host.state.withLock { $0.sideChatRequests.last?.fresh } == true)
+        let follow = try JSONEncoder.remote.encode(RemoteSideChatRequest(kind: .btw, question: "and then?", catchUpId: "side_2"))
+        _ = try await f.request("POST", "/v1/cards/card_live/side-chat", token: f.fullToken, body: follow)
+        #expect(f.host.state.withLock { $0.sideChatRequests.last?.catchUpId } == "side_2")
+
         let (cancel, _) = try await f.request("DELETE", "/v1/cards/card_live/side-chat/\(run.id)", token: f.fullToken)
         #expect(cancel == 204)
         #expect(f.host.state.withLock { $0.sideChatCancels } == [run.id])

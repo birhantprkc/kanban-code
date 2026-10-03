@@ -58,6 +58,8 @@ public final class MasterEngine {
     public lazy var sideChat = SideChatService(runner: ClaudeSideChatRunner(kanbanHome: platform.kanbanHome))
     /// What the human typed and sent from a Kanban chat, by card.
     public lazy var humanMessages = HumanMessageLog(kanbanHome: platform.kanbanHome)
+    /// Each card's last catch-up, shown again while the session has nothing new.
+    public lazy var catchUps = CatchUpKeep(kanbanHome: platform.kanbanHome)
 
     /// The inbox of the `kanban` commands the CLI hands to this master.
     public lazy var subagentCommands = SubagentCommandStore(

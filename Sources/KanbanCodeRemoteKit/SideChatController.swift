@@ -55,7 +55,9 @@ public final class SideChatController {
 
     /// Asks in the side chat; earlier exchanges go along. One question at a
     /// time: a question asked while another is answered is dropped.
-    public func ask(_ kind: RemoteSideChatKind, question: String = "") {
+    /// `fresh` runs a new catch-up even when the kept one still covers the
+    /// session.
+    public func ask(_ kind: RemoteSideChatKind, question: String = "", fresh: Bool = false) {
         let question = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !state.isRunning, kind == .catchup || !question.isEmpty else { return }
         let history = state.history
@@ -63,8 +65,10 @@ public final class SideChatController {
         let localId = "local-\(asked)"
         state.apply(.asked(localId: localId, kind: kind,
                            question: kind == .catchup ? SideChatState.catchUpQuestion : question))
+        let catchUpId = kind == .btw ? state.catchUpId : nil
         let request = RemoteSideChatRequest(kind: kind, question: kind == .btw ? question : nil,
-                                            history: history.isEmpty ? nil : history)
+                                            history: history.isEmpty ? nil : history,
+                                            fresh: fresh ? true : nil, catchUpId: catchUpId)
         let transport = self.transport
         let interval = pollInterval
         task = Task { [weak self] in
@@ -91,6 +95,14 @@ public final class SideChatController {
                 self?.state.apply(.failed(id: id, message: message))
             }
         }
+    }
+
+    /// Runs the catch-up again from nothing: the side chat starts over
+    /// with a new answer.
+    public func refresh() {
+        guard !state.isRunning else { return }
+        state.apply(.dismissed)
+        ask(.catchup, fresh: true)
     }
 
     /// Closes the panel; a run still answering is stopped.

@@ -125,7 +125,7 @@ struct SideChatPanel: View {
                     .foregroundStyle(Color(.secondaryLabel))
             }
             ForEach(state.entries) { entry in
-                SideChatEntryView(entry: entry, onJump: onJump)
+                SideChatEntryView(entry: entry, onJump: onJump, onRefresh: { controller.refresh() })
                     .id(entry.id)
             }
         }
@@ -174,6 +174,8 @@ struct SideChatPanel: View {
 private struct SideChatEntryView: View {
     let entry: SideChatState.Entry
     var onJump: (Int) -> Void
+    /// Runs the catch-up again.
+    var onRefresh: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -192,6 +194,23 @@ private struct SideChatEntryView: View {
                 MarkdownText(text: entry.answerText)
                     .font(.subheadline)
                     .accessibilityIdentifier("sideChatAnswer")
+            }
+            if entry.kind == .catchup, !entry.isRunning, entry.error == nil {
+                HStack(spacing: 10) {
+                    if let note = entry.reopenedNote() {
+                        Text(note)
+                            .font(.caption)
+                            .foregroundStyle(Color(.secondaryLabel))
+                            .accessibilityIdentifier("catchUpReopened")
+                    }
+                    Button(action: onRefresh) {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.accentColor)
+                    .accessibilityIdentifier("catchUpRefresh")
+                }
             }
             if entry.isRunning {
                 HStack(spacing: 6) {

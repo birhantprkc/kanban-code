@@ -99,6 +99,40 @@ Feature: Side chat (/btw and /catchup)
     And the phone loads older pages until it has the message
     And the chat scrolls to it
 
+  # ── Reopening ───────────────────────────────────────────────────────
+
+  Scenario: Catch up again with nothing new
+    Given I ran /catchup and closed the panel
+    And the session has no message after the last one that catch-up covers
+    When I run /catchup again
+    Then the previous catch-up shows at once
+    And no model run starts
+    And it says when it was made and that nothing is new since
+
+  Scenario: The follow-ups come back with it
+    Given I asked a follow-up in the side chat of a catch-up
+    When the catch-up is reopened
+    Then the follow-up and its answer show under it
+    And a new follow-up carries them as history
+
+  Scenario: It survives a restart and reaches the other device
+    Given I ran /catchup on the Mac
+    When the app restarts, or I open the card on the phone
+    And the session has nothing new
+    Then /catchup shows the same catch-up at once
+
+  Scenario: A new message makes the next catch-up fresh
+    Given a kept catch-up
+    When the agent writes a message, I send one, or another agent delivers one
+    Then the next /catchup runs the model again
+    And the new catch-up replaces the kept one
+
+  Scenario: Refresh
+    Given a catch-up shows in the panel
+    When I use Refresh
+    Then a new catch-up runs, whatever the session holds
+    And the side chat starts over with it
+
   Scenario: The answer is not JSON
     When the side model answers in plain text
     Then the panel shows the text as markdown

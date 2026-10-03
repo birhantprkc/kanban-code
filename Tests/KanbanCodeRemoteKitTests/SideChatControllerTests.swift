@@ -11,6 +11,8 @@ private final class FakeSideChat: Sendable {
         var polls = 0
         var cancelled: [String] = []
         var failStart: String?
+        /// Starts answer with this run, finished, instead of a new one.
+        var kept: RemoteSideChatRun?
         /// The answer after each read; the last one ends the run.
         var steps: [String] = ["Half", "Half done."]
     }
@@ -24,6 +26,7 @@ private final class FakeSideChat: Sendable {
                     if let message = s.failStart { throw RemoteError(message) }
                     s.requests.append(request)
                     s.polls = 0
+                    if request.kind == .catchup, request.fresh != true, let kept = s.kept { return kept }
                     return RemoteSideChatRun(id: "run\(s.requests.count)", cardId: "card_1", kind: request.kind,
                                              since: request.kind == .catchup ? RemoteSideChatSince(text: "do it", offset: 40) : nil,
                                              refs: request.kind == .catchup ? [RemoteSideChatRef(ref: "m1", offset: 40, role: "you", preview: "do it")] : nil)
@@ -102,6 +105,94 @@ struct SideChatControllerTests {
         #expect(entry?.refs.map(\.ref) == ["m1"])
         #expect(entry?.catchUp?.sections.first?.items.first?.text == "Done.")
         #expect(fake.state.withLock { $0.requests.first?.question } == nil)
+    }
+
+    private var keptRun: RemoteSideChatRun {
+        RemoteSideChatRun(
+            id: "kept1", cardId: "card_1", kind: .catchup, state: .done,
+            text: #"{"section":"status","text":"Done.","refs":["m1"]}"#,
+            since: RemoteSideChatSince(text: "do it", offset: 40),
+            refs: [RemoteSideChatRef(ref: "m1", offset: 40, role: "you", preview: "do it")],
+            finishedAt: Date(timeIntervalSince1970: 1_800_000_000), reopened: true,
+            followUps: [RemoteSideChatExchange(question: "what is left?", answer: "Nothing.")])
+    }
+
+    @Test("a kept catch-up shows at once, finished, with its follow-ups and no polling")
+    func reopened() async {
+        let fake = FakeSideChat()
+        fake.state.withLock { $0.kept = keptRun }
+        let chat = controller(fake)
+        chat.run(.catchup)
+        await settle(chat) { !chat.state.isRunning }
+
+        #expect(chat.state.entries.map(\.id) == ["kept1", "kept1/0"])
+        #expect(chat.state.entries[0].reopened)
+        #expect(chat.state.entries[0].catchUp?.sections.first?.items.first?.text == "Done.")
+        #expect(chat.state.entries[1].question == "what is left?")
+        #expect(chat.state.entries[1].answer == "Nothing.")
+        #expect(fake.state.withLock { $0.polls } == 0)
+        #expect(fake.state.withLock { $0.requests.first?.fresh } == nil)
+
+        // Asked again with the panel still open: it shows once.
+        chat.run(.catchup)
+        await settle(chat) { !chat.state.isRunning }
+        #expect(chat.state.entries.map(\.id) == ["kept1", "kept1/0"])
+    }
+
+    @Test("a follow-up names the catch-up it belongs to and carries the kept exchanges")
+    func followUpOfAKeptCatchUp() async {
+        let fake = FakeSideChat()
+        fake.state.withLock { $0.kept = keptRun }
+        let chat = controller(fake)
+        chat.run(.catchup)
+        await settle(chat) { !chat.state.isRunning }
+        chat.ask(.btw, question: "and then?")
+        await settle(chat) { !chat.state.isRunning }
+
+        let request = fake.state.withLock { $0.requests.last }
+        #expect(request?.catchUpId == "kept1")
+        #expect(request?.history?.map(\.question) == [SideChatState.catchUpQuestion, "what is left?"])
+    }
+
+    @Test("a /btw with no catch-up in the panel names none")
+    func followUpWithoutCatchUp() async {
+        let fake = FakeSideChat()
+        let chat = controller(fake)
+        chat.ask(.btw, question: "what is left?")
+        await settle(chat) { !chat.state.isRunning }
+        #expect(fake.state.withLock { $0.requests.first?.catchUpId } == nil)
+    }
+
+    @Test("refresh starts the side chat over with a new run")
+    func refresh() async {
+        let fake = FakeSideChat()
+        fake.state.withLock {
+            $0.kept = keptRun
+            $0.steps = [#"{"section":"status","text":"Still going.","refs":["m1"]}"#]
+        }
+        let chat = controller(fake)
+        chat.run(.catchup)
+        await settle(chat) { !chat.state.isRunning }
+        chat.refresh()
+        #expect(chat.state.isOpen)
+        await settle(chat) { !chat.state.isRunning }
+
+        #expect(fake.state.withLock { $0.requests.last?.fresh } == true)
+        #expect(chat.state.entries.count == 1)
+        #expect(!chat.state.entries[0].reopened)
+        #expect(chat.state.entries[0].catchUp?.sections.first?.items.first?.text == "Still going.")
+    }
+
+    @Test("a reopened catch-up says when it was made")
+    func reopenedNote() {
+        let utc = TimeZone(identifier: "UTC")!
+        let made = Date(timeIntervalSince1970: 1_800_000_000)
+        var entry = SideChatState.Entry(id: "kept1", kind: .catchup, question: "Catch me up", isRunning: false,
+                                        reopened: true, finishedAt: made)
+        #expect(entry.reopenedNote(now: made.addingTimeInterval(600), timeZone: utc) == "From 08:00, nothing new since")
+        #expect(entry.reopenedNote(now: made.addingTimeInterval(86_400 * 2), timeZone: utc) == "From Jan 15, 08:00, nothing new since")
+        entry.reopened = false
+        #expect(entry.reopenedNote() == nil)
     }
 
     @Test("one question at a time, and an empty one is not asked")

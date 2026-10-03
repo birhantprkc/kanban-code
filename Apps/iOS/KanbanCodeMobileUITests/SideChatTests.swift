@@ -51,6 +51,35 @@ final class SideChatTests: KanbanUITestCase {
         XCTAssertTrue(waitFor(5) { !panel.exists })
     }
 
+    /// Asked again with nothing new in the session, the catch-up made
+    /// before comes back at once; Refresh runs a new one.
+    func testCatchUpAgainReopensThePreviousOneAndRefreshRunsANewOne() throws {
+        openCard("card_long")
+        XCTAssertTrue(composer.waitForExistence(timeout: 10))
+        let reopened = app.staticTexts["catchUpReopened"]
+        let refresh = app.buttons["catchUpRefresh"]
+
+        app.buttons["catchUp"].tap()
+        XCTAssertTrue(refresh.waitForExistence(timeout: 20))
+        // A run made on an earlier pass of this test comes back reopened: start from a new one.
+        if reopened.exists {
+            refresh.tap()
+            XCTAssertTrue(waitFor(20) { refresh.exists && !reopened.exists })
+        }
+        panel.tap()
+        XCTAssertTrue(waitFor(5) { !panel.exists })
+
+        app.buttons["catchUp"].tap()
+        XCTAssertTrue(reopened.waitForExistence(timeout: 3), "the kept catch-up did not come back at once")
+        XCTAssertTrue(refresh.exists)
+        shot("67-catchup-reopened")
+
+        refresh.tap()
+        XCTAssertTrue(waitFor(20) { refresh.exists && !reopened.exists })
+        shot("68-catchup-refreshed")
+        panel.tap()
+    }
+
     func testBtwAnswersInThePanelAndAFollowUpCanGoToTheMainChat() throws {
         openCard("card_wait")
         XCTAssertTrue(composer.waitForExistence(timeout: 10))
