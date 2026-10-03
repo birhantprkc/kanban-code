@@ -276,11 +276,15 @@ public enum CatchUpParser {
                 bySection[id, default: []].append(item)
             }
         }
-        let report = (object["report"] as? [String: Any]).flatMap { raw -> CatchUpSummary.Item? in
+        // The report is an item, or only the id of its message.
+        var report = (object["report"] as? [String: Any]).flatMap { raw -> CatchUpSummary.Item? in
             var raw = raw
             if raw["text"] == nil { raw["text"] = raw["label"] ?? "Full report" }
             if raw["refs"] == nil, let ref = raw["ref"] { raw["refs"] = [ref] }
             return item(from: raw, id: next)
+        }
+        if report == nil, let ref = object["report"].flatMap(normalizedRef) {
+            report = CatchUpSummary.Item(id: next, text: "Full report", refs: [ref])
         }
         return summary(bySection: bySection, seen: seen, report: report)
     }

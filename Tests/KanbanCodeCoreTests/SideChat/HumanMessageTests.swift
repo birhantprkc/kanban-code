@@ -133,6 +133,33 @@ struct HumanMessageFinderTests {
         #expect(HumanMessageFinder.find(transcriptPath: path, rushRecord: [])?.text == "status check from a cron script")
     }
 
+    @Test func whatTheKanbanChatSentCountsNextToTheRushRecord() throws {
+        var t = TranscriptBuilder()
+        t.user("typed in the rush composer", uuid: "rush-uuid")   // 0
+        t.assistant("done")
+        // Sent from the Kanban chat through a rush that marked nothing.
+        t.user("typed in the Kanban chat")                        // 2
+        t.assistant("on it")
+        t.user("status check from a cron script")
+        t.assistant("all good")
+        let path = try t.write()
+        let rush = [RushHumanMessage(at: nil, text: "typed in the rush composer", uuid: "rush-uuid")]
+        let kanban = [HumanMessageRecord(at: Date(timeIntervalSince1970: 0), text: "typed in the Kanban chat")]
+
+        #expect(HumanMessageFinder.find(transcriptPath: path, rushRecord: rush)?.offset == t.offset(0))
+        #expect(HumanMessageFinder.find(transcriptPath: path, record: kanban, rushRecord: rush)?.offset == t.offset(2))
+    }
+
+    @Test func rushIsToldTheFirstPromptIsHis() {
+        let request = RushStartRequest(cwd: "/repo", sessionId: "sid", resume: false, prompt: "hi")
+        let marked = RushCliAdapter.startArguments(request, promptFile: "-", human: true)
+        #expect(marked.contains("--human"))
+        #expect(marked.firstIndex(of: "--human") == marked.firstIndex(of: "--prompt-file").map { $0 + 2 })
+        #expect(!RushCliAdapter.startArguments(request, promptFile: "-").contains("--human"))
+        // A start with no prompt has nothing to mark.
+        #expect(!RushCliAdapter.startArguments(request, promptFile: nil, human: true).contains("--human"))
+    }
+
     @Test func aQueuedPromptCountsFromWhenHeWroteIt() throws {
         var t = TranscriptBuilder()
         t.user("start the migration")                 // 0

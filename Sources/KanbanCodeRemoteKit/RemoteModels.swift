@@ -502,10 +502,13 @@ public struct RemoteTaskRequest: Codable, Sendable, Equatable {
     /// machine (an ssh machine or a boxd machine). nil follows the project
     /// default, as the New Task dialog would.
     public var machine: String?
+    /// true when the human typed the prompt himself in the app. Ignored
+    /// from an agent-scope device.
+    public var human: Bool?
 
     public init(project: String, prompt: String, name: String? = nil, worktree: String? = nil,
                 assistant: String? = nil, model: String? = nil, launch: Bool? = nil, images: [RemoteImage]? = nil,
-                machine: String? = nil) {
+                machine: String? = nil, human: Bool? = nil) {
         self.project = project
         self.prompt = prompt
         self.name = name
@@ -515,6 +518,7 @@ public struct RemoteTaskRequest: Codable, Sendable, Equatable {
         self.launch = launch
         self.images = images
         self.machine = machine
+        self.human = human
     }
 }
 

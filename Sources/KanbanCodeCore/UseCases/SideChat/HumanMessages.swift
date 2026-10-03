@@ -128,8 +128,8 @@ public struct LastHumanMessage: Sendable, Equatable {
 /// Finds the human's last message in a Claude Code transcript.
 ///
 /// The records of the harnesses decide: rush's own record for a rush
-/// session whose rush keeps one, Kanban's record for when a queued prompt
-/// was written. A user record with a delivery marker (`kanban send`, a DM,
+/// session whose rush keeps one, together with Kanban's record, which also
+/// tells when a queued prompt was written. A user record with a delivery marker (`kanban send`, a DM,
 /// a channel, a remote agent, a self-compact follow-up), a task
 /// notification or a harness wrapper is never his. Where no record covers
 /// the session, the user records left after that are taken as typed.
@@ -160,7 +160,10 @@ public enum HumanMessageFinder {
             guard line.contains("\"user\""), !line.contains("\"toolUseResult\""),
                   let obj = jsonObject(line),
                   case .typed(let text)? = CardPromptReader.entry(record: obj) else { return false }
-            if let rush, !rush.contains(where: { matches($0, uuid: obj["uuid"] as? String, text: text) }) {
+            // A session with a rush record: the message is in it, or in
+            // Kanban's own (what its chat sent through a rush that marks nothing).
+            if let rush, !rush.contains(where: { matches($0, uuid: obj["uuid"] as? String, text: text) }),
+               !record.contains(where: { sameText($0.text, text) }) {
                 return false
             }
             found = (offset, text, timestamp(of: obj))

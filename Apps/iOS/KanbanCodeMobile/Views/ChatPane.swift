@@ -28,6 +28,11 @@ struct ChatPane: View {
     /// Top of the keyboard and bottom of the chat, in window coordinates.
     @State private var keyboardTop: CGFloat?
     @State private var paneBottom: CGFloat = 0
+    /// The card's side chat (`/btw`, `/catchup`), made when first used.
+    @State private var sideChat: SideChatController?
+    @State private var sideChatCollapsed = false
+    /// The message a catch-up link landed on, tinted for a moment.
+    @State private var highlightedMessage: String?
 
     /// How much of the chat the keyboard still covers after SwiftUI made
     /// room for it: nothing, unless SwiftUI missed the suggestion bar.
@@ -53,6 +58,10 @@ struct ChatPane: View {
 
     private var supportsImages: Bool { board.supports(RemoteAPI.Feature.images) }
     private var supportsQueue: Bool { board.supports(RemoteAPI.Feature.queue) }
+    /// The side chat forks a Claude Code session.
+    private var supportsSideChat: Bool {
+        board.supports(RemoteAPI.Feature.sideChat) && card.assistant == "claude" && card.sessionId != nil
+    }
 
     var body: some View {
         ScrollView {
@@ -68,6 +77,15 @@ struct ChatPane: View {
                 }
                 ForEach(visibleMessages) { message in
                     MessageView(message: message)
+                        .background {
+                            if highlightedMessage == message.id {
+                                RoundedRectangle(cornerRadius: 12)
+                                    .fill(Color.accentColor.opacity(0.18))
+                                    .padding(-6)
+                                    .accessibilityElement()
+                                    .accessibilityIdentifier("citedMessage")
+                            }
+                        }
                         .id(message.id)
                 }
                 ForEach(card.queuedPrompts) { prompt in
@@ -134,6 +152,25 @@ struct ChatPane: View {
         }
         .scrollDismissesKeyboard(.interactively)
         .overlay { emptyState }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if sideChat?.state.isOpen == true {
+                Color.clear.frame(height: SideChatPanel.foldedHeight)
+            }
+        }
+        .overlay(alignment: .top) {
+            if let sideChat, sideChat.state.isOpen {
+                // The reader's height is what shows above the composer and
+                // the keyboard: the panel never reaches under them.
+                GeometryReader { geo in
+                    SideChatPanel(controller: sideChat, collapsed: $sideChatCollapsed,
+                                  maxHeight: geo.size.height - keyboardShortfall - 12,
+                                  onJump: jump(toOffset:),
+                                  onSendToMain: { deliver($0, .queue, fromDraft: false) })
+                }
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.snappy, value: sideChat?.state.isOpen)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             bottomBar
                 .padding(.bottom, keyboardShortfall)
@@ -248,6 +285,9 @@ struct ChatPane: View {
                         .foregroundStyle(status?.kind == .failed ? AnyShapeStyle(Color.red) : AnyShapeStyle(.secondary))
                         .accessibilityIdentifier("sessionStatus")
                     Spacer()
+                    if supportsSideChat {
+                        catchUpButton
+                    }
                     if status == nil || status?.canResume == true {
                         Button("Resume", systemImage: "play.fill", action: onResume)
                             .buttonStyle(.borderedProminent)
@@ -281,6 +321,9 @@ struct ChatPane: View {
                     }
                     if !draft.stashes.isEmpty {
                         stashButton
+                    }
+                    if supportsSideChat {
+                        catchUpButton
                     }
                     Spacer()
                     sendButton
@@ -411,6 +454,53 @@ struct ChatPane: View {
         .accessibilityIdentifier("unstash")
     }
 
+    /// What happened since the human's last message, in the side chat.
+    private var catchUpButton: some View {
+        Button {
+            runSideChat(.catchup)
+        } label: {
+            Image(systemName: "clock.arrow.circlepath")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(Color(.label))
+                .frame(width: 34, height: 34)
+                .background(Color(.tertiarySystemFill), in: Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Catch me up")
+        .accessibilityHint("Sums up what happened since your last message.")
+        .accessibilityIdentifier("catchUp")
+    }
+
+    private func runSideChat(_ command: SideChatCommand) {
+        guard let client = board.client else { return }
+        let controller = sideChat ?? SideChatController(transport: .remote(client, cardId: card.id))
+        sideChat = controller
+        composerFocused = false
+        sideChatCollapsed = false
+        controller.run(command)
+    }
+
+    /// Shows the message at a transcript offset: older pages load until it
+    /// is there, then the chat scrolls to it and tints it. The side chat
+    /// folds so the message shows under it.
+    private func jump(toOffset offset: Int) {
+        withAnimation(.snappy) { sideChatCollapsed = true }
+        follow.followsEnd = false
+        Task {
+            guard let message = await transcript.message(atOffset: offset) else { return }
+            // One turn later, so rows that just loaded are laid out.
+            try? await Task.sleep(for: .milliseconds(120))
+            withAnimation(.snappy) {
+                scrollPosition.scrollTo(id: message.id, anchor: .top)
+                highlightedMessage = message.id
+            }
+            try? await Task.sleep(for: .seconds(3))
+            if highlightedMessage == message.id {
+                withAnimation(.easeOut(duration: 0.6)) { highlightedMessage = nil }
+            }
+        }
+    }
+
     private var attachButton: some View {
         Menu {
             Button("Photos", systemImage: "photo.on.rectangle") {
@@ -506,6 +596,12 @@ struct ChatPane: View {
     private func send(_ mode: RemotePromptRequest.Mode) {
         let text = draft.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard secretOffer == nil, !isSending else { return }
+        // /btw and /catchup open the side chat; nothing goes to the session.
+        if supportsSideChat, draft.images.isEmpty, let command = SideChatCommand.parse(text) {
+            draft.clear()
+            runSideChat(command)
+            return
+        }
         guard !text.isEmpty, !SecretDetector.find(in: text).isEmpty, let client = board.client else {
             deliver(text, mode)
             return
@@ -548,16 +644,18 @@ struct ChatPane: View {
         }
     }
 
-    private func deliver(_ text: String, _ mode: RemotePromptRequest.Mode) {
-        let images = draft.remoteImages
+    /// Sends what the human wrote: the draft with its images, or with
+    /// `fromDraft` false a text of its own that leaves the draft alone.
+    private func deliver(_ text: String, _ mode: RemotePromptRequest.Mode, fromDraft: Bool = true) {
+        let images = fromDraft ? draft.remoteImages : []
         guard !text.isEmpty || !images.isEmpty, let client = board.client, !isSending else { return }
         isSending = true
         sendError = nil
         Task {
             defer { isSending = false }
             do {
-                try await client.sendPrompt(cardId: card.id, text: text, mode: mode, images: images)
-                draft.clear()
+                try await client.sendPrompt(cardId: card.id, text: text, mode: mode, images: images, human: true)
+                if fromDraft { draft.clear() }
                 follow.followsEnd = true
                 sentCount += 1
                 transcript.appendPending(text, imageCount: images.count)

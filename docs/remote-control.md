@@ -34,6 +34,7 @@ JSON bodies, up to 48 MiB. Dates are ISO 8601 with milliseconds, UTC (`2026-09-2
 - `machines`: `GET /v1/machines`, and `machine` on tasks.
 - `cardActions`: `pinned` on cards, `pinned` and `archived: false` on `PATCH /v1/cards/{id}`, and `DELETE /v1/cards/{id}`.
 - `worktrees`: `POST /v1/cards/{id}/worktree/remove` and `POST /v1/cards/{id}/discover`.
+- `sideChat`: the `/v1/cards/{id}/side-chat` routes, and `human` on prompts and tasks.
 
 | Method and path | Scope | Returns |
 |---|---|---|
@@ -48,6 +49,9 @@ JSON bodies, up to 48 MiB. Dates are ISO 8601 with milliseconds, UTC (`2026-09-2
 | `POST /v1/cards/{id}/queue/{promptId}` | any | 204 |
 | `PATCH /v1/cards/{id}/queue/{promptId}` | any | `{"text"}` → 204 |
 | `DELETE /v1/cards/{id}/queue/{promptId}` | any | 204 |
+| `POST /v1/cards/{id}/side-chat` | any | `RemoteSideChatRequest` → `RemoteSideChatRun`, 201 |
+| `GET /v1/cards/{id}/side-chat/{runId}` | any | `RemoteSideChatRun` with the answer so far |
+| `DELETE /v1/cards/{id}/side-chat/{runId}` | any | 204, stops the run |
 | `POST /v1/cards/{id}/interrupt` | any | 204 |
 | `POST /v1/cards/{id}/resume` | any | `RemoteCard` |
 | `PATCH /v1/cards/{id}` | any | `RemoteCardUpdate` (`name`, `column`, `archived`, `pinned`) → `RemoteCard` |
@@ -75,6 +79,8 @@ Behaviour:
 - A prompt's `text` places each image with an `[Image #N]` marker, N counting from 1 in `images` order, as in Claude Code. The server renumbers the markers in text order, reorders `images` to match and drops an image no marker names. Text with no marker keeps every image, after the text. In the transcript, a user message shows its images as those markers (images sent by file path too); a message whose images have no markers ends with `[image]` or `[N images]`.
 - A card's `queuedPrompts` lists the prompts waiting for the turn to end, oldest first, each with `id`, `text` and `imageCount`. `POST /v1/cards/{id}/queue/{promptId}` sends one now, interrupting the turn when one runs; `DELETE` on the same path drops it. Both return 404 when the prompt is no longer queued (sent or removed).
 - rush cards use rush's own queue. `mode: queue` hands the prompt to `rush session send` at once and rush holds it while Claude works; `mode: now` is `rush session send --now`, which gives it to Claude mid-turn without stopping the turn. Images always go at once. The card's `queuedPrompts` come from rush's queue (ids `agtop-<n>-<hash>`; `rush-<n>-<hash>` is accepted too), read on every session scan and every 2 seconds while something is queued, and `/queue/{promptId}` runs `rush queue send|remove <id> <n> --was <text>` (`agtop session queue <id> send|remove` where only agtop is installed).
+- `side-chat` starts a `/btw` or `/catchup` run (see [`side-chat.md`](side-chat.md)): `{"kind": "btw", "question", "history"}` or `{"kind": "catchup"}`. The run reads the session and writes nothing into it. Poll the run until `state` is `done` or `failed`; `text` grows while it is `running`. A catch-up run carries `since` (the human's last message) and `refs` (the messages it can cite, each with the transcript `offset` a `RemoteMessage.id` starts with). Runs are kept for 15 minutes. A card another master owns is forwarded there. 409 for a card with no conversation or a session that is not Claude Code.
+- `human: true` on `prompt` and `tasks` says the human typed the text himself in a chat composer. The server records it per card and passes `--human` to rush. It is dropped for an agent-scope device.
 - `transcript` pages back with `before=<olderCursor>` of the previous page; `olderCursor` is null at the start of the conversation.
 - `resume` on a card that never ran launches it.
 - `PATCH /v1/cards/{id}` does what the Mac's card menu does. `archived: true` archives the card and ends its sessions; `archived: false` puts an archived card back in the backlog, from where activity moves it. `pinned: true` pins it on top of the board and brings an archived card back; a subagent card cannot be pinned (409). `DELETE` removes an archived card with its subagents, sessions and conversation file, as Delete Card on the Mac; a card still on the board, or an archived GitHub issue, is refused with 409.

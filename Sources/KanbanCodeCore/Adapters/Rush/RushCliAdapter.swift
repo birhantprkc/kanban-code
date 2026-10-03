@@ -200,12 +200,18 @@ public final class RushCliAdapter: @unchecked Sendable {
     /// Arguments for `rush session start`, the prompt already written to
     /// `promptFile` (`-` for stdin).
     /// rush runs other agents too, so it is told the agent is Claude Code.
-    public static func startArguments(_ request: RushStartRequest, promptFile: String?, rush: Bool = false) -> [String] {
+    /// `human` marks the first prompt as typed by the human, for a rush
+    /// that keeps that record.
+    public static func startArguments(_ request: RushStartRequest, promptFile: String?, rush: Bool = false,
+                                      human: Bool = false) -> [String] {
         var args = ["session", "start", "--cwd", request.cwd, "--session-id", request.sessionId]
         if rush { args += ["--agent", "claude"] }
         if request.resume { args.append("--resume") }
         if let name = request.name, !name.isEmpty { args += ["--name", name] }
-        if let promptFile { args += ["--prompt-file", promptFile] }
+        if let promptFile {
+            args += ["--prompt-file", promptFile]
+            if human { args.append("--human") }
+        }
         for path in request.imagePaths { args += ["--image", path] }
         for key in request.env.keys.sorted() { args += ["--env", "\(key)=\(request.env[key]!)"] }
         if let model = request.model, !model.isEmpty { args += ["--model", model] }
@@ -217,12 +223,14 @@ public final class RushCliAdapter: @unchecked Sendable {
     }
 
     @discardableResult
-    public func start(_ request: RushStartRequest) async throws -> RushSessionInfo {
+    public func start(_ request: RushStartRequest, human: Bool = false) async throws -> RushSessionInfo {
         var request = request
         request.imagePaths = try await machinePaths(of: request.imagePaths)
         let prompt = request.prompt.flatMap { $0.isEmpty ? nil : $0 }
+        let marksHuman = human && prompt != nil ? await supportsHumanRecord() : false
         let args = Self.startArguments(
-            request, promptFile: prompt == nil ? nil : "-", rush: resolvedExecutable().map(Self.isRush) ?? false)
+            request, promptFile: prompt == nil ? nil : "-", rush: resolvedExecutable().map(Self.isRush) ?? false,
+            human: marksHuman)
         let result = try await exec(args, stdin: prompt, timeout: 60)
         guard result.succeeded else {
             throw RushCommandFailed(arguments: Array(args.dropFirst()), message: Self.errorMessage(result))

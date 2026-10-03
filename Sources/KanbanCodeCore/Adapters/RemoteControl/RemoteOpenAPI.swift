@@ -187,6 +187,7 @@ enum RemoteOpenAPI {
         "properties": {
           "project": {"type": "string", "description": "a project path, or a project name as the board lists it"},
           "prompt": {"type": "string"},
+          "human": {"type": "boolean", "description": "true only when the human typed the prompt himself in the app; ignored for scope agent"},
           "name": {"type": "string"},
           "worktree": {"type": "string", "description": "worktree name, empty for a random one; omit to run in the project checkout"},
           "assistant": {"type": "string", "description": "claude, codex or gemini"},

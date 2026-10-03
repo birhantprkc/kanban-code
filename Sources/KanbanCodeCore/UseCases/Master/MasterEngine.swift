@@ -101,8 +101,14 @@ public final class MasterEngine {
         modelOverride: String? = nil,
         machineChoice: BoxdMachineChoice? = nil,
         keepSelection: Bool = false,
+        humanPrompt: Bool = false,
         completion: ((String?) -> Void)? = nil
     ) {
+        if humanPrompt, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // The first prompt is one the human typed: it joins the card's record.
+            let log = humanMessages
+            Task.detached { log.append(cardId: cardId, HumanMessageRecord(text: prompt)) }
+        }
         if isForeign(cardId) {
             // The master that owns the card starts it.
             forwardToOwner(cardId, "start the card", isStart: true) { client in _ = try await client.resume(cardId: cardId) }
@@ -234,7 +240,8 @@ public final class MasterEngine {
                         skipPermissions: skipPermissions,
                         model: effectiveModelOverride,
                         commandTemplate: commandTemplate,
-                        service: resolvedService
+                        service: resolvedService,
+                        human: humanPrompt
                     )
                     let sessionLink = SessionLink(
                         sessionId: sessionId,
@@ -262,7 +269,8 @@ public final class MasterEngine {
                         model: effectiveModelOverride,
                         commandTemplate: nil,
                         service: resolvedService,
-                        rush: machineRush
+                        rush: machineRush,
+                        human: humanPrompt
                     )
                     await boxdSupervisor?.assignSession(name, to: preparation.machineName)
                     platform.markRemoteSessionReady(name, preparation.machineName)
@@ -1015,7 +1023,8 @@ public final class MasterEngine {
         model: String?,
         commandTemplate: String?,
         service: APIService?,
-        rush: RushCliAdapter? = nil
+        rush: RushCliAdapter? = nil,
+        human: Bool = false
     ) async throws -> String {
         let imagePaths = images.compactMap { image -> String? in
             if let tempPath = image.tempPath { return tempPath }
@@ -1041,7 +1050,7 @@ public final class MasterEngine {
             model: model ?? service?.modelFlag,
             binary: binary
         )
-        let info = try await adapter.start(request)
+        let info = try await adapter.start(request, human: human)
         let name = RushSessionName.name(for: info)
         KanbanCodeLog.info("rush", "Started \(name) for card=\(cardId.prefix(12)) session=\(sessionId.prefix(8)) resume=\(resume)")
         return name

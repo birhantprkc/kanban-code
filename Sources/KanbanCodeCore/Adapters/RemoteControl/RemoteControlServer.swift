@@ -454,7 +454,7 @@ public final class RemoteControlServer: Sendable {
                 return .response(.json(RemoteMachineList(machines: await host.machines())))
 
             case ("POST", "tasks"):
-                guard let body = try? JSONDecoder.remote.decode(RemoteTaskRequest.self, from: request.body) else {
+                guard var body = try? JSONDecoder.remote.decode(RemoteTaskRequest.self, from: request.body) else {
                     return .response(.error(400, "body must be a RemoteTaskRequest: {\"project\", \"prompt\", ...}"))
                 }
                 guard !body.project.trimmingCharacters(in: .whitespaces).isEmpty else {
@@ -464,6 +464,8 @@ public final class RemoteControlServer: Sendable {
                     return .response(.error(400, "prompt is required"))
                 }
                 _ = try RemotePromptImages.decode(body.images)
+                // An agent's task is never the human's, whatever it claims.
+                if device.scope == .agent { body.human = nil }
                 return .response(.json(try await host.createTask(body), status: 201))
 
             case ("POST", "cards/*/prompt"):

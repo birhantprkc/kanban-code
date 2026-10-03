@@ -61,6 +61,26 @@ final class TranscriptModel {
         }
     }
 
+    /// The loaded message at a transcript offset (what a catch-up cites),
+    /// loading older pages until the conversation reaches back to it.
+    func message(atOffset offset: Int) async -> RemoteMessage? {
+        let target = RemoteSideChatRef(ref: "", offset: offset, role: "", preview: "")
+        var pages = 0
+        while !target.isLoaded(in: messages), olderCursor != nil, pages < Self.maxJumpPages {
+            let cursor = olderCursor
+            await loadOlder()
+            // A page that failed or one already loading leaves the cursor.
+            if olderCursor == cursor {
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+            pages += 1
+        }
+        return target.message(in: messages)
+    }
+
+    /// Pages a jump to a cited message loads at most.
+    static let maxJumpPages = 400
+
     /// Shows a sent prompt before the transcript catches up, written the way
     /// the transcript writes a prompt with images.
     func appendPending(_ text: String, imageCount: Int = 0) {

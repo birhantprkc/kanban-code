@@ -146,7 +146,8 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
                 model: request.model,
                 launch: request.launch ?? true,
                 imagePaths: imagePaths,
-                machine: request.machine?.trimmingCharacters(in: .whitespacesAndNewlines)
+                machine: request.machine?.trimmingCharacters(in: .whitespacesAndNewlines),
+                human: request.human == true
             ))
         }
         for _ in 0..<30 {

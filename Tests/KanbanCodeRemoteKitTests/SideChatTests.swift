@@ -58,6 +58,14 @@ struct CatchUpParserTests {
         #expect(summary.report?.refs == ["m9"])
     }
 
+    @Test func aDocumentMayNameItsReportByMessageId() throws {
+        let document = """
+            {"sections":[{"id":"status","items":[{"text":"Done.","refs":["m12"]}]}],"report":"m12"}
+            """
+        let summary = try #require(CatchUpParser.parse(document))
+        #expect(summary.report == CatchUpSummary.Item(id: 1, text: "Full report", refs: ["m12"]))
+    }
+
     @Test func citationsLeftInTheTextBecomeRefs() throws {
         let summary = try #require(CatchUpParser.parse(#"{"section":"facts","text":"Tests pass [m5] and CI is green [M6].","refs":[5]}"#))
         let item = summary.sections[0].items[0]
