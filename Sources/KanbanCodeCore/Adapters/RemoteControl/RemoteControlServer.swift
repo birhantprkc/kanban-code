@@ -355,7 +355,8 @@ public final class RemoteControlServer: Sendable {
         if bearer == nil, let vault, seg.count >= 2, seg[1] == "vault", peer?.isLoopback == true,
            let response = await RemoteVaultRoutes.handle(
                method: method, rest: Array(seg.dropFirst()), query: request.query, body: request.body,
-               device: nil, peer: peer, serverPort: port, vault: vault) {
+               device: nil, peer: peer, serverPort: port, vault: vault,
+               cardToken: request.header("x-kanban-card-token")) {
             return .response(response)
         }
         guard let token = bearer else {

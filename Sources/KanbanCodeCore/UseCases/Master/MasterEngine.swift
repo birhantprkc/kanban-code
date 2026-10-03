@@ -45,6 +45,10 @@ public final class MasterEngine {
     /// What the attention scan last saw of each transcript, by path.
     var attentionScanMarks: [String: AttentionScanMark] = [:]
 
+    /// What a card's new local session gets in its environment for the
+    /// vault (the card id and a fresh session token); nil without a vault.
+    public var cardSessionEnvironment: (@Sendable (String) async -> [String: String])?
+
     /// Wakes the channels mirror after a channel write.
     let channelsPoke = AsyncSignal()
     /// Display name of the channels home while it is another master.
@@ -196,6 +200,11 @@ public final class MasterEngine {
                     serviceExtraEnv.merge(parentEnv) { _, new in new }
                 }
                 serviceExtraEnv.merge(platform.sessionEnvironment) { current, _ in current }
+                // The vault runs on this master: only a session on this
+                // machine can use its token.
+                if !isRemote, let cardSessionEnvironment {
+                    serviceExtraEnv.merge(await cardSessionEnvironment(cardId)) { _, new in new }
+                }
 
                 if boxdPreparation == nil,
                    rushChoice(settings: settings, assistant: assistant, remote: isRemote, commandOverride: commandOverride) == .rush {
@@ -840,6 +849,11 @@ public final class MasterEngine {
                     serviceExtraEnv.merge(parentEnv) { _, new in new }
                 }
                 serviceExtraEnv.merge(platform.sessionEnvironment) { current, _ in current }
+                // The vault runs on this master: only a session on this
+                // machine can use its token.
+                if !isRemote, let cardSessionEnvironment {
+                    serviceExtraEnv.merge(await cardSessionEnvironment(cardId)) { _, new in new }
+                }
 
                 if boxdPreparation == nil,
                    rushChoice(settings: settings, assistant: assistant, remote: isRemote, commandOverride: commandOverride) == .rush {

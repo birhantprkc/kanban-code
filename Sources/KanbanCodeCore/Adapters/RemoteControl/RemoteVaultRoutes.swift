@@ -22,7 +22,8 @@ import KanbanCodeRemoteKit
 ///   POST   /v1/vault/replica           merge a peer's encrypted file (full scope)
 ///
 /// Loopback callers need no token: the master finds the calling process
-/// and the card session it runs in. Callers over the network are never
+/// and the card session it runs in, or takes the card of the session token
+/// in `X-Kanban-Card-Token` when the process left its session's tree. Callers over the network are never
 /// inside a card session, so everything they ask goes to the human.
 enum RemoteVaultRoutes {
     static func handle(
@@ -33,7 +34,8 @@ enum RemoteVaultRoutes {
         device: RemoteDevice?,
         peer: RemotePeerAddress?,
         serverPort: Int,
-        vault: VaultService
+        vault: VaultService,
+        cardToken: String? = nil
     ) async -> RemoteHTTPResponse? {
         guard rest.first == "vault" else { return nil }
         let path = Array(rest.dropFirst())
@@ -43,7 +45,8 @@ enum RemoteVaultRoutes {
             guard loopback, let peer else {
                 return VaultCaller(claimedCardId: claimedCard, sessionId: sessionId, remoteDevice: device?.name ?? "unknown")
             }
-            return await vault.resolver.resolve(clientPort: peer.port, serverPort: serverPort, claimedCardId: claimedCard, sessionId: sessionId)
+            return await vault.resolver.resolve(clientPort: peer.port, serverPort: serverPort, claimedCardId: claimedCard,
+                                                sessionId: sessionId, cardToken: cardToken)
         }
 
         func respond(_ r: VaultResponse) -> RemoteHTTPResponse {

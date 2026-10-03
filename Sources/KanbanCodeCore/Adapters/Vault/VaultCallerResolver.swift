@@ -149,6 +149,23 @@ public enum VaultCallerResolver {
         return String(decoding: data, as: UTF8.self)
     }
 
+    /// The working directory of a local process, as the system reports it.
+    public static func workingDirectory(of pid: Int) async -> String? {
+        #if os(Linux)
+        return OpenClawLayout.procCwd(pid)
+        #else
+        guard let lsof = ShellCommand.findExecutable("lsof") ?? Optional("/usr/sbin/lsof"),
+              let result = try? await ShellCommand.run(lsof, arguments: ["-a", "-p", String(pid), "-d", "cwd", "-Fn"])
+        else { return nil }
+        return parseLsofCwd(result.stdout)
+        #endif
+    }
+
+    /// The `n<path>` line of `lsof -d cwd -Fn`.
+    public static func parseLsofCwd(_ output: String) -> String? {
+        output.split(whereSeparator: \.isNewline).first { $0.hasPrefix("n/") }.map { String($0.dropFirst()) }
+    }
+
     public static func processTable() async -> [Int: VaultProcess] {
         let ps = ShellCommand.findExecutable("ps") ?? "/bin/ps"
         guard let result = try? await ShellCommand.run(ps, arguments: ["-A", "-o", "pid=", "-o", "ppid=", "-o", "comm="]) else {
@@ -247,10 +264,21 @@ public struct LiveVaultCallerResolver: Sendable {
     /// Session name -> card id, for every local card terminal.
     public let cardSessions: @Sendable () async -> [String: String]
     public let rush: RushCliAdapter?
+    /// The session tokens of this master's cards; nil where none are issued.
+    public let tokens: VaultCardTokens?
 
-    public init(rush: RushCliAdapter? = RushCliAdapter(), cardSessions: @escaping @Sendable () async -> [String: String]) {
+    public init(rush: RushCliAdapter? = RushCliAdapter(), tokens: VaultCardTokens? = nil,
+                cardSessions: @escaping @Sendable () async -> [String: String]) {
         self.cardSessions = cardSessions
         self.rush = rush
+        self.tokens = tokens
+    }
+
+    /// The card of a caller the process ancestry did not place: the one
+    /// its session token belongs to, when that card still has a session.
+    public func card(forToken token: String?) async -> String? {
+        guard let tokens, let token, !token.isEmpty else { return nil }
+        return await tokens.verify(token, liveCards: Set(await cardSessions().values))
     }
 
     /// Pid -> card for every process a card session owns.
@@ -267,10 +295,12 @@ public struct LiveVaultCallerResolver: Sendable {
         return out
     }
 
-    public func resolve(clientPort: Int, serverPort: Int, claimedCardId: String?, sessionId: String?) async -> VaultCaller {
+    public func resolve(clientPort: Int, serverPort: Int, claimedCardId: String?, sessionId: String?,
+                        cardToken: String? = nil) async -> VaultCaller {
         guard let pid = await VaultCallerResolver.peerPid(clientPort: clientPort, serverPort: serverPort) else {
             KanbanCodeLog.warn("vault", "no local process found for the connection from port \(clientPort) to \(serverPort)")
-            return VaultCaller(claimedCardId: claimedCardId, sessionId: sessionId)
+            let card = await card(forToken: cardToken)
+            return VaultCaller(cardId: card, claimedCardId: claimedCardId, sessionId: sessionId, byToken: card == nil ? nil : true)
         }
         let table = await VaultCallerResolver.processTable()
         let chain = VaultCallerResolver.ancestry(of: pid, in: table)
@@ -284,9 +314,15 @@ public struct LiveVaultCallerResolver: Sendable {
             if let card { KanbanCodeLog.info("vault", "caller pid \(pid) is \(card)") }
         }
         #endif
+        var byToken: Bool?
+        if card == nil, let found = await self.card(forToken: cardToken) {
+            card = found
+            byToken = true
+            KanbanCodeLog.info("vault", "caller pid \(pid) is outside every session tree; its session token is card \(found.prefix(12))'s")
+        }
         return VaultCaller(
             cardId: card, claimedCardId: claimedCardId, sessionId: sessionId, pid: pid,
-            ancestry: chain.map(\.name)
+            ancestry: chain.map(\.name), cwd: await VaultCallerResolver.workingDirectory(of: pid), byToken: byToken
         )
     }
 }

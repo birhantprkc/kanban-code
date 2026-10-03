@@ -843,7 +843,8 @@ public actor VaultBroker {
         for (s, why) in zip(secrets, whys) {
             await store.append(VaultAuditEntry(at: now, machine: machine, cardId: caller.cardId, sessionId: caller.sessionId,
                                                secret: s.name, tier: s.tier, outcome: .asked, decider: .rule,
-                                               action: actionName(action), command: command, reason: reason, detail: why, requestId: id))
+                                               action: actionName(action), command: command, reason: reason,
+                                               detail: caller.byToken == true ? "\(why), by session token" : why, requestId: id))
         }
         await approvals.raise(request)
         Task { await self.waitForHuman(id: id) }
@@ -1077,7 +1078,8 @@ public actor VaultBroker {
         await store.append(VaultAuditEntry(
             at: Date(), machine: machine, cardId: caller.cardId ?? caller.claimedCardId.map { "unverified:\($0)" },
             sessionId: caller.sessionId ?? req.sessionId, secret: s.name, tier: s.tier, outcome: outcome, decider: decider,
-            action: req.mode, command: req.command.map { String($0.prefix(2000)) }, reason: req.reason, detail: detail,
+            action: req.mode, command: req.command.map { String($0.prefix(2000)) }, reason: req.reason,
+            detail: caller.byToken == true ? [detail, "by session token"].compactMap { $0 }.joined(separator: ", ") : detail,
             requestId: requestId
         ))
     }

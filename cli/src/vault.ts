@@ -151,9 +151,15 @@ export class VaultClient {
     for (;;) {
       let failure: string | undefined;
       try {
+        // The card session's token places a process that left the session's
+        // process tree; the master ignores it when the ancestry already does.
+        const token = this.io.env.KANBAN_CARD_TOKEN;
         res = await this.io.fetch(`${this.baseUrl}/v1/vault/${path}`, {
           method,
-          headers: body === undefined ? {} : { "Content-Type": "application/json" },
+          headers: {
+            ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+            ...(token ? { "X-Kanban-Card-Token": token } : {}),
+          },
           body: body === undefined ? undefined : JSON.stringify(body),
         });
         if (res.status === 502 || res.status === 503) failure = `HTTP ${res.status}`;

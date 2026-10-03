@@ -11,6 +11,7 @@ public final class VaultService: Sendable {
     public let broker: VaultBroker
     public let resolver: LiveVaultCallerResolver
     public let replica: VaultReplicaSync?
+    public let cardTokens: VaultCardTokens
     public let kanbanHome: String
 
     public init(
@@ -29,8 +30,17 @@ public final class VaultService: Sendable {
         let jev = JevClient(apiKey: { await VaultService.jevKey(store: store) })
         broker = VaultBroker(store: store, jev: jev, approvals: approvals, machine: machine, cardTitle: cardTitle,
                              cardPrompts: cardPrompts)
-        resolver = LiveVaultCallerResolver(cardSessions: cardSessions)
+        let tokens = VaultCardTokens(directory: VaultStore.defaultDirectory(kanbanHome: kanbanHome))
+        cardTokens = tokens
+        resolver = LiveVaultCallerResolver(tokens: tokens, cardSessions: cardSessions)
         replica = peers.map { VaultReplicaSync(store: store, peers: $0) }
+    }
+
+    /// What a card's new session gets in its environment so the vault
+    /// knows its processes, also the detached ones: the card id and a
+    /// fresh session token.
+    public func sessionEnvironment(cardId: String) async -> [String: String] {
+        ["KANBAN_CARD_ID": cardId, VaultCardTokens.environmentName: await cardTokens.issue(cardId: cardId)]
     }
 
     /// Jev's key is itself a vault secret (`JEV_API_KEY`), used only here.

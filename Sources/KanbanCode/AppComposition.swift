@@ -203,6 +203,7 @@ final class AppComposition {
             cardSessions: { [weak boardStore] in await MainActor.run { boardStore?.vaultCardSessions() ?? [:] } },
             peers: { await peerSync.configuredPeers() }
         )
+        engine.cardSessionEnvironment = { [vault] cardId in await vault.sessionEnvironment(cardId: cardId) }
         Task { await vault.start() }
 
         // Decisions agents wait on: Mac notification, then the phone.
