@@ -335,7 +335,7 @@ test("a pending approval outlives a master restart: kv waits for the master to c
   assert.equal(r.status, "granted");
   assert.equal(notes.filter((n) => /probably restarting; waiting up to 2 min/.test(n)).length, 1);
   assert.ok(notes.some((n) => /the master is back/.test(n)));
-  assert.deepEqual(slept, [1500, 1000, 2000, 4000]);
+  assert.deepEqual(slept, [500, 1000, 2000, 4000]);
 });
 
 test("kv gives up after two minutes of a master that does not answer", async () => {
