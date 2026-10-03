@@ -91,6 +91,15 @@ struct VaultProjectsTests {
         #expect(VaultProjects.candidates(forPath: tree + "/api", home: home) == ["shop/api", "shop"])
     }
 
+    @Test func aSubmoduleIsASubfolderOfTheRepositoryThatHoldsIt() {
+        let home = tempDir("home")
+        let repo = home + "/Projects/shop"
+        mkdir(repo + "/.git/modules/engine")
+        write(repo + "/engine/.git", "gitdir: ../.git/modules/engine\n")
+        mkdir(repo + "/engine/nlp")
+        #expect(VaultProjects.candidates(forPath: repo + "/engine/nlp", home: home) == ["shop/engine/nlp", "shop/engine", "shop"])
+    }
+
     @Test func outsideARepositoryTheManifestFolderIsTheRoot() {
         let home = tempDir("home")
         let dir = home + "/Projects/local/my tool"
@@ -177,6 +186,7 @@ struct VaultProjectsTests {
             switch path {
             case "/p/shop": ["shop"]
             case "/p/shop/api": ["shop/api", "shop"]
+            case "/p/shop/web": ["shop/web", "shop"]
             case "/p/other": ["other"]
             default: []
             }
@@ -207,6 +217,13 @@ struct VaultProjectsTests {
         // A subfolder with secrets of its own gets those, not its parent's.
         let api = await broker.release(.init(mode: "env", names: [], group: true, dir: "/p/shop/api"), caller: card(cwd: "/p/shop/api"))
         #expect(api.env == ["DATABASE_URL": "api-db"])
+        // A manifest's folder without secrets of its own gets no group;
+        // a folder without a manifest gets the nearest project's.
+        let web = await broker.release(.init(mode: "env", names: [], group: true, dir: "/p/shop/web"), caller: card(cwd: "/p/shop/web"))
+        #expect(web.env == [:])
+        let deep = await broker.release(.init(mode: "env", names: [], group: true, dir: "/p/shop/web", nearest: true),
+                                        caller: card(cwd: "/p/shop/web"))
+        #expect(deep.env == ["OPENAI_API_KEY": "shop-openai", "DATABASE_URL": "shop-db"])
         // A project without secrets of its own gets an empty group, not an error.
         let none = await broker.release(.init(mode: "env", names: [], group: true, dir: "/p/other"), caller: card(cwd: "/p/other"))
         #expect(none.status == .granted && none.env == [:])

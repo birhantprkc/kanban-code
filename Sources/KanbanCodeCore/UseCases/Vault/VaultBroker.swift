@@ -28,6 +28,9 @@ public struct VaultReleaseRequest: Codable, Sendable, Equatable {
     public var keys: [String]?
     /// Also every secret the project owns for the environment.
     public var group: Bool?
+    /// The group of the nearest project up from `dir` that has secrets,
+    /// for a folder without a manifest of its own.
+    public var nearest: Bool?
     /// Variables the caller sets some other way; the group leaves them out.
     public var defined: [String]?
     /// The folder whose project is meant (a manifest's folder); `cwd` when nil.
@@ -39,7 +42,8 @@ public struct VaultReleaseRequest: Codable, Sendable, Equatable {
 
     public init(mode: String, names: [String], command: String? = nil, reason: String? = nil, cwd: String? = nil,
                 cardId: String? = nil, sessionId: String? = nil, keys: [String]? = nil, group: Bool? = nil,
-                defined: [String]? = nil, dir: String? = nil, project: String? = nil, environment: String? = nil) {
+                defined: [String]? = nil, dir: String? = nil, project: String? = nil, environment: String? = nil,
+                nearest: Bool? = nil) {
         self.mode = mode
         self.names = names
         self.command = command
@@ -53,6 +57,7 @@ public struct VaultReleaseRequest: Codable, Sendable, Equatable {
         self.dir = dir
         self.project = project
         self.environment = environment
+        self.nearest = nearest
     }
 }
 
@@ -380,7 +385,8 @@ public actor VaultBroker {
         }
         if req.group == true {
             let skip = seen.union(req.defined ?? [])
-            for s in try await store.group(projects: projects, environment: environment) where !skip.contains(s.key) {
+            for s in try await store.group(projects: projects, environment: environment, nearest: req.nearest == true)
+            where !skip.contains(s.key) {
                 out.append(Wanted(secret: s, requested: s.key, asEnv: true))
             }
         }

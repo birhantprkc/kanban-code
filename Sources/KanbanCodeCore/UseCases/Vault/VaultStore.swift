@@ -234,11 +234,12 @@ public actor VaultStore {
         return try secret(key)
     }
 
-    /// A project's own secrets for an environment: those of the most
-    /// specific project that has any.
-    public func group(projects: [String], environment: String) throws -> [VaultSecret] {
+    /// A project's own secrets for an environment: those of the first of
+    /// `projects`, or with `nearest` those of the most specific one that
+    /// has any.
+    public func group(projects: [String], environment: String, nearest: Bool = false) throws -> [VaultSecret] {
         let live = try load().live
-        for project in projects {
+        for project in nearest ? projects : Array(projects.prefix(1)) {
             let own = live.filter { $0.project == project && $0.environment == environment }
             if !own.isEmpty { return own }
         }

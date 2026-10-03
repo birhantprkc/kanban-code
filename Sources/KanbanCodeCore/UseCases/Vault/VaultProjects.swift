@@ -6,7 +6,8 @@ import KanbanCodeRemoteKit
 /// The project of a folder inside a git repository is the name of the
 /// repository's main checkout folder, plus the path below it for a
 /// subfolder: `~/Projects/shop/api` in the repository `shop` is `shop/api`.
-/// A linked worktree counts as its main checkout. Outside a repository the
+/// A linked worktree counts as its main checkout, a submodule as a
+/// subfolder of the repository that holds it. Outside a repository the
 /// root is the nearest folder holding a `.env.vault` (or `.env.X.vault`)
 /// manifest, else the folder itself. A `.vault-project` file in the root
 /// holding one line replaces the folder name.
@@ -55,8 +56,11 @@ public enum VaultProjects {
         for _ in 0..<64 {
             if current == home || current == "/" { break }
             let git = current + "/.git"
-            if fileManager.fileExists(atPath: git) {
-                return (mainCheckout(ofGitFile: git, fileManager: fileManager) ?? current, below)
+            var isDirectory: ObjCBool = false
+            if fileManager.fileExists(atPath: git, isDirectory: &isDirectory) {
+                if isDirectory.boolValue { return (current, below) }
+                if let main = mainCheckout(ofGitFile: git, fileManager: fileManager) { return (main, below) }
+                // A submodule: its folder is a subfolder of the repository that holds it.
             }
             if manifestRoot == nil, hasManifest(current, fileManager: fileManager) {
                 manifestRoot = (current, below)

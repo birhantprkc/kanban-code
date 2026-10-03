@@ -32,7 +32,7 @@ A secret has a key (the environment variable it fills), a project and an environ
 
 The last part is the key, the one before it the environment, the rest the project. Listings carry `key`, `project` and `environment` as fields, and approvals, the audit log and `kv ls` show a project's secret as "label · project · environment".
 
-The project of a folder is the name of its repository's main checkout folder, plus the path below it for a subfolder (`VaultProjects`). A linked worktree counts as its main checkout. Outside a repository the root is the nearest folder with a `.env.vault` manifest, else the folder itself. A `.vault-project` file in the root holding one line replaces the folder name, for two repositories with the same folder name. Characters a secret name does not allow become `-`.
+The project of a folder is the name of its repository's main checkout folder, plus the path below it for a subfolder (`VaultProjects`). A linked worktree counts as its main checkout, a submodule as a subfolder of the repository that holds it. Outside a repository the root is the nearest folder with a `.env.vault` manifest, else the folder itself. A `.vault-project` file in the root holding one line replaces the folder name, for two repositories with the same folder name. Characters a secret name does not allow become `-`.
 
 The environment is `dev` unless said: `.env.prod.vault` or `--env prod` selects `prod`, `.env.X.vault` selects `X`.
 
@@ -136,7 +136,7 @@ kv exec-provider                             OpenClaw exec SecretRef provider
 
 ### kv env and the manifest
 
-`kv env -- <cmd>` loads the project's own secrets for the environment as a group: every secret named `project/environment/*`, each under its key. The project is the one of the manifest's folder (the current folder without a manifest), or `--project`. In a subfolder, the group is that of the nearest project up to the repository root that has any secrets, so `shop/api` gets its own group when it has one and `shop`'s otherwise. A project with only its own secrets needs no manifest.
+`kv env -- <cmd>` loads the project's own secrets for the environment as a group: every secret named `project/environment/*`, each under its key. The project is the one of the manifest's folder (the current folder without a manifest), or `--project`. A manifest's folder gets the group of its own project only. A folder without a manifest gets the group of the nearest project up to the repository root that has any secrets. A project with only its own secrets needs no manifest.
 
 `.env.vault` is the manifest for what the group does not cover. `.env.prod.vault` is the manifest for `prod`.
 

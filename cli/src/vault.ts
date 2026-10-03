@@ -409,6 +409,9 @@ export function manifestRequest(
       keys: [...new Set(entries.filter((e) => e.bare).map((e) => e.key))],
       defined: [...new Set(entries.filter((e) => !e.bare).map((e) => e.key))],
       group: true,
+      // A manifest's folder is its own project; without one the group is
+      // that of the nearest project up from here that has secrets.
+      nearest: !file,
       dir: file ? dirname(resolve(file)) : options.cwd,
       project: options.project,
       environment: options.environment ?? (file ? environmentOf(file) : DEFAULT_ENVIRONMENT),
@@ -671,7 +674,7 @@ export async function runKv(argv: string[], io: VaultIO = defaultIO()): Promise<
       const file = before[0] ?? findEnvVault(ctx.cwd, homedir(), manifestName(environment ?? DEFAULT_ENVIRONMENT));
       const { entries, body } = manifestRequest(file, { cwd: ctx.cwd, environment, project });
       if (namesOnly) {
-        const { body: r } = await client.call<VaultResponse>("POST", "resolve", body);
+        const { body: r } = await client.call<VaultResponse>("POST", "resolve", { mode: "env", ...body, cwd: ctx.cwd });
         if (r.status !== "granted") throw deniedError(r);
         const resolved = r.resolved ?? {};
         const lines = new Map<string, string>();
