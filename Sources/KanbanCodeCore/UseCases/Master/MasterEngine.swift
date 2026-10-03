@@ -54,6 +54,11 @@ public final class MasterEngine {
     /// Display name of the channels home while it is another master.
     public internal(set) var channelsHomeName: String?
 
+    /// The side chats (`/btw`, `/catchup`) running for this master's cards.
+    public lazy var sideChat = SideChatService(runner: ClaudeSideChatRunner(kanbanHome: platform.kanbanHome))
+    /// What the human typed and sent from a Kanban chat, by card.
+    public lazy var humanMessages = HumanMessageLog(kanbanHome: platform.kanbanHome)
+
     /// The inbox of the `kanban` commands the CLI hands to this master.
     public lazy var subagentCommands = SubagentCommandStore(
         baseURL: URL(fileURLWithPath: platform.kanbanHome).appendingPathComponent("commands", isDirectory: true))

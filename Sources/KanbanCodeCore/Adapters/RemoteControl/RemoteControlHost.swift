@@ -89,6 +89,13 @@ public protocol RemoteControlHost: AnyObject, Sendable {
 
     /// Presence the Mac reported, for the escalation of the requests here.
     func reportPresence(_ presence: MacPresence) async
+
+    /// Starts a side chat run for the card (`/btw`, `/catchup`): it reads
+    /// the session and writes nothing into it.
+    func startSideChat(cardId: String, _ request: RemoteSideChatRequest) async throws -> RemoteSideChatRun
+    /// The run and its answer so far.
+    func sideChatRun(cardId: String, runId: String) async throws -> RemoteSideChatRun
+    func cancelSideChat(cardId: String, runId: String) async throws
 }
 
 extension RemoteControlHost {
@@ -149,6 +156,18 @@ extension RemoteControlHost {
     }
 
     public func reportPresence(_ presence: MacPresence) async {}
+
+    public func startSideChat(cardId: String, _ request: RemoteSideChatRequest) async throws -> RemoteSideChatRun {
+        throw RemoteHostError.notFound("this host has no side chat")
+    }
+
+    public func sideChatRun(cardId: String, runId: String) async throws -> RemoteSideChatRun {
+        throw RemoteHostError.notFound("this host has no side chat")
+    }
+
+    public func cancelSideChat(cardId: String, runId: String) async throws {
+        throw RemoteHostError.notFound("this host has no side chat")
+    }
 }
 
 /// A host call that failed for a reason the client should see, with the

@@ -23,6 +23,8 @@ public struct RushSessionInfo: Decodable, Sendable, Equatable {
     /// What a blocked session waits on, as rush words it: "asks: <question>"
     /// for a question, "<Tool> <argument>" for a permission.
     public var needs: String?
+    /// The model the hosted assistant runs, such as `claude-opus-5-5[1m]`.
+    public var model: String?
 
     public init(id: String, sessionId: String, cwd: String, name: String? = nil, state: String, alive: Bool,
                 queue: [String] = []) {
@@ -36,7 +38,7 @@ public struct RushSessionInfo: Decodable, Sendable, Equatable {
         self.queue = queue
     }
 
-    enum CodingKeys: String, CodingKey { case id, sessionId, cwd, name, state, alive, sleeping, queue, hostPid, claudePid, meta, needs }
+    enum CodingKeys: String, CodingKey { case id, sessionId, cwd, name, state, alive, sleeping, queue, hostPid, claudePid, meta, needs, model }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -52,6 +54,7 @@ public struct RushSessionInfo: Decodable, Sendable, Equatable {
         claudePid = try? c.decodeIfPresent(Int.self, forKey: .claudePid)
         meta = try? c.decodeIfPresent([String: String].self, forKey: .meta)
         needs = try? c.decodeIfPresent(String.self, forKey: .needs)
+        model = try? c.decodeIfPresent(String.self, forKey: .model)
     }
 
     /// The session is open on its card: its host runs, or rush put it to
@@ -230,9 +233,12 @@ public final class RushCliAdapter: @unchecked Sendable {
     /// Sends a message. A busy session queues it; `now` delivers it mid-turn,
     /// for Claude to read at its next step. Images always go at once. A
     /// stopped host is started again with `--resume`.
-    public func send(id: String, text: String, imagePaths: [String] = [], now: Bool = false) async throws {
+    /// `human` marks a message the human typed and sent himself, for a rush
+    /// that keeps that record (`--human`); an older rush sends it unmarked.
+    public func send(id: String, text: String, imagePaths: [String] = [], now: Bool = false, human: Bool = false) async throws {
         var args = ["session", "send", id]
         if now { args.append("--now") }
+        if human, await supportsHumanRecord() { args.append("--human") }
         for path in try await machinePaths(of: imagePaths) { args += ["--image", path] }
         let result = try await exec(args, stdin: text, timeout: 60)
         guard result.succeeded else {
@@ -255,6 +261,43 @@ public final class RushCliAdapter: @unchecked Sendable {
         let message = Self.errorMessage(result)
         if message.contains("unknown session command") { return false }
         throw RushCommandFailed(arguments: args, message: message)
+    }
+
+    // MARK: - The human's messages
+
+    private static let humanSupport = HumanSupportCache()
+
+    /// Whether this rush has `session send --human` and `session human`.
+    /// Read from its help text, and read again every few minutes, since
+    /// rush is updated while the app runs.
+    public func supportsHumanRecord() async -> Bool {
+        guard let bin = resolvedExecutable() else { return false }
+        let key = remote == nil ? bin : "\(bin)|remote:\(ObjectIdentifier(remote! as AnyObject).hashValue)"
+        if let known = Self.humanSupport.value(key) { return known }
+        guard let result = try? await exec(["session", "--help"], stdin: nil, timeout: 15) else { return false }
+        let supported = Self.helpListsHumanRecord(result.stdout + "\n" + result.stderr)
+        Self.humanSupport.set(key, supported)
+        return supported
+    }
+
+    static func helpListsHumanRecord(_ help: String) -> Bool {
+        help.contains("--human") && help.contains("session human")
+    }
+
+    /// The messages of the session the human typed himself, newest last, as
+    /// `rush session human <id> --json` prints them. Nil when this rush
+    /// keeps no such record.
+    public func humanMessages(id: String) async -> [RushHumanMessage]? {
+        guard await supportsHumanRecord(),
+              let result = try? await exec(["session", "human", id, "--json"], stdin: nil, timeout: 20),
+              result.succeeded else { return nil }
+        return Self.parseHumanMessages(result.stdout)
+    }
+
+    static func parseHumanMessages(_ output: String) -> [RushHumanMessage]? {
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed == "null" { return [] }
+        return try? JSONDecoder().decode([RushHumanMessage].self, from: Data(trimmed.utf8))
     }
 
     /// Sends the queued message at `index` now. `was` is its text as last
@@ -385,5 +428,23 @@ public final class RushCliAdapter: @unchecked Sendable {
 
     static func shellQuote(_ s: String) -> String {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+}
+
+/// What `supportsHumanRecord` last found, by rush binary.
+private final class HumanSupportCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var known: [String: (supported: Bool, at: Date)] = [:]
+    private let lifetime: TimeInterval = 300
+
+    func value(_ key: String) -> Bool? {
+        lock.withLock {
+            guard let entry = known[key], Date.now.timeIntervalSince(entry.at) < lifetime else { return nil }
+            return entry.supported
+        }
+    }
+
+    func set(_ key: String, _ supported: Bool) {
+        lock.withLock { known[key] = (supported, .now) }
     }
 }

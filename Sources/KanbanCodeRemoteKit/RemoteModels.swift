@@ -25,9 +25,11 @@ public enum RemoteAPI {
         public static let cardActions = "cardActions"
         /// `POST /v1/cards/{id}/worktree/remove` and `POST /v1/cards/{id}/discover`.
         public static let worktrees = "worktrees"
+        /// `/v1/cards/{id}/side-chat` (`/btw` and `/catchup`) and `human` on prompts.
+        public static let sideChat = "sideChat"
     }
 
-    public static let features = [Feature.images, Feature.queue, Feature.terminalScroll, Feature.machines, Feature.cardActions, Feature.worktrees]
+    public static let features = [Feature.images, Feature.queue, Feature.terminalScroll, Feature.machines, Feature.cardActions, Feature.worktrees, Feature.sideChat]
 }
 
 /// What a device may do. `full` is a phone: everything, terminals included.
@@ -529,11 +531,15 @@ public struct RemotePromptRequest: Codable, Sendable, Equatable {
     public var text: String
     public var mode: Mode?
     public var images: [RemoteImage]?
+    /// True when the human typed and sent this himself in a chat composer.
+    /// Prompts from agents, scripts and other cards leave it out.
+    public var human: Bool?
 
-    public init(text: String, mode: Mode? = nil, images: [RemoteImage]? = nil) {
+    public init(text: String, mode: Mode? = nil, images: [RemoteImage]? = nil, human: Bool? = nil) {
         self.text = text
         self.mode = mode
         self.images = images
+        self.human = human
     }
 }
 

@@ -417,7 +417,8 @@ public final class RemoteControlServer: Sendable {
             }
             let id = rest.count >= 2 && rest[0] == "cards" ? rest[1] : ""
             let shape = rest.enumerated().map { item in
-                let wildcard = rest[0] == "cards" && (item.offset == 1 || (item.offset == 3 && rest[2] == "queue"))
+                let wildcard = rest[0] == "cards"
+                    && (item.offset == 1 || (item.offset == 3 && (rest[2] == "queue" || rest[2] == "side-chat")))
                 return wildcard ? "*" : item.element
             }.joined(separator: "/")
             switch (method, shape) {
@@ -477,7 +478,22 @@ public final class RemoteControlServer: Sendable {
                 let (text, images) = PromptImageLayout.arranged(text: body.text, images: decoded)
                 var prompt = body
                 prompt.text = device.scope == .agent ? CardPromptReader.markRemoteAgentMessage(text, device: device.name) : text
+                // An agent's prompt is never the human's, whatever it claims.
+                if device.scope == .agent { prompt.human = nil }
                 try await host.sendPrompt(cardId: id, prompt, images: images)
+                return .response(.noContent)
+
+            case ("POST", "cards/*/side-chat"):
+                guard let body = try? JSONDecoder.remote.decode(RemoteSideChatRequest.self, from: request.body) else {
+                    return .response(.error(400, "body must be {\"kind\": \"btw\"|\"catchup\", \"question\", \"history\"}"))
+                }
+                return .response(.json(try await host.startSideChat(cardId: id, body), status: 201))
+
+            case ("GET", "cards/*/side-chat/*"):
+                return .response(.json(try await host.sideChatRun(cardId: id, runId: rest[3])))
+
+            case ("DELETE", "cards/*/side-chat/*"):
+                try await host.cancelSideChat(cardId: id, runId: rest[3])
                 return .response(.noContent)
 
             case ("POST", "cards/*/queue/*"):
@@ -603,7 +619,7 @@ public final class RemoteControlServer: Sendable {
         "me", "board", "machines", "cards/*", "cards/*/transcript", "tasks", "cards/*/prompt", "cards/*/queue/*",
         "cards/*/interrupt", "cards/*/resume", "events", "cards/*/terminal",
         "cards/*/move", "cards/*/handover", "cards/*/transcript/raw",
-        "cards/*/worktree/remove", "cards/*/discover",
+        "cards/*/worktree/remove", "cards/*/discover", "cards/*/side-chat", "cards/*/side-chat/*",
     ]
 
     static func response(for error: Error) -> RemoteHTTPResponse {

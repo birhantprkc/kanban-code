@@ -175,12 +175,31 @@ public struct RemoteClient: Sendable {
         return try await send(request)
     }
 
+    /// `human` marks a prompt the human typed and sent himself.
     public func sendPrompt(cardId: String, text: String, mode: RemotePromptRequest.Mode = .queue,
-                           images: [RemoteImage] = []) async throws {
+                           images: [RemoteImage] = [], human: Bool = false) async throws {
         var request = makeRequest("POST", "v1/cards/\(Self.escape(cardId))/prompt",
-                                  body: RemotePromptRequest(text: text, mode: mode, images: images.isEmpty ? nil : images))
+                                  body: RemotePromptRequest(text: text, mode: mode, images: images.isEmpty ? nil : images,
+                                                            human: human ? true : nil))
         if !images.isEmpty { request.timeoutInterval = 120 }
         try await sendEmpty(request)
+    }
+
+    // MARK: Side chat
+
+    /// Starts a side chat run (`/btw` or `/catchup`); poll `sideChatRun` for its answer.
+    public func startSideChat(cardId: String, _ body: RemoteSideChatRequest) async throws -> RemoteSideChatRun {
+        try await send(makeRequest("POST", "v1/cards/\(Self.escape(cardId))/side-chat", body: body))
+    }
+
+    /// The run and its answer so far.
+    public func sideChatRun(cardId: String, runId: String) async throws -> RemoteSideChatRun {
+        try await send(makeRequest("GET", "v1/cards/\(Self.escape(cardId))/side-chat/\(Self.escape(runId))"))
+    }
+
+    /// Stops a run and forgets it.
+    public func cancelSideChat(cardId: String, runId: String) async throws {
+        try await sendEmpty(makeRequest("DELETE", "v1/cards/\(Self.escape(cardId))/side-chat/\(Self.escape(runId))"))
     }
 
     /// Sends a queued prompt right away, interrupting the turn.
