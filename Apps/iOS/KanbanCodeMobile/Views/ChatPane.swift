@@ -332,7 +332,11 @@ struct ChatPane: View {
     private var caretOffset: Int? {
         guard let composerSelection, case .selection(let range) = composerSelection.indices else { return nil }
         let text = draft.text
-        let utf16 = min(range.upperBound.utf16Offset(in: text), text.utf16.count)
+        // The selection can outlive the text it was made in (a send or a
+        // dictation rewrite shortens the draft), so its index is clamped
+        // before any distance is measured.
+        let upper = min(range.upperBound, text.endIndex)
+        let utf16 = text.utf16.distance(from: text.utf16.startIndex, to: upper)
         let index = String.Index(utf16Offset: utf16, in: text)
         return text.distance(from: text.startIndex, to: index)
     }
