@@ -17,6 +17,8 @@ agent: kanban remote ... ──┘   :7780, tailnet     └─ ~/.claude transcr
 - A token belongs to one device and has a scope:
   - `full`: everything, including terminals. For a phone.
   - `agent`: read the board and transcripts, create tasks, send prompts, interrupt. No terminal, no raw keys. For another agent such as OpenClaw.
+  - `peer`: what a paired master calls (see "Peer scope" below). No terminal, no vault secrets. For the other master.
+  - `terminal`: the terminal socket, plus reading the board to find the card. For showing a peer's card terminals.
 - Tokens are `kc_` followed by 40 base62 characters. `~/.kanban-code/remote/devices.json` keeps only their SHA-256 with the device id, name, scope, `createdAt` and `lastSeenAt`. The server re-reads the file when it changes, so a revoked device is refused on its next request and its open sockets close.
 - Pairing:
   - In the app, Settings > Remote Control > Add device shows the token once, plus a QR code of `kanbancode://pair?url=<base url>&token=<token>&name=<host name>`.
@@ -62,13 +64,14 @@ JSON bodies, up to 48 MiB. Dates are ISO 8601 with milliseconds, UTC (`2026-09-2
 | `GET /v1/cards/{id}/handover` | any | `RemoteHandoverInfo` |
 | `GET /v1/cards/{id}/transcript/raw?offset=0&limit=4194304` | any | transcript bytes, `X-Transcript-Size` header |
 | `GET /v1/links?since=&epoch=`, `POST /v1/links/changed`, `GET /v1/peers` | any | peer sync |
-| `GET /v1/sync/state`, `GET /v1/sync/file?entry=&path=`, `POST /v1/sync/changed?machine=&what=` | full | agent sync (Settings > Sync) |
-| `POST /v1/optmem/run` | full | `{"id", "argv", "date"}` → `{"status", "stdout", "stderr"}`: a memo command on the OptMem home |
-| `POST /v1/cli` | full | `RemoteCLIRequest` → `RemoteCLIResult` (`kanban channel`/`dm` only) |
+| `GET /v1/sync/state`, `GET /v1/sync/file?entry=&path=`, `POST /v1/sync/changed?machine=&what=` | full, peer | agent sync (Settings > Sync) |
+| `POST /v1/optmem/run` | full, peer | `{"id", "argv", "date"}` → `{"status", "stdout", "stderr"}`: a memo command on the OptMem home |
+| `POST /v1/cli` | full, peer | `RemoteCLIRequest` → `RemoteCLIResult` (`kanban channel`/`dm` only) |
 | `GET /v1/channels/files`, `GET /v1/channels/files/{path}?offset=` | any | channel files, for the mirror |
-| `PUT /v1/channels/files/{path}` | full | creates a missing channel file, 204 or 409 |
+| `PUT /v1/channels/files/{path}` | full, peer | creates a missing channel file, 204 or 409 |
+| `GET /v1/scrub/status`, `POST /v1/scrub/run`, `PUT /v1/scrub/schedule` | full, peer | the secret scrubber (see [`vault.md`](vault.md)) |
 | `GET /v1/events?all=1` (WebSocket) | any | `RemoteEvent` text frames |
-| `GET /v1/cards/{id}/terminal?session=<name>&cols=80&rows=24` (WebSocket) | full | terminal bytes |
+| `GET /v1/cards/{id}/terminal?session=<name>&cols=80&rows=24` (WebSocket) | full, terminal | terminal bytes |
 | `GET /.well-known/openapi.json` | none | OpenAPI 3.1 of the above |
 
 Behaviour:
@@ -92,7 +95,7 @@ Behaviour:
 
 The Mac app and `kanban-code-server` (an always-on Linux box) are both masters: each runs the same engine, owns the cards it launched or adopted, and syncs light card state with its peers (Settings > Remote Control > Peers: a peer's URL and a device token that peer issued, `kanban-code-server pair <name>` on a box). A card carries `machineId`/`machineName`, the master that owns it.
 
-- Any master answers for any card: prompts, queue, interrupt, resume, transcript and move on a card another master owns are forwarded to that master. The terminal of such a card on the Mac runs `kanban remote attach`, which bridges the owner's terminal socket.
+- Any master answers for any card: prompts, queue, interrupt, resume, transcript and move on a card another master owns are forwarded to that master. The terminal of such a card on the Mac runs `kanban remote attach`, which bridges the owner's terminal socket with the peer's terminal token.
 - `POST /v1/tasks` with `machine` naming a peer creates the card here and hands it to that peer, which starts it. `project` may also be a repository URL: the master finds the project with that origin, or clones it into `~/Projects` (a box).
 - `POST /v1/cards/{id}/move` with `{"to": "<machine id or name>"}` continues a card on a peer master, or `"mac"`/`"local"` for the master that answers. A move to a peer is a handover: the session ends, the worktree branch is pushed to origin, the card is released; the peer reads `handover` (origin, branch, uncommitted changes as a base64 git diff), checks out the worktree, copies the transcript through `transcript/raw` with its paths rewritten, adopts the card and resumes it. Only Claude conversations move. A name that is not a peer is a boxd or ssh machine this master drives.
 - One machine is one choice. An ssh machine of Settings > Remote whose host is a paired peer (the ssh target host is the peer URL host, or the names match) is shown once, in the launch dialogs, Continue on, the API and `kancode://move`, and running a card there hands it to that master, so it keeps going while this Mac is off. A card that already ran there over ssh moves to that master on its next resume: the ssh session ends first, and the master continues in the same folder with the transcript it already has (`machineCwd` in `handover`), uncommitted work included. Until then it stays owned by the Mac, labelled with the Mac as its master.
@@ -103,6 +106,25 @@ The Mac app and `kanban-code-server` (an always-on Linux box) are both masters: 
 - A master that runs all the time (`kanban-code-server`, `alwaysOn` in its identity) polls GitHub for the pull requests of every card while it is online, and writes them on cards other masters own; the others do not poll. With no such master online, the master with the lowest machine id polls. Masters send the repository (`host/owner/name`) of their project paths with the links, so the poller needs no checkout of them.
 - The always-on master is the channels home: channels and DMs live in its `~/.kanban-code/channels/`. Another master mirrors that directory (appends by offset, the rest whole, deletions follow; `read-state.json` and `drafts.json` stay local), writes `channels-home.json` for its CLI, and sends every channel write there: its `kanban channel`/`kanban dm` commands and its UI go through `POST /v1/cli`. The first time a Mac pairs with a home that has no channels, it copies its own there. Channel messages for a card another master runs are queued on that master (through the command inbox from the CLI).
 - `kanban subagent` and the other command inbox operations run on the master whose CLI wrote them, the box included.
+
+### Peer scope
+
+The token a master holds for its peer has the `peer` scope, in both directions. It may call what pairing uses and nothing else (`RemoteScopePolicy`, an allow list: a route added later is refused until it is listed):
+
+- Card sync: `GET /v1/links`, `POST /v1/links/changed`, `GET /v1/peers`, `GET /v1/board`, `GET /v1/machines`, `GET /v1/events`, `GET /v1/me`.
+- What the human does to a card the peer owns: `POST /v1/tasks`, and on `/v1/cards/{id}`: `GET`, `PATCH`, `DELETE`, `transcript`, `transcript/raw`, `prompt`, `queue/{promptId}`, `interrupt`, `resume`, `side-chat`, `discover`, `worktree/remove`.
+- Moves between masters: `POST /v1/cards/{id}/move`, `GET /v1/cards/{id}/handover`.
+- Approvals: `GET /v1/attention`, `POST /v1/attention/presence`, `POST /v1/attention/{id}/resolve`.
+- Channels: `POST /v1/cli` (`kanban channel` and `dm` only), `GET` and `PUT /v1/channels/files`.
+- Agent sync: `/v1/sync/state`, `/v1/sync/file`, `/v1/sync/changed`, `POST /v1/optmem/run` (memo `note`, `nap`, `forget`, `wake`, `recall`, `zoom` only).
+- Vault: `GET` and `POST /v1/vault/replica` (the encrypted file), `POST /v1/vault/card-token`, and the audit log mirror (`GET /v1/vault/audit/hashes`, `GET` and `POST /v1/vault/audit/mirror`).
+- Scrubber: `/v1/scrub/status`, `/v1/scrub/run`, `/v1/scrub/schedule`.
+
+Refused with 403: the terminal socket, and every vault route that releases, lists or edits a secret. So a peer's token cannot open a shell here.
+
+The Mac shows the terminals of the box's cards, so it holds a second token of the box, scope `terminal` (`kanban-code-server pair "<name> terminals" --scope terminal`), in the peer entry's `terminalToken` (Settings > Remote Control > Peers). The box holds no terminal token of the Mac: it never opens a terminal there.
+
+Pairing: `kanban-code-server pair <name> --scope peer` on a box, Add Device > Peer master on the Mac. A peer entry whose token is still `full` keeps working; change its `scope` in `~/.kanban-code/remote/devices.json` on the machine that issued it (the server re-reads the file).
 
 ## Agent sync
 

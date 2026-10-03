@@ -10,6 +10,7 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
+import { runScrub } from "./scrub.js";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
@@ -681,6 +682,9 @@ export const USAGE = `kv: secrets from the Kanban Code vault
   kv tiers <tier> [NAME..] [--value-prefix P].. [--every-use-asks|--leases] --reason "..."
                                                             one change to many secrets, one approval
   kv status                                                 is the vault unlocked here
+  kv scrub [--dry-run] [--status] [--all] [--json]          replace secrets in this machine's transcripts with
+                                                            {{vault:NAME}} references (dry run: counts only)
+  kv scrub --at HH:MM | --on | --off                        the daily run, on every master
   kv exec-provider                                          OpenClaw exec SecretRef provider (JSON on stdin)
   kv import [--apply] [--secrets-only] [--only <dir>]..   plan (then do) the migration of plaintext secrets
 
@@ -982,6 +986,9 @@ export async function runKv(argv: string[], io: VaultIO = defaultIO()): Promise<
       out(`you are: ${body.caller ?? "outside every card session (every release asks Rogerio)"}\n`);
       return 0;
     }
+
+    case "scrub":
+      return runScrub(args, client, out, io.sleep);
 
     case "exec-provider": {
       const request = JSON.parse((await readStdin()) || "{}");

@@ -26,6 +26,7 @@ final class AppComposition {
     let peerSync: PeerSync
     let agentSync: AgentSyncEngine
     let vault: VaultService
+    let scrubber: SecretScrubber
     let transcriptMirror: PeerTranscriptMirror
     let attentionCenter: AttentionCenter
 
@@ -257,6 +258,9 @@ final class AppComposition {
         }
         RemoteControlController.shared.attach(
             engine: engine,
+        let scrubber = SecretScrubber(vault: vault, machine: identity.name) { await peerSync.configuredPeers() }
+        Task.detached(priority: .utility) { await scrubber.runSchedule() }
+        RemoteControlController.shared.scrubber = scrubber
             peerServer: BoardPeerLinksServer(store: boardStore, peerSync: peerSync),
             syncEngine: agentSync,
             vault: vault,
@@ -276,6 +280,7 @@ final class AppComposition {
         self.vault = vault
         self.transcriptMirror = mirror
         self.attentionCenter = attentionCenter
+        self.scrubber = scrubber
         KanbanCodeLog.info("app", "services composed machine=\(identity.name) (\(identity.id))")
     }
 

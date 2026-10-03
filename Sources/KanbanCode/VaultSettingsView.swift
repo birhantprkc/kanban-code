@@ -27,6 +27,7 @@ struct VaultSettingsView: View {
             }
             HSplitView {
                 List(selection: $selected) {
+            ScrubSettingsSection()
                     ForEach(VaultTier.allCases, id: \.self) { tier in
                         let inTier = secrets.filter { $0.tier == tier }
                         if !inTier.isEmpty {

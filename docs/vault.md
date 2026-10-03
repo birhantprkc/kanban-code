@@ -13,12 +13,13 @@ The vault keeps secrets out of plaintext files. Every master (the Mac app and `k
 | `audit.jsonl` | Append-only log of this machine: time, card, secret, tier, outcome, decider, command |
 | `pending.age` | Approval requests still waiting for the human, age-encrypted to the vault key (an add carries the new value). Removed when none are open |
 | `card-tokens.json` | SHA-256 of each card session token and its card. No tokens |
+| `scrub-index.json` | Fingerprints of the values, for the scrubber. No values, no key |
 
 The key is an age X25519 identity. On the box it is `vault/identity.txt` (0600, root). On the Mac it is the login keychain item `io.kanbancode.vault` / `age-identity`, readable without a prompt only by the signed app. To give a machine the key, write it to `~/.kanban-code/vault/identity.import`; the master imports it at start and deletes the file.
 
 Recovery without Kanban Code: `age -d -i identity.txt vault.age` gives `{"doc": <base64 JSON>, "auth": ...}`; the `doc` field is the secrets.
 
-Replicas sync with the configured peers every minute (`GET`/`POST /v1/vault/replica`, full-scope peer token). Each secret's newest edit wins; a delete is an edit.
+Replicas sync with the configured peers every minute (`GET`/`POST /v1/vault/replica`, peer token). Each secret's newest edit wins; a delete is an edit.
 
 ## Names, projects and environments
 
@@ -72,7 +73,7 @@ A card on one master that runs a command on the other over ssh (`ssh root@box 'k
 1. ssh carries the two variables. The client sends them (`~/.ssh/config`, for the peer's host: `SendEnv KANBAN_CARD_ID KANBAN_CARD_TOKEN`) and the server takes them (`/etc/ssh/sshd_config.d/60-kanban-card-env.conf`: `AcceptEnv KANBAN_CARD_ID KANBAN_CARD_TOKEN`, then `sshd -t` and a reload). The token is never on a command line and never logged. Set up from the Mac to the box; the other direction needs the same two lines the other way round (the Mac's sshd config needs an administrator).
 2. kv on the remote side sends the token in `X-Kanban-Card-Token`, as it does locally.
    A shared ssh connection (`ControlMaster`) opened before the sshd reload keeps the old server settings and drops the variables: close it once with `ssh -O exit <host>`. `ssh <host> 'echo ${KANBAN_CARD_TOKEN:+set}'` from a card session prints `set` when they arrive.
-3. The master does not know the token, so it sends its SHA-256 to each enabled peer (`POST /v1/vault/card-token`, full-scope peer token; `VaultPeerTokenVerifier`). The master that issued it answers with the card id, the card's title and its own machine name while the card has a session, else 404.
+3. The master does not know the token, so it sends its SHA-256 to each enabled peer (`POST /v1/vault/card-token`, peer token; `VaultPeerTokenVerifier`). The master that issued it answers with the card id, the card's title and its own machine name while the card has a session, else 404.
 4. The caller is then that card: its leases, its one question per thing asked, the card's prompts for Jev when this master has the card's transcript (the peer mirror), none otherwise. The request names the card by its title, the details say "Card: <title>, via ssh from <machine>" (plain "from <machine>" without sshd in the chain), and the audit line ends with "by session token, verified by <machine>".
 
 A yes is kept for 60 seconds, a no for 15. A peer that does not answer is neither: the caller is outside every card, as before, and the next call asks again. The own-project development rule does not apply to such a caller: this master verified neither the session nor the folder the card works in, so a judged secret goes to Jev.
@@ -243,7 +244,7 @@ Plaintext that stays, and why:
 - LangWatch dev secrets its tooling writes into `.env` when missing (`LW_GATEWAY_INTERNAL_SECRET`, `LW_GATEWAY_JWT_SECRET`, `LW_VIRTUAL_KEY_PEPPER`, `LANGY_INTERNAL_SECRET`, `LWQL_*_PASSWORD`): local random values, kept in the file.
 - Local DSNs with throwaway passwords, URLs, paths and ids.
 - Tool credential stores read by the tools themselves: `~/.ssh`, `~/.config/gh`, `~/.git-credentials`, `~/.config/gcloud`, `~/.config/stripe`, Claude and Codex logins, local CA keys (`~/.portless`, `~/.minikube`, `~/.docker`).
-- Keys inside code, fixtures, notebooks, logs and transcripts (`~/.claude/projects`, `file-history`, `paste-cache`): content, not config; scrubbing them is a separate step.
+- Keys inside code, fixtures and notebooks, and in `~/.claude/file-history`: content, not config. Transcripts, histories and logs are cleaned by the scrubber below.
 
 ## Pasted secrets
 
@@ -251,6 +252,51 @@ The card chat composer, the queued prompt editor, channel composers and the iPho
 
 rush's own message boxes (a Session's box and the Prompt) get the same check from the `kanban-vault` rush plugin in `plugins/rush/kanban-vault`, a Go port of the same rules. It answers rush's `ui.intercept` with an ask, saves with `kv add NAME --tier judged` through the manifest's `exec`, and rewrites the message in place so paste chips stay chips. `make rush-plugins` (`Scripts/rush-plugins-install.sh`) builds it into rush's plugin folder and runs `rush plugin approve` at a terminal. rush runs installed plugins only on macOS, where it sandboxes them, so the script installs nothing on a Linux machine.
 
+## Scrubber
+
+A secret pasted into a chat, or printed by a command, stays in the transcript. The scrubber replaces it there with a `{{vault:NAME}}` reference. Each master runs it over its own files, once a day (04:30 unless changed) and on demand. It cleans local files only: what already reached a model provider, a remote log or a backup elsewhere is not touched, so a key that leaked still needs rotating.
+
+Settings > Vault has the switch, the time, Dry Run, Run Now and the last result of every master. The schedule set there is sent to the peers (`PUT /v1/scrub/schedule`); each master keeps it in `~/.kanban-code/scrub/schedule.json`. From a shell:
+
+```
+kv scrub --dry-run     counts per folder and per secret name, nothing changes
+kv scrub               a run now
+kv scrub --status      schedule and the last run
+kv scrub --at 03:00 | --on | --off
+```
+
+### What it reads
+
+- Claude Code: `projects/`, `history.jsonl` and `paste-cache/` of `~/.claude` and of every rush account folder (`~/.config/rush/claude/*`; folders that link to the same place are read once).
+- Codex: `~/.codex/sessions`, `archived_sessions`, `history.jsonl`.
+- rush: `~/.config/rush/drafts.json`, `box-drafts`, and its cache folder.
+- Kanban Code: `links.json` and its backups, `human-messages`, `logs`, `channels`, `chat-drafts`, `peers` (transcript copies of the other masters' cards), `context`, `commands`, `hook-events.jsonl`. Never `vault/`, `settings.json` or the device and sync files.
+- OptMem: `~/.optmem/memory`, `WAKE.md`, `spool`, `audit`. Its log and tree are fixed-width records with no checksum, and a replacement keeps every record's width, so memo reads them as before.
+
+Images, archives, databases and files that start with a zero byte are skipped. A file written in the last 10 minutes belongs to a session in progress and waits for the next run; Kanban's current `links.json` and log are always in that state, so they are cleaned once they rotate into a backup.
+
+### What it finds
+
+1. Values the vault holds, by fingerprint. `vault/scrub-index.json` has, for each value, its length, a keyed 32-bit fingerprint of its first eight bytes and a keyed HMAC of the whole (`ScrubIndex`), under a key derived from the vault key. A scan reads only this index, so it never handles a value of any tier. The master rebuilds the index when `vault.age` changes. Each value is indexed as stored and as JSON writes it (escaped once, twice, and with `\/`); a JSON value also by its long members, a URL by its credential parts. Values under 16 bytes, and ones that do not look minted (no digits, a word, a path, a host), are left out, so a vault entry holding `eu-central-1` does not rewrite the transcripts.
+2. Keys in a vendor's format the vault does not hold: the `SecretDetector` rules the composers use for pasted keys, limited to the fixed formats (`sk-...`, `ghp_...`, `xoxb-...`, `AIza...` and the vendor list), with placeholders and low-entropy identifiers left out. Each is saved first as `scrubbed/found/<VENDOR_NAME>_<fingerprint>`, tier ask, tag `scrubbed`, then replaced. The name comes from the value, so two masters that find the same key save it under the same name. `kv ls --project scrubbed` lists them; rename the ones worth keeping (`kv mv`) and delete the rest (`kv rm`).
+
+JWTs, bearer tokens, URL passwords, PEM keys and `password=` style assignments that are not in the vault are not replaced: without a human looking they match too much that is not a secret.
+
+### How it replaces
+
+In place, and every line keeps its byte length: the file keeps its size, its inode and the offset of every line, so the transcript copies on the other master, cached offsets and a process appending to the file are not disturbed. The modification time is put back.
+
+- The value becomes `{{vault:NAME}}`. When that is longer than the value, it becomes `{{vault:#<start of the secret's fingerprint>}}`; `kv ls --json` shows each secret's `fingerprint`.
+- The bytes left over become spaces: in `.json` and `.jsonl` files after the closing quote of the string the value was in (where JSON allows them), in other files right after the reference.
+- A `.jsonl` line that parsed before must parse after, and a `.json` file likewise, or it is left alone. A value that starts right after a backslash is left alone.
+
+### Safety
+
+- A dry run changes nothing and reports counts per folder, per file and per secret name.
+- The first real run on a machine first copies every file it is about to change, gzipped, into `~/.kanban-code/scrub-backups/<date>/` with a `manifest.json` of the original paths (`gunzip -c <file> > <path>` restores one). These copies hold the secrets: they are deleted after 7 days, and no sync entry covers that folder.
+- Reports (`scrub/last-run.json`, `last-dry-run.json`) and the `[scrub]` log lines carry names, paths and counts, never a value.
+- Files the last run left clean are skipped by size and time until the vault changes.
+
 ## Remote API
 
-See the routes list in `Sources/KanbanCodeCore/Adapters/RemoteControl/RemoteVaultRoutes.swift`. Listings never carry values. Adding a new secret is allowed to any local caller; replacing a value, changing a tier or rules, or deleting asks Rogerio, except from Settings > Vault in the app.
+See the routes list in `Sources/KanbanCodeCore/Adapters/RemoteControl/RemoteVaultRoutes.swift`. Listings never carry values. Adding a new secret is allowed to any local caller; replacing a value, changing a tier or rules, or deleting asks Rogerio, except from Settings > Vault in the app. A peer master's token reaches only the replica, the card token check and the audit log mirror. The scrubber routes are in `RemoteScrubRoutes.swift`.

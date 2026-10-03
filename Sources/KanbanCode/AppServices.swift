@@ -100,8 +100,9 @@ enum AppServices {
     }
 
     /// The shell script a terminal of a card another master owns runs: the
-    /// kanban CLI bridges it to the owner's terminal socket, with the token
-    /// this Mac holds for that peer, and reconnects when the link drops.
+    /// kanban CLI bridges it to the owner's terminal socket, with the
+    /// terminal token this Mac holds for that peer, and reconnects when the
+    /// link drops.
     @MainActor
     static func peerAttachScript(machineId: String, cardId: String, session: String) -> String? {
         let settings = FileManager.default.contents(atPath: NSHomeDirectory() + "/.kanban-code/settings.json")
@@ -113,7 +114,7 @@ enum AppServices {
         let cli = cliBundlePath.map { "\($0)/dist/kanban.js" }
             ?? (NSHomeDirectory() + "/Projects/kanban/cli/dist/kanban.js")
         let node = findNode() ?? "node"
-        let attach = "KANBAN_REMOTE_URL=\(quote(peer.url)) KANBAN_REMOTE_TOKEN=\(quote(peer.token)) "
+        let attach = "KANBAN_REMOTE_URL=\(quote(peer.url)) KANBAN_REMOTE_TOKEN=\(quote(peer.terminalToken ?? peer.token)) "
             + "\(quote(node)) \(quote(cli)) remote attach \(quote(cardId)) --session \(quote(session))"
         return "while :; do \(attach) && break; sleep 2; done; echo 'Session ended.'"
     }

@@ -36,8 +36,18 @@ public enum RemoteAPI {
 /// `agent` is another agent (OpenClaw): read the board, start tasks, send
 /// prompts, never a terminal or raw keys.
 public enum RemoteScope: String, Codable, Sendable, CaseIterable {
+    /// Everything, terminals included. The human's own devices.
     case full
+    /// Board, tasks and prompts. Another agent.
     case agent
+    /// What a paired master needs: sync, forwarding, moves, approvals. No terminal.
+    case peer
+    /// Card terminals only, for `kanban remote attach` on a paired master.
+    case terminal
+
+    /// Whether the device acts for the human: a device of his, or a master
+    /// passing on what he did there.
+    public var actsForOwner: Bool { self == .full || self == .peer }
 }
 
 public struct RemoteHealth: Codable, Sendable, Equatable {
