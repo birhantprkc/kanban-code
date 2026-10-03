@@ -301,15 +301,22 @@ public struct VaultCaller: Codable, Sendable, Equatable {
     public var ancestry: [String]
     /// Not on loopback: a device over the tailnet.
     public var remoteDevice: String?
+    /// The calling process's working directory, as the master read it.
+    public var cwd: String?
+    /// The card was found by the session token the caller sent, not by
+    /// its process ancestry (a detached process).
+    public var byToken: Bool?
 
     public init(cardId: String? = nil, claimedCardId: String? = nil, sessionId: String? = nil, pid: Int? = nil,
-                ancestry: [String] = [], remoteDevice: String? = nil) {
+                ancestry: [String] = [], remoteDevice: String? = nil, cwd: String? = nil, byToken: Bool? = nil) {
         self.cardId = cardId
         self.claimedCardId = claimedCardId
         self.sessionId = sessionId
         self.pid = pid
         self.ancestry = ancestry
         self.remoteDevice = remoteDevice
+        self.cwd = cwd
+        self.byToken = byToken
     }
 
     public var insideCard: Bool { cardId != nil && remoteDevice == nil }

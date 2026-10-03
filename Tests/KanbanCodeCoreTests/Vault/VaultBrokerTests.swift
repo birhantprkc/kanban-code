@@ -303,7 +303,7 @@ struct VaultBrokerTests {
     }
 
     @Test func jevBodyAndParse() throws {
-        let body = JevClient.body(for: JevReleaseQuestion(secret: "S", rules: "", command: "c", reason: "r", cardTitle: "t", cwd: nil), model: "jev-latest")
+        let body = JevClient.body(for: JevReleaseQuestion(secrets: ["S"], rules: "", command: "c", reason: "r", cardTitle: "t", cwd: nil), model: "jev-latest")
         #expect(body["model"] as? String == "jev-latest")
         let data = Data(#"{"model":"jev","answers":{"release":{"type":"choice","choice":"allow","confidence":0.3,"probabilities":{"allow":0.93,"ask":0.05,"deny":0.02}}}}"#.utf8)
         #expect(JevClient.parse(data) == JevVerdict(choice: .allow, confidence: 0.93))

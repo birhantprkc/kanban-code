@@ -346,27 +346,90 @@ public actor VaultBroker {
         self.sts = sts
     }
 
-    public func configure(approvalTimeout: TimeInterval? = nil, pollInterval: TimeInterval? = nil) {
+    public func configure(approvalTimeout: TimeInterval? = nil, pollInterval: TimeInterval? = nil,
+                          projectsOf: (@Sendable (String?) -> [String])? = nil) {
         if let approvalTimeout { self.approvalTimeout = approvalTimeout }
         if let pollInterval { self.pollInterval = pollInterval }
+        if let projectsOf { self.projectsOf = projectsOf }
+    }
+
+    // MARK: - Resolution
+
+    /// The secrets a release asks for: the named ones as they are, each
+    /// environment variable from the project (its own value for the
+    /// environment, else the shared one), and the project's group.
+    func wanted(for req: VaultReleaseRequest) async throws -> [Wanted] {
+        var out: [Wanted] = []
+        for name in req.names {
+            guard let s = try await store.secret(name) else {
+                throw VaultError.notFound("no secret named \(name) in the vault (add it: kv add \(name))")
+            }
+            out.append(Wanted(secret: s, requested: name, asEnv: false))
+        }
+        let keys = req.keys ?? []
+        guard !keys.isEmpty || req.group == true else { return out }
+        let projects = req.project.map { [$0] } ?? projectsOf(req.dir ?? req.cwd)
+        let environment = req.environment ?? VaultSecretName.defaultEnvironment
+        var seen = Set<String>()
+        for key in keys where seen.insert(key).inserted {
+            guard let s = try await store.resolve(key: key, projects: projects, environment: environment) else {
+                let scope = projects.first.map { "for \($0) (\(environment)) nor a shared one" } ?? "in the vault"
+                throw VaultError.notFound("no secret \(key) \(scope) (add it: kv set \(key))")
+            }
+            out.append(Wanted(secret: s, requested: key, asEnv: true))
+        }
+        if req.group == true {
+            let skip = seen.union(req.defined ?? [])
+            for s in try await store.group(projects: projects, environment: environment) where !skip.contains(s.key) {
+                out.append(Wanted(secret: s, requested: s.key, asEnv: true))
+            }
+        }
+        return out
+    }
+
+    /// What a release would hand out, names only: requested -> secret name.
+    public func resolve(_ req: VaultReleaseRequest) async -> VaultResponse {
+        do {
+            let wanted = try await wanted(for: req)
+            return VaultResponse(status: .granted, message: "resolved",
+                                 resolved: Dictionary(wanted.map { ($0.requested, $0.secret.name) }) { first, _ in first })
+        } catch let error as VaultError {
+            if case .notFound(let why) = error { return .denied(why) }
+            return .denied("the vault is locked on this machine: \(error)")
+        } catch {
+            return .denied("the vault is locked on this machine: \(error)")
+        }
+    }
+
+    /// The values of the allowed secrets, under what the caller asked for.
+    private func answer(_ wanted: [Wanted], allowed: Set<String>) -> (values: [String: String], env: [String: String]) {
+        var values: [String: String] = [:]
+        var env: [String: String] = [:]
+        for w in wanted where allowed.contains(w.secret.name) {
+            if w.asEnv { env[w.requested] = w.secret.value } else { values[w.requested] = w.secret.value }
+        }
+        return (values, env)
     }
 
     // MARK: - Release
 
     public func release(_ req: VaultReleaseRequest, caller: VaultCaller, now: Date = Date()) async -> VaultResponse {
         let hook = req.mode == "hook"
-        guard !req.names.isEmpty else { return .denied("name at least one secret") }
-        var secrets: [VaultSecret] = []
+        guard !req.names.isEmpty || !(req.keys ?? []).isEmpty || req.group == true else {
+            return .denied("name at least one secret")
+        }
+        let wanted: [Wanted]
         do {
-            for name in req.names {
-                guard let s = try await store.secret(name) else {
-                    return .denied("no secret named \(name) in the vault (add it: kv add \(name))")
-                }
-                secrets.append(s)
-            }
+            wanted = try await self.wanted(for: req)
+        } catch let error as VaultError {
+            if case .notFound(let why) = error { return .denied(why) }
+            return .denied("the vault is locked on this machine: \(error)")
         } catch {
             return .denied("the vault is locked on this machine: \(error)")
         }
+        var known = Set<String>()
+        let secrets = wanted.map(\.secret).filter { known.insert($0.name).inserted }
+        let callerProjects = projectsOf(caller.cwd)
 
         var allowed: [(VaultSecret, VaultDecider, String)] = []
         var asks: [(VaultSecret, String)] = []
@@ -381,7 +444,7 @@ public actor VaultBroker {
                 denies.append((s, "\(s.name) is an AWS profile: use kv aws"))
                 continue
             }
-            let verdict = await verdict(for: s, req: req, caller: caller, now: now)
+            let verdict = await verdict(for: s, req: req, caller: caller, callerProjects: callerProjects, now: now)
             switch verdict {
             case .allow(let by, let why): allowed.append((s, by, why))
             case .ask(let why): asks.append((s, why))
@@ -439,17 +502,23 @@ public actor VaultBroker {
         )
     }
 
-    private func verdict(for s: VaultSecret, req: VaultReleaseRequest, caller: VaultCaller, now: Date) async -> VaultVerdict {
+    private func verdict(for s: VaultSecret, req: VaultReleaseRequest, caller: VaultCaller, callerProjects: [String],
+                         now: Date) async -> VaultVerdict {
         let lease = caller.cardId.flatMap { _ in caller.insideCard ? caller.cardId : nil }
         var hasLease = false
-        if let card = lease { hasLease = await store.activeLease(cardId: card, secret: s.name, now: now) != nil }
+        if let card = lease {
+            for name in s.allNames where !hasLease {
+                hasLease = await store.activeLease(cardId: card, secret: name, now: now) != nil
+            }
+        }
         let reuseKey = "\(caller.cardId ?? "")|\(s.name)"
         let reusing = req.mode == "hook" && caller.insideCard && (hookAllows[reuseKey].map { now.timeIntervalSince($0) < hookReuse } ?? false)
         let input = VaultDecisionInput(
             tier: s.tier, everyUseAsks: s.leasePolicy.everyUseAsks, insideCard: caller.insideCard,
             // Hook-wrapped commands load the env on every Bash call: that
             // volume is ambient, so it neither counts nor trips the limit.
-            hasLease: hasLease, recentReleases: req.mode == "hook" ? 0 : await store.recentReleases(s.name, now: now)
+            hasLease: hasLease, recentReleases: req.mode == "hook" ? 0 : await store.recentReleases(s.name, now: now),
+            ownProjectDev: VaultPolicy.isOwnProjectDev(s, caller: caller, callerProjects: callerProjects)
         )
         let first = VaultPolicy.decide(input)
         guard first == .consultJev else { return first }
@@ -457,7 +526,9 @@ public actor VaultBroker {
         return .consultJev
     }
 
-    /// Asks Jev about every judged secret at once.
+    /// Asks Jev about the judged secrets: one question per distinct rules
+    /// text, naming every secret under those rules. The answer is the
+    /// verdict of each of them.
     private func judge(_ secrets: [VaultSecret], req: VaultReleaseRequest, caller: VaultCaller) async -> [(VaultSecret, VaultVerdict)] {
         guard !secrets.isEmpty else { return [] }
         guard let jev else { return secrets.map { ($0, VaultPolicy.afterJev(nil)) } }
@@ -468,36 +539,46 @@ public actor VaultBroker {
         if let card = caller.cardId, caller.insideCard, VaultCaller.openClawAgent(principal: card) == nil {
             prompts = await cardPrompts(card)
         }
-        return await withTaskGroup(of: (Int, VaultVerdict).self) { group in
-            for (i, s) in secrets.enumerated() {
+        var byRules: [(rules: String, indexes: [Int])] = []
+        for (i, s) in secrets.enumerated() {
+            if let at = byRules.firstIndex(where: { $0.rules == s.rules }) {
+                byRules[at].indexes.append(i)
+            } else {
+                byRules.append((s.rules, [i]))
+            }
+        }
+        return await withTaskGroup(of: ([Int], VaultVerdict).self) { group in
+            for (rules, indexes) in byRules {
+                let names = indexes.map { secrets[$0].name }
                 let question = JevReleaseQuestion(
-                    secret: s.name, rules: s.rules, command: req.command ?? "(no command given)",
+                    secrets: names, rules: rules, command: req.command ?? "(no command given)",
                     reason: req.reason, cardTitle: title, cwd: req.cwd, prompts: prompts
                 )
-                let subject = "\(s.name) for \(caller.cardId ?? "outside")"
+                let subject = "\(names.joined(separator: ", ")) for \(caller.cardId ?? "outside")"
                 let evidence = prompts.map { "\($0.typed.count + $0.earlier.count) prompts entered in the card, \($0.delivered.count) from other senders" }
                     ?? "no card transcript"
                 group.addTask {
                     let verdict = await jev.judge(question)
                     let answer = verdict.map { "\($0.choice.rawValue) \(Int(($0.confidence * 100).rounded()))%" } ?? "no answer"
                     KanbanCodeLog.info("vault", "Jev on \(subject): \(answer) (\(evidence))")
-                    return (i, VaultPolicy.afterJev(verdict))
+                    return (indexes, VaultPolicy.afterJev(verdict))
                 }
             }
             var out = [(VaultSecret, VaultVerdict)?](repeating: nil, count: secrets.count)
-            for await (i, verdict) in group { out[i] = (secrets[i], verdict) }
+            for await (indexes, verdict) in group {
+                for i in indexes { out[i] = (secrets[i], verdict) }
+            }
             return out.compactMap { $0 }
         }
     }
 
-    private func grant(_ allowed: [(VaultSecret, VaultDecider, String)], req: VaultReleaseRequest, caller: VaultCaller,
-                       now: Date, requestId: String? = nil) async -> VaultResponse {
-        var values: [String: String] = [:]
+    private func grant(_ allowed: [(VaultSecret, VaultDecider, String)], wanted: [Wanted], req: VaultReleaseRequest,
+                       caller: VaultCaller, now: Date, requestId: String? = nil) async -> VaultResponse {
         for (s, by, why) in allowed {
             await store.recordRelease(s.name, now: now)
             await audit(s, req: req, caller: caller, outcome: .allowed, decider: by, detail: why, requestId: requestId)
-            values[s.name] = s.value
         }
+        let given = answer(wanted, allowed: Set(allowed.map(\.0.name)))
         if req.mode == "aws" {
             guard let s = allowed.first?.0, let role = s.aws else { return .denied("not an AWS profile") }
             do {
