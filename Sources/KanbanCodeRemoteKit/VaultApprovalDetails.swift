@@ -67,6 +67,9 @@ public struct VaultApprovalDetails: Codable, Sendable, Equatable, Hashable {
     public var remoteDevice: String?
     /// Executable names from the caller up.
     public var ancestry: [String]
+    /// For a card that runs on another machine: how its command got here,
+    /// e.g. "via ssh from Studio".
+    public var cardOrigin: String?
 
     public init(
         action: Action,
@@ -83,8 +86,10 @@ public struct VaultApprovalDetails: Codable, Sendable, Equatable, Hashable {
         leaseSeconds: Double? = nil,
         claimedCardId: String? = nil,
         remoteDevice: String? = nil,
-        ancestry: [String] = []
+        ancestry: [String] = [],
+        cardOrigin: String? = nil
     ) {
+        self.cardOrigin = cardOrigin
         self.action = action
         self.origin = origin
         self.principal = principal
@@ -121,7 +126,8 @@ public struct VaultApprovalDetails: Codable, Sendable, Equatable, Hashable {
         var rows: [Row] = []
         switch origin {
         case .card:
-            rows.append(Row("Card", cardName ?? principal ?? "unknown card"))
+            let name = cardName ?? principal ?? "unknown card"
+            rows.append(Row("Card", cardOrigin.map { "\(name), \($0)" } ?? name))
         case .openClaw:
             rows.append(Row("OpenClaw agent", principal ?? "unknown agent"))
         case .outside:

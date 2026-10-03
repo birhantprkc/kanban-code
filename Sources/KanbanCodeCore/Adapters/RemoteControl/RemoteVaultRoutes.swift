@@ -19,6 +19,7 @@ import KanbanCodeRemoteKit
 ///   GET    /v1/vault/log               the audit log, newest first
 ///   GET    /v1/vault/leases            active leases
 ///   GET    /v1/vault/status
+///   POST   /v1/vault/card-token        the card of a session token's hash (full scope, for peer masters)
 ///   GET    /v1/vault/replica           the encrypted file (full scope, for peer masters)
 ///   POST   /v1/vault/replica           merge a peer's encrypted file (full scope)
 ///
@@ -163,6 +164,19 @@ enum RemoteVaultRoutes {
             let who = await caller(claimedCard: query["card"], sessionId: nil)
             return .json(VaultStatus(unlocked: identity != nil, recipient: identity?.recipient.text, secrets: count,
                                      machine: vault.broker.machine, caller: who.insideCard ? who.cardId : nil))
+
+        case ("POST", "card-token", 1):
+            guard let device, device.scope == .full else {
+                return .error(403, "card tokens are verified for peer masters with a full-scope token")
+            }
+            guard let query = try? JSONDecoder().decode(VaultCardTokenQuery.self, from: body), !query.hash.isEmpty else {
+                return .error(400, "body must be {\"hash\": \"<sha256 of the token>\"}")
+            }
+            let live = Set(await vault.resolver.cardSessions().values)
+            guard let card = await vault.cardTokens.verify(hash: query.hash, liveCards: live) else {
+                return .error(404, "no card session here has that token")
+            }
+            return .json(VaultPeerCard(cardId: card, title: await vault.broker.cardTitle(card), machine: vault.broker.machine))
 
         case (_, "replica", 1):
             guard let device, device.scope == .full else {

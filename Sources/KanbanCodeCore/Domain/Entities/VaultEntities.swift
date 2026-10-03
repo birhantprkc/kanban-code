@@ -308,9 +308,17 @@ public struct VaultCaller: Codable, Sendable, Equatable {
     /// The card was found by the session token the caller sent, not by
     /// its process ancestry (a detached process).
     public var byToken: Bool?
+    /// The master that issued the session token and vouched for the card,
+    /// when the card runs there and the caller here (a command over ssh).
+    public var verifiedByPeer: String?
+    /// The card's title as that master gave it.
+    public var peerTitle: String?
 
     public init(cardId: String? = nil, claimedCardId: String? = nil, sessionId: String? = nil, pid: Int? = nil,
-                ancestry: [String] = [], remoteDevice: String? = nil, cwd: String? = nil, byToken: Bool? = nil) {
+                ancestry: [String] = [], remoteDevice: String? = nil, cwd: String? = nil, byToken: Bool? = nil,
+                verifiedByPeer: String? = nil, peerTitle: String? = nil) {
+        self.verifiedByPeer = verifiedByPeer
+        self.peerTitle = peerTitle
         self.cardId = cardId
         self.claimedCardId = claimedCardId
         self.sessionId = sessionId
@@ -322,6 +330,20 @@ public struct VaultCaller: Codable, Sendable, Equatable {
     }
 
     public var insideCard: Bool { cardId != nil && remoteDevice == nil }
+
+    /// How the caller reached this machine from the card's own, for the
+    /// human: "via ssh from <machine>" when sshd is in its process chain.
+    public var peerOrigin: String? {
+        guard let machine = verifiedByPeer else { return nil }
+        let overSsh = ancestry.contains { $0.hasPrefix("sshd") }
+        return overSsh ? "via ssh from \(machine)" : "from \(machine)"
+    }
+
+    /// How the audit log says the card was found.
+    public var tokenNote: String? {
+        guard byToken == true else { return nil }
+        return verifiedByPeer.map { "by session token, verified by \($0)" } ?? "by session token"
+    }
 
     /// The OpenClaw agent behind `cardId` when the caller is an OpenClaw
     /// agent rather than a card ("openclaw:<agent>"). Those get the tiers

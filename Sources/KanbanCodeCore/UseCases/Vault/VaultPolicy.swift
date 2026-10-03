@@ -71,7 +71,9 @@ public enum VaultPolicy {
     /// environments, secrets with rules and ones that ask on every use are
     /// not; nor is any caller that is not a card.
     public static func isOwnProjectDev(_ secret: VaultSecret, caller: VaultCaller, callerProjects: [String]) -> Bool {
-        guard caller.insideCard, caller.openClawAgent == nil,
+        // A card another master vouched for runs a command here over ssh:
+        // this master read neither its session nor where it works.
+        guard caller.insideCard, caller.openClawAgent == nil, caller.verifiedByPeer == nil,
               let project = secret.project, secret.environment == developmentEnvironment,
               secret.rules.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               !secret.leasePolicy.everyUseAsks, secret.aws == nil

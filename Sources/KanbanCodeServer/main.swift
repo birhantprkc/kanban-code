@@ -83,6 +83,10 @@ func fail(_ message: String) -> Never {
 
 signal(SIGPIPE, SIG_IGN)
 
+// A server started by hand from a card's shell, or from an ssh login that
+// carried a card's variables, must not hand them to the sessions it starts.
+InheritedSessionEnvironment.scrub()
+
 let options = ServerOptions.parse(Array(CommandLine.arguments.dropFirst()))
 let devices = RemoteDeviceStore(path: options.devicesFile)
 let settings = try? await SettingsStore(basePath: options.home).read()

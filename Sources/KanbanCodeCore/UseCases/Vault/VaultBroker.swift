@@ -592,7 +592,7 @@ public actor VaultBroker {
     private func judge(_ secrets: [VaultSecret], req: VaultReleaseRequest, caller: VaultCaller) async -> [(VaultSecret, VaultVerdict)] {
         guard !secrets.isEmpty else { return [] }
         guard let jev else { return secrets.map { ($0, VaultPolicy.afterJev(nil)) } }
-        let title: String? = if let card = caller.cardId { await principalTitle(card) } else { nil }
+        let title = await principalTitle(of: caller)
         // Only a session the master matched to a card is read: a claimed id
         // must not borrow another card's prompts.
         var prompts: CardPrompts?
@@ -698,6 +698,12 @@ public actor VaultBroker {
     }
 
     /// A card's title, or "OpenClaw agent <id>" for an OpenClaw principal.
+    private func principalTitle(of caller: VaultCaller) async -> String? {
+        guard let card = caller.cardId else { return nil }
+        if let title = await principalTitle(card) { return title }
+        return caller.peerTitle
+    }
+
     private func principalTitle(_ id: String) async -> String? {
         if let agent = VaultCaller.openClawAgent(principal: id) { return "OpenClaw agent \(agent)" }
         return await cardTitle(id)
@@ -967,7 +973,7 @@ public actor VaultBroker {
         guard let approvals else {
             return .denied("needs a human approval, and this master cannot ask for one")
         }
-        let title: String? = if let card = caller.cardId { await principalTitle(card) } else { nil }
+        let title = await principalTitle(of: caller)
         let everyUse = secrets.contains { $0.leasePolicy.everyUseAsks }
         let key = Self.joinKey(action, caller: caller)
 
@@ -1021,7 +1027,7 @@ public actor VaultBroker {
             await store.append(VaultAuditEntry(at: now, machine: machine, cardId: caller.cardId, sessionId: caller.sessionId,
                                                secret: s.name, tier: s.tier, outcome: .asked, decider: .rule,
                                                action: actionName(action), command: command, reason: reason,
-                                               detail: caller.byToken == true ? "\(why), by session token" : why, requestId: id))
+                                               detail: caller.tokenNote.map { "\(why), \($0)" } ?? why, requestId: id))
         }
         await approvals.raise(request)
         Task { await self.waitForHuman(id: id) }
@@ -1144,7 +1150,8 @@ public actor VaultBroker {
             leaseSeconds: offersLease ? secrets.map(\.leasePolicy.leaseSeconds).min() : nil,
             claimedCardId: caller.insideCard ? nil : caller.claimedCardId,
             remoteDevice: caller.remoteDevice,
-            ancestry: caller.ancestry
+            ancestry: caller.ancestry,
+            cardOrigin: caller.peerOrigin
         )
     }
 
@@ -1394,7 +1401,7 @@ public actor VaultBroker {
             at: Date(), machine: machine, cardId: caller.cardId ?? caller.claimedCardId.map { "unverified:\($0)" },
             sessionId: caller.sessionId ?? req.sessionId, secret: s.name, tier: s.tier, outcome: outcome, decider: decider,
             action: req.mode, command: req.command.map { String($0.prefix(2000)) }, reason: req.reason,
-            detail: caller.byToken == true ? [detail, "by session token"].compactMap { $0 }.joined(separator: ", ") : detail,
+            detail: caller.tokenNote.map { [detail, $0].compactMap { $0 }.joined(separator: ", ") } ?? detail,
             requestId: requestId
         ))
     }

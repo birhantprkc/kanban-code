@@ -74,6 +74,13 @@ public actor VaultCardTokens {
         return entry.cardId
     }
 
+    /// The card of the token whose SHA-256 is `hash`, under the same rules:
+    /// what a peer master asks for a token one of its callers carried.
+    public func verify(hash: String, liveCards: Set<String>) -> String? {
+        guard let entry = load().first(where: { $0.hash == hash }), liveCards.contains(entry.cardId) else { return nil }
+        return entry.cardId
+    }
+
     public func drop(cardId: String) {
         let list = load()
         let kept = list.filter { $0.cardId != cardId }

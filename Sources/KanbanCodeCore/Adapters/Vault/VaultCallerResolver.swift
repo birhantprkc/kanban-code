@@ -266,12 +266,23 @@ public struct LiveVaultCallerResolver: Sendable {
     public let rush: RushCliAdapter?
     /// The session tokens of this master's cards; nil where none are issued.
     public let tokens: VaultCardTokens?
+    /// Asks the paired masters about a token this one did not issue.
+    public let peerTokens: VaultPeerTokenVerifier?
 
     public init(rush: RushCliAdapter? = RushCliAdapter(), tokens: VaultCardTokens? = nil,
+                peerTokens: VaultPeerTokenVerifier? = nil,
                 cardSessions: @escaping @Sendable () async -> [String: String]) {
         self.cardSessions = cardSessions
         self.rush = rush
         self.tokens = tokens
+        self.peerTokens = peerTokens
+    }
+
+    /// The card a peer master vouches for, for a token this master does
+    /// not know: a card there whose command runs here.
+    public func peerCard(forToken token: String?) async -> VaultPeerCard? {
+        guard let peerTokens, let token, !token.isEmpty else { return nil }
+        return await peerTokens.verify(token: token)
     }
 
     /// The card of a caller the process ancestry did not place: the one
@@ -299,8 +310,12 @@ public struct LiveVaultCallerResolver: Sendable {
                         cardToken: String? = nil) async -> VaultCaller {
         guard let pid = await VaultCallerResolver.peerPid(clientPort: clientPort, serverPort: serverPort) else {
             KanbanCodeLog.warn("vault", "no local process found for the connection from port \(clientPort) to \(serverPort)")
-            let card = await card(forToken: cardToken)
-            return VaultCaller(cardId: card, claimedCardId: claimedCardId, sessionId: sessionId, byToken: card == nil ? nil : true)
+            if let card = await card(forToken: cardToken) {
+                return VaultCaller(cardId: card, claimedCardId: claimedCardId, sessionId: sessionId, byToken: true)
+            }
+            let peer = await peerCard(forToken: cardToken)
+            return VaultCaller(cardId: peer?.cardId, claimedCardId: claimedCardId, sessionId: sessionId,
+                               byToken: peer == nil ? nil : true, verifiedByPeer: peer?.machine, peerTitle: peer?.title)
         }
         let table = await VaultCallerResolver.processTable()
         let chain = VaultCallerResolver.ancestry(of: pid, in: table)
@@ -320,9 +335,17 @@ public struct LiveVaultCallerResolver: Sendable {
             byToken = true
             KanbanCodeLog.info("vault", "caller pid \(pid) is outside every session tree; its session token is card \(found.prefix(12))'s")
         }
+        var peer: VaultPeerCard?
+        if card == nil, let found = await peerCard(forToken: cardToken) {
+            card = found.cardId
+            byToken = true
+            peer = found
+            KanbanCodeLog.info("vault", "caller pid \(pid) carries the session token of card \(found.cardId.prefix(12)) on \(found.machine)")
+        }
         return VaultCaller(
             cardId: card, claimedCardId: claimedCardId, sessionId: sessionId, pid: pid,
-            ancestry: chain.map(\.name), cwd: await VaultCallerResolver.workingDirectory(of: pid), byToken: byToken
+            ancestry: chain.map(\.name), cwd: await VaultCallerResolver.workingDirectory(of: pid), byToken: byToken,
+            verifiedByPeer: peer?.machine, peerTitle: peer?.title
         )
     }
 }

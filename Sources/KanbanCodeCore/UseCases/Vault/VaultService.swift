@@ -32,7 +32,8 @@ public final class VaultService: Sendable {
                              cardPrompts: cardPrompts)
         let tokens = VaultCardTokens(directory: VaultStore.defaultDirectory(kanbanHome: kanbanHome))
         cardTokens = tokens
-        resolver = LiveVaultCallerResolver(tokens: tokens, cardSessions: cardSessions)
+        resolver = LiveVaultCallerResolver(tokens: tokens, peerTokens: peers.map { VaultPeerTokenVerifier(peers: $0) },
+                                           cardSessions: cardSessions)
         replica = peers.map { VaultReplicaSync(store: store, peers: $0) }
     }
 
