@@ -203,18 +203,27 @@ extension MasterEngine {
     /// A request another master raised is answered there.
     public func resolveAttention(id: String, resolution: String, by device: String) async throws {
         guard let request = store.state.attentionRequests[id] else {
-            throw RemoteHostError.notFound("no attention request \(id)")
+            throw RemoteHostError.notFound(AttentionAnswerCopy.gone)
         }
         guard request.isOpen else {
-            throw RemoteHostError.conflict("\(id) was already resolved by \(request.resolvedBy ?? "someone")")
+            // The same answer sent again (a second tap, a retry) is fine.
+            if request.resolution == resolution { return }
+            throw RemoteHostError.conflict(AttentionAnswerCopy.alreadyAnswered(by: request.resolvedBy, resolution: request.resolution))
         }
         if let owner = request.machineId, !store.state.localMachineId.isEmpty, owner != store.state.localMachineId {
             guard let client = await peerClient(machineId: owner) else {
-                throw RemoteHostError.conflict("the master that raised \(id) is not reachable")
+                throw RemoteHostError.conflict(AttentionAnswerCopy.ownerUnreachable)
             }
             do {
                 try await client.resolveAttention(id: id, resolution: resolution, by: device)
             } catch let error as RemoteClientError {
+                // Settled on its own master already: it is over here too.
+                switch error {
+                case .conflict, .notFound:
+                    store.dispatch(.attentionResolved(id: id, resolution: nil, by: "peer"))
+                default:
+                    break
+                }
                 throw MasterRemoteControlHost.hostError(error)
             }
             store.dispatch(.attentionResolved(id: id, resolution: resolution, by: device))
@@ -248,7 +257,7 @@ extension MasterEngine {
     func answerInSession(_ request: AttentionRequest, resolution: String) async throws {
         guard let cardId = request.cardId, let link = store.state.links[cardId],
               let session = link.tmuxLink?.sessionName, store.state.tmuxSessions.contains(session)
-        else { throw RemoteHostError.conflict("the session of \(request.id) is not running") }
+        else { throw RemoteHostError.conflict(AttentionAnswerCopy.sessionGone) }
         let index = request.options.firstIndex(of: resolution)
         if let rushId = RushSessionName.rushId(fromName: session) {
             let rush = try tmux.rush(forSession: session)

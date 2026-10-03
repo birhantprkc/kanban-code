@@ -13,6 +13,7 @@ import KanbanCodeRemoteKit
 ///   PATCH  /v1/vault/secrets           one change to several secrets, in one approval
 ///   PATCH  /v1/vault/secrets/{name}    tier, rules, tags (asks the human)
 ///   DELETE /v1/vault/secrets/{name}    (asks the human)
+///   POST   /v1/vault/delete            several secrets deleted in one approval (dryRun: what it would do)
 ///   POST   /v1/vault/rename            new names for several secrets, in one approval (dryRun: what it would do)
 ///   GET    /v1/vault/project           the vault projects of ?dir=, the most specific first
 ///   GET    /v1/vault/log               the audit log, newest first
@@ -81,6 +82,15 @@ enum RemoteVaultRoutes {
             }
             let who = await caller(claimedCard: query["card"], sessionId: nil)
             let r = await vault.broker.rename(req, caller: who, trusted: false)
+            await vault.replica?.poke()
+            return respond(r)
+
+        case ("POST", "delete", 1):
+            guard let req = decode(VaultDeleteRequest.self) else {
+                return .error(400, "body must be {\"names\": [...], \"reason\", \"dryRun\"}")
+            }
+            let who = await caller(claimedCard: query["card"], sessionId: nil)
+            let r = await vault.broker.deleteMany(req, caller: who, trusted: false)
             await vault.replica?.poke()
             return respond(r)
 

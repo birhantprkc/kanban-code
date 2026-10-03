@@ -7,7 +7,7 @@ import KanbanCodeCore
 /// supervisor through here instead of building their own adapters.
 enum AppServices {
     /// Answers an attention request from a Mac notification action.
-    nonisolated(unsafe) static var resolveAttention: (@Sendable (String, String) async -> Void)?
+    nonisolated(unsafe) static var resolveAttention: (@Sendable (String, String) async -> String?)?
     /// Answers the question or plan a card waits on from the chat; false
     /// when it waits on none.
     nonisolated(unsafe) static var answerCard: (@Sendable (String, String) async -> Bool)?

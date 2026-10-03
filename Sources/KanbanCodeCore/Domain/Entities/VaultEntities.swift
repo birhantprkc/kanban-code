@@ -238,6 +238,8 @@ public enum VaultDecider: String, Codable, Sendable {
     case human
     case rule
     case timeout
+    /// AWS credentials the card already holds, handed to it again.
+    case reuse
 }
 
 public enum VaultOutcome: String, Codable, Sendable {

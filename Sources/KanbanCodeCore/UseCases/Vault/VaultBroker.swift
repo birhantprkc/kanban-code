@@ -1,3 +1,8 @@
+#if canImport(CryptoKit)
+import CryptoKit
+#else
+import Crypto
+#endif
 import Foundation
 import KanbanCodeRemoteKit
 
@@ -7,8 +12,9 @@ public protocol VaultApprovals: Sendable {
     func raise(_ request: AttentionRequest) async
     /// The resolution once the request was resolved, nil while open.
     func resolution(of id: String) async -> (resolution: String?, by: String)?
-    /// Closes an unanswered request (timeout).
-    func expire(id: String, resolution: String) async
+    /// Closes a request the human did not answer here: a timeout, or one
+    /// an approval elsewhere settled.
+    func close(id: String, resolution: String, by: String) async
 }
 
 /// Body of `POST /v1/vault/release`.
@@ -82,6 +88,20 @@ public struct VaultRenameRequest: Codable, Sendable, Equatable {
 
     public init(renames: [VaultRename], reason: String? = nil, dryRun: Bool? = nil) {
         self.renames = renames
+        self.reason = reason
+        self.dryRun = dryRun
+    }
+}
+
+/// Body of `POST /v1/vault/delete`: several secrets deleted in one approval.
+public struct VaultDeleteRequest: Codable, Sendable, Equatable {
+    public var names: [String]
+    public var reason: String?
+    /// Only say what each delete would do.
+    public var dryRun: Bool?
+
+    public init(names: [String], reason: String? = nil, dryRun: Bool? = nil) {
+        self.names = names
         self.reason = reason
         self.dryRun = dryRun
     }
@@ -280,7 +300,17 @@ public actor VaultBroker {
     /// How long a hook-wrapped command reuses Jev's allow for the same card.
     public var hookReuse: TimeInterval = 10 * 60
     public var approvalTimeout: TimeInterval = VaultPolicy.approvalTimeout
-    public var pollInterval: TimeInterval = 1
+    public var pollInterval: TimeInterval = 0.3
+    /// How long an approved result that was not fetched stays for the caller that
+    /// asked: a `credential_process` or a tool call often gives up before
+    /// the human answers, and its next call takes the answer.
+    public var unclaimedResultLifetime: TimeInterval = 10 * 60
+    /// How long a fetched result stays for other callers waiting on the
+    /// same request.
+    public var claimedResultLifetime: TimeInterval = 30
+    /// AWS credentials a card got are handed to it again while they are
+    /// valid for longer than this.
+    public var awsReuseMargin: TimeInterval = 15 * 60
     /// The vault projects of a folder, the most specific first.
     public var projectsOf: @Sendable (String?) -> [String] = { VaultProjects.candidates(forPath: $0) }
 
@@ -293,18 +323,19 @@ public actor VaultBroker {
         var asEnv: Bool
     }
 
-    struct LeaseWant: Codable, Sendable {
+    struct LeaseWant: Codable, Sendable, Equatable {
         var name: String
         var scope: String?
     }
 
-    enum PendingAction: Codable, Sendable {
+    enum PendingAction: Codable, Sendable, Equatable {
         case release(VaultReleaseRequest, [String])
         case lease([LeaseWant], reason: String)
         case add(VaultAddRequest)
         case edit([String], VaultEditRequest)
         case delete(String)
         case rename([VaultRename])
+        case deleteMany([String])
     }
 
     private struct Pending: Sendable {
@@ -314,6 +345,20 @@ public actor VaultBroker {
         var createdAt: Date
         var everyUseAsks: Bool
         var request: AttentionRequest
+        /// The open request whose answer this one takes: the human sees
+        /// one question for everything that asks the same thing.
+        var joinedTo: String?
+        /// When a caller first fetched the result.
+        var claimedAt: Date?
+    }
+
+    /// AWS credentials handed to a card, kept in memory until they expire.
+    private struct IssuedAws: Sendable {
+        var credentials: AwsProcessCredentials
+        var expiresAt: Date
+        var issuedAt: Date
+        var role: VaultAwsRole
+        var secretUpdatedAt: Date
     }
 
     /// An open request as `pending.age` keeps it, so a restart of the
@@ -325,9 +370,11 @@ public actor VaultBroker {
         var createdAt: Date
         var everyUseAsks: Bool
         var request: AttentionRequest
+        var joinedTo: String?
     }
 
     private var pending: [String: Pending] = [:]
+    private var awsIssued: [String: IssuedAws] = [:]
     private var hookAllows: [String: Date] = [:]
     private var restoring: Task<Void, Never>?
 
@@ -352,10 +399,13 @@ public actor VaultBroker {
     }
 
     public func configure(approvalTimeout: TimeInterval? = nil, pollInterval: TimeInterval? = nil,
-                          projectsOf: (@Sendable (String?) -> [String])? = nil) {
+                          projectsOf: (@Sendable (String?) -> [String])? = nil,
+                          unclaimedResultLifetime: TimeInterval? = nil, claimedResultLifetime: TimeInterval? = nil) {
         if let approvalTimeout { self.approvalTimeout = approvalTimeout }
         if let pollInterval { self.pollInterval = pollInterval }
         if let projectsOf { self.projectsOf = projectsOf }
+        if let unclaimedResultLifetime { self.unclaimedResultLifetime = unclaimedResultLifetime }
+        if let claimedResultLifetime { self.claimedResultLifetime = claimedResultLifetime }
     }
 
     // MARK: - Resolution
@@ -436,6 +486,10 @@ public actor VaultBroker {
         var known = Set<String>()
         let secrets = wanted.map(\.secret).filter { known.insert($0.name).inserted }
         let callerProjects = projectsOf(caller.cwd)
+
+        if req.mode == "aws", secrets.count == 1, let reused = await reusedAws(secrets[0], req: req, caller: caller, now: now) {
+            return reused
+        }
 
         var allowed: [(VaultSecret, VaultDecider, String)] = []
         var asks: [(VaultSecret, String)] = []
@@ -578,6 +632,42 @@ public actor VaultBroker {
         }
     }
 
+    /// The credentials this card already got for the profile, while they
+    /// stay valid for a while: the card holds them for their whole hour, so
+    /// handing them over again releases nothing new. No new decision, no
+    /// STS call, and it does not count toward the rate limit. Tools that
+    /// run `credential_process` on every call (kubectl through `aws eks
+    /// get-token`, terraform providers) ask many times a minute.
+    private func reusedAws(_ s: VaultSecret, req: VaultReleaseRequest, caller: VaultCaller, now: Date) async -> VaultResponse? {
+        guard caller.insideCard, let card = caller.cardId, let role = s.aws,
+              s.tier != .never, !s.leasePolicy.everyUseAsks else { return nil }
+        let key = "\(card)|\(s.name)"
+        guard let issued = awsIssued[key] else { return nil }
+        guard issued.role == role, issued.secretUpdatedAt == s.updatedAt,
+              issued.expiresAt.timeIntervalSince(now) > awsReuseMargin else {
+            if issued.expiresAt <= now || issued.role != role || issued.secretUpdatedAt != s.updatedAt { awsIssued[key] = nil }
+            return nil
+        }
+        let minutes = Int(issued.expiresAt.timeIntervalSince(now) / 60)
+        await audit(s, req: req, caller: caller, outcome: .allowed, decider: .reuse,
+                    detail: "the credentials this card got \(Int(now.timeIntervalSince(issued.issuedAt) / 60)) min ago, valid for \(minutes) more")
+        return VaultResponse(status: .granted, message: "released", credentials: issued.credentials, card: card)
+    }
+
+    /// Drops what the vault remembers of AWS credentials handed out, so the
+    /// next `kv aws` is decided again.
+    public func forgetIssuedAws() {
+        awsIssued = [:]
+    }
+
+    static func awsExpiry(_ text: String) -> Date? {
+        let plain = ISO8601DateFormatter()
+        if let date = plain.date(from: text) { return date }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: text)
+    }
+
     private func grant(_ allowed: [(VaultSecret, VaultDecider, String)], wanted: [Wanted], req: VaultReleaseRequest,
                        caller: VaultCaller, now: Date, requestId: String? = nil) async -> VaultResponse {
         for (s, by, why) in allowed {
@@ -594,6 +684,10 @@ public actor VaultBroker {
                 let key = try JSONDecoder().decode(AwsAccessKey.self, from: Data(source.value.utf8))
                 let session = "kanban-\(caller.cardId ?? "outside")"
                 let credentials = try await sts(key, role, session)
+                if caller.insideCard, let card = caller.cardId, let expires = Self.awsExpiry(credentials.Expiration) {
+                    awsIssued["\(card)|\(s.name)"] = IssuedAws(credentials: credentials, expiresAt: expires, issuedAt: now,
+                                                               role: role, secretUpdatedAt: s.updatedAt)
+                }
                 return VaultResponse(status: .granted, message: "released", id: requestId, credentials: credentials, card: caller.cardId)
             } catch {
                 return .denied("STS failed: \(error)")
@@ -757,6 +851,37 @@ public actor VaultBroker {
         return await apply(.delete(name), caller: caller, now: now)
     }
 
+    /// Deletes several secrets in one approval. A dry run answers what
+    /// each name would do: "delete", or "missing" for a name not in the vault.
+    public func deleteMany(_ req: VaultDeleteRequest, caller: VaultCaller, trusted: Bool, now: Date = Date()) async -> VaultResponse {
+        guard !req.names.isEmpty else { return .denied("name at least one secret") }
+        var outcomes: [String: String] = [:]
+        var secrets: [VaultSecret] = []
+        var seen = Set<String>()
+        do {
+            for name in req.names {
+                guard let s = try await store.secret(name) else {
+                    outcomes[name] = "missing"
+                    continue
+                }
+                outcomes[name] = s.name == name ? "delete" : "delete \(s.name) (\(name) is an earlier name of it)"
+                if seen.insert(s.name).inserted { secrets.append(s) }
+            }
+        } catch {
+            return .denied("the vault is locked on this machine: \(error)")
+        }
+        if req.dryRun == true {
+            return VaultResponse(status: .granted, message: "dry run", resolved: outcomes)
+        }
+        guard !secrets.isEmpty else { return VaultResponse(status: .granted, message: "nothing to delete", resolved: outcomes) }
+        let names = secrets.map(\.name)
+        if !trusted {
+            return await ask(action: .deleteMany(names), secrets: secrets, whys: secrets.map { _ in "deleting a secret always asks" },
+                             caller: caller, command: nil, reason: req.reason, now: now, leaseOnly: false, admin: true)
+        }
+        return await apply(.deleteMany(names), caller: caller, now: now)
+    }
+
     private func apply(_ action: PendingAction, caller: VaultCaller, now: Date, by: VaultDecider = .rule, requestId: String? = nil) async -> VaultResponse {
         do {
             switch action {
@@ -795,6 +920,23 @@ public actor VaultBroker {
                                                    secret: name, tier: nil, outcome: .allowed, decider: by,
                                                    action: "delete", requestId: requestId))
                 return VaultResponse(status: .granted, message: "deleted \(name)", id: requestId)
+            case .deleteMany(let names):
+                var outcomes: [String: String] = [:]
+                var done = 0
+                for name in names {
+                    guard try await store.secret(name) != nil else {
+                        outcomes[name] = "missing"
+                        continue
+                    }
+                    try await store.delete(name, now: now)
+                    outcomes[name] = "deleted"
+                    done += 1
+                    await store.append(VaultAuditEntry(at: now, machine: machine, cardId: caller.cardId, sessionId: caller.sessionId,
+                                                       secret: name, tier: nil, outcome: .allowed, decider: by,
+                                                       action: "delete", requestId: requestId))
+                }
+                return VaultResponse(status: .granted, message: "deleted \(done) of \(names.count) secrets", id: requestId,
+                                     resolved: outcomes)
             case .rename(let renames):
                 var outcomes: [String: String] = [:]
                 var done = 0
@@ -825,11 +967,40 @@ public actor VaultBroker {
         guard let approvals else {
             return .denied("needs a human approval, and this master cannot ask for one")
         }
-        let id = KSUID.generate(prefix: "vault")
+        let title: String? = if let card = caller.cardId { await principalTitle(card) } else { nil }
         let everyUse = secrets.contains { $0.leasePolicy.everyUseAsks }
+        let key = Self.joinKey(action, caller: caller)
+
+        // The answer to this same request, given after its caller stopped
+        // waiting: this call takes it.
+        if let done = pending.first(where: {
+            $0.value.claimedAt == nil && $0.value.result?.status == .granted
+                && Self.joinKey($0.value.action, caller: $0.value.caller) == key && Self.sameShape($0.value.action, action)
+        }), let result = done.value.result {
+            claim(done.key, now: now)
+            return result
+        }
+
+        // A request for the same thing is still open: no second question.
+        if let open = pending.first(where: {
+            $0.value.result == nil && $0.value.joinedTo == nil && Self.joinKey($0.value.action, caller: $0.value.caller) == key
+        }) {
+            let waiting = waitingMessage(caller: caller, title: title, reason: open.value.request.vault?.reason)
+            if let same = pending.first(where: {
+                $0.value.result == nil && ($0.key == open.key || $0.value.joinedTo == open.key) && Self.sameShape($0.value.action, action)
+            }) {
+                return VaultResponse(status: .pending, message: waiting, id: same.key, card: caller.cardId)
+            }
+            let joinedId = KSUID.generate(prefix: "vault")
+            pending[joinedId] = Pending(action: action, caller: caller, result: nil, createdAt: now, everyUseAsks: everyUse,
+                                        request: open.value.request, joinedTo: open.key)
+            await persist()
+            return VaultResponse(status: .pending, message: waiting, id: joinedId, card: caller.cardId)
+        }
+
+        let id = KSUID.generate(prefix: "vault")
         var options = VaultPolicy.approvalOptions(everyUseAsks: everyUse || admin, insideCard: caller.insideCard)
         if leaseOnly { options = [AttentionRequest.vaultApprovalOptions[0], AttentionRequest.vaultApprovalOptions[2]] }
-        let title: String? = if let card = caller.cardId { await principalTitle(card) } else { nil }
         let details = approvalDetails(action: action, secrets: secrets, whys: whys, caller: caller, title: title,
                                       command: command, reason: reason, options: options)
         let request = AttentionRequest(
@@ -854,6 +1025,11 @@ public actor VaultBroker {
         }
         await approvals.raise(request)
         Task { await self.waitForHuman(id: id) }
+        return VaultResponse(status: .pending, message: waitingMessage(caller: caller, title: title, reason: reason),
+                             id: id, card: caller.cardId)
+    }
+
+    private func waitingMessage(caller: VaultCaller, title: String?, reason: String?) -> String {
         var waitingOn = caller.insideCard
             ? "Waiting for Rogerio's approval on his phone or Mac (\(caller.openClawAgent == nil ? "card " : "")\(title ?? caller.cardId ?? "?"))"
             : "Waiting for Rogerio's approval on his phone or Mac (this process is not in a Kanban card session)"
@@ -861,7 +1037,63 @@ public actor VaultBroker {
         if AttentionCopy.usableReason(reason) == nil {
             waitingOn += ". He sees no reason from you; next time: \(AttentionCopy.reasonGuidance)"
         }
-        return VaultResponse(status: .pending, message: waitingOn, id: id, card: caller.cardId)
+        return waitingOn
+    }
+
+    /// Who asks, as far as joining goes: the verified card, or for a
+    /// caller outside a card what it claims and where it runs.
+    static func principalKey(_ caller: VaultCaller) -> String {
+        if caller.insideCard, let card = caller.cardId { return "card:\(card)" }
+        return "outside:\(caller.claimedCardId ?? "")|\(caller.remoteDevice ?? "")|\(caller.cwd ?? "")"
+    }
+
+    /// Two requests with the same key are one question to the human: the
+    /// same caller, the same kind of action, the same secrets.
+    static func joinKey(_ action: PendingAction, caller: VaultCaller) -> String {
+        let what: String
+        switch action {
+        case .release(let req, let asked):
+            what = "release|\(req.mode)|\(asked.sorted().joined(separator: ","))"
+        case .lease(let wanted, _):
+            what = "lease|\(wanted.map { "\($0.name):\($0.scope ?? "")" }.sorted().joined(separator: ","))"
+        case .add(var req):
+            req.reason = nil
+            what = "add|\(digest(req))"
+        case .edit(let names, var req):
+            req.reason = nil
+            what = "edit|\(names.sorted().joined(separator: ","))|\(digest(req))"
+        case .delete(let name):
+            what = "delete|\(name)"
+        case .deleteMany(let names):
+            what = "delete|\(names.sorted().joined(separator: ","))"
+        case .rename(let renames):
+            what = "rename|\(renames.map { "\($0.from)>\($0.to)" }.sorted().joined(separator: ","))"
+        }
+        return principalKey(caller) + "|" + what
+    }
+
+    private static func digest<T: Encodable>(_ value: T) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return SHA256.hash(data: (try? encoder.encode(value)) ?? Data()).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Two actions of one question that also get the same answer, so their
+    /// callers can wait on one id. Releases differ in what each caller
+    /// gets back; the command and the reason do not count.
+    static func sameShape(_ a: PendingAction, _ b: PendingAction) -> Bool {
+        switch (a, b) {
+        case (.release(var x, let askedX), .release(var y, let askedY)):
+            for clear in [\VaultReleaseRequest.command, \.reason, \.sessionId, \.cardId] as [WritableKeyPath<VaultReleaseRequest, String?>] {
+                x[keyPath: clear] = nil
+                y[keyPath: clear] = nil
+            }
+            return x == y && Set(askedX) == Set(askedY)
+        case (.release, _), (_, .release):
+            return false
+        default:
+            return true
+        }
     }
 
     /// What the detail sheet shows for a request about to be raised.
@@ -885,7 +1117,7 @@ public actor VaultBroker {
             kind = .edit
             changes = req.changes
             changeLines = req.changeLines
-        case .delete:
+        case .delete, .deleteMany:
             kind = .delete
         case .rename(let renames):
             kind = .edit
@@ -922,7 +1154,7 @@ public actor VaultBroker {
         case .lease: "lease"
         case .add: "replace"
         case .edit: "edit"
-        case .delete: "delete"
+        case .delete, .deleteMany: "delete"
         case .rename: "rename"
         }
     }
@@ -936,14 +1168,42 @@ public actor VaultBroker {
             }
             try? await Task.sleep(for: .seconds(pollInterval))
         }
-        await approvals.expire(id: id, resolution: "Deny")
+        await approvals.close(id: id, resolution: "Deny", by: "timeout")
         await settle(id: id, approval: .deny, by: "timeout")
     }
 
     private func settle(id: String, approval: VaultPolicy.Approval, by: String) async {
-        guard let p = pending[id], p.result == nil else { return }
+        guard let p = pending[id], p.result == nil, p.joinedTo == nil else { return }
         let now = Date()
-        let result: VaultResponse
+        // A yes past the rate limit starts the count again: the human saw
+        // the volume and allowed it.
+        if approval != .deny, case .release(_, let asked) = p.action {
+            for name in asked { await store.resetReleases(name) }
+        }
+        var leasedTo: String?
+        if approval == .lease, case .release(let req, let asked) = p.action,
+           let card = p.caller.cardId, p.caller.insideCard, !p.everyUseAsks {
+            for name in asked {
+                let policy = ((try? await store.secret(name)) ?? nil)?.leasePolicy ?? .standard
+                try? await store.grantLease(VaultLease(cardId: card, secret: name, reason: req.reason, grantedAt: now,
+                                                       expiresAt: now.addingTimeInterval(policy.leaseSeconds), grantedBy: "human:\(by)"))
+            }
+            leasedTo = card
+        }
+        if approval != .deny, case .lease = p.action { leasedTo = p.caller.cardId }
+
+        let joined = pending.filter { $0.value.joinedTo == id && $0.value.result == nil }.map(\.key).sorted()
+        for member in [id] + joined {
+            guard let m = pending[member], m.result == nil else { continue }
+            pending[member]?.result = await outcome(of: m, id: member, approval: approval, by: by, now: now)
+            expireResult(member, after: unclaimedResultLifetime)
+        }
+        await persist()
+        if let leasedTo { await settleCovered(card: leasedTo, by: by, now: now) }
+    }
+
+    /// What one waiting request gets for the human's answer.
+    private func outcome(of p: Pending, id: String, approval: VaultPolicy.Approval, by: String, now: Date) async -> VaultResponse {
         switch (approval, p.action) {
         case (.deny, _):
             let timedOut = by == "timeout"
@@ -955,49 +1215,87 @@ public actor VaultBroker {
                                                    secret: name, tier: nil, outcome: .denied, decider: timedOut ? .timeout : .human,
                                                    action: actionName(p.action), detail: "by \(by)", requestId: id))
             }
-            result = VaultResponse(status: .denied, message: message, id: id, card: p.caller.cardId)
+            return VaultResponse(status: .denied, message: message, id: id, card: p.caller.cardId)
 
-        case (let approved, .release(let req, let asked)):
-            if approved == .lease, let card = p.caller.cardId, p.caller.insideCard, !p.everyUseAsks {
-                for name in asked {
-                    let policy = ((try? await store.secret(name)) ?? nil)?.leasePolicy ?? .standard
-                    try? await store.grantLease(VaultLease(cardId: card, secret: name, reason: req.reason, grantedAt: now,
-                                                           expiresAt: now.addingTimeInterval(policy.leaseSeconds), grantedBy: "human:\(by)"))
-                }
-            }
+        case (_, .release(let req, let asked)):
             let wanted = (try? await self.wanted(for: req)) ?? []
             var allowed: [(VaultSecret, VaultDecider, String)] = []
             var known = Set<String>()
+            let covered = by == Self.coveredByLease
             for s in wanted.map(\.secret) where known.insert(s.name).inserted {
-                let decider: VaultDecider = asked.contains(s.name) ? .human : .tier
-                allowed.append((s, decider, asked.contains(s.name) ? "approved by \(by)" : "allowed with the request"))
+                let wasAsked = asked.contains(s.name)
+                let decider: VaultDecider = wasAsked ? (covered ? .lease : .human) : .tier
+                let why = wasAsked ? (covered ? "the card got a lease while this waited" : "approved by \(by)") : "allowed with the request"
+                allowed.append((s, decider, why))
             }
-            result = await grant(allowed, wanted: wanted, req: req, caller: p.caller, now: now, requestId: id)
+            return await grant(allowed, wanted: wanted, req: req, caller: p.caller, now: now, requestId: id)
 
         case (_, .lease(let wanted, let reason)):
-            guard let card = p.caller.cardId else {
-                result = .denied("no card to lease to")
-                break
-            }
+            guard let card = p.caller.cardId else { return .denied("no card to lease to") }
             for want in wanted {
                 let (name, scope) = (want.name, want.scope)
-                let policy = ((try? await store.secret(name)) ?? nil)?.leasePolicy ?? .standard
-                try? await store.grantLease(VaultLease(cardId: card, secret: name, scope: scope, reason: reason, grantedAt: now,
-                                                       expiresAt: now.addingTimeInterval(policy.leaseSeconds), grantedBy: "human:\(by)"))
+                if by != Self.coveredByLease {
+                    let policy = ((try? await store.secret(name)) ?? nil)?.leasePolicy ?? .standard
+                    try? await store.grantLease(VaultLease(cardId: card, secret: name, scope: scope, reason: reason, grantedAt: now,
+                                                           expiresAt: now.addingTimeInterval(policy.leaseSeconds), grantedBy: "human:\(by)"))
+                }
                 await store.append(VaultAuditEntry(at: now, machine: machine, cardId: card, sessionId: p.caller.sessionId,
-                                                   secret: name, tier: nil, outcome: .allowed, decider: .human,
+                                                   secret: name, tier: nil, outcome: .allowed, decider: by == Self.coveredByLease ? .lease : .human,
                                                    action: "lease", reason: reason, detail: "by \(by)", requestId: id))
             }
-            result = VaultResponse(status: .granted, message: "leased \(wanted.map(\.name).joined(separator: ", ")) to the card", id: id, card: card)
+            return VaultResponse(status: .granted, message: "leased \(wanted.map(\.name).joined(separator: ", ")) to the card", id: id, card: card)
 
         case (_, let action):
-            result = await apply(action, caller: p.caller, now: now, by: .human, requestId: id)
+            return await apply(action, caller: p.caller, now: now, by: .human, requestId: id)
         }
-        pending[id]?.result = result
-        await persist()
-        // Unclaimed results go after a while; values do not linger.
+    }
+
+    static let coveredByLease = "lease"
+
+    /// After a card got a lease: every other open request of that card
+    /// whose secrets its leases now cover is settled as approved, and its
+    /// attention request closed, so the human is not asked what he just
+    /// answered.
+    private func settleCovered(card: String, by: String, now: Date) async {
+        let open = pending.filter { $0.value.result == nil && $0.value.joinedTo == nil }.sorted { $0.value.createdAt < $1.value.createdAt }
+        for (otherId, other) in open {
+            guard other.caller.insideCard, other.caller.cardId == card, !other.everyUseAsks else { continue }
+            let asked: [String]
+            switch other.action {
+            case .release(_, let names): asked = names
+            case .lease(let wanted, _): asked = wanted.map(\.name)
+            default: continue
+            }
+            var covered = !asked.isEmpty
+            for name in asked where covered {
+                covered = await store.activeLease(cardId: card, secret: name, now: now) != nil
+            }
+            guard covered, pending[otherId]?.result == nil else { continue }
+            await settle(id: otherId, approval: .once, by: Self.coveredByLease)
+            await approvals?.close(id: otherId, resolution: AttentionRequest.vaultApprovalOptions[0], by: by)
+        }
+    }
+
+    /// Forgets a result after `seconds`: values do not linger.
+    private func expireResult(_ id: String, after seconds: TimeInterval) {
         Task {
-            try? await Task.sleep(for: .seconds(120))
+            try? await Task.sleep(for: .seconds(seconds))
+            self.forgetUnclaimed(id)
+        }
+    }
+
+    private func forgetUnclaimed(_ id: String) {
+        if pending[id]?.result != nil, pending[id]?.claimedAt == nil { pending[id] = nil }
+    }
+
+    /// Marks a result as fetched; it goes shortly after, once the other
+    /// callers waiting on the same id had their turn.
+    private func claim(_ id: String, now: Date) {
+        guard pending[id]?.claimedAt == nil else { return }
+        pending[id]?.claimedAt = now
+        let grace = claimedResultLifetime
+        Task {
+            try? await Task.sleep(for: .seconds(grace))
             self.forget(id)
         }
     }
@@ -1008,7 +1306,7 @@ public actor VaultBroker {
     private func persist() async {
         let open = pending.filter { $0.value.result == nil }.map { id, p in
             SavedPending(id: id, action: p.action, caller: p.caller, createdAt: p.createdAt,
-                         everyUseAsks: p.everyUseAsks, request: p.request)
+                         everyUseAsks: p.everyUseAsks, request: p.request, joinedTo: p.joinedTo)
         }.sorted { $0.createdAt < $1.createdAt }
         do {
             try await store.savePending(open.isEmpty ? nil : try JSONEncoder.vault.encode(open))
@@ -1037,13 +1335,23 @@ public actor VaultBroker {
             return
         }
         var restored = 0
-        for s in saved where pending[s.id] == nil {
+        let savedIds = Set(saved.map(\.id))
+        for s in saved.sorted(by: { $0.createdAt < $1.createdAt }) where pending[s.id] == nil {
+            // Asks once for what several saved requests ask alike.
+            var joinedTo = s.joinedTo.flatMap { savedIds.contains($0) ? $0 : nil }
+            if joinedTo == nil {
+                let key = Self.joinKey(s.action, caller: s.caller)
+                joinedTo = pending.first(where: {
+                    $0.value.joinedTo == nil && Self.joinKey($0.value.action, caller: $0.value.caller) == key
+                })?.key
+            }
             pending[s.id] = Pending(action: s.action, caller: s.caller, result: nil, createdAt: s.createdAt,
-                                    everyUseAsks: s.everyUseAsks, request: s.request)
+                                    everyUseAsks: s.everyUseAsks, request: s.request, joinedTo: joinedTo)
+            restored += 1
+            guard joinedTo == nil else { continue }
             await approvals.raise(s.request)
             let id = s.id
             Task { await self.waitForHuman(id: id) }
-            restored += 1
         }
         if restored > 0 { KanbanCodeLog.info("vault", "restored \(restored) open vault request(s)") }
     }
@@ -1059,12 +1367,13 @@ public actor VaultBroker {
         case .add(let req): [req.name]
         case .edit(let names, _): names
         case .delete(let name): [name]
+        case .deleteMany(let names): names
         case .rename(let renames): renames.map(\.from)
         }
     }
 
-    /// The result of a pending request: still pending, or its outcome
-    /// (handed out once, then forgotten).
+    /// The result of a pending request: still pending, or its outcome,
+    /// which goes shortly after the first fetch.
     public func poll(id: String) async -> VaultResponse {
         await restore()
         guard let p = pending[id] else {
@@ -1073,7 +1382,7 @@ public actor VaultBroker {
         guard let result = p.result else {
             return VaultResponse(status: .pending, message: "still waiting for Rogerio's approval", id: id, card: p.caller.cardId)
         }
-        pending[id] = nil
+        claim(id, now: Date())
         return result
     }
 

@@ -237,11 +237,13 @@ final class AppComposition {
             Task { await attentionCenter.configure(settings: notifications.attentionPolicy, phone: notifications.phoneSender) }
         }
         AppServices.resolveAttention = { [weak engine] id, resolution in
-            guard let engine else { return }
+            guard let engine else { return "Kanban Code is still starting." }
             do {
                 try await engine.resolveAttention(id: id, resolution: resolution, by: "mac")
+                return nil
             } catch {
                 KanbanCodeLog.warn("attention", "Resolving \(id) from the Mac failed: \(error)")
+                return (error as? RemoteHostError)?.message ?? error.localizedDescription
             }
         }
         AppServices.answerCard = { [weak engine] cardId, answer in

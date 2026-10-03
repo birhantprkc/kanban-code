@@ -9,6 +9,9 @@ import {
   EXIT_DENIED,
   VaultClient,
   checkedReason,
+  describeInvoker,
+  invokingCommand,
+  readNamePlan,
   envFromVault,
   environmentOf,
   findEnvVault,
@@ -506,4 +509,71 @@ test("import names a second value after its project and environment", () => {
     new Map([["API_KEY", "shop/api/prod/API_KEY"], ["OTHER", "API_KEY"]]), "shop/api/prod");
   assert.match(manifest, /^API_KEY$/m);
   assert.match(manifest, /^OTHER=\{\{vault:API_KEY\}\}$/m);
+});
+
+test("the invoking command is the outermost tool above kv, below the shell", () => {
+  const eks = "aws --region eu-central-1 eks get-token --cluster-name dev --output json";
+  assert.equal(
+    describeInvoker([eks, "kubectl get pods -n langwatch", "/bin/bash -c kubectl get pods -n langwatch", "claude"]),
+    `kubectl get pods -n langwatch  (through: ${eks})`
+  );
+  assert.equal(describeInvoker(["aws s3 ls s3://bucket", "-zsh", "tmux"]), "aws s3 ls s3://bucket");
+  assert.equal(describeInvoker(["terraform apply -auto-approve", "/bin/zsh -c terraform apply -auto-approve"]), "terraform apply -auto-approve");
+  // Started straight from a shell or a script runner: that is all there is to show.
+  assert.equal(describeInvoker(["/bin/bash ./deploy.sh", "claude"]), "/bin/bash ./deploy.sh");
+  assert.equal(describeInvoker([]), undefined);
+});
+
+test("the invoking command is read from the process ancestry", () => {
+  const tree: Record<number, { ppid: number; args: string }> = {
+    30: { ppid: 20, args: "aws eks get-token --cluster-name dev" },
+    20: { ppid: 10, args: "helm upgrade api ./chart" },
+    10: { ppid: 5, args: "/bin/zsh -c helm upgrade api ./chart" },
+    5: { ppid: 1, args: "claude" },
+  };
+  assert.equal(invokingCommand(30, (pid) => tree[pid]), "helm upgrade api ./chart  (through: aws eks get-token --cluster-name dev)");
+  assert.equal(invokingCommand(99, (pid) => tree[pid]), undefined);
+});
+
+test("kv aws takes its reason from KV_REASON and sends the invoking command", async () => {
+  const credentials = { Version: 1, AccessKeyId: "ASIA", SecretAccessKey: "x", SessionToken: "t", Expiration: "2030-01-01T00:00:00Z" };
+  const m = await fakeMaster(() => ({ status: 200, body: { status: "granted", message: "released", credentials } }));
+  const reason = "Check the dev cluster pods after the nlpgo deploy";
+  const base = io(m.url, []);
+  const code = await runKv(["aws", "lw-dev"], { ...base, env: { ...base.env, KV_REASON: reason } });
+  assert.equal(code, 0);
+  assert.equal(m.calls[0].path, "/v1/vault/aws");
+  assert.equal(m.calls[0].body.reason, reason);
+  assert.equal(typeof m.calls[0].body.command, "string");
+  assert.ok(!/^kv aws/.test(m.calls[0].body.command));
+  // A KV_REASON a human could not read is refused like --reason is.
+  await assert.rejects(runKv(["aws", "lw-dev"], { ...base, env: { ...base.env, KV_REASON: "kubectl get pods" } }), (e: any) => e.code === 2);
+  m.close();
+  assert.equal(m.calls.length, 1);
+});
+
+test("kv rm deletes several secrets in one request and needs a reason", async () => {
+  const m = await fakeMaster(() => ({
+    status: 200,
+    body: { status: "granted", message: "deleted 2 of 2 secrets", resolved: { OLD__A: "deleted", OLD__B: "deleted" } },
+  }));
+  await assert.rejects(runKv(["rm", "OLD__A"], io(m.url, [])), (e: any) => e.code === 2);
+  assert.equal(m.calls.length, 0);
+  const reason = "Delete two leftover secrets nothing uses any more";
+  assert.equal(await runKv(["rm", "OLD__A", "OLD__B", "--reason", reason], io(m.url, [])), 0);
+  assert.equal(m.calls[0].path.split("?")[0], "/v1/vault/delete");
+  assert.deepEqual(m.calls[0].body, { names: ["OLD__A", "OLD__B"], reason, dryRun: false });
+
+  const dir = mkdtempSync(join(tmpdir(), "kv-rm-"));
+  const plan = join(dir, "names.txt");
+  writeFileSync(plan, "# leftovers\nOLD__A\n\nOLD__B\n");
+  assert.equal(await runKv(["rm", "--plan", plan, "--dry-run", "--reason", reason], io(m.url, [])), 0);
+  m.close();
+  assert.deepEqual(m.calls[1].body, { names: ["OLD__A", "OLD__B"], reason, dryRun: true });
+});
+
+test("a kv rm plan is a JSON array or one name per line", () => {
+  assert.deepEqual(readNamePlan('["A", "p/dev/B"]'), ["A", "p/dev/B"]);
+  assert.deepEqual(readNamePlan("A\n# note\n  p/dev/B  \n"), ["A", "p/dev/B"]);
+  assert.throws(() => readNamePlan('[{"from": "A"}]'), /JSON array of secret names/);
 });

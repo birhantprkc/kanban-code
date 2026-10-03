@@ -449,6 +449,11 @@ public actor VaultStore {
         rate.record(secret, at: now)
     }
 
+    /// Starts the count of a secret's releases again.
+    public func resetReleases(_ secret: String) {
+        rate.reset(secret)
+    }
+
     // MARK: - Audit
 
     public func append(_ entry: VaultAuditEntry) {

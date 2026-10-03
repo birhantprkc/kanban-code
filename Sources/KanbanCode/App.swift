@@ -674,7 +674,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                 let biometry = request.requiresBiometry
                 Task {
                     if biometry, !(await Self.confirmWithBiometry(reason: "Approve: \(request.title)")) { return }
-                    await AppServices.resolveAttention?(attentionId, resolution)
+                    _ = await AppServices.resolveAttention?(attentionId, resolution)
                 }
             }
             completionHandler()

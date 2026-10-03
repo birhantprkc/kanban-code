@@ -103,6 +103,8 @@ struct AttentionDetailSheet: View {
     var waitingAfter: Int = 0
     let onClose: () -> Void
     @State private var busy: String?
+    /// Why the last answer was not taken.
+    @State private var failure: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -139,6 +141,12 @@ struct AttentionDetailSheet: View {
                     .foregroundStyle(.secondary)
             }
 
+            if let failure {
+                Label("Not sent: \(failure)", systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             HStack {
                 Button("Close", action: onClose)
                     .keyboardShortcut(.cancelAction)
@@ -149,7 +157,7 @@ struct AttentionDetailSheet: View {
                     } label: {
                         HStack(spacing: 4) {
                             if busy == option { ProgressView().controlSize(.small) }
-                            Text(option)
+                            Text(busy == option ? "Sending..." : option)
                         }
                     }
                     .disabled(busy != nil)
@@ -170,14 +178,20 @@ struct AttentionDetailSheet: View {
     }
 
     private func answer(_ option: String) {
+        guard busy == nil else { return }
         busy = option
+        failure = nil
         let id = request.id
         let biometry = request.requiresBiometry
         let title = request.title
         Task { @MainActor in
             defer { busy = nil }
             if biometry, !(await AppDelegate.confirmWithBiometry(reason: "\(option): \(title)")) { return }
-            await AppServices.resolveAttention?(id, option)
+            if let problem = await AppServices.resolveAttention?(id, option) {
+                // A request settled elsewhere closes on its own state change.
+                failure = problem
+                return
+            }
             onClose()
         }
     }

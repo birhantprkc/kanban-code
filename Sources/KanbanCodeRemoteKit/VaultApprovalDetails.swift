@@ -201,12 +201,21 @@ public enum AttentionCopy {
         "\(subject(details)) \(actionPhrase(details))"
     }
 
-    /// The notification body of a vault request: the agent's reason, or a
-    /// plain note that it gave none.
+    /// The notification body of a vault request: the agent's reason; without
+    /// one, the command that asked, so the human still knows what it is for.
     public static func vaultBody(_ details: VaultApprovalDetails) -> String {
         if let reason = usableReason(details.reason) { return reason }
-        if let command = details.command, !command.isEmpty { return "No reason given. Open it to see the command." }
+        if let command = details.command.map(shortCommand), !command.isEmpty { return "No reason given. Asked by: \(command)" }
         return "No reason given."
+    }
+
+    /// Longest command a notification body carries.
+    public static let commandLimit = 140
+
+    /// A command on one line, cut to `commandLimit` characters.
+    public static func shortCommand(_ command: String) -> String {
+        let flat = command.split(whereSeparator: \.isNewline).joined(separator: " ").trimmingCharacters(in: .whitespaces)
+        return flat.count > commandLimit ? String(flat.prefix(commandLimit)) + "..." : flat
     }
 
     static func subject(_ details: VaultApprovalDetails) -> String {

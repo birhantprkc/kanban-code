@@ -53,7 +53,7 @@ Order, first match wins:
 
 1. Tier never: deny.
 2. The caller is not inside a card session: ask, whatever the tier.
-3. More than 20 releases of the secret in 5 minutes: ask.
+3. More than 20 releases of the secret in 5 minutes: ask. A yes from the human starts the count again.
 4. The card holds a lease and the secret allows leases: allow.
 5. Open: allow. Judged: the project's own development secret is allowed, anything else goes to Jev (allow needs at least 60% probability; Jev unreachable asks). Ask: the human.
 
@@ -68,6 +68,26 @@ A process that left its session's tree (`setsid nohup ... &` reparents it to lau
 OpenClaw agents on a Linux master count like card sessions under the principal `openclaw:<agent>`: the master finds, in the caller's ancestry, a process whose cgroup is the gateway's systemd unit (`openclaw-gateway.service`, set by systemd, not by the process), then the topmost process below the gateway whose working directory is an agent workspace from `~/.openclaw/openclaw.json` (the agent runtime the gateway started; a child that changes directory does not change it). The gateway itself, resolving SecretRefs, is `openclaw:gateway`. Each principal holds its own leases. Commands an agent starts outside the unit (`systemd-run`, cron) are outside, so they ask.
 
 Human approvals are attention requests of kind `vaultApproval` with the options "Approve for this card (2 days)", "Approve once", "Deny". A secret with "every use asks" never offers the lease. No answer in 60 minutes denies; kv says so when it starts waiting.
+
+### One question per thing asked
+
+A request that asks the human what an open request already asks joins it: no second attention request, no second notification. Two requests are the same question when they come from the same caller (the verified card or OpenClaw agent; outside a card, the same claimed card, device and folder), are the same kind (a release in the same mode, a lease, the same edit) and ask for the same secrets. The command and the reason do not count; the human sees those of the first.
+
+- The same call again (a retry, parallel `credential_process` calls) gets the id of the open request and waits on it.
+- A release that asks the same secrets but returns something else (other open secrets next to them, another folder) waits under its own id on the same question and gets its own values.
+- The answer goes to every waiter: approve, deny or timeout.
+
+The open request does not depend on its caller. When the caller gives up (a tool call that timed out, a `credential_process` that was killed), the request stays open for the 60 minutes, and the same call made again waits on it. An approval that was not fetched stays for 10 minutes: the same call made again takes it at once, then it is used up. A fetched result stays 30 seconds for the other callers waiting on the same id.
+
+"Approve for this card" grants the lease and then settles every other open request of that card whose secrets its leases now cover: their callers get the secrets (audit decider `lease`), their attention requests close on every master, and the Mac notifications and the phone rows go. A Pushover message cannot be taken back; with one question per thing asked there is one message.
+
+### Answering
+
+`POST /v1/attention/{id}/resolve` takes the first answer. The same answer sent again succeeds and changes nothing. A different answer to a settled request gets HTTP 409 "This was already answered on the phone: Approve once."; a request that is gone gets 404 "This request is no longer open.". No answer text names a request id.
+
+A master lists its own requests and mirrors its peers' every 4 seconds. A device that follows several masters (`AttentionFleet` in KanbanCodeRemoteKit) shows each request once, from the master that raised it. While that master's event stream is live its list decides: a mirror's copy of a request it no longer lists is not shown. Without the owner the mirror's copy shows, and the answer is forwarded.
+
+On the phone a tapped answer shows "Sending..." on that option at once and the row takes no other tap (`AttentionAnswerState`). The row leaves when the master took the answer, or when it says the request was already settled (a short note at the top of the list says so). When the call fails the row stays with "Not sent: ..." and working buttons. The Mac sheet does the same.
 
 ### What Jev reads
 
@@ -99,7 +119,7 @@ kv waits out a master that does not answer: on a refused connection, or HTTP 502
 The notification (Mac, Pushover, the phone app) has two lines:
 
 - Title: who wants what, e.g. "Kanban Chat Claude wants AWS lw-dev access", "... wants to use the Slack user token", "... wants to change the AWS lw-dev rules", "... wants to use the Slack user token for 2 days" (a lease). Outside a card it reads "A process outside any card wants ...".
-- Body: the agent's `--reason` and nothing else. A missing reason, or one that reads like a command or has under four words, shows "No reason given." instead.
+- Body: the agent's `--reason` and nothing else. A missing reason, or one that reads like a command or has under four words, shows "No reason given. Asked by: <command>" (the command on one line, cut to 140 characters), or "No reason given." when there is no command.
 
 Secrets are named by their label: the `label` field when set (`kv label NAME "..."`, `kv add --label`), else one derived from the name (`aws:lw-dev` is "AWS lw-dev", `aws:lw-prod:read` is "AWS lw-prod read-only", `SLACK_USER_TOKEN` is "Slack user token").
 
@@ -109,7 +129,7 @@ When it reaches you: the Mac notification posts at once and the Dock icon shows 
 
 ### Reasons
 
-The reason is the only text the human reads before deciding, so it must be one short plain sentence saying what the agent wants to do and why, e.g. `--reason "Deploy the langwatch staging app to check the fix for the login bug"`. kv refuses (exit 2, before asking the master) a reason that is missing where required (`kv request`), shorter than four words, longer than one sentence (200 characters or a newline), or that reads like a command (starts with a command name, has flags or shell operators). `--reason` is optional for `kv run`, `env`, `get`, `aws`, `add`, `tier`, `rules`, `label`; `KV_REASON` in the environment stands in for it, which is how `kv aws` from `credential_process` gets one. When a request reaches the human without a usable reason, the pending message tells the agent how to write one next time.
+The reason is the only text the human reads before deciding, so it must be one short plain sentence saying what the agent wants to do and why, e.g. `--reason "Deploy the langwatch staging app to check the fix for the login bug"`. kv refuses (exit 2, before asking the master) a reason that is missing where required (`kv request`), shorter than four words, longer than one sentence (200 characters or a newline), or that reads like a command (starts with a command name, has flags or shell operators). `--reason` is optional for `kv run`, `env`, `get`, `aws`, `add`, `tier`, `rules`, `label`; `KV_REASON` in the environment stands in for it, under the same rules. `aws`, `kubectl`, `helm` and `terraform` reach `kv aws` through `credential_process` and cannot pass `--reason`, so agents set `KV_REASON` on those commands: `KV_REASON="Check the dev cluster pods after the nlpgo deploy" kubectl get pods`. When a request reaches the human without a usable reason, the pending message tells the agent how to write one next time.
 
 ## kv
 
@@ -126,6 +146,7 @@ kv aws <profile> [--reason "..."]
 kv set KEY [--project P|.] [--env E] [--tier t] [--rules "..."] [--label "..."] [--reason "..."]   value on stdin (kv add is the same)
 kv ls [--project P] | kv log | kv leases | kv status   (status also says who the master takes you for)
 kv mv OLD NEW [--reason "..."] | kv mv --plan renames.json [--dry-run] --reason "..."   asks Rogerio, one approval
+kv rm NAME [NAME..] --reason "..." | kv rm --plan names.txt [--dry-run] --reason "..."   asks Rogerio, one approval
 kv tier NAME <tier> [--every-use-asks|--leases] | kv rules NAME "..." | kv label NAME "..."  [--reason "..."]   asks Rogerio
 kv tiers <tier> [NAME..] [--value-prefix P].. [--every-use-asks|--leases] --reason "..."   one approval for all
 kv import [--apply]
@@ -133,6 +154,8 @@ kv exec-provider                             OpenClaw exec SecretRef provider
 ```
 
 `kv exec-provider` speaks OpenClaw's exec provider protocol (`{"protocolVersion":1,"ids":[...]}` on stdin, `{"values":{...},"errors":{...}}` on stdout); each id is a vault secret name. It never waits on a human: a secret that needs approval comes back as `NEEDS_APPROVAL` and its request stays open for the next `openclaw secrets reload`.
+
+`kv rm` deletes secrets (`POST /v1/vault/delete`): the names given, or with `--plan` the names in a file (a JSON array, or one name per line, `#` for comments). All of them are one approval with Face ID, and the reason is required. `--dry-run` prints what each name would do (`delete`, `missing`, or the secret an earlier name resolves to) and asks nothing. A deleted secret becomes a tombstone that reaches the other replica like any edit, and each one gets an audit line with action `delete`. Its aliases stop resolving.
 
 ### kv env and the manifest
 
@@ -161,6 +184,10 @@ region = eu-central-1
 ```
 
 `aws:lw-prod:read` adds the ReadOnlyAccess session policy to the prod role.
+
+The `Command` of a `kv aws` request is the tool that asked, not `kv aws <profile>`: kv walks its process ancestry up to the shell or assistant that started the command and sends the outermost tool, with the nearest one after it, e.g. `kubectl get pods -n langwatch  (through: aws eks get-token --cluster-name dev)`. Jev judges that command, and the human sees it in the details and, without a reason, in the notification body.
+
+Credentials a card got are handed to it again while they are valid for more than 15 minutes: no new decision, no Jev call, no STS call, not counted toward the rate limit, one audit line with decider `reuse`. kubectl runs `aws eks get-token` on every call and terraform once per provider, each running `credential_process`; the card holds the first credentials for their whole hour, so the same ones again release nothing new. A profile with "every use asks" is never reused, nor is a caller outside a card. Editing the profile, or a restart of the master, ends the reuse.
 
 ## Bash hook
 

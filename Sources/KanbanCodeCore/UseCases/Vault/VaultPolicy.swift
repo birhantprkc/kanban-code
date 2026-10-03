@@ -174,4 +174,8 @@ public struct VaultRateCounter: Sendable {
         list.append(now)
         events[secret] = list
     }
+
+    public mutating func reset(_ secret: String) {
+        events[secret] = nil
+    }
 }

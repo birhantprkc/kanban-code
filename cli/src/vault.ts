@@ -208,8 +208,8 @@ export class VaultClient {
     this.io.stderr(`kv: ${r.message}...\n`);
     const started = Date.now();
     let lastNote = started;
-    while (r.status === "pending" && r.id) {
-      await this.io.sleep(1500);
+    for (let polls = 0; r.status === "pending" && r.id; polls++) {
+      await this.io.sleep(pendingPollDelay(polls));
       r = (await this.call<VaultResponse>("GET", `pending/${encodeURIComponent(r.id)}`)).body;
       if (r.status === "pending" && Date.now() - lastNote > 60_000) {
         lastNote = Date.now();
@@ -219,6 +219,11 @@ export class VaultClient {
     if (r.status === "granted") this.io.stderr("kv: approved.\n");
     return r;
   }
+}
+
+/** How long to wait before poll number `polls` of a pending request: an answer within the first minute is picked up in half a second. */
+export function pendingPollDelay(polls: number): number {
+  return polls < 120 ? 500 : 1500;
 }
 
 export function callerContext(env: NodeJS.ProcessEnv): { cardId?: string; sessionId?: string; cwd: string } {
@@ -504,9 +509,64 @@ export async function execProviderAnswer(
   return { protocolVersion: 1, values, ...(Object.keys(errors).length ? { errors } : {}) };
 }
 
-function parentCommand(): string | undefined {
-  const r = spawnSync("ps", ["-o", "args=", "-p", String(process.ppid)], { encoding: "utf8" });
-  return r.status === 0 ? r.stdout.trim() || undefined : undefined;
+/** One process of the caller's ancestry. */
+export interface ProcessInfo {
+  ppid: number;
+  args: string;
+}
+
+function readProcess(pid: number): ProcessInfo | undefined {
+  const r = spawnSync("ps", ["-o", "ppid=,args=", "-p", String(pid)], { encoding: "utf8" });
+  const m = r.status === 0 ? /^\s*(\d+)\s+(.*)$/s.exec(r.stdout.trim()) : null;
+  return m ? { ppid: Number(m[1]), args: m[2].trim() } : undefined;
+}
+
+/** Programs that start commands rather than being one: the walk up the ancestry stops there. */
+const NOT_A_COMMAND = new Set([
+  "sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "login", "sshd", "tmux", "screen", "launchd", "init",
+  "systemd", "claude", "codex", "rush", "agtop", "node", "env", "sudo", "nohup", "setsid", "timeout", "xargs",
+]);
+
+function programName(args: string): string {
+  const first = args.trim().split(/\s+/)[0] ?? "";
+  return basename(first).replace(/^-/, "");
+}
+
+/**
+ * The command a human would recognise as what asked for the secret: the
+ * outermost tool above kv, below the shell or assistant that started it.
+ * `kubectl get pods` runs `aws eks get-token`, which runs `kv aws` as its
+ * `credential_process`: the answer is "kubectl get pods (through aws eks
+ * get-token ...)". `commands` are the ancestors' command lines, nearest first.
+ */
+export function describeInvoker(commands: string[]): string | undefined {
+  const chain: string[] = [];
+  for (const args of commands) {
+    if (!args || NOT_A_COMMAND.has(programName(args))) break;
+    chain.push(args);
+  }
+  if (chain.length === 0) return commands[0] || undefined;
+  const outer = chain[chain.length - 1];
+  if (chain.length === 1) return outer;
+  const inner = chain[0].length > 160 ? `${chain[0].slice(0, 160)}...` : chain[0];
+  return `${outer}  (through: ${inner})`;
+}
+
+/** The invoking command of this kv process, from its ancestry (at most 8 levels). */
+export function invokingCommand(
+  pid: number = process.ppid,
+  read: (pid: number) => ProcessInfo | undefined = readProcess
+): string | undefined {
+  const commands: string[] = [];
+  for (let current = pid, depth = 0; current > 1 && depth < 8; depth++) {
+    const info = read(current);
+    if (!info) break;
+    commands.push(info.args);
+    // Past the shell or assistant that started it there is nothing to show.
+    if (NOT_A_COMMAND.has(programName(info.args))) break;
+    current = info.ppid;
+  }
+  return describeInvoker(commands);
 }
 
 function readStdin(): Promise<string> {
@@ -612,6 +672,8 @@ export const USAGE = `kv: secrets from the Kanban Code vault
   kv ls [--project P] [--json]                              names, tiers and rules
   kv mv OLD NEW [--reason "..."]                            rename; the old name keeps resolving (asks Rogerio)
   kv mv --plan <file.json> [--dry-run] --reason "..."       many renames ([{"from","to"}]), one approval
+  kv rm NAME [NAME..] --reason "..."                         delete secrets (asks Rogerio, one approval)
+  kv rm --plan <file> [--dry-run] --reason "..."            the names from a file: a JSON array or one per line
   kv log [--card ID] [--secret NAME] [--limit N] [--json]   the audit log, newest first
   kv leases [--card ID]                                     active card leases
   kv tier NAME <tier> [--every-use-asks|--leases] | kv rules NAME "..." | kv label NAME "..."  [--reason "..."]
@@ -630,8 +692,10 @@ another name, KEY=value for plain config. .env.prod.vault is the prod manifest.
 
 When Rogerio has to approve, his phone shows "<card> wants to use <secret>"
 and under it only your reason. ${REASON_GUIDANCE}
-KV_REASON in the environment is used when --reason is not given (for kv aws
-from credential_process).
+KV_REASON in the environment is used when --reason is not given. Set it on
+every aws, kubectl, helm or terraform command, which reach kv aws through
+credential_process and cannot pass --reason:
+  KV_REASON="Check the dev cluster pods after the nlpgo deploy" kubectl get pods
 
 Exit code ${EXIT_DENIED} means the vault denied the request; 2 means kv refused the reason.`;
 
@@ -719,7 +783,7 @@ export async function runKv(argv: string[], io: VaultIO = defaultIO()): Promise<
       const reason = checkedReason(takeOption(args, "--reason"), io.env, false);
       const name = args[0];
       if (!name) throw new VaultCliError("kv get NAME");
-      const r = await client.decide("release", { mode: "get", names: [name], command: parentCommand(), reason, ...ctx });
+      const r = await client.decide("release", { mode: "get", names: [name], command: invokingCommand(), reason, ...ctx });
       if (r.status !== "granted") throw deniedError(r);
       out((r.values ?? {})[name] ?? "");
       if (process.stdout.isTTY) out("\n");
@@ -740,7 +804,7 @@ export async function runKv(argv: string[], io: VaultIO = defaultIO()): Promise<
       const reason = checkedReason(takeOption(args, "--reason"), io.env, false);
       const profile = args[0];
       if (!profile) throw new VaultCliError("kv aws <profile>");
-      const r = await client.decide("aws", { mode: "aws", names: [profile], command: parentCommand(), reason, ...ctx });
+      const r = await client.decide("aws", { mode: "aws", names: [profile], command: invokingCommand(), reason, ...ctx });
       if (r.status !== "granted" || !r.credentials) throw deniedError(r);
       out(JSON.stringify(r.credentials) + "\n");
       return 0;
@@ -827,6 +891,26 @@ export async function runKv(argv: string[], io: VaultIO = defaultIO()): Promise<
       }
       const { body } = await client.call<VaultResponse>("POST", `rename${ctx.cardId ? `?card=${ctx.cardId}` : ""}`, {
         renames,
+        reason,
+        dryRun,
+      });
+      const r = body.status === "pending" ? await waitPending(client, body) : body;
+      if (r.status !== "granted") throw deniedError(r);
+      if (dryRun || plan) out(JSON.stringify(r.resolved ?? {}, null, 2) + "\n");
+      io.stderr(`kv: ${r.message}\n`);
+      return 0;
+    }
+
+    case "rm": {
+      const reason = checkedReason(takeOption(args, "--reason"), io.env, true);
+      const dryRun = takeFlag(args, "--dry-run");
+      const plan = takeOption(args, "--plan");
+      const names = plan ? readNamePlan(readFileSync(plan, "utf8")) : args;
+      if (names.length === 0) {
+        throw new VaultCliError('kv rm NAME [NAME..] --reason "..."  |  kv rm --plan <file> [--dry-run] --reason "..."');
+      }
+      const { body } = await client.call<VaultResponse>("POST", `delete${ctx.cardId ? `?card=${ctx.cardId}` : ""}`, {
+        names,
         reason,
         dryRun,
       });
@@ -926,11 +1010,27 @@ export async function runKv(argv: string[], io: VaultIO = defaultIO()): Promise<
   }
 }
 
+/** The names of a `kv rm --plan` file: a JSON array of names, or one name per line (# starts a comment). */
+export function readNamePlan(text: string): string[] {
+  const trimmed = text.trim();
+  if (trimmed.startsWith("[")) {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (!Array.isArray(parsed) || parsed.some((n) => typeof n !== "string")) {
+      throw new VaultCliError("kv: the plan must be a JSON array of secret names, or one name per line");
+    }
+    return parsed as string[];
+  }
+  return trimmed
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"));
+}
+
 async function waitPending(client: VaultClient, first: VaultResponse): Promise<VaultResponse> {
   client.io.stderr(`kv: ${first.message}...\n`);
   let r = first;
-  while (r.status === "pending" && r.id) {
-    await client.io.sleep(1500);
+  for (let polls = 0; r.status === "pending" && r.id; polls++) {
+    await client.io.sleep(pendingPollDelay(polls));
     r = (await client.call<VaultResponse>("GET", `pending/${encodeURIComponent(r.id)}`)).body;
   }
   return r;

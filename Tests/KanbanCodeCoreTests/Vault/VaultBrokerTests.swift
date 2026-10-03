@@ -19,6 +19,7 @@ private final class FakeApprovals: VaultApprovals, @unchecked Sendable {
     var raised: [AttentionRequest] = []
     var answer: String?
     var expired: [String] = []
+    var closedBy: [String: String] = [:]
 
     init(answer: String?) { self.answer = answer }
 
@@ -26,7 +27,7 @@ private final class FakeApprovals: VaultApprovals, @unchecked Sendable {
     func resolution(of id: String) async -> (resolution: String?, by: String)? {
         lock.withLock { answer.map { ($0, "phone") } }
     }
-    func expire(id: String, resolution: String) async { lock.withLock { expired.append(id) } }
+    func close(id: String, resolution: String, by: String) async { lock.withLock { expired.append(id); closedBy[id] = by } }
 }
 
 private let inside = VaultCaller(cardId: "card_1", sessionId: "s1", pid: 42, ancestry: ["kv", "zsh", "tmux"])
